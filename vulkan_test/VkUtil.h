@@ -93,3 +93,21 @@ private:
     T value;
     Deleter deleter;
 };
+
+template <typename T>
+std::function<void(T*)> deleterWithDevice(Handle<VkDevice>& device,
+                                         std::function<void(VkDevice, T, const VkAllocationCallbacks*)> destroyFunc) {
+    return [&device, destroyFunc](T* t) {
+        destroyFunc(*device, *t, nullptr);
+    };
+}
+
+template <typename T>
+std::function<void(std::vector<T>*)> deleterLoopWithDevice(Handle<VkDevice>& device,
+                                                           std::function<void(VkDevice, T, const VkAllocationCallbacks*)> destroyFunc) {
+    return [&device, destroyFunc](std::vector<T>* v) {
+        for (auto t : *v) {
+            destroyFunc(*device, t, nullptr);
+        }
+    };
+}
