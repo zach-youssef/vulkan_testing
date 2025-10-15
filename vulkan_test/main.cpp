@@ -5,6 +5,7 @@
 #include "DeviceSelection.h"
 #include "QueueFamilyIndices.h"
 #include "SwapChainSupportDetails.h"
+#include "Frame.h"
 
 #include "FileUtil.h"
 
@@ -19,6 +20,8 @@ const uint32_t WINDOW_HEIGHT = 600;
 const std::vector<const char*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
 };
+
+const int MAX_FRAMES_IN_FLIGHT = 2;
 
 /*
 #ifdef NDEBUG
@@ -481,17 +484,6 @@ private:
                             "Failed to create command pool");
     }
     
-    void createCommandBuffer() {
-        VkCommandBufferAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.commandPool = *this->commandPool;
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandBufferCount = 1;
-        
-        VK_SUCCESS_OR_THROW(vkAllocateCommandBuffers(*this->device, &allocInfo, &this->commandBuffer),
-                            "Failed to allocate command buffers");
-    }
-    
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -538,20 +530,10 @@ private:
                             "Failed to reccord command buffer.");
     }
     
-    void createSyncObjects() {
-        VkSemaphoreCreateInfo semaphoreInfo{};
-        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        
-        VkFenceCreateInfo fenceInfo{};
-        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // Init fence as signaled so first frame isn't blocked
-        
-        VK_SUCCESS_OR_THROW(vkCreateSemaphore(*this->device, &semaphoreInfo, nullptr, this->imageAvailableSemaphore.get()),
-                            "Failed to create image available semaphore.");
-        VK_SUCCESS_OR_THROW(vkCreateSemaphore(*this->device, &semaphoreInfo, nullptr, this->renderFinishedSemaphore.get()),
-                            "Failed to create render finished semaphore.");
-        VK_SUCCESS_OR_THROW(vkCreateFence(*this->device, &fenceInfo, nullptr, this->inFlightFence.get()),
-                            "Failed to create in-flight fence.");
+    void initFrames() {
+        for (auto& frame : this->frames) {
+            frame.init(this->commandPool);
+        }
     }
     
     void initVulkan() {
@@ -565,8 +547,7 @@ private:
         createGraphicsPipeline();
         createFramebuffers();
         createCommandPool();
-        createCommandBuffer();
-        createSyncObjects();
+        initFrames();
     }
     
     void initWindow() {
@@ -582,50 +563,23 @@ private:
     }
     
     void drawFrame() {
+        auto& currentFrame = this->frames[this->currentFrameIndex];
         // Wait for previous frame to complete
-        vkWaitForFences(*this->device, 1, this->inFlightFence.get(), VK_TRUE, UINT64_MAX); // disabled timeout
-        vkResetFences(*this->device, 1, this->inFlightFence.get());
+        currentFrame.waitForFenceAndReset();
         
         // Acquire index of next image in swapchain
-        uint32_t imageIndex;
-        vkAcquireNextImageKHR(*this->device, *this->swapChain, UINT64_MAX, *this->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+        uint32_t imageIndex = currentFrame.aquireImageIndex(this->swapChain);
         
         // Record the command buffer
-        vkResetCommandBuffer(this->commandBuffer, 0);
+        auto commandBuffer = currentFrame.getCommandBuffer();
+        vkResetCommandBuffer(commandBuffer, 0);
         recordCommandBuffer(commandBuffer, imageIndex);
         
         // Submit command buffer
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &this->commandBuffer;
+        currentFrame.submit(imageIndex, graphicsQueue, presentQueue, this->swapChain);
         
-        // (it should wait for the swapchain image to be available before writing out to it)
-        VkSemaphore waitSemaphores[] = {*this->imageAvailableSemaphore};
-        VkPipelineStageFlags waitStages[] {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = waitSemaphores;
-        submitInfo.pWaitDstStageMask = waitStages;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffer;
-        VkSemaphore signalSemaphores[] = {*this->renderFinishedSemaphore};
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = signalSemaphores;
-        
-        VK_SUCCESS_OR_THROW(vkQueueSubmit(this->graphicsQueue, 1, &submitInfo, *this->inFlightFence), "Failed to submit draw command buffer.");
-        
-        VkPresentInfoKHR presentInfo{};
-        presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
-        presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = signalSemaphores;
-        VkSwapchainKHR swapChains[] = {*this->swapChain};
-        presentInfo.swapchainCount = 1;
-        presentInfo.pSwapchains = swapChains;
-        presentInfo.pImageIndices = &imageIndex;
-        presentInfo.pResults = nullptr; // Array of VkResults to check for each swapchain?
-        
-        vkQueuePresentKHR(this->presentQueue, &presentInfo);
+        // Increment frame index
+        this->currentFrameIndex = (this->currentFrameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
     void mainLoop() {
@@ -674,14 +628,11 @@ private:
     Handle<VkCommandPool> commandPool{
         deleterWithDevice<VkCommandPool>(this->device, vkDestroyCommandPool)};
     
-    VkCommandBuffer commandBuffer;
-    
-    Handle<VkSemaphore> imageAvailableSemaphore{
-        deleterWithDevice<VkSemaphore>(this->device, vkDestroySemaphore)};
-    Handle<VkSemaphore> renderFinishedSemaphore{
-        deleterWithDevice<VkSemaphore>(this->device, vkDestroySemaphore)};
-    Handle<VkFence> inFlightFence{
-        deleterWithDevice<VkFence>(this->device, vkDestroyFence)};
+    // TODO: there's gotta be a way to do this dynamically
+    std::array<Frame, MAX_FRAMES_IN_FLIGHT> frames = {
+        Frame{this->device}, Frame{this->device}
+    };
+    uint32_t currentFrameIndex = 0;
 };
 
 int main() {

@@ -73,9 +73,16 @@ public:
     using Deleter = std::function<void(T*)>;
     Handle<T>(Deleter&& d): deleter(d) {}
     
+    Handle<T>(): deleter([](T*){}) {}
+    
     ~Handle() {
         deleter(&value);
     }
+    
+    Handle<T> (const Handle<T>& other) {
+        this->value = other.value;
+        this->deleter = [](T*){};
+    };
     
     T* operator -> () {
         return &value;
