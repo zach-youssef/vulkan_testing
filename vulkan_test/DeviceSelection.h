@@ -18,8 +18,8 @@ bool isDeviceSuitable(VkPhysicalDevice device, Handle<VkSurfaceKHR>& surface) {
 }
 
 // Returns VK_NULL_HANDLE if no suitable device found
-VkPhysicalDevice pickPhysicalDevice(Handle<VkInstance>& instance, Handle<VkSurfaceKHR>& surface) {
-    std::vector<VkPhysicalDevice> devices = readVkVector<VkPhysicalDevice, VkInstance>(*instance, vkEnumeratePhysicalDevices);
+VkPhysicalDevice pickPhysicalDevice(VkInstance instance, Handle<VkSurfaceKHR>& surface) {
+    std::vector<VkPhysicalDevice> devices = readVkVector<VkPhysicalDevice, VkInstance>(instance, vkEnumeratePhysicalDevices);
     if (devices.size() == 0) {
         //throw std::runtime_error("Failed to find GPU with Vulkan support.");
         return VK_NULL_HANDLE;

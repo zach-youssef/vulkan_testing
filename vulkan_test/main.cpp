@@ -6,6 +6,7 @@
 #include "QueueFamilyIndices.h"
 #include "SwapChainSupportDetails.h"
 #include "Frame.h"
+#include "VkTypes.h"
 
 #include "FileUtil.h"
 
@@ -115,12 +116,12 @@ private:
         
         createInfo.enabledLayerCount = 0;
         
-        VK_SUCCESS_OR_THROW(vkCreateInstance(&createInfo, nullptr, this->instance.get()),
+        VK_SUCCESS_OR_THROW(VulkanInstance::createVulkanInstance(createInfo, instance_),
                             "Failed to create Instance!");
     }
     
     void choosePhysicalDevice() {
-        this->physicalDevice = pickPhysicalDevice(this->instance, this->surface);
+        this->physicalDevice = pickPhysicalDevice(**instance_, this->surface);
         
         if (this->physicalDevice == VK_NULL_HANDLE) {
             throw std::runtime_error("Failed to find a suitable GPU.");
@@ -164,7 +165,7 @@ private:
     }
     
     void createSurface() {
-        VK_SUCCESS_OR_THROW(glfwCreateWindowSurface(*this->instance, this->window.get(), nullptr, this->surface.get()),
+        VK_SUCCESS_OR_THROW(glfwCreateWindowSurface(**instance_, this->window.get(), nullptr, this->surface.get()),
                             "Failed to create window surface");
     }
     
@@ -591,9 +592,10 @@ private:
     }
 private:
     std::unique_ptr<GLFWwindow, std::function<void(GLFWwindow*)>> window;
-    Handle<VkInstance> instance{[](VkInstance* i){
+    /*Handle<VkInstance> instance{[](VkInstance* i){
         vkDestroyInstance(*i, nullptr);
-    }};
+    }};*/
+    std::unique_ptr<VulkanInstance> instance_;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     Handle<VkDevice> device{[](VkDevice* d){
         vkDestroyDevice(*d, nullptr);
@@ -601,7 +603,7 @@ private:
     VkQueue graphicsQueue;
     VkQueue presentQueue;
     Handle<VkSurfaceKHR> surface{[this](VkSurfaceKHR* s){
-        vkDestroySurfaceKHR(*this->instance, *s, nullptr);
+        vkDestroySurfaceKHR(**instance_, *s, nullptr);
     }};
     Handle<VkSwapchainKHR> swapChain{
         deleterWithDevice<VkSwapchainKHR>(this->device, vkDestroySwapchainKHR)};
