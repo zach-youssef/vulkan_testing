@@ -121,15 +121,15 @@ private:
     }
     
     void choosePhysicalDevice() {
-        this->physicalDevice = pickPhysicalDevice(**instance_, **surface_);
+        physicalDevice_ = pickPhysicalDevice(**instance_, **surface_);
         
-        if (this->physicalDevice == VK_NULL_HANDLE) {
+        if (physicalDevice_ == VK_NULL_HANDLE) {
             throw std::runtime_error("Failed to find a suitable GPU.");
         }
     }
     
     void createLogicalDevice() {
-        QueueFamilyIndices indices = findQueueFamilies(this->physicalDevice, **surface_);
+        QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, **surface_);
         
         std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
         
@@ -157,11 +157,11 @@ private:
         createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
         createInfo.ppEnabledExtensionNames = deviceExtensions.data();
         
-        VK_SUCCESS_OR_THROW(VulkanDevice::create(device_, physicalDevice, createInfo),
+        VK_SUCCESS_OR_THROW(VulkanDevice::create(device_, physicalDevice_, createInfo),
                             "Failed to create logical device.");
         
-        vkGetDeviceQueue(**device_, indices.graphicsFamily.value(), 0, &this->graphicsQueue);
-        vkGetDeviceQueue(**device_, indices.presentFamily.value(), 0, &this->presentQueue);
+        vkGetDeviceQueue(**device_, indices.graphicsFamily.value(), 0, &graphicsQueue_);
+        vkGetDeviceQueue(**device_, indices.presentFamily.value(), 0, &presentQueue_);
     }
     
     void createSurface() {
@@ -170,7 +170,7 @@ private:
     }
     
     void createSwapChain() {
-        SwapChainSupportDetails swapChainSupport = querySwapChainSupport(this->physicalDevice, **surface_);
+        SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice_, **surface_);
         
         auto surfaceFormat = swapChainSupport.chooseSwapSurfaceFormat();
         auto presentMode = swapChainSupport.chooseSwapPresentMode();
@@ -190,7 +190,7 @@ private:
         createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         
         // Set sharing mode based on if a single present/graphics queue will be accessing the swapchain or 2 separate queues
-        QueueFamilyIndices indices = findQueueFamilies(physicalDevice, **surface_);
+        QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, **surface_);
         uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(), indices.presentFamily.value()};
         if (indices.graphicsFamily != indices.presentFamily) {
             createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
@@ -217,23 +217,23 @@ private:
                             "Failed to create swap chain.");
         
         // Retrieve swapchain images
-        this->swapChainImages = readVkVector<VkImage, VkDevice, VkSwapchainKHR>(**device_, **swapChain_,
+        swapChainImages_ = readVkVector<VkImage, VkDevice, VkSwapchainKHR>(**device_, **swapChain_,
                                                                                 vkGetSwapchainImagesKHR);
         
         // Cache swapchain properties
-        this->swapChainImageFormat = surfaceFormat.format;
-        this->swapChainExtent = extent;
+        swapChainImageFormat_ = surfaceFormat.format;
+        swapChainExtent_ = extent;
     }
     
     void createSwapChainImageViews() {
-        swapChainImageViews_.resize(this->swapChainImages.size());
+        swapChainImageViews_.resize(swapChainImages_.size());
         
-        for (size_t i = 0; i < swapChainImages.size(); ++i) {
+        for (size_t i = 0; i < swapChainImages_.size(); ++i) {
             VkImageViewCreateInfo createInfo{};
             createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            createInfo.image = this->swapChainImages[i];
+            createInfo.image = swapChainImages_[i];
             createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            createInfo.format = this->swapChainImageFormat;
+            createInfo.format = swapChainImageFormat_;
             // here is where you could make channels constant or remapped
             createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
             createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -313,14 +313,14 @@ private:
         VkViewport viewport{};
         viewport.x = 0.0f;
         viewport.y = 0.0f;
-        viewport.width = (float) this->swapChainExtent.width;
-        viewport.height = (float) this->swapChainExtent.height;
+        viewport.width = static_cast<float>(swapChainExtent_.width);
+        viewport.height = static_cast<float>(swapChainExtent_.height);
         viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
         
         VkRect2D scissor{};
         scissor.offset = {0, 0};
-        scissor.extent = swapChainExtent;
+        scissor.extent = swapChainExtent_;
         
         VkPipelineViewportStateCreateInfo viewportState{};
         viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -408,7 +408,7 @@ private:
     
     void createRenderPass() {
         VkAttachmentDescription colorAttachment{};
-        colorAttachment.format = swapChainImageFormat;
+        colorAttachment.format = swapChainImageFormat_;
         colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
         colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; // clear data before loading
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; // Store rendered content in memory after rendering
@@ -462,8 +462,8 @@ private:
             framebufferInfo.renderPass = **renderPass_;
             framebufferInfo.attachmentCount = 1;
             framebufferInfo.pAttachments = attachments;
-            framebufferInfo.width = swapChainExtent.width;
-            framebufferInfo.height = swapChainExtent.height;
+            framebufferInfo.width = swapChainExtent_.width;
+            framebufferInfo.height = swapChainExtent_.height;
             framebufferInfo.layers = 1;
             
             VK_SUCCESS_OR_THROW(VulkanFramebuffer::create(swapChainFramebuffers_[i], **device_, framebufferInfo),
@@ -472,7 +472,7 @@ private:
     }
     
     void createCommandPool() {
-        QueueFamilyIndices queueFamilyIndices = findQueueFamilies(this->physicalDevice, **surface_);
+        QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice_, **surface_);
 
         VkCommandPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -498,7 +498,7 @@ private:
         renderPassInfo.framebuffer = **swapChainFramebuffers_[imageIndex];
         
         renderPassInfo.renderArea.offset = {0, 0};
-        renderPassInfo.renderArea.extent = swapChainExtent;
+        renderPassInfo.renderArea.extent = swapChainExtent_;
         
         VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
         renderPassInfo.clearValueCount = 1;
@@ -510,15 +510,15 @@ private:
         VkViewport viewport{};
         viewport.x = 0.0f;
         viewport.y = 0.0f;
-        viewport.width = static_cast<float>(swapChainExtent.width);
-        viewport.height = static_cast<float>(swapChainExtent.height);
+        viewport.width = static_cast<float>(swapChainExtent_.width);
+        viewport.height = static_cast<float>(swapChainExtent_.height);
         viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
         VkRect2D scissor{};
         scissor.offset = {0, 0};
-        scissor.extent = swapChainExtent;
+        scissor.extent = swapChainExtent_;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
         
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
@@ -575,7 +575,7 @@ private:
         recordCommandBuffer(commandBuffer, imageIndex);
         
         // Submit command buffer
-        currentFrame->submit(imageIndex, graphicsQueue, presentQueue, **swapChain_);
+        currentFrame->submit(imageIndex, graphicsQueue_, presentQueue_, **swapChain_);
         
         // Increment frame index
         currentFrameIndex_ = (this->currentFrameIndex_ + 1) % MAX_FRAMES_IN_FLIGHT;
@@ -591,16 +591,16 @@ private:
 private:
     std::unique_ptr<GLFWwindow, std::function<void(GLFWwindow*)>> window;
     std::unique_ptr<VulkanInstance> instance_;
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     std::unique_ptr<VulkanDevice> device_;
-    VkQueue graphicsQueue;
-    VkQueue presentQueue;
+    VkQueue graphicsQueue_;
+    VkQueue presentQueue_;
     std::unique_ptr<VulkanSurface> surface_;
     std::unique_ptr<VulkanSwapchain> swapChain_;
     
-    std::vector<VkImage> swapChainImages;
-    VkFormat swapChainImageFormat;
-    VkExtent2D swapChainExtent;
+    std::vector<VkImage> swapChainImages_;
+    VkFormat swapChainImageFormat_;
+    VkExtent2D swapChainExtent_;
     
     std::vector<std::unique_ptr<VulkanImageView>> swapChainImageViews_;
     
