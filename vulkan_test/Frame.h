@@ -1,50 +1,50 @@
 #pragma once
 
 #include "VkUtil.h"
+#include "VkTypes.h"
 
 class Frame {
 public:
-    Frame(Handle<VkDevice>& device): device(device) {}
-    
-    void init(Handle<VkCommandPool>& commandPool) {
+    Frame(VkDevice device, VkCommandPool commandPool): device_(device) {
         createCommandBuffer(commandPool);
         createSyncObjects();
     }
     
+    
     void waitForFenceAndReset() {
-        vkWaitForFences(*this->device, 1, this->inFlightFence.get(), VK_TRUE, UINT64_MAX); // disabled timeout
-        vkResetFences(*this->device, 1, this->inFlightFence.get());
+        vkWaitForFences(device_, 1, (*inFlightFence_).get(), VK_TRUE, UINT64_MAX); // disabled timeout
+        vkResetFences(device_, 1, (*inFlightFence_).get());
     }
     
-    uint32_t aquireImageIndex(Handle<VkSwapchainKHR>& swapChain){
+    uint32_t aquireImageIndex(VkSwapchainKHR swapChain){
         uint32_t imageIndex;
-        vkAcquireNextImageKHR(*this->device, *swapChain, UINT64_MAX, *this->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+        vkAcquireNextImageKHR(device_, swapChain, UINT64_MAX, **imageAvailableSemaphore_, VK_NULL_HANDLE, &imageIndex);
         return imageIndex;
     }
     
     VkCommandBuffer getCommandBuffer() {
-        return this->commandBuffer;
+        return commandBuffer_;
     }
     
-    void submit(uint32_t imageIndex, VkQueue graphicsQueue, VkQueue presentQueue, Handle<VkSwapchainKHR>& swapChain) {
+    void submit(uint32_t imageIndex, VkQueue graphicsQueue, VkQueue presentQueue, VkSwapchainKHR swapChain) {
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffer;
+        submitInfo.pCommandBuffers = &commandBuffer_;
         
         // (it should wait for the swapchain image to be available before writing out to it)
-        VkSemaphore waitSemaphores[] = {*this->imageAvailableSemaphore};
+        VkSemaphore waitSemaphores[] = {**imageAvailableSemaphore_};
         VkPipelineStageFlags waitStages[] {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         submitInfo.waitSemaphoreCount = 1;
         submitInfo.pWaitSemaphores = waitSemaphores;
         submitInfo.pWaitDstStageMask = waitStages;
         submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffer;
-        VkSemaphore signalSemaphores[] = {*this->renderFinishedSemaphore};
+        submitInfo.pCommandBuffers = &commandBuffer_;
+        VkSemaphore signalSemaphores[] = {**renderFinishedSemaphore_};
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
         
-        VK_SUCCESS_OR_THROW(vkQueueSubmit(graphicsQueue, 1, &submitInfo, *this->inFlightFence),
+        VK_SUCCESS_OR_THROW(vkQueueSubmit(graphicsQueue, 1, &submitInfo, **inFlightFence_),
                             "Failed to submit draw command buffer.");
         
         VkPresentInfoKHR presentInfo{};
@@ -52,7 +52,7 @@ public:
 
         presentInfo.waitSemaphoreCount = 1;
         presentInfo.pWaitSemaphores = signalSemaphores;
-        VkSwapchainKHR swapChains[] = {*swapChain};
+        VkSwapchainKHR swapChains[] = {swapChain};
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = swapChains;
         presentInfo.pImageIndices = &imageIndex;
@@ -62,14 +62,14 @@ public:
     }
     
 private:
-    void createCommandBuffer(Handle<VkCommandPool>& commandPool) {
+    void createCommandBuffer(VkCommandPool commandPool) {
         VkCommandBufferAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.commandPool = *commandPool;
+        allocInfo.commandPool = commandPool;
         allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocInfo.commandBufferCount = 1;
         
-        VK_SUCCESS_OR_THROW(vkAllocateCommandBuffers(*this->device, &allocInfo, &this->commandBuffer),
+        VK_SUCCESS_OR_THROW(vkAllocateCommandBuffers(device_, &allocInfo, &commandBuffer_),
                             "Failed to allocate command buffers");
     }
     
@@ -81,22 +81,19 @@ private:
         fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // Init fence as signaled so first frame isn't blocked
         
-        VK_SUCCESS_OR_THROW(vkCreateSemaphore(*this->device, &semaphoreInfo, nullptr, this->imageAvailableSemaphore.get()),
+        VK_SUCCESS_OR_THROW(VulkanSemaphore::create(imageAvailableSemaphore_, device_, semaphoreInfo),
                             "Failed to create image available semaphore.");
-        VK_SUCCESS_OR_THROW(vkCreateSemaphore(*this->device, &semaphoreInfo, nullptr, this->renderFinishedSemaphore.get()),
+        VK_SUCCESS_OR_THROW(VulkanSemaphore::create(renderFinishedSemaphore_, device_, semaphoreInfo),
                             "Failed to create render finished semaphore.");
-        VK_SUCCESS_OR_THROW(vkCreateFence(*this->device, &fenceInfo, nullptr, this->inFlightFence.get()),
+        VK_SUCCESS_OR_THROW(VulkanFence::create(inFlightFence_, device_, fenceInfo),
                             "Failed to create in-flight fence.");
     }
     
 private:
-    VkCommandBuffer commandBuffer;
-    Handle<VkDevice>& device;
+    VkCommandBuffer commandBuffer_;
+    VkDevice device_;
     
-    Handle<VkSemaphore> imageAvailableSemaphore{
-        deleterWithDevice<VkSemaphore>(this->device, vkDestroySemaphore)};
-    Handle<VkSemaphore> renderFinishedSemaphore{
-        deleterWithDevice<VkSemaphore>(this->device, vkDestroySemaphore)};
-    Handle<VkFence> inFlightFence{
-        deleterWithDevice<VkFence>(this->device, vkDestroyFence)};
+    std::unique_ptr<VulkanSemaphore> imageAvailableSemaphore_;
+    std::unique_ptr<VulkanSemaphore> renderFinishedSemaphore_;
+    std::unique_ptr<VulkanFence> inFlightFence_;
 };

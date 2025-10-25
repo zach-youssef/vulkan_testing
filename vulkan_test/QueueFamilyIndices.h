@@ -21,7 +21,7 @@ struct QueueFamilyIndices {
     }
 };
 
-QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, Handle<VkSurfaceKHR>& surface) {
+QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface) {
     QueueFamilyIndices indices;
     
     std::vector<VkQueueFamilyProperties> queueFamilies = readVkVectorVoid<VkQueueFamilyProperties, VkPhysicalDevice>(device, vkGetPhysicalDeviceQueueFamilyProperties);
@@ -31,7 +31,7 @@ QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, Handle<VkSurfaceKH
         }
         
         VkBool32 presentSupport = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, *surface, &presentSupport);
+        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
         if (presentSupport) {
             indices.presentFamily = i;
         }

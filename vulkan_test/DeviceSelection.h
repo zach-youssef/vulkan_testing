@@ -13,12 +13,12 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
     return requiredExtensions.empty();
 }
 
-bool isDeviceSuitable(VkPhysicalDevice device, Handle<VkSurfaceKHR>& surface) {
+bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface) {
     return findQueueFamilies(device, surface).complete() && checkDeviceExtensionSupport(device) && querySwapChainSupport(device, surface).adequate();
 }
 
 // Returns VK_NULL_HANDLE if no suitable device found
-VkPhysicalDevice pickPhysicalDevice(VkInstance instance, Handle<VkSurfaceKHR>& surface) {
+VkPhysicalDevice pickPhysicalDevice(VkInstance instance, VkSurfaceKHR surface) {
     std::vector<VkPhysicalDevice> devices = readVkVector<VkPhysicalDevice, VkInstance>(instance, vkEnumeratePhysicalDevices);
     if (devices.size() == 0) {
         //throw std::runtime_error("Failed to find GPU with Vulkan support.");

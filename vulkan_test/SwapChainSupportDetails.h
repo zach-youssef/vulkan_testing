@@ -53,13 +53,13 @@ struct SwapChainSupportDetails {
     }
 };
 
-SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, Handle<VkSurfaceKHR>& surface) {
+SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
     SwapChainSupportDetails details{};
     
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, *surface, &details.capabilities);
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
     
-    details.formats = readVkVector<VkSurfaceFormatKHR, VkPhysicalDevice, VkSurfaceKHR>(device, *surface, vkGetPhysicalDeviceSurfaceFormatsKHR);
-    details.presentModes = readVkVector<VkPresentModeKHR, VkPhysicalDevice, VkSurfaceKHR>(device, *surface, vkGetPhysicalDeviceSurfacePresentModesKHR);
+    details.formats = readVkVector<VkSurfaceFormatKHR, VkPhysicalDevice, VkSurfaceKHR>(device, surface, vkGetPhysicalDeviceSurfaceFormatsKHR);
+    details.presentModes = readVkVector<VkPresentModeKHR, VkPhysicalDevice, VkSurfaceKHR>(device, surface, vkGetPhysicalDeviceSurfacePresentModesKHR);
 
     return details;
 }
