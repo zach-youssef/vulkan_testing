@@ -2,7 +2,7 @@
 
 #include <vulkan/vulkan.h>
 
-template<typename VkType>
+template<typename WrapperType, typename VkType, class... Args>
 class VkWrapper {
 public:
     VkType operator * () {
@@ -13,26 +13,26 @@ public:
         return &value_;
     }
     
-protected:
-    VkType value_;
-};
-
-// Test impl
-class VulkanInstance final : public VkWrapper<VkInstance> {
-public:
-    static VkResult createVulkanInstance(const VkInstanceCreateInfo& createInfo, std::unique_ptr<VulkanInstance>& outPtr) {
+    static VkResult create(std::unique_ptr<WrapperType>& outPtr, Args... args) {
         VkResult result;
-        outPtr = std::make_unique<VulkanInstance>(createInfo, result);
+        outPtr = std::make_unique<WrapperType>(result, args...);
         if (result != VK_SUCCESS) {
             outPtr = nullptr;
         }
         return result;
     }
+protected:
+    VkType value_;
+};
+
+// Test impl
+class VulkanInstance final : public VkWrapper<VulkanInstance, VkInstance, const VkInstanceCreateInfo&> {
+public:
+    VulkanInstance(VkResult& outResult, const VkInstanceCreateInfo& createInfo) {
+        outResult = vkCreateInstance(&createInfo, nullptr, &value_);
+    }
+    
     ~VulkanInstance() {
         vkDestroyInstance(value_, nullptr);
     }
-    VulkanInstance(const VkInstanceCreateInfo& createInfo, VkResult& outResult) {
-        outResult = vkCreateInstance(&createInfo, nullptr, &value_);
-    }
 };
-

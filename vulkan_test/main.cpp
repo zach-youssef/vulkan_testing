@@ -116,7 +116,7 @@ private:
         
         createInfo.enabledLayerCount = 0;
         
-        VK_SUCCESS_OR_THROW(VulkanInstance::createVulkanInstance(createInfo, instance_),
+        VK_SUCCESS_OR_THROW(VulkanInstance::create(instance_, createInfo),
                             "Failed to create Instance!");
     }
     
