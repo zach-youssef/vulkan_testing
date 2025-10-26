@@ -10,15 +10,20 @@ public:
         createSyncObjects();
     }
     
-    
-    void waitForFenceAndReset() {
+    void waitForFence() {
         vkWaitForFences(device_, 1, (*inFlightFence_).get(), VK_TRUE, UINT64_MAX); // disabled timeout
+    }
+    
+    void resetFence() {
         vkResetFences(device_, 1, (*inFlightFence_).get());
     }
     
-    uint32_t aquireImageIndex(VkSwapchainKHR swapChain){
+    uint32_t aquireImageIndex(VkSwapchainKHR swapChain, bool& outShouldRecreateSwapChain){
         uint32_t imageIndex;
-        vkAcquireNextImageKHR(device_, swapChain, UINT64_MAX, **imageAvailableSemaphore_, VK_NULL_HANDLE, &imageIndex);
+        auto result = vkAcquireNextImageKHR(device_, swapChain, UINT64_MAX, **imageAvailableSemaphore_, VK_NULL_HANDLE, &imageIndex);
+        
+        outShouldRecreateSwapChain = result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR;
+        
         return imageIndex;
     }
     

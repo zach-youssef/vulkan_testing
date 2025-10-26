@@ -165,7 +165,7 @@ private:
     }
     
     void createSurface() {
-        VK_SUCCESS_OR_THROW(VulkanSurface::create(surface_, **instance_, this->window.get()),
+        VK_SUCCESS_OR_THROW(VulkanSurface::create(surface_, **instance_, window_.get()),
                             "Failed to create window surface");
     }
     
@@ -174,7 +174,7 @@ private:
         
         auto surfaceFormat = swapChainSupport.chooseSwapSurfaceFormat();
         auto presentMode = swapChainSupport.chooseSwapPresentMode();
-        auto extent = swapChainSupport.chooseSwapExtent(this->window.get());
+        auto extent = swapChainSupport.chooseSwapExtent(window_.get());
         
         uint32_t imageCount = std::min(swapChainSupport.capabilities.minImageCount + 1,
                                        swapChainSupport.capabilities.maxImageCount);
@@ -210,8 +210,11 @@ private:
         createInfo.presentMode = presentMode;
         createInfo.clipped = true;
         
-        // Advanced
-        createInfo.oldSwapchain = VK_NULL_HANDLE;
+        if (swapChain_) {
+            createInfo.oldSwapchain = **swapChain_;
+        } else {
+            createInfo.oldSwapchain = VK_NULL_HANDLE;
+        }
         
         VK_SUCCESS_OR_THROW(VulkanSwapchain::create(swapChain_, **device_, createInfo),
                             "Failed to create swap chain.");
@@ -549,26 +552,43 @@ private:
         initFrames();
     }
     
+    static void onFrameBufferResizeCallback(GLFWwindow* window, int /*width*/, int /*height*/) {
+        auto app = reinterpret_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
+        app->frameBufferResized_ = true;
+    }
+    
     void initWindow() {
         glfwInit();
         
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         
-        this->window = std::unique_ptr<GLFWwindow, std::function<void(GLFWwindow*)>>(glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Vulkan", nullptr, nullptr), [](GLFWwindow* w){
+        window_ = std::unique_ptr<GLFWwindow, std::function<void(GLFWwindow*)>>(glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Vulkan", nullptr, nullptr), [](GLFWwindow* w){
             glfwDestroyWindow(w);
             glfwTerminate();
         });
+        glfwSetWindowUserPointer(window_.get(), this);
+        glfwSetFramebufferSizeCallback(window_.get(), onFrameBufferResizeCallback);
     }
     
     void drawFrame() {
         auto& currentFrame = frames_[currentFrameIndex_];
         // Wait for previous frame to complete
-        currentFrame->waitForFenceAndReset();
+        currentFrame->waitForFence();
         
         // Acquire index of next image in swapchain
-        uint32_t imageIndex = currentFrame->aquireImageIndex(**swapChain_);
+        bool shouldRecreateSwapChain;
+        uint32_t imageIndex = currentFrame->aquireImageIndex(**swapChain_, shouldRecreateSwapChain);
         
+        if (shouldRecreateSwapChain || frameBufferResized_) {
+            frameBufferResized_ = false;
+            recreateSwapChain();
+            return;
+        }
+        
+        // Only reset fence here now that we know we will be doing work
+        currentFrame->resetFence();
+
         // Record the command buffer
         auto commandBuffer = currentFrame->getCommandBuffer();
         vkResetCommandBuffer(commandBuffer, 0);
@@ -580,16 +600,24 @@ private:
         // Increment frame index
         currentFrameIndex_ = (this->currentFrameIndex_ + 1) % MAX_FRAMES_IN_FLIGHT;
     }
+    
+    void recreateSwapChain() {
+        vkDeviceWaitIdle(**device_);
+        
+        createSwapChain();
+        createSwapChainImageViews();
+        createFramebuffers();
+    }
 
     void mainLoop() {
-        while(!glfwWindowShouldClose(this->window.get())) {
+        while(!glfwWindowShouldClose(window_.get())) {
             glfwPollEvents();
             drawFrame();
         }
         vkDeviceWaitIdle(**device_);
     }
 private:
-    std::unique_ptr<GLFWwindow, std::function<void(GLFWwindow*)>> window;
+    std::unique_ptr<GLFWwindow, std::function<void(GLFWwindow*)>> window_;
     std::unique_ptr<VulkanInstance> instance_;
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     std::unique_ptr<VulkanDevice> device_;
@@ -616,6 +644,8 @@ private:
     
     std::array<std::unique_ptr<Frame>, MAX_FRAMES_IN_FLIGHT> frames_;
     uint32_t currentFrameIndex_ = 0;
+    
+    bool frameBufferResized_ = false;
 };
 
 int main() {
