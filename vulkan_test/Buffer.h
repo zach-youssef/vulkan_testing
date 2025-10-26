@@ -6,8 +6,7 @@
 outResult = expr;               \
 if (outResult != VK_SUCCESS) {  \
     return;                     \
-}                               \
-
+}
 
 template <typename Data>
 class Buffer {
