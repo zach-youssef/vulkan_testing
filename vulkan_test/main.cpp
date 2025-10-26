@@ -7,6 +7,7 @@
 #include "SwapChainSupportDetails.h"
 #include "Frame.h"
 #include "VkTypes.h"
+#include "Buffer.h"
 
 #include "FileUtil.h"
 
@@ -552,7 +553,7 @@ private:
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, **pipeline_);
         
-        VkBuffer vertexBuffers[] {**vertexBuffer_};
+        VkBuffer vertexBuffers[] {vertexBuffer_->getBuffer()};
         VkDeviceSize offsets[] {0};
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
         
@@ -599,41 +600,18 @@ private:
     }
     
     void createVertexBuffer() {
-        VkBufferCreateInfo bufferInfo{};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = sizeof(Vertex) * vertexData.size();
-        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // Only accessed by graphics queue
+        VK_SUCCESS_OR_THROW(Buffer<Vertex>::create(vertexBuffer_,
+                                                   vertexData.size(),
+                                                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                   **device_,
+                                                   physicalDevice_),
+                            "Failed to create vertex buffer");
         
-        VK_SUCCESS_OR_THROW(VulkanBuffer::create(vertexBuffer_, **device_, bufferInfo),
-                            "Failed to create vertex buffer.");
-        
-        VkMemoryRequirements memoryRequirements;
-        vkGetBufferMemoryRequirements(**device_, **vertexBuffer_, &memoryRequirements);
-        
-        auto memoryTypeIndex = findMemoryType(memoryRequirements.memoryTypeBits,
-                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (!memoryTypeIndex.has_value()) {
-            throw std::runtime_error("Unable to find suitable memory for vertex buffer");
-        }
-        
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memoryRequirements.size;
-        allocInfo.memoryTypeIndex = memoryTypeIndex.value();
-        
-        VK_SUCCESS_OR_THROW(VulkanMemory::create(vertexMemory_, **device_, allocInfo),
-                            "Failed to allocate vertex buffer memory.");
-        
-        vkBindBufferMemory(**device_, **vertexBuffer_, **vertexMemory_, 0);
-        
-        // Fun part
-        void* data;
-        vkMapMemory(**device_, **vertexMemory_, 0, bufferInfo.size, 0, &data);
-        
-        memcpy(data, vertexData.data(), (size_t) bufferInfo.size);
-        
-        vkUnmapMemory(**device_, **vertexMemory_);
+        size_t copySize = vertexBuffer_->getStride() * vertexData.size();
+        vertexBuffer_->mapAndExecute(0, vertexBuffer_->getStride() * vertexData.size(), [copySize] (void* data){
+            memcpy(data, vertexData.data(), copySize);
+        });
     }
     
     void initVulkan() {
@@ -752,8 +730,7 @@ private:
     
     bool frameBufferResized_ = false;
     
-    std::unique_ptr<VulkanBuffer> vertexBuffer_;
-    std::unique_ptr<VulkanMemory> vertexMemory_;
+    std::unique_ptr<Buffer<Vertex>> vertexBuffer_;
 };
 
 int main() {
