@@ -24,13 +24,11 @@ const std::vector<const char*> validationLayers = {
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
-/*
 #ifdef NDEBUG
     const bool enableValidationLayers = false;
 #else
     const bool enableValidationLayers = true;
 #endif
- */
 
 
 class HelloTriangleApplication {
@@ -76,13 +74,15 @@ private:
     }
     
     void createInstance() {
+        logSupportedExtensions();
+        logAvailableLayers();
+#ifndef __APPLE__
         //TODO: Figure out why validation layers aren't available
-        //logSupportedExtensions();
-        //logAvailableLayers();
-        
-        //if (enableValidationLayers && !checkValidationLayerSupport()) {
-        //    throw std::runtime_error("Validation layers requested but not available!");
-        //}
+        // MoltenVK logs in XCode seem to give us plenty of info as it is? ¯\_(ツ)_/¯
+        if (enableValidationLayers && !checkValidationLayerSupport()) {
+            throw std::runtime_error("Validation layers requested but not available!");
+        }
+#endif
         
         VkApplicationInfo appInfo{};
         appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
