@@ -600,18 +600,65 @@ private:
     }
     
     void createVertexBuffer() {
+        size_t bufferSize = sizeof(Vertex) * vertexData.size();
+        
+        std::unique_ptr<Buffer<Vertex>> stagingBuffer;
+        VK_SUCCESS_OR_THROW(Buffer<Vertex>::create(stagingBuffer,
+                                                   vertexData.size(),
+                                                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                   **device_,
+                                                   physicalDevice_),
+                            "Failed to create staging buffer");
+        
+        stagingBuffer->mapAndExecute(0, bufferSize, [bufferSize] (void* data){
+            memcpy(data, vertexData.data(), bufferSize);
+        });
+
         VK_SUCCESS_OR_THROW(Buffer<Vertex>::create(vertexBuffer_,
                                                    vertexData.size(),
-                                                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                                    **device_,
                                                    physicalDevice_),
                             "Failed to create vertex buffer");
         
-        size_t copySize = vertexBuffer_->getStride() * vertexData.size();
-        vertexBuffer_->mapAndExecute(0, vertexBuffer_->getStride() * vertexData.size(), [copySize] (void* data){
-            memcpy(data, vertexData.data(), copySize);
-        });
+        copyBuffer(stagingBuffer->getBuffer(), vertexBuffer_->getBuffer(), bufferSize);
+    }
+    
+    void copyBuffer(VkBuffer src, VkBuffer dst, VkDeviceSize size) {
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandPool = **commandPool_;
+        allocInfo.commandBufferCount = 1;
+        
+        VkCommandBuffer commandBuffer;
+        vkAllocateCommandBuffers(**device_, &allocInfo, &commandBuffer);
+        
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // Just used once to transfer vertex data
+        
+        vkBeginCommandBuffer(commandBuffer, &beginInfo);
+        
+        VkBufferCopy copyRegion{};
+        copyRegion.srcOffset = 0;
+        copyRegion.dstOffset = 0;
+        copyRegion.size = size;
+        vkCmdCopyBuffer(commandBuffer, src, dst, 1 /*regionCount*/, &copyRegion);
+        
+        vkEndCommandBuffer(commandBuffer);
+        
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+        
+        vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(graphicsQueue_); // Could replace null handle above with a fence instead
+        
+        vkFreeCommandBuffers(**device_, **commandPool_, 1, &commandBuffer);
     }
     
     void initVulkan() {

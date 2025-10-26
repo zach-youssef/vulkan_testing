@@ -74,7 +74,9 @@ public:
                        std::function<void(void*)> op) {
         void* mappedData;
         vkMapMemory(device_, **memory_, offset, size, 0, &mappedData);
+        
         op(mappedData);
+        
         vkUnmapMemory(device_, **memory_);
     }
     
