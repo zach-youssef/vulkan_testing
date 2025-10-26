@@ -602,6 +602,12 @@ private:
     }
     
     void recreateSwapChain() {
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(window_.get(), &width, &height);
+        while (width == 0 || height == 0){
+            glfwGetFramebufferSize(window_.get(), &width, &height);
+            glfwWaitEvents(); // Sleep the thread until something happens to the window
+        }
         vkDeviceWaitIdle(**device_);
         
         createSwapChain();
