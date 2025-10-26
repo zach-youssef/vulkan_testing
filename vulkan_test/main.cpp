@@ -15,6 +15,8 @@
 #include <cstdlib>
 #include <set>
 
+#include <glm/glm.hpp>
+
 const uint32_t WINDOW_WIDTH = 800;
 const uint32_t WINDOW_HEIGHT = 600;
 
@@ -27,9 +29,45 @@ const int MAX_FRAMES_IN_FLIGHT = 2;
 #ifdef NDEBUG
     const bool enableValidationLayers = false;
 #else
+    [[maybe_unused]]
     const bool enableValidationLayers = true;
 #endif
 
+struct Vertex {
+    glm::vec2 pos;
+    glm::vec3 color;
+    
+    static VkVertexInputBindingDescription getBindingDescription() {
+        VkVertexInputBindingDescription bindingDescription{};
+        bindingDescription.binding = 0;
+        bindingDescription.stride = sizeof(Vertex);
+        // Move to next data entry after each vertex (alternative is after each instance)
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        return bindingDescription;
+    }
+    
+    static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions() {
+        std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+        
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[0].offset = offsetof(Vertex, pos);
+        
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+        return attributeDescriptions;
+    }
+};
+
+const std::vector<Vertex> vertexData = {
+    {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+};
 
 class HelloTriangleApplication {
 public:
@@ -292,11 +330,15 @@ private:
         VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
         
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+        
+        auto bindingDescription = Vertex::getBindingDescription();
         vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertexInputInfo.vertexBindingDescriptionCount = 0;
-        vertexInputInfo.pVertexBindingDescriptions = nullptr; // Optional
-        vertexInputInfo.vertexAttributeDescriptionCount = 0;
-        vertexInputInfo.pVertexAttributeDescriptions = nullptr; // Optional
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
         
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
         inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -510,6 +552,10 @@ private:
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, **pipeline_);
         
+        VkBuffer vertexBuffers[] {**vertexBuffer_};
+        VkDeviceSize offsets[] {0};
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+        
         VkViewport viewport{};
         viewport.x = 0.0f;
         viewport.y = 0.0f;
@@ -538,6 +584,58 @@ private:
         }
     }
     
+    std::optional<uint32_t> findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties){
+        VkPhysicalDeviceMemoryProperties memoryProperties;
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice_, &memoryProperties);
+        
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
+            if (typeFilter & (1 << i)
+                && (memoryProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+                return i;
+            }
+        }
+        
+        return {};
+    }
+    
+    void createVertexBuffer() {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = sizeof(Vertex) * vertexData.size();
+        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // Only accessed by graphics queue
+        
+        VK_SUCCESS_OR_THROW(VulkanBuffer::create(vertexBuffer_, **device_, bufferInfo),
+                            "Failed to create vertex buffer.");
+        
+        VkMemoryRequirements memoryRequirements;
+        vkGetBufferMemoryRequirements(**device_, **vertexBuffer_, &memoryRequirements);
+        
+        auto memoryTypeIndex = findMemoryType(memoryRequirements.memoryTypeBits,
+                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (!memoryTypeIndex.has_value()) {
+            throw std::runtime_error("Unable to find suitable memory for vertex buffer");
+        }
+        
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memoryRequirements.size;
+        allocInfo.memoryTypeIndex = memoryTypeIndex.value();
+        
+        VK_SUCCESS_OR_THROW(VulkanMemory::create(vertexMemory_, **device_, allocInfo),
+                            "Failed to allocate vertex buffer memory.");
+        
+        vkBindBufferMemory(**device_, **vertexBuffer_, **vertexMemory_, 0);
+        
+        // Fun part
+        void* data;
+        vkMapMemory(**device_, **vertexMemory_, 0, bufferInfo.size, 0, &data);
+        
+        memcpy(data, vertexData.data(), (size_t) bufferInfo.size);
+        
+        vkUnmapMemory(**device_, **vertexMemory_);
+    }
+    
     void initVulkan() {
         createInstance();
         createSurface();
@@ -549,6 +647,7 @@ private:
         createGraphicsPipeline();
         createFramebuffers();
         createCommandPool();
+        createVertexBuffer();
         initFrames();
     }
     
@@ -652,6 +751,9 @@ private:
     uint32_t currentFrameIndex_ = 0;
     
     bool frameBufferResized_ = false;
+    
+    std::unique_ptr<VulkanBuffer> vertexBuffer_;
+    std::unique_ptr<VulkanMemory> vertexMemory_;
 };
 
 int main() {
