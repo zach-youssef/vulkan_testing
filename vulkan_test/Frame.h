@@ -2,12 +2,24 @@
 
 #include "VkUtil.h"
 #include "VkTypes.h"
+#include "Buffer.h"
+#include "Ubo.h"
+
+#define GLM_FORCE_RADIANS
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 class Frame {
 public:
-    Frame(VkDevice device, VkCommandPool commandPool): device_(device) {
+    Frame(VkDevice device,
+          VkCommandPool commandPool,
+          VkPhysicalDevice physicalDevice,
+          VkDescriptorSet descriptorSet)
+    : device_(device), descriptorSet_(descriptorSet) {
         createCommandBuffer(commandPool);
         createSyncObjects();
+        createUniformBuffer(physicalDevice);
+        populateDescriptorSet();
     }
     
     void waitForFence() {
@@ -29,6 +41,10 @@ public:
     
     VkCommandBuffer getCommandBuffer() {
         return commandBuffer_;
+    }
+    
+    VkDescriptorSet* getDescriptorSet() {
+        return &descriptorSet_;
     }
     
     void submit(uint32_t imageIndex, VkQueue graphicsQueue, VkQueue presentQueue, VkSwapchainKHR swapChain) {
@@ -66,6 +82,25 @@ public:
         vkQueuePresentKHR(presentQueue, &presentInfo);
     }
     
+    void updateUniformBuffer(uint32_t currentImage, VkExtent2D swapChainExtent) {
+        static auto startTime = std::chrono::high_resolution_clock::now();
+        
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+        
+        auto model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.f), glm::vec3(0.0f, 0.0f, 1.0f));
+        auto view =
+        glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+        auto projection = glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float) swapChainExtent.height, 0.1f, 10.0f);
+        
+        // GLM was originally designed for OpenGL where the Y coordinate of the clip coordinates is inverted
+        projection[1][1] *= -1;
+
+        auto ubo = UniformBufferObject::fromModelViewProjection(model, view, projection);
+        
+        memcpy(mappedUniformBuffer_.get(), &ubo, sizeof(ubo));
+    }
+    
 private:
     void createCommandBuffer(VkCommandPool commandPool) {
         VkCommandBufferAllocateInfo allocInfo{};
@@ -94,11 +129,47 @@ private:
                             "Failed to create in-flight fence.");
     }
     
+    void createUniformBuffer(VkPhysicalDevice physicalDevice) {
+        VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(uniformBuffer_,
+                                                                1,
+                                                                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                                                                device_,
+                                                                physicalDevice),
+                            "Failed to create uniform buffer.");
+        mappedUniformBuffer_ = uniformBuffer_->getPersistentMapping(0, sizeof(UniformBufferObject));
+    }
+    
+    void populateDescriptorSet() {
+        VkDescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = uniformBuffer_->getBuffer();
+        bufferInfo.offset = 0;
+        bufferInfo.range = sizeof(UniformBufferObject);
+        
+        VkWriteDescriptorSet descriptorWrite{};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = descriptorSet_;
+        descriptorWrite.dstBinding = 0;
+        descriptorWrite.dstArrayElement = 0;
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pBufferInfo = &bufferInfo;
+        descriptorWrite.pImageInfo = nullptr; // Optional
+        descriptorWrite.pTexelBufferView = nullptr; // Optional
+        
+        vkUpdateDescriptorSets(device_, 1, &descriptorWrite, 0, nullptr);
+    }
+    
 private:
     VkCommandBuffer commandBuffer_;
     VkDevice device_;
+    VkDescriptorSet descriptorSet_;
     
     std::unique_ptr<VulkanSemaphore> imageAvailableSemaphore_;
     std::unique_ptr<VulkanSemaphore> renderFinishedSemaphore_;
     std::unique_ptr<VulkanFence> inFlightFence_;
+    
+    std::unique_ptr<Buffer<UniformBufferObject>> uniformBuffer_;
+    // Must be freed before uniform buffer
+    std::unique_ptr<UniformBufferObject, std::function<void(UniformBufferObject*)>> mappedUniformBuffer_;
 };

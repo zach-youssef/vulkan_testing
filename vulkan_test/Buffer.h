@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VkTypes.h"
+#include <functional>
 
 #define RETURN_IF_ERROR(expr)   \
 outResult = expr;               \
@@ -77,6 +78,16 @@ public:
         op(mappedData);
         
         vkUnmapMemory(device_, **memory_);
+    }
+    
+    std::unique_ptr<Data, std::function<void(Data*)>> getPersistentMapping(VkDeviceSize offset, VkDeviceSize size) {
+        void* data;
+        
+        vkMapMemory(device_, **memory_, offset, size, 0, &data);
+        
+        return std::unique_ptr<Data, std::function<void(Data*)>>((Data*) data, [device = device_, memory = **memory_](Data*){
+            vkUnmapMemory(device, memory);
+        });
     }
     
 private:

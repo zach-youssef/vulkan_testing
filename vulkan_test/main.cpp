@@ -387,7 +387,7 @@ private:
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
         rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         rasterizer.depthBiasEnable = VK_FALSE;
         rasterizer.depthBiasConstantFactor = 0.0f; // Optional
         rasterizer.depthBiasClamp = 0.0f; // Optional
@@ -425,8 +425,8 @@ private:
         
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = 0; // Optional
-        pipelineLayoutInfo.pSetLayouts = nullptr; // Optional
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = descriptorSetLayout_->get();
         pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
         pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
         
@@ -565,6 +565,13 @@ private:
         
         vkCmdBindIndexBuffer(commandBuffer, indexBuffer_->getBuffer(), 0, VK_INDEX_TYPE_UINT16);
         
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                **pipelineLayout_,
+                                0, 1,
+                                frames_[currentFrameIndex_]->getDescriptorSet(),
+                                0, nullptr);
+        
         VkViewport viewport{};
         viewport.x = 0.0f;
         viewport.y = 0.0f;
@@ -593,8 +600,24 @@ private:
     }
     
     void initFrames() {
+        // createDescriptorSets
+        std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, **descriptorSetLayout_);
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = **descriptorPool_;
+        allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        allocInfo.pSetLayouts = layouts.data();
+        
+        std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT> descriptorSets;
+        
+        VK_SUCCESS_OR_THROW(vkAllocateDescriptorSets(**device_, &allocInfo, descriptorSets.data()),
+                            "Failed to allocate descriptor sets.");
+        
         for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-            frames_[i] = std::make_unique<Frame>(**device_, **commandPool_);
+            frames_[i] = std::make_unique<Frame>(**device_,
+                                                 **commandPool_,
+                                                 physicalDevice_,
+                                                 descriptorSets[i]);
         }
     }
     
@@ -683,6 +706,38 @@ private:
         vkFreeCommandBuffers(**device_, **commandPool_, 1, &commandBuffer);
     }
     
+    void createDescriptorSetLayout() {
+        VkDescriptorSetLayoutBinding uboLayoutBinding{};
+        uboLayoutBinding.binding = 0;
+        uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        uboLayoutBinding.descriptorCount = 0;
+        uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        uboLayoutBinding.pImmutableSamplers = nullptr; // Optional, only relevant for image sampling
+        
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = &uboLayoutBinding;
+        
+        VK_SUCCESS_OR_THROW(VulkanDescriptorSetLayout::create(descriptorSetLayout_, **device_, layoutInfo),
+                            "Failed to create descriptor set layout.");
+    }
+    
+    void createDescriptorPool() {
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSize.descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        
+        VK_SUCCESS_OR_THROW(VulkanDescriptorPool::create(descriptorPool_, **device_, poolInfo),
+                            "Failed to create descriptor pool");
+    }
+
     void initVulkan() {
         createInstance();
         createSurface();
@@ -691,9 +746,11 @@ private:
         createSwapChain();
         createSwapChainImageViews();
         createRenderPass();
+        createDescriptorSetLayout();
         createGraphicsPipeline();
         createFramebuffers();
         createCommandPool();
+        createDescriptorPool();
         createVertexBuffer();
         createIndexBuffer();
         initFrames();
@@ -787,6 +844,7 @@ private:
     
     std::unique_ptr<VulkanRenderPass> renderPass_;
     
+    std::unique_ptr<VulkanDescriptorSetLayout> descriptorSetLayout_;
     std::unique_ptr<VulkanPipelineLayout> pipelineLayout_;
     
     std::unique_ptr<VulkanGraphicsPipeline> pipeline_;
@@ -795,6 +853,8 @@ private:
     
     std::unique_ptr<VulkanCommandPool> commandPool_;
     
+    std::unique_ptr<VulkanDescriptorPool> descriptorPool_;
+
     std::array<std::unique_ptr<Frame>, MAX_FRAMES_IN_FLIGHT> frames_;
     uint32_t currentFrameIndex_ = 0;
     
