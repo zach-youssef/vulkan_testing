@@ -710,7 +710,7 @@ private:
         VkDescriptorSetLayoutBinding uboLayoutBinding{};
         uboLayoutBinding.binding = 0;
         uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        uboLayoutBinding.descriptorCount = 0;
+        uboLayoutBinding.descriptorCount = 1;
         uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
         uboLayoutBinding.pImmutableSamplers = nullptr; // Optional, only relevant for image sampling
         
@@ -792,6 +792,9 @@ private:
         
         // Only reset fence here now that we know we will be doing work
         currentFrame->resetFence();
+        
+        // Update the uniform buffer
+        currentFrame->updateUniformBuffer(imageIndex, swapChainExtent_);
 
         // Record the command buffer
         auto commandBuffer = currentFrame->getCommandBuffer();
