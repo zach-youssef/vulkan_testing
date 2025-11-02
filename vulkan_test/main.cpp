@@ -654,7 +654,7 @@ private:
         
         VK_SUCCESS_OR_THROW(Buffer<Data>::create(buffer,
                                                    data.size(),
-                                                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | usage,
+                                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
                                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                                    **device_,
                                                    physicalDevice_),
