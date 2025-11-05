@@ -118,10 +118,46 @@ VULKAN_DEVICE_CLASS(VulkanBuffer, VkBuffer, VkBufferCreateInfo, vkCreateBuffer, 
 };
 
 VULKAN_DEVICE_CLASS(VulkanMemory, VkDeviceMemory, VkMemoryAllocateInfo, vkAllocateMemory, vkFreeMemory)
+public:
+    static VkResult createFromRequirements(std::unique_ptr<VulkanMemory>& outPtr,
+                                           VkDevice device,
+                                           VkPhysicalDevice physicalDevice,
+                                           VkMemoryPropertyFlags properties,
+                                           const VkMemoryRequirements& memoryRequirements) {
+        auto memoryTypeIndex = findMemoryType(physicalDevice, memoryRequirements.memoryTypeBits, properties);
+        
+        if (!memoryTypeIndex.has_value()) {
+            return VK_ERROR_UNKNOWN; // TODO better handling
+        }
+        
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memoryRequirements.size;
+        allocInfo.memoryTypeIndex = memoryTypeIndex.value();
+        
+        return VulkanMemory::create(outPtr, device, allocInfo);
+    }
+private:
+    static std::optional<uint32_t> findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties){
+        VkPhysicalDeviceMemoryProperties memoryProperties;
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
+        
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
+            if (typeFilter & (1 << i)
+                && (memoryProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+                return i;
+            }
+        }
+        
+        return {};
+    }
 };
 
 VULKAN_DEVICE_CLASS(VulkanDescriptorSetLayout, VkDescriptorSetLayout, VkDescriptorSetLayoutCreateInfo, vkCreateDescriptorSetLayout, vkDestroyDescriptorSetLayout)
 };
 
 VULKAN_DEVICE_CLASS(VulkanDescriptorPool, VkDescriptorPool, VkDescriptorPoolCreateInfo, vkCreateDescriptorPool, vkDestroyDescriptorPool)
+};
+
+VULKAN_DEVICE_CLASS(VulkanImage, VkImage, VkImageCreateInfo, vkCreateImage, vkDestroyImage)
 };

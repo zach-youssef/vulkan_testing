@@ -8,6 +8,7 @@
 #include "Frame.h"
 #include "VkTypes.h"
 #include "Buffer.h"
+#include "Image.h"
 
 #include "FileUtil.h"
 
@@ -17,6 +18,9 @@
 #include <set>
 
 #include <glm/glm.hpp>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
 
 const uint32_t WINDOW_WIDTH = 800;
 const uint32_t WINDOW_HEIGHT = 600;
@@ -670,11 +674,10 @@ private:
     void createIndexBuffer() {
         createAndInitializeBuffer<uint16_t>(indexBuffer_, indexData, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     }
-
-    void copyBuffer(VkBuffer src, VkBuffer dst, VkDeviceSize size) {
+    
+    void issueSingleTimeCommand(std::function<void(VkCommandBuffer)> op, VkQueue queue) {
         VkCommandBufferAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocInfo.commandPool = **commandPool_;
         allocInfo.commandBufferCount = 1;
         
@@ -683,15 +686,11 @@ private:
         
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // Just used once to transfer vertex data
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         
         vkBeginCommandBuffer(commandBuffer, &beginInfo);
         
-        VkBufferCopy copyRegion{};
-        copyRegion.srcOffset = 0;
-        copyRegion.dstOffset = 0;
-        copyRegion.size = size;
-        vkCmdCopyBuffer(commandBuffer, src, dst, 1 /*regionCount*/, &copyRegion);
+        op(commandBuffer);
         
         vkEndCommandBuffer(commandBuffer);
         
@@ -700,10 +699,101 @@ private:
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffer;
         
-        vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE);
-        vkQueueWaitIdle(graphicsQueue_); // Could replace null handle above with a fence instead
+        vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(queue);
         
         vkFreeCommandBuffers(**device_, **commandPool_, 1, &commandBuffer);
+    }
+
+    void copyBuffer(VkBuffer src, VkBuffer dst, VkDeviceSize size) {
+        issueSingleTimeCommand([src, dst, size](VkCommandBuffer commandBuffer){
+            VkBufferCopy copyRegion{};
+            copyRegion.srcOffset = 0;
+            copyRegion.dstOffset = 0;
+            copyRegion.size = size;
+            vkCmdCopyBuffer(commandBuffer, src, dst, 1 /*regionCount*/, &copyRegion);
+        }, graphicsQueue_);
+    }
+    
+    void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
+        issueSingleTimeCommand([=](VkCommandBuffer commandBuffer){
+            VkImageMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = oldLayout;
+            barrier.newLayout = newLayout;
+            
+            // Must be set. Barrier can be used to transfer queue ownership.
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            
+            barrier.image = image;
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            barrier.subresourceRange.baseMipLevel = 0;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.subresourceRange.baseArrayLayer = 0;
+            barrier.subresourceRange.layerCount = 1;
+            
+            VkPipelineStageFlags sourceStage;
+            VkPipelineStageFlags destinationStage;
+
+            if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+                barrier.srcAccessMask = 0;
+                barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+                sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+                destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+                barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+                sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            } else {
+                // TODO better handling
+                throw std::invalid_argument("unsupported layout transition!");
+            }
+
+            
+            vkCmdPipelineBarrier(
+                commandBuffer,
+                sourceStage,
+                destinationStage,
+                0,
+                0, nullptr,
+                0, nullptr,
+                1, &barrier
+            );
+        }, graphicsQueue_);
+    }
+    
+    void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
+        issueSingleTimeCommand([=](VkCommandBuffer commandBuffer){
+            VkBufferImageCopy region{};
+            region.bufferOffset = 0;
+            region.bufferRowLength = 0;
+            region.bufferImageHeight = 0;
+
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.mipLevel = 0;
+            region.imageSubresource.baseArrayLayer = 0;
+            region.imageSubresource.layerCount = 1;
+
+            region.imageOffset = {0, 0, 0};
+            region.imageExtent = {
+                width,
+                height,
+                1
+            };
+            
+            vkCmdCopyBufferToImage(
+                commandBuffer,
+                buffer,
+                image,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1,
+                &region
+            );
+        }, graphicsQueue_);
     }
     
     void createDescriptorSetLayout() {
@@ -737,6 +827,56 @@ private:
         VK_SUCCESS_OR_THROW(VulkanDescriptorPool::create(descriptorPool_, **device_, poolInfo),
                             "Failed to create descriptor pool");
     }
+    
+    void createTextureImage() {
+        static const std::string path = "/Users/zyoussef/code/vulkan_test/vulkan_test/textures";
+        
+        int width, height, channels;
+        
+        stbi_uc* pixels = stbi_load((path + "/texture.jpg").c_str(), &width, &height, &channels, STBI_rgb_alpha);
+        
+        if (!pixels) {
+            throw std::runtime_error("Failed to load texture image.");
+        }
+        
+        VkDeviceSize imageSize = width * width * 4;
+        
+        std::unique_ptr<Buffer<uint8_t>> stagingBuffer;
+        VK_SUCCESS_OR_THROW(Buffer<uint8_t>::create(stagingBuffer, imageSize,
+                                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                    **device_, physicalDevice_),
+                            "Failed to create image staging buffer");
+        
+        stagingBuffer->mapAndExecute(0, imageSize, [pixels, imageSize] (void* data) {
+            memcpy(data, pixels, static_cast<size_t>(imageSize));
+        });
+        
+        stbi_image_free(pixels);
+        
+        VK_SUCCESS_OR_THROW(Image::create(textureImage_,
+                                          width, height,
+                                          VK_FORMAT_R8G8B8A8_SRGB,
+                                          VK_IMAGE_TILING_OPTIMAL,
+                                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                          **device_, physicalDevice_),
+                            "Failed to create image.");
+        
+        transitionImageLayout(textureImage_->getImage(),
+                              VK_FORMAT_R8G8B8A8_SRGB,
+                              VK_IMAGE_LAYOUT_UNDEFINED,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        
+        copyBufferToImage(stagingBuffer->getBuffer(),
+                          textureImage_->getImage(),
+                          width, height);
+        
+        transitionImageLayout(textureImage_->getImage(),
+                              VK_FORMAT_R8G8B8A8_SRGB,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
 
     void initVulkan() {
         createInstance();
@@ -751,6 +891,7 @@ private:
         createFramebuffers();
         createCommandPool();
         createDescriptorPool();
+        createTextureImage();
         createVertexBuffer();
         createIndexBuffer();
         initFrames();
@@ -865,6 +1006,8 @@ private:
     
     std::unique_ptr<Buffer<Vertex>> vertexBuffer_;
     std::unique_ptr<Buffer<uint16_t>> indexBuffer_;
+    
+    std::unique_ptr<Image> textureImage_;
 };
 
 int main() {

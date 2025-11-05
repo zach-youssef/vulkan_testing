@@ -54,17 +54,11 @@ public:
         VkMemoryRequirements memoryRequirements;
         vkGetBufferMemoryRequirements(device_, **buffer_, &memoryRequirements);
 
-        auto memoryTypeIndex = findMemoryType(physicalDevice, memoryRequirements.memoryTypeBits, properties);
-        
-        // TOOD: better handling than "Unknown"
-        RETURN_IF_ERROR(memoryTypeIndex.has_value() ? VK_SUCCESS : VK_ERROR_UNKNOWN)
-        
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memoryRequirements.size;
-        allocInfo.memoryTypeIndex = memoryTypeIndex.value();
-        
-        RETURN_IF_ERROR(VulkanMemory::create(memory_, device_, allocInfo))
+        RETURN_IF_ERROR(VulkanMemory::createFromRequirements(memory_,
+                                                             device_,
+                                                             physicalDevice,
+                                                             properties,
+                                                             memoryRequirements))
         
         vkBindBufferMemory(device_, **buffer_, **memory_, 0);
     }
@@ -90,20 +84,6 @@ public:
         });
     }
     
-private:
-    std::optional<uint32_t> findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties){
-        VkPhysicalDeviceMemoryProperties memoryProperties;
-        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
-        
-        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
-            if (typeFilter & (1 << i)
-                && (memoryProperties.memoryTypes[i].propertyFlags & properties) == properties) {
-                return i;
-            }
-        }
-        
-        return {};
-    }
 private:
     VkDevice device_;
     std::unique_ptr<VulkanBuffer> buffer_;

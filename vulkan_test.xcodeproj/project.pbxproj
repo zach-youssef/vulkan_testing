@@ -277,6 +277,7 @@
 				HEADER_SEARCH_PATHS = (
 					"/usr/local/include/**",
 					"/Users/zyoussef/VulkanSDK/1.4.321.0/macOS/include/**",
+					/Users/zyoussef/stb,
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"/usr/local/lib/**",
@@ -293,6 +294,7 @@
 				HEADER_SEARCH_PATHS = (
 					"/usr/local/include/**",
 					"/Users/zyoussef/VulkanSDK/1.4.321.0/macOS/include/**",
+					/Users/zyoussef/stb,
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"/usr/local/lib/**",
