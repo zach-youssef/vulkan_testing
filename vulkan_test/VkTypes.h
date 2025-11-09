@@ -79,6 +79,24 @@ VULKAN_DEVICE_CLASS(VulkanSwapchain, VkSwapchainKHR, VkSwapchainCreateInfoKHR, v
 };
 
 VULKAN_DEVICE_CLASS(VulkanImageView, VkImageView, VkImageViewCreateInfo, vkCreateImageView, vkDestroyImageView)
+public:
+    static VkResult createForImageWithFormat(std::unique_ptr<VulkanImageView>& outPtr,
+                                             VkDevice device,
+                                             VkImage image,
+                                             VkFormat format) {
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = format;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+        
+        return VulkanImageView::create(outPtr, device, viewInfo);
+    }
 };
 
 VULKAN_DEVICE_CLASS(VulkanRenderPass, VkRenderPass, VkRenderPassCreateInfo, vkCreateRenderPass, vkDestroyRenderPass)
@@ -160,4 +178,7 @@ VULKAN_DEVICE_CLASS(VulkanDescriptorPool, VkDescriptorPool, VkDescriptorPoolCrea
 };
 
 VULKAN_DEVICE_CLASS(VulkanImage, VkImage, VkImageCreateInfo, vkCreateImage, vkDestroyImage)
+};
+
+VULKAN_DEVICE_CLASS(VulkanSampler, VkSampler, VkSamplerCreateInfo, vkCreateSampler, vkDestroySampler)
 };

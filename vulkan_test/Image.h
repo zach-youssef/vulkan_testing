@@ -34,6 +34,10 @@ public:
         return **image_;
     }
     
+    VkImageView getImageView() {
+        return **imageView_;
+    }
+    
     Image(uint32_t width,
           uint32_t height,
           VkFormat format,
@@ -73,9 +77,14 @@ public:
                                                              memoryRequirements))
         
         vkBindImageMemory(device_, **image_, **memory_, 0);
+        
+        RETURN_IF_ERROR(VulkanImageView::createForImageWithFormat(imageView_, device_, **image_, format));
     }
 private:
     VkDevice device_;
     std::unique_ptr<VulkanImage> image_;
     std::unique_ptr<VulkanMemory> memory_;
+    
+    std::unique_ptr<VulkanImageView> imageView_;
+    std::unique_ptr<VulkanSampler> sampler_;
 };

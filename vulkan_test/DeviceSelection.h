@@ -13,8 +13,17 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
     return requiredExtensions.empty();
 }
 
+VkPhysicalDeviceFeatures getSupportedFeatures(VkPhysicalDevice device) {
+    VkPhysicalDeviceFeatures supportedFeatures;
+    vkGetPhysicalDeviceFeatures(device, &supportedFeatures);
+    return supportedFeatures;
+}
+
 bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface) {
-    return findQueueFamilies(device, surface).complete() && checkDeviceExtensionSupport(device) && querySwapChainSupport(device, surface).adequate();
+    return findQueueFamilies(device, surface).complete()
+            && checkDeviceExtensionSupport(device)
+            && querySwapChainSupport(device, surface).adequate()
+            && getSupportedFeatures(device).samplerAnisotropy;
 }
 
 // Returns VK_NULL_HANDLE if no suitable device found

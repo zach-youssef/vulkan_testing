@@ -281,23 +281,10 @@ private:
         swapChainImageViews_.resize(swapChainImages_.size());
         
         for (size_t i = 0; i < swapChainImages_.size(); ++i) {
-            VkImageViewCreateInfo createInfo{};
-            createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            createInfo.image = swapChainImages_[i];
-            createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            createInfo.format = swapChainImageFormat_;
-            // here is where you could make channels constant or remapped
-            createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-            createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-            createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-            createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-            // Interesting part, specifies which part of image to be accessed
-            createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            createInfo.subresourceRange.baseMipLevel = 0;
-            createInfo.subresourceRange.levelCount = 1;
-            createInfo.subresourceRange.baseArrayLayer = 0;
-            createInfo.subresourceRange.layerCount = 1;
-            VK_SUCCESS_OR_THROW(VulkanImageView::create(swapChainImageViews_[i], **device_, createInfo),
+            VK_SUCCESS_OR_THROW(VulkanImageView::createForImageWithFormat(swapChainImageViews_[i],
+                                                                          **device_,
+                                                                          swapChainImages_[i],
+                                                                          swapChainImageFormat_),
                                 "Failed to create image view for swapchain");
         }
     }
@@ -737,11 +724,11 @@ private:
             VkPipelineStageFlags destinationStage;
 
             if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-                barrier.srcAccessMask = 0;
+                barrier.srcAccessMask = 0; // Nothing to wait on
                 barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-                sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-                destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT; // Earliest possible stage
+                destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT; // Not a "real" stage, but is where transfers happen?
             } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
                 barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                 barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -877,6 +864,49 @@ private:
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
+    
+    void createTextureSampler() {
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        
+        // Alternative is VK_FILTER_NEAREST
+        // Mag is for oversampling, min is for undersampling
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        
+        // Alternatives are
+        // - MIRRORED_REPEAT
+        // - CLAMP_TO_EDGE (or MIRRORED_)
+        // CLAMP_TO_BORDER
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        
+        // Can be set to false if device doesn't support it
+        samplerInfo.anisotropyEnable = VK_TRUE;
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+        samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+        
+        // Only relevant if using CLAMP_TO_BORDER adress mode
+        samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        
+        // Use real coordinates instead of UVs
+        samplerInfo.unnormalizedCoordinates = VK_FALSE;
+        
+        // I don't understand this but it has some use with shadow maps?
+        samplerInfo.compareEnable = VK_FALSE;
+        samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        
+        // To be revisted when we implement mip maps
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerInfo.mipLodBias = 0.0f;
+        samplerInfo.minLod = 0.0f;
+        samplerInfo.maxLod = 0.0f;
+        
+        VK_SUCCESS_OR_THROW(VulkanSampler::create(textureSampler_, **device_, samplerInfo),
+                            "Failed to create texture sampler");
+    }
 
     void initVulkan() {
         createInstance();
@@ -892,6 +922,7 @@ private:
         createCommandPool();
         createDescriptorPool();
         createTextureImage();
+        createTextureSampler();
         createVertexBuffer();
         createIndexBuffer();
         initFrames();
@@ -1008,6 +1039,7 @@ private:
     std::unique_ptr<Buffer<uint16_t>> indexBuffer_;
     
     std::unique_ptr<Image> textureImage_;
+    std::unique_ptr<VulkanSampler> textureSampler_;
 };
 
 int main() {
