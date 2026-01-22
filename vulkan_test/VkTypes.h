@@ -3,6 +3,9 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#include <memory>
+#include <optional>
+
 template<typename WrapperType, typename VkType, class... Args>
 class VkWrapper {
 public:
