@@ -14,12 +14,14 @@ public:
     Frame(VkDevice device,
           VkCommandPool commandPool,
           VkPhysicalDevice physicalDevice,
-          VkDescriptorSet descriptorSet)
+          VkDescriptorSet descriptorSet,
+          VkImageView imageView,
+          VkSampler sampler)
     : device_(device), descriptorSet_(descriptorSet) {
         createCommandBuffer(commandPool);
         createSyncObjects();
         createUniformBuffer(physicalDevice);
-        populateDescriptorSet();
+        populateDescriptorSet(imageView, sampler);
     }
     
     void waitForFence() {
@@ -140,24 +142,43 @@ private:
         mappedUniformBuffer_ = uniformBuffer_->getPersistentMapping(0, sizeof(UniformBufferObject));
     }
     
-    void populateDescriptorSet() {
+    void populateDescriptorSet(VkImageView imageView, VkSampler sampler) {
         VkDescriptorBufferInfo bufferInfo{};
         bufferInfo.buffer = uniformBuffer_->getBuffer();
         bufferInfo.offset = 0;
         bufferInfo.range = sizeof(UniformBufferObject);
         
-        VkWriteDescriptorSet descriptorWrite{};
-        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = descriptorSet_;
-        descriptorWrite.dstBinding = 0;
-        descriptorWrite.dstArrayElement = 0;
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pBufferInfo = &bufferInfo;
-        descriptorWrite.pImageInfo = nullptr; // Optional
-        descriptorWrite.pTexelBufferView = nullptr; // Optional
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = imageView;
+        imageInfo.sampler = sampler;
         
-        vkUpdateDescriptorSets(device_, 1, &descriptorWrite, 0, nullptr);
+        VkWriteDescriptorSet bufferDescriptorWrite{};
+        bufferDescriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        bufferDescriptorWrite.dstSet = descriptorSet_;
+        bufferDescriptorWrite.dstBinding = 0;
+        bufferDescriptorWrite.dstArrayElement = 0;
+        bufferDescriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bufferDescriptorWrite.descriptorCount = 1;
+        bufferDescriptorWrite.pBufferInfo = &bufferInfo;
+        bufferDescriptorWrite.pImageInfo = nullptr; // Optional
+        bufferDescriptorWrite.pTexelBufferView = nullptr; // Optional
+        
+        VkWriteDescriptorSet imageDescriptorWrite{};
+        imageDescriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        imageDescriptorWrite.dstSet = descriptorSet_;
+        imageDescriptorWrite.dstBinding = 1;
+        imageDescriptorWrite.dstArrayElement = 0;
+        imageDescriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        imageDescriptorWrite.descriptorCount = 1;
+        imageDescriptorWrite.pImageInfo = &imageInfo;
+        
+        std::array<VkWriteDescriptorSet, 2> descriptorWrites{
+            bufferDescriptorWrite, imageDescriptorWrite
+        };
+        
+
+        vkUpdateDescriptorSets(device_, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
     }
     
 private:
