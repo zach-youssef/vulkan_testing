@@ -614,7 +614,9 @@ private:
             frames_[i] = std::make_unique<Frame>(**device_,
                                                  **commandPool_,
                                                  physicalDevice_,
-                                                 descriptorSets[i]);
+                                                 descriptorSets[i],
+                                                 textureImage_->getImageView(),
+                                                 **textureSampler_);
         }
     }
     
@@ -797,24 +799,38 @@ private:
         uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
         uboLayoutBinding.pImmutableSamplers = nullptr; // Optional, only relevant for image sampling
         
+        VkDescriptorSetLayoutBinding imageLayoutBinding{};
+        imageLayoutBinding.binding = 1;
+        imageLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        imageLayoutBinding.descriptorCount = 1;
+        imageLayoutBinding.pImmutableSamplers = nullptr;
+        imageLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        
+        std::array<VkDescriptorSetLayoutBinding, 2> layoutBindings {uboLayoutBinding, imageLayoutBinding};
+        
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 1;
-        layoutInfo.pBindings = &uboLayoutBinding;
+        layoutInfo.bindingCount = static_cast<uint32_t>(layoutBindings.size());
+        layoutInfo.pBindings = layoutBindings.data();
         
         VK_SUCCESS_OR_THROW(VulkanDescriptorSetLayout::create(descriptorSetLayout_, **device_, layoutInfo),
                             "Failed to create descriptor set layout.");
     }
     
     void createDescriptorPool() {
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSize.descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        std::array<VkDescriptorPoolSize, 2> poolSize{};
+        
+        poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSize[0].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        
+        poolSize[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize[1].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        
         
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSize.size());
+        poolInfo.pPoolSizes = poolSize.data();
         poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
         
         VK_SUCCESS_OR_THROW(VulkanDescriptorPool::create(descriptorPool_, **device_, poolInfo),
