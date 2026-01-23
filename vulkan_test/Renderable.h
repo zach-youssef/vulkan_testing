@@ -27,6 +27,18 @@ public:
     
     virtual void update(uint32_t currentImage, VkExtent2D swapChainExtent) = 0;
     
+    VkDescriptorSet* getDescriptorSet(uint32_t index) {
+        return &descriptorSets_[index];
+    }
+    
+    VkPipeline getPipeline() {
+        return **pipeline_;
+    }
+    
+    VkPipelineLayout getPipelineLayout() {
+        return **pipelineLayout_;
+    }
+
 protected:
     Material(VkDevice device, VkPhysicalDevice physicalDevice) : device_(device), physicalDevice_(physicalDevice){}
     
@@ -48,14 +60,14 @@ protected:
 protected:
     VkDevice device_;
     VkPhysicalDevice physicalDevice_;
-    
-    std::unique_ptr<VulkanDescriptorSetLayout> descriptorSetLayout_;
-    std::unique_ptr<VulkanDescriptorPool> descriptorPool_;
-    // TODO: max frames in flight refactor
-    std::array<VkDescriptorSet, 2> descriptorSets_;
-    
+
     std::unique_ptr<VulkanPipelineLayout> pipelineLayout_;
     std::unique_ptr<VulkanGraphicsPipeline> pipeline_;
+
+    std::unique_ptr<VulkanDescriptorSetLayout> descriptorSetLayout_;
+    // TODO: max frames in flight refactor
+    std::array<VkDescriptorSet, 2> descriptorSets_;
+    std::unique_ptr<VulkanDescriptorPool> descriptorPool_;
 };
 
 class Renderable {
@@ -82,8 +94,8 @@ public:
         submitInfo.signalSemaphoreCount = static_cast<uint32_t>(signalSemaphores.size());
         submitInfo.pSignalSemaphores = signalSemaphores.data();
         
-        VK_SUCCESS_OR_THROW(vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFence),
-                            "Failed to submit draw command buffer.");
+        /*VK_SUCCESS_OR_THROW(*/vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFence);//,
+                            //"Failed to submit draw command buffer.");
     }
     
     Material* getMaterial() {
@@ -97,6 +109,10 @@ public:
     virtual void recordCommandBuffer(VkCommandBuffer commandBuffer,
                              uint32_t frameIndex,
                              VkExtent2D swapChainExtent) = 0;
+    
+    virtual VkBuffer getVertexBuffer() = 0;
+    virtual VkBuffer getIndexBuffer() = 0;
+    virtual uint32_t getIndexCount() = 0;
     
 protected:
     Renderable(std::unique_ptr<Material>&& material) {
@@ -174,6 +190,18 @@ public:
                             "Failed to reccord command buffer.");
     }
     
+    VkBuffer getVertexBuffer() {
+        return vertexBuffer_->getBuffer();
+    }
+    
+    VkBuffer getIndexBuffer() {
+        return indexBuffer_->getBuffer();
+    }
+    
+    uint32_t getIndexCount() {
+        return indexCount_;
+    }
+
 private:
     std::unique_ptr<Buffer<VertexData>> vertexBuffer_;
     std::unique_ptr<Buffer<uint16_t>> indexBuffer_;

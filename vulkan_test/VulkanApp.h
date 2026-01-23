@@ -159,34 +159,117 @@ private: // Main initialize & run functions
         // Only reset fence here now that we know we will be doing work
         vkResetFences(**device_, 1, (*inFlightFences_[currentFrameIndex_]).get());
         
+        // Grab command buffer
+        auto& commandBuffer = commandBuffers_[currentFrameIndex_];
+        
+        // Reset it
+        VK_SUCCESS_OR_THROW(vkResetCommandBuffer(commandBuffer, 0), "Failed to reset cb")
+
+        // Start recording
+        //startRenderPass(commandBuffer, imageIndex);
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = 0; // Optional
+        beginInfo.pInheritanceInfo = nullptr; // Optional
+        
+        VK_SUCCESS_OR_THROW(vkBeginCommandBuffer(commandBuffer, &beginInfo),
+                            "Failed to begin recording command buffer");
+        
+        VkRenderPassBeginInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = **renderPass_;
+        renderPassInfo.framebuffer = **swapChainFramebuffers_[imageIndex];
+        
+        renderPassInfo.renderArea.offset = {0, 0};
+        renderPassInfo.renderArea.extent = swapChainExtent_;
+        
+        VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+        renderPassInfo.clearValueCount = 1;
+        renderPassInfo.pClearValues = &clearColor;
+
+        vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
         // TODO: 99% sure this loop does not work with more than one renderable
         for (auto& renderable : renderables_) {
-            // Begin render pass
-            auto commandBuffer = commandBuffers_[currentFrameIndex_];
-            vkResetCommandBuffer(commandBuffer, 0);
-            startRenderPass(commandBuffer, currentFrameIndex_);
-            
             // Update the uniform buffer
             renderable->update(currentFrameIndex_, swapChainExtent_);
+            
+            // Moving out of the renderable to here seems to get us farther
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              renderable->getMaterial()->getPipeline());
+            
+            VkDeviceSize offsets[] {0};
+            VkBuffer vertexBuffers[] {renderable->getVertexBuffer()};
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+            vkCmdBindIndexBuffer(commandBuffer, renderable->getIndexBuffer(), 0, VK_INDEX_TYPE_UINT16);
+            
+            vkCmdBindDescriptorSets(commandBuffer,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    renderable->getMaterial()->getPipelineLayout(),
+                                    0, 1,
+                                    renderable->getMaterial()->getDescriptorSet(currentFrameIndex_),
+                                    0, nullptr);
+            
+            VkViewport viewport{};
+            viewport.x = 0.0f;
+            viewport.y = 0.0f;
+            viewport.width = static_cast<float>(swapChainExtent_.width);
+            viewport.height = static_cast<float>(swapChainExtent_.height);
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
-            // Record the command buffer
-            renderable->recordCommandBuffer(commandBuffer, currentFrameIndex_, swapChainExtent_);
+            VkRect2D scissor{};
+            scissor.offset = {0, 0};
+            scissor.extent = swapChainExtent_;
+            vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
             
-            // End render pass
-            vkCmdEndRenderPass(commandBuffer);
-            VK_SUCCESS_OR_THROW(vkEndCommandBuffer(commandBuffer),
-                                "Failed to end command buffer.");
-            
-            // Submit to graphics queue
-            renderable->submit(currentFrameIndex_,
-                               commandBuffer,
-                               graphicsQueue_,
-                               **swapChain_,
-                               **inFlightFences_[currentFrameIndex_],
-                               {**imageAvailableSemaphores_[currentFrameIndex_]},
-                               {**renderFinishedSemaphores_[currentFrameIndex_]});
+            vkCmdDrawIndexed(commandBuffer,
+                             renderable->getIndexCount(),
+                             1 /*num instances*/,
+                             0 /*offset into buffer*/,
+                             0 /*offset to add to indices*/,
+                             0 /* instancing offset*/);
+
+            // Record the renderable commands
+            //renderable->recordCommandBuffer(commandBuffer, currentFrameIndex_, swapChainExtent_);
         }
         
+
+        // End render pass
+        vkCmdEndRenderPass(commandBuffer);
+        
+        // End command buffer
+        vkEndCommandBuffer(commandBuffer);
+        
+        // Submit to graphics queue
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+        // (it should wait for the swapchain image to be available before writing out to it)
+        VkPipelineStageFlags waitStages[] {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+        VkSemaphore wait[] = {**imageAvailableSemaphores_[currentFrameIndex_]};
+        VkSemaphore signal[] = {**renderFinishedSemaphores_[currentFrameIndex_]};
+        submitInfo.waitSemaphoreCount = 1;//static_cast<uint32_t>(waitSemaphores.size());
+        submitInfo.pWaitSemaphores = wait;
+        submitInfo.pWaitDstStageMask = waitStages;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+        submitInfo.signalSemaphoreCount = 1;//static_cast<uint32_t>(signalSemaphores.size());
+        submitInfo.pSignalSemaphores = signal;
+
+        VK_SUCCESS_OR_THROW(vkQueueSubmit(graphicsQueue_, 1, &submitInfo, **inFlightFences_[currentFrameIndex_]),
+                            "Failed to submit draw command buffer.");
+
+        /*renderable->submit(imageIndex,
+                           commandBuffer,
+                           graphicsQueue_,
+                           **swapChain_,
+                           **inFlightFences_[currentFrameIndex_],
+                           {**imageAvailableSemaphores_[currentFrameIndex_]},
+                           {**renderFinishedSemaphores_[currentFrameIndex_]});*/
+
         // Submit present queue
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -1181,11 +1264,12 @@ private: // Member variables
     std::unique_ptr<Image> textureImage_;
     std::unique_ptr<VulkanSampler> textureSampler_;
     
-    std::vector<std::unique_ptr<Renderable>> renderables_;
     
     // TODO: Replace 2 w/ constant max_frame_count
     std::array<std::unique_ptr<VulkanSemaphore>, 2> imageAvailableSemaphores_;
     std::array<std::unique_ptr<VulkanSemaphore>, 2> renderFinishedSemaphores_;
     std::array<std::unique_ptr<VulkanFence>, 2> inFlightFences_;
     std::array<VkCommandBuffer, 2> commandBuffers_;
+    
+    std::vector<std::unique_ptr<Renderable>> renderables_;
 };
