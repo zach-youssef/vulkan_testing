@@ -1,9 +1,49 @@
 #include "VulkanApp.h"
 #include "Renderable.h"
+#include "Ubo.h"
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 const uint32_t WINDOW_WIDTH = 800;
 const uint32_t WINDOW_HEIGHT = 600;
 const int MAX_FRAMES_IN_FLIGHT = 2;
+
+struct Vertex {
+    glm::vec2 pos;
+    glm::vec3 color;
+    glm::vec2 texCoord0;
+    
+    static VkVertexInputBindingDescription getBindingDescription() {
+        VkVertexInputBindingDescription bindingDescription{};
+        bindingDescription.binding = 0;
+        bindingDescription.stride = sizeof(Vertex);
+        // Move to next data entry after each vertex (alternative is after each instance)
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        return bindingDescription;
+    }
+    
+    static std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions() {
+        std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
+        
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[0].offset = offsetof(Vertex, pos);
+        
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[1].offset = offsetof(Vertex, color);
+        
+        attributeDescriptions[2].binding = 0;
+        attributeDescriptions[2].location = 2;
+        attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[2].offset = offsetof(Vertex, texCoord0);
+
+        return attributeDescriptions;
+    }
+};
 
 class TutorialMaterial : public Material {
 public:
@@ -28,7 +68,6 @@ public:
         }
     }
     
-    // TODO: Where does this get called?
     void populateDescriptorSet(uint32_t frameIndex) {
         VkDescriptorBufferInfo bufferInfo{};
         bufferInfo.buffer = uniformBuffers_[frameIndex]->getBuffer();
@@ -66,16 +105,6 @@ public:
         
 
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
-    }
-    
-    void recordCommandBuffer(uint32_t frameIndex, VkCommandBuffer commandBuffer) {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, **pipeline_);
-        vkCmdBindDescriptorSets(commandBuffer,
-                                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                **pipelineLayout_,
-                                0, 1,
-                                &descriptorSets_[frameIndex],
-                                0, nullptr);
     }
     
     void update(uint32_t currentImage, VkExtent2D swapChainExtent) {
