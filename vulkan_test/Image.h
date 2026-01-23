@@ -93,6 +93,7 @@ public:
         RETURN_IF_ERROR(VulkanImageView::createForImageWithFormat(imageView_, device_, **image_, format));
     }
     
+    
     static void createFromFile(std::unique_ptr<Image>& outImage,
                                const std::string& filePath,
                                VkQueue graphicsQueue,
@@ -109,6 +110,28 @@ public:
         
         VkDeviceSize imageSize = width * height * 4;
         
+        createFromUcharBuffer(outImage,
+                              pixels,
+                              width,
+                              height,
+                              imageSize,
+                              graphicsQueue,
+                              commandPool,
+                              device,
+                              physicalDevice);
+        
+        stbi_image_free(pixels);
+    }
+    
+    static void createFromUcharBuffer(std::unique_ptr<Image>& outImage,
+                                      unsigned char* pixels,
+                                      uint32_t width,
+                                      uint32_t height,
+                                      VkDeviceSize imageSize,
+                                      VkQueue graphicsQueue,
+                                      VkCommandPool commandPool,
+                                      VkDevice device,
+                                      VkPhysicalDevice physicalDevice) {
         std::unique_ptr<Buffer<uint8_t>> stagingBuffer;
         VK_SUCCESS_OR_THROW(Buffer<uint8_t>::create(stagingBuffer, imageSize,
                                                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -119,8 +142,6 @@ public:
         stagingBuffer->mapAndExecute(0, imageSize, [pixels, imageSize] (void* data) {
             memcpy(data, pixels, static_cast<size_t>(imageSize));
         });
-        
-        stbi_image_free(pixels);
         
         VK_SUCCESS_OR_THROW(Image::create(outImage,
                                           width, height,
