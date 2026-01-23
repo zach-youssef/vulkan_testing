@@ -5,6 +5,9 @@
 
 #include <memory>
 #include <optional>
+#include <iostream>
+
+#include <vulkan/vk_enum_string_helper.h>
 
 template<typename WrapperType, typename VkType, class... Args>
 class VkWrapper {
@@ -21,7 +24,8 @@ public:
         VkResult result;
         outPtr = std::make_unique<WrapperType>(result, args...);
         if (result != VK_SUCCESS) {
-            outPtr = nullptr;
+            std::cerr << string_VkResult(result) << std::endl;
+            //outPtr = nullptr;
         }
         return result;
     }

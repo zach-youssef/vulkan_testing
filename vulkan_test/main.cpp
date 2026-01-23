@@ -317,6 +317,7 @@ private:
                             "Failed to create graphics pipeline");
     }
     
+    // TODO: this can probably be moved to the abstract material
     void createDescriptorSets() {
         std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, **descriptorSetLayout_);
         VkDescriptorSetAllocateInfo allocInfo{};
@@ -347,12 +348,16 @@ private:
 };
 
 class TestComputeMat : public ComputeMaterial {
+public:
     TestComputeMat(const std::vector<char>& computeShaderCode,
                    std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> inImages,
                    std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> outImages,
+                   uint32_t imageWidth, uint32_t imageHeight,
                    VkDevice device,
                    VkPhysicalDevice physicalDevice)
-    : ComputeMaterial(device, physicalDevice), inImages_(inImages), outImages_(outImages) {
+    : ComputeMaterial(device, physicalDevice),
+    inImages_(inImages), outImages_(outImages),
+    imageWidth_(imageWidth), imageHeight_(imageHeight){
         createDescriptorSetLayout();
         createDescriptorPool();
         createComputePipeline(computeShaderCode);
@@ -366,12 +371,10 @@ class TestComputeMat : public ComputeMaterial {
     void populateDescriptorSet(uint32_t frameIndex) {
         VkDescriptorImageInfo inImageInfo{};
         inImageInfo.imageView = inImages_[frameIndex];
-        // TODO: is this ok?
         inImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         VkDescriptorImageInfo outImageInfo{};
         outImageInfo.imageView = outImages_[frameIndex];
-        // TODO: is this ok?
         outImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         
         VkWriteDescriptorSet inDescriptorWrite{};
@@ -401,8 +404,8 @@ class TestComputeMat : public ComputeMaterial {
     }
     
     glm::vec3 getDispatchDimensions() {
-        // TODO
-        return glm::vec3{};
+        // "32" here matches layout size defined in shader
+        return glm::vec3{imageWidth_ / 32u, imageHeight_ / 32u, 1};
     }
     
 private:
@@ -410,13 +413,13 @@ private:
         VkDescriptorSetLayoutBinding inImageBinding{};
         inImageBinding.binding = 0;
         inImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        inImageBinding.descriptorCount = 0;
+        inImageBinding.descriptorCount = 1;
         inImageBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         
         VkDescriptorSetLayoutBinding outImageBinding{};
         inImageBinding.binding = 1;
         inImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        inImageBinding.descriptorCount = 0;
+        inImageBinding.descriptorCount = 1;
         inImageBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         
         std::array<VkDescriptorSetLayoutBinding, 2> layoutBindings {inImageBinding, outImageBinding};
@@ -471,17 +474,28 @@ private:
         pipelineInfo.layout = **pipelineLayout_;
         pipelineInfo.stage = computeShaderStageInfo;
         
-        VK_SUCCESS_OR_THROW(VulkanComputePipeline::create(computePipeline_, device_, pipelineInfo),
-                            "Failed to create compute pipeline");
+        /*VK_SUCCESS_OR_THROW(*/VulkanComputePipeline::create(computePipeline_, device_, pipelineInfo);//,
+                            //"Failed to create compute pipeline");
     }
     
+    // TODO: this can probably be moved to the abstract material
     void createDescriptorSets() {
-        // TODO
+        std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, **descriptorSetLayout_);
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = **descriptorPool_;
+        allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        allocInfo.pSetLayouts = layouts.data();
+        
+        VK_SUCCESS_OR_THROW(vkAllocateDescriptorSets(device_, &allocInfo, descriptorSets_.data()),
+                            "Failed to allocate descriptor sets.");
     }
 private:
     // TODO: MaxFramesPerFlight refactor
     std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> inImages_;
     std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> outImages_;
+    uint32_t imageWidth_;
+    uint32_t imageHeight_;
 };
 
 const std::vector<Vertex> vertexData = {
@@ -495,15 +509,28 @@ const std::vector<uint16_t> indexData = {
     2, 3, 0
 };
 
+void createTestComputeMaterial(std::unique_ptr<TestComputeMat>& outPtr,
+                               std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> inViews,
+                               std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> outViews,
+                               uint32_t width, uint32_t height,
+                               VulkanApp& app){
+    const static std::string shaderPath = "/Users/zyoussef/code/vulkan_test/vulkan_test/shaders";
+    auto computeShaderCode = readFile(shaderPath + "/compTest.spv");
+    
+    outPtr = std::make_unique<TestComputeMat>(computeShaderCode,
+                                              inViews, outViews,
+                                              width, height,
+                                              app.getDevice(),
+                                              app.getPhysicalDevice());
+}
+
 void createTutorialMaterial(std::unique_ptr<TutorialMaterial>& outPtr,
-                            VkImageView imageView,
+                            std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> imageViews,
                             VkSampler sampler,
                             VulkanApp& app) {
-    const std::string shaderPath = "/Users/zyoussef/code/vulkan_test/vulkan_test/shaders";
+    const static std::string shaderPath = "/Users/zyoussef/code/vulkan_test/vulkan_test/shaders";
     auto vertShaderCode = readFile(shaderPath + "/vert.spv");
     auto fragShaderCode = readFile(shaderPath + "/frag.spv");
-    
-    std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> imageViews = {imageView, imageView};
     
     outPtr = std::make_unique<TutorialMaterial>(app.getDevice(),
                                                 app.getPhysicalDevice(),
@@ -516,11 +543,11 @@ void createTutorialMaterial(std::unique_ptr<TutorialMaterial>& outPtr,
 }
 
 void createTutorialRenderable(std::unique_ptr<MeshRenderable<Vertex>>& outPtr,
-                              VkImageView textureImage,
+                              std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> textureImages,
                               VkSampler textureSampler,
                               VulkanApp& app) {
     std::unique_ptr<TutorialMaterial> material;
-    createTutorialMaterial(material, textureImage, textureSampler, app);
+    createTutorialMaterial(material, textureImages, textureSampler, app);
     
     outPtr = std::make_unique<MeshRenderable<Vertex>>(vertexData,
                                                       indexData,
@@ -538,8 +565,10 @@ int main() {
         MAX_FRAMES_IN_FLIGHT
     };
     
+    // Initialize Window & Vulkan
     app.init();
     
+    // Load texture file
     std::unique_ptr<Image> texture;
     Image::createFromFile(texture,
                           "/Users/zyoussef/code/vulkan_test/vulkan_test/textures/texture.jpg",
@@ -547,17 +576,46 @@ int main() {
                           app.getCommandPool(),
                           app.getDevice(),
                           app.getPhysicalDevice());
+    std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> inputImages = {texture->getImageView(), texture->getImageView()};
+
+    // Create output texture images
+    std::array<std::unique_ptr<Image>, MAX_FRAMES_IN_FLIGHT> outImages;
+    for (int frameIdx = 0; frameIdx < MAX_FRAMES_IN_FLIGHT; ++frameIdx) {
+        Image::createEmptyRGBA(outImages[frameIdx],
+                               texture->getWidth(),
+                               texture->getHeight(),
+                               app.getGraphicsQueue(),
+                               app.getCommandPool(),
+                               app.getDevice(),
+                               app.getPhysicalDevice());
+    }
     
+    std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> outputImages = {outImages[0]->getImageView(), outImages[1]->getImageView()};
+
+    // Create texture sampler
     std::unique_ptr<VulkanSampler> sampler;
     VulkanSampler::createWithAddressMode(sampler,
                                          VK_SAMPLER_ADDRESS_MODE_REPEAT,
                                          app.getDevice(),
                                          app.getPhysicalDevice());
+    
 
+    // Create & add renderable
     std::unique_ptr<MeshRenderable<Vertex>> renderable;
-    createTutorialRenderable(renderable, texture->getImageView(), **sampler, app);
+    createTutorialRenderable(renderable, outputImages, **sampler, app);
     
     app.addRenderable(std::move(renderable));
+    
+    // Create and add compute material
+    std::unique_ptr<TestComputeMat> computeMaterial;
+    createTestComputeMaterial(computeMaterial,
+                              inputImages,
+                              outputImages,
+                              texture->getWidth(),
+                              texture->getHeight(),
+                              app);
+    
+    app.addComputeStage(std::move(computeMaterial));
 
     try {
         app.run();

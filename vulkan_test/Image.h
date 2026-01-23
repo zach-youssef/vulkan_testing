@@ -42,6 +42,14 @@ public:
         return **imageView_;
     }
     
+    uint32_t getWidth() {
+        return width_;
+    }
+    
+    uint32_t getHeight() {
+        return height_;
+    }
+    
     Image(uint32_t width,
           uint32_t height,
           VkFormat format,
@@ -50,7 +58,7 @@ public:
           VkMemoryPropertyFlags properties,
           VkDevice device,
           VkPhysicalDevice physicalDevice,
-          VkResult& outResult) : device_(device) {
+          VkResult& outResult) : device_(device), width_(width), height_(height) {
         VkImageCreateInfo imageInfo{};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -99,7 +107,7 @@ public:
             throw std::runtime_error("Failed to load texture image.");
         }
         
-        VkDeviceSize imageSize = width * width * 4;
+        VkDeviceSize imageSize = width * height * 4;
         
         std::unique_ptr<Buffer<uint8_t>> stagingBuffer;
         VK_SUCCESS_OR_THROW(Buffer<uint8_t>::create(stagingBuffer, imageSize,
@@ -118,7 +126,7 @@ public:
                                           width, height,
                                           VK_FORMAT_R8G8B8A8_SRGB,
                                           VK_IMAGE_TILING_OPTIMAL,
-                                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
                                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                           device, physicalDevice),
                             "Failed to create image.");
@@ -139,6 +147,30 @@ public:
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               graphicsQueue, commandPool, device);
+    }
+    
+    // TODO: Could probably abstract this to make it more useful
+    static void createEmptyRGBA(std::unique_ptr<Image>& outImage,
+                                uint32_t width,
+                                uint32_t height,
+                                VkQueue queue,
+                                VkCommandPool commandPool,
+                                VkDevice device,
+                                VkPhysicalDevice physicalDevice) {
+        VK_SUCCESS_OR_THROW(Image::create(outImage,
+                                          width, height,
+                                          VK_FORMAT_R8G8B8A8_SRGB,
+                                          VK_IMAGE_TILING_OPTIMAL,
+                                          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                          device, physicalDevice),
+                            "Failed to create image.");
+        
+        transitionImageLayout(outImage->getImage(),
+                              VK_FORMAT_R8G8B8A8_SRGB,
+                              VK_IMAGE_LAYOUT_UNDEFINED,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              queue, commandPool, device);
     }
     
     static void transitionImageLayout(VkImage image,
@@ -177,9 +209,15 @@ public:
             } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
                 barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                 barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
+                
                 sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-                destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+                destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            } else if(oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+                barrier.srcAccessMask = 0; // Nothing to wait on
+                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                
+                sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+                destinationStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
             } else {
                 // TODO better handling
                 throw std::invalid_argument("unsupported layout transition!");
@@ -240,4 +278,7 @@ private:
     
     std::unique_ptr<VulkanImageView> imageView_;
     std::unique_ptr<VulkanSampler> sampler_;
+    
+    uint32_t width_;
+    uint32_t height_;
 };
