@@ -160,7 +160,7 @@ private: // Main initialize & run functions
         vkResetFences(**device_, 1, (*inFlightFences_[currentFrameIndex_]).get());
         
         // Grab command buffer
-        auto& commandBuffer = commandBuffers_[currentFrameIndex_];
+        auto commandBuffer = commandBuffers_[currentFrameIndex_];
         
         // Reset it
         VK_SUCCESS_OR_THROW(vkResetCommandBuffer(commandBuffer, 0), "Failed to reset cb")

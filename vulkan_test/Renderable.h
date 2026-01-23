@@ -28,7 +28,8 @@ public:
     virtual void update(uint32_t currentImage, VkExtent2D swapChainExtent) = 0;
     
     VkDescriptorSet* getDescriptorSet(uint32_t index) {
-        return &descriptorSets_[index];
+        return &descriptorSets_.at(index);
+        //return &descriptorSets_[index];
     }
     
     VkPipeline getPipeline() {
@@ -65,9 +66,9 @@ protected:
     std::unique_ptr<VulkanGraphicsPipeline> pipeline_;
 
     std::unique_ptr<VulkanDescriptorSetLayout> descriptorSetLayout_;
+    std::unique_ptr<VulkanDescriptorPool> descriptorPool_;
     // TODO: max frames in flight refactor
     std::array<VkDescriptorSet, 2> descriptorSets_;
-    std::unique_ptr<VulkanDescriptorPool> descriptorPool_;
 };
 
 class Renderable {

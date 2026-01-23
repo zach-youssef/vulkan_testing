@@ -21,6 +21,7 @@ public:
         createDescriptorSetLayout();
         createDescriptorPool();
         createGraphicsPipeline(vertSpirv, fragSpirv, swapchainExtent, renderPass);
+        createDescriptorSets();
         for (uint32_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; ++frameIndex) {
             createUniformBuffer(frameIndex);
             populateDescriptorSet(frameIndex);
@@ -295,9 +296,7 @@ private:
         allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
         allocInfo.pSetLayouts = layouts.data();
         
-        std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT> descriptorSets;
-        
-        VK_SUCCESS_OR_THROW(vkAllocateDescriptorSets(device_, &allocInfo, descriptorSets.data()),
+        VK_SUCCESS_OR_THROW(vkAllocateDescriptorSets(device_, &allocInfo, descriptorSets_.data()),
                             "Failed to allocate descriptor sets.");
     }
     
