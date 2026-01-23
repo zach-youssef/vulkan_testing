@@ -120,6 +120,18 @@ private:
     VkDevice device_;
 };
 
+class VulkanComputePipeline final : public VkWrapper<VulkanComputePipeline, VkPipeline, VkDevice, const VkComputePipelineCreateInfo&> {
+public:
+    VulkanComputePipeline(VkResult outResult, VkDevice device, const VkComputePipelineCreateInfo& createInfo): device_(device) {
+        outResult = vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &createInfo, nullptr, &value_);
+    }
+    ~VulkanComputePipeline() {
+        vkDestroyPipeline(device_, value_, nullptr);
+    }
+private:
+    VkDevice device_;
+};
+
 VULKAN_DEVICE_CLASS(VulkanFramebuffer, VkFramebuffer, VkFramebufferCreateInfo, vkCreateFramebuffer, vkDestroyFramebuffer)
 };
 

@@ -346,6 +346,109 @@ private:
     std::unique_ptr<VulkanSampler> textureSampler_;
 };
 
+class TestComputeMat : public ComputeMaterial {
+    TestComputeMat(const std::vector<char>& computeShaderCode,
+                   VkDevice device,
+                   VkPhysicalDevice physicalDevice)
+    : ComputeMaterial(device, physicalDevice) {
+        createDescriptorSetLayout();
+        createDescriptorPool();
+        createComputePipeline(computeShaderCode);
+        createDescriptorSets();
+        // TODO: initialize buffers
+        for (uint32_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; ++frameIndex) {
+            populateDescriptorSet(frameIndex);
+        }
+    }
+    
+    void populateDescriptorSet(uint32_t frameIndex) {
+        // TODO
+    }
+    
+    void update(uint32_t currentImage, VkExtent2D swapChainExtent) {
+        // no-op
+    }
+    
+    glm::vec3 getDispatchDimensions() {
+        // TODO
+        return glm::vec3{};
+    }
+    
+private:
+    void createDescriptorSetLayout() {
+        VkDescriptorSetLayoutBinding inImageBinding{};
+        inImageBinding.binding = 0;
+        inImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        inImageBinding.descriptorCount = 0;
+        inImageBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        
+        VkDescriptorSetLayoutBinding outImageBinding{};
+        inImageBinding.binding = 1;
+        inImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        inImageBinding.descriptorCount = 0;
+        inImageBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        
+        std::array<VkDescriptorSetLayoutBinding, 2> layoutBindings {inImageBinding, outImageBinding};
+        
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = static_cast<uint32_t>(layoutBindings.size());
+        layoutInfo.pBindings = layoutBindings.data();
+        
+        VK_SUCCESS_OR_THROW(VulkanDescriptorSetLayout::create(descriptorSetLayout_, device_, layoutInfo),
+                            "Failed to create descriptor set layout.");
+    }
+    
+    void createDescriptorPool() {
+        std::array<VkDescriptorPoolSize, MAX_FRAMES_IN_FLIGHT> poolSize{};
+        
+        poolSize[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        poolSize[0].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        
+        poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        poolSize[1].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        
+        
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSize.size());
+        poolInfo.pPoolSizes = poolSize.data();
+        poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        
+        VK_SUCCESS_OR_THROW(VulkanDescriptorPool::create(descriptorPool_, device_, poolInfo),
+                            "Failed to create descriptor pool");
+    }
+    
+    void createComputePipeline(const std::vector<char>& computeShaderCode) {
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = descriptorSetLayout_->get();
+        VK_SUCCESS_OR_THROW(VulkanPipelineLayout::create(pipelineLayout_, device_, pipelineLayoutInfo),
+                            "Failed to create compute pipeline layout");
+        
+        auto computeShaderModule = createShaderModule(computeShaderCode);
+        
+        VkPipelineShaderStageCreateInfo computeShaderStageInfo{};
+        computeShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        computeShaderStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        computeShaderStageInfo.module = **computeShaderModule;
+        computeShaderStageInfo.pName = "main";
+        
+        VkComputePipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineInfo.layout = **pipelineLayout_;
+        pipelineInfo.stage = computeShaderStageInfo;
+        
+        VK_SUCCESS_OR_THROW(VulkanComputePipeline::create(computePipeline_, device_, pipelineInfo),
+                            "Failed to create compute pipeline");
+    }
+    
+    void createDescriptorSets() {
+        // TODO
+    }
+};
+
 const std::vector<Vertex> vertexData = {
     {{-0.5f, -0.5f},{1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
     {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},

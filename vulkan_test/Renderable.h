@@ -32,7 +32,7 @@ public:
         return &descriptorSets_.at(index);
     }
     
-    VkPipeline getPipeline() {
+    virtual VkPipeline getPipeline() {
         return **pipeline_;
     }
     
@@ -74,6 +74,16 @@ protected:
 class ComputeMaterial : public Material {
 public:
     virtual glm::vec3 getDispatchDimensions() = 0;
+    
+    VkPipeline getPipeline() override {
+        return **computePipeline_;
+    }
+protected:
+    ComputeMaterial(VkDevice device, VkPhysicalDevice physicalDevice)
+    : Material(device, physicalDevice) {}
+    
+protected:
+    std::unique_ptr<VulkanComputePipeline> computePipeline_;
 };
 
 class Renderable {
