@@ -154,7 +154,7 @@ private:
     
     // TODO: There's probably a way to abstract away the idea of creating a pool from a layout
     void createDescriptorPool() {
-        std::array<VkDescriptorPoolSize, MAX_FRAMES_IN_FLIGHT> poolSize{};
+        std::array<VkDescriptorPoolSize, 2> poolSize{};
         
         poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         poolSize[0].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
@@ -417,10 +417,10 @@ private:
         inImageBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         
         VkDescriptorSetLayoutBinding outImageBinding{};
-        inImageBinding.binding = 1;
-        inImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        inImageBinding.descriptorCount = 1;
-        inImageBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        outImageBinding.binding = 1;
+        outImageBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        outImageBinding.descriptorCount = 1;
+        outImageBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         
         std::array<VkDescriptorSetLayoutBinding, 2> layoutBindings {inImageBinding, outImageBinding};
         
@@ -434,7 +434,7 @@ private:
     }
     
     void createDescriptorPool() {
-        std::array<VkDescriptorPoolSize, MAX_FRAMES_IN_FLIGHT> poolSize{};
+        std::array<VkDescriptorPoolSize, 2> poolSize{};
         
         poolSize[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         poolSize[0].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
