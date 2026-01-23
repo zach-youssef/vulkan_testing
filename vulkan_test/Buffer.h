@@ -36,7 +36,60 @@ public:
         
         return result;
     }
-    
+
+    static void copyBuffer(VkBuffer src,
+                           VkBuffer dst,
+                           VkDeviceSize size,
+                           VkQueue graphicsQueue,
+                           VkDevice device,
+                           VkCommandPool commandPool) {
+        issueSingleTimeCommand([src, dst, size](VkCommandBuffer commandBuffer){
+            VkBufferCopy copyRegion{};
+            copyRegion.srcOffset = 0;
+            copyRegion.dstOffset = 0;
+            copyRegion.size = size;
+            vkCmdCopyBuffer(commandBuffer, src, dst, 1 /*regionCount*/, &copyRegion);
+        }, graphicsQueue, device, commandPool);
+    }
+
+    static void createAndInitialize(std::unique_ptr<Buffer<Data>>& buffer,
+                                    const std::vector<Data>& data,
+                                    VkBufferUsageFlags usage,
+                                    VkDevice device,
+                                    VkPhysicalDevice physicalDevice,
+                                    VkQueue graphicsQueue,
+                                    VkCommandPool commandPool) {
+        size_t bufferSize = sizeof(Data) * data.size();
+        
+        std::unique_ptr<Buffer<Data>> stagingBuffer;
+        VK_SUCCESS_OR_THROW(Buffer<Data>::create(stagingBuffer,
+                                                   data.size(),
+                                                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                   device,
+                                                   physicalDevice),
+                            "Failed to create staging buffer");
+        
+        stagingBuffer->mapAndExecute(0, bufferSize, [bufferSize, &data] (void* mappedData){
+            memcpy(mappedData, data.data(), bufferSize);
+        });
+        
+        VK_SUCCESS_OR_THROW(Buffer<Data>::create(buffer,
+                                                 data.size(),
+                                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
+                                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                                 device,
+                                                 physicalDevice),
+                            "Failed to create gpu buffer");
+        
+        copyBuffer(stagingBuffer->getBuffer(),
+                   buffer->getBuffer(),
+                   bufferSize,
+                   graphicsQueue,
+                   device,
+                   commandPool);
+    }
+
     Buffer(size_t numElements,
            VkBufferUsageFlags usage,
            VkMemoryPropertyFlags properties,

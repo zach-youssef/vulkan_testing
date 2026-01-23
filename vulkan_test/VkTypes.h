@@ -184,4 +184,49 @@ VULKAN_DEVICE_CLASS(VulkanImage, VkImage, VkImageCreateInfo, vkCreateImage, vkDe
 };
 
 VULKAN_DEVICE_CLASS(VulkanSampler, VkSampler, VkSamplerCreateInfo, vkCreateSampler, vkDestroySampler)
+public:
+    static VkResult createWithAddressMode(std::unique_ptr<VulkanSampler>& outSampler,
+                                          VkSamplerAddressMode addressMode,
+                                          VkDevice device,
+                                          VkPhysicalDevice physicalDevice) {
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        
+        // Alternative is VK_FILTER_NEAREST
+        // Mag is for oversampling, min is for undersampling
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        
+        // Alternatives are
+        // - MIRRORED_REPEAT
+        // - CLAMP_TO_EDGE (or MIRRORED_)
+        // CLAMP_TO_BORDER
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        
+        // Can be set to false if device doesn't support it
+        samplerInfo.anisotropyEnable = VK_TRUE;
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+        samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+        
+        // Only relevant if using CLAMP_TO_BORDER adress mode
+        samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        
+        // Use real coordinates instead of UVs
+        samplerInfo.unnormalizedCoordinates = VK_FALSE;
+        
+        // I don't understand this but it has some use with shadow maps?
+        samplerInfo.compareEnable = VK_FALSE;
+        samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        
+        // To be revisted when we implement mip maps
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerInfo.mipLodBias = 0.0f;
+        samplerInfo.minLod = 0.0f;
+        samplerInfo.maxLod = 0.0f;
+        
+        return VulkanSampler::create(outSampler, device, samplerInfo);
+    }
 };

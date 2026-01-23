@@ -13,9 +13,7 @@
 #include "Buffer.h"
 #include "Image.h"
 #include "FileUtil.h"
-
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
+#include "Renderable.h"
 
 #include <glm/glm.hpp>
 
@@ -117,16 +115,22 @@ private: // Main initialize & run functions
         createSwapChain();
         createSwapChainImageViews();
         createRenderPass();
-        createDescriptorSetLayout();
-        createGraphicsPipeline();
+        // ------------------------------
+        //createDescriptorSetLayout();
+        //createGraphicsPipeline();
+        // -------------------------------
         createFramebuffers();
         createCommandPool();
-        createDescriptorPool();
-        createTextureImage();
-        createTextureSampler();
-        createVertexBuffer();
-        createIndexBuffer();
-        initFrames();
+        // -------------------------------
+        //createDescriptorPool();
+        //createTextureImage();
+        //createTextureSampler();
+        //createVertexBuffer();
+        //createIndexBuffer();
+        // --------------------------------
+        //initFrames(); // Replace w/ just sync objects
+        createSyncObjects();
+        createCommandBuffers();
     }
     
     void mainLoop() {
@@ -138,14 +142,14 @@ private: // Main initialize & run functions
     }
     
     void drawFrame() {
-        auto& currentFrame = frames_[currentFrameIndex_];
         // Wait for previous frame to complete
-        currentFrame->waitForFence();
+        vkWaitForFences(**device_, 1, (*inFlightFences_[currentFrameIndex_]).get(), VK_TRUE, UINT64_MAX);
         
         // Acquire index of next image in swapchain
-        bool shouldRecreateSwapChain;
-        uint32_t imageIndex = currentFrame->aquireImageIndex(**swapChain_, shouldRecreateSwapChain);
-        
+        uint32_t imageIndex;
+        auto result = vkAcquireNextImageKHR(**device_, **swapChain_, UINT64_MAX, **imageAvailableSemaphores_[currentFrameIndex_], VK_NULL_HANDLE, &imageIndex);
+        bool shouldRecreateSwapChain = result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR;
+
         if (shouldRecreateSwapChain || frameBufferResized_) {
             frameBufferResized_ = false;
             recreateSwapChain();
@@ -153,19 +157,50 @@ private: // Main initialize & run functions
         }
         
         // Only reset fence here now that we know we will be doing work
-        currentFrame->resetFence();
+        vkResetFences(**device_, 1, (*inFlightFences_[currentFrameIndex_]).get());
         
-        // Update the uniform buffer
-        currentFrame->updateUniformBuffer(imageIndex, swapChainExtent_);
+        // TODO: 99% sure this loop does not work with more than one renderable
+        for (auto& renderable : renderables_) {
+            // Begin render pass
+            auto commandBuffer = commandBuffers_[currentFrameIndex_];
+            vkResetCommandBuffer(commandBuffer, 0);
+            startRenderPass(commandBuffer, currentFrameIndex_);
+            
+            // Update the uniform buffer
+            renderable->update(currentFrameIndex_, swapChainExtent_);
 
-        // Record the command buffer
-        auto commandBuffer = currentFrame->getCommandBuffer();
-        vkResetCommandBuffer(commandBuffer, 0);
-        recordCommandBuffer(commandBuffer, imageIndex);
+            // Record the command buffer
+            renderable->recordCommandBuffer(commandBuffer, currentFrameIndex_, swapChainExtent_);
+            
+            // End render pass
+            vkCmdEndRenderPass(commandBuffer);
+            VK_SUCCESS_OR_THROW(vkEndCommandBuffer(commandBuffer),
+                                "Failed to end command buffer.");
+            
+            // Submit to graphics queue
+            renderable->submit(currentFrameIndex_,
+                               commandBuffer,
+                               graphicsQueue_,
+                               **swapChain_,
+                               **inFlightFences_[currentFrameIndex_],
+                               {**imageAvailableSemaphores_[currentFrameIndex_]},
+                               {**renderFinishedSemaphores_[currentFrameIndex_]});
+        }
         
-        // Submit command buffer
-        currentFrame->submit(imageIndex, graphicsQueue_, presentQueue_, **swapChain_);
+        // Submit present queue
+        VkPresentInfoKHR presentInfo{};
+        presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+        presentInfo.waitSemaphoreCount = 1;
+        presentInfo.pWaitSemaphores = (*renderFinishedSemaphores_[currentFrameIndex_]).get();
+        VkSwapchainKHR swapChains[] = {**swapChain_};
+        presentInfo.swapchainCount = 1;
+        presentInfo.pSwapchains = swapChains;
+        presentInfo.pImageIndices = &imageIndex;
+        presentInfo.pResults = nullptr; // Array of VkResults to check for each swapchain?
         
+        vkQueuePresentKHR(presentQueue_, &presentInfo);
+
         // Increment frame index
         currentFrameIndex_ = (this->currentFrameIndex_ + 1) % maxFramesInFlight_;
     }
@@ -730,6 +765,39 @@ private: // Vulkan Initialization Functions
         }
     }
     
+    void createSyncObjects() {
+        // TODO: maxFramesInFlight_ refactor
+        for (int frameIndex = 0; frameIndex < maxFramesInFlight_; ++frameIndex) {
+            VkSemaphoreCreateInfo semaphoreInfo{};
+            semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            
+            VkFenceCreateInfo fenceInfo{};
+            fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // Init fence as signaled so first frame isn't blocked
+            
+            VK_SUCCESS_OR_THROW(VulkanSemaphore::create(imageAvailableSemaphores_[frameIndex], **device_, semaphoreInfo),
+                                "Failed to create image available semaphore.");
+            VK_SUCCESS_OR_THROW(VulkanSemaphore::create(renderFinishedSemaphores_[frameIndex], **device_, semaphoreInfo),
+                                "Failed to create render finished semaphore.");
+            VK_SUCCESS_OR_THROW(VulkanFence::create(inFlightFences_[frameIndex], **device_, fenceInfo),
+                                "Failed to create in-flight fence.");
+        }
+    }
+    
+    void createCommandBuffers() {
+        // TODO: maxframes refactor
+        for (int frameIndex = 0; frameIndex < maxFramesInFlight_; ++frameIndex) {
+            VkCommandBufferAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            allocInfo.commandPool = **commandPool_;
+            allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocInfo.commandBufferCount = 1;
+            
+            VK_SUCCESS_OR_THROW(vkAllocateCommandBuffers(**device_, &allocInfo, &commandBuffers_[frameIndex]),
+                                "Failed to allocate command buffers");
+        }
+    }
+    
 private: // Additional helper functions
     // TODO: Anything in this section probably belongs elsewhere
     void recreateSwapChain() {
@@ -744,6 +812,30 @@ private: // Additional helper functions
         createSwapChain();
         createSwapChainImageViews();
         createFramebuffers();
+    }
+    
+    void startRenderPass(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = 0; // Optional
+        beginInfo.pInheritanceInfo = nullptr; // Optional
+        
+        VK_SUCCESS_OR_THROW(vkBeginCommandBuffer(commandBuffer, &beginInfo),
+                            "Failed to begin recording command buffer");
+        
+        VkRenderPassBeginInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = **renderPass_;
+        renderPassInfo.framebuffer = **swapChainFramebuffers_[imageIndex];
+        
+        renderPassInfo.renderArea.offset = {0, 0};
+        renderPassInfo.renderArea.extent = swapChainExtent_;
+        
+        VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+        renderPassInfo.clearValueCount = 1;
+        renderPassInfo.pClearValues = &clearColor;
+
+        vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
     }
     
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
@@ -989,7 +1081,36 @@ private: // Additional helper functions
             vkCmdCopyBuffer(commandBuffer, src, dst, 1 /*regionCount*/, &copyRegion);
         }, graphicsQueue_);
     }
-
+    
+public:
+    void addRenderable(std::unique_ptr<Renderable>&& renderable) {
+        renderables_.emplace_back(std::move(renderable));
+    }
+    
+public: // Public getters
+    VkDevice getDevice() {
+        return **device_;
+    }
+    
+    VkPhysicalDevice getPhysicalDevice() {
+        return physicalDevice_;
+    }
+    
+    VkCommandPool getCommandPool() {
+        return **commandPool_;
+    }
+    
+    VkQueue getGraphicsQueue() {
+        return graphicsQueue_;
+    }
+    
+    VkExtent2D getSwapchainExtent() {
+        return swapChainExtent_;
+    }
+    
+    VkRenderPass getRenderPass() {
+        return **renderPass_;
+    }
 private: // Member variables
     // Application constants
     const uint32_t windowHeight_;
@@ -1045,6 +1166,7 @@ private: // Member variables
     // Command & Descriptor Pools
     // TODO: Can be owned here but need to match what is needed
     std::unique_ptr<VulkanCommandPool> commandPool_;
+    // TODO: moving to material
     std::unique_ptr<VulkanDescriptorPool> descriptorPool_;
     
     // Per-frame data
@@ -1058,4 +1180,12 @@ private: // Member variables
     std::unique_ptr<Buffer<uint16_t>> indexBuffer_;
     std::unique_ptr<Image> textureImage_;
     std::unique_ptr<VulkanSampler> textureSampler_;
+    
+    std::vector<std::unique_ptr<Renderable>> renderables_;
+    
+    // TODO: Replace 2 w/ constant max_frame_count
+    std::array<std::unique_ptr<VulkanSemaphore>, 2> imageAvailableSemaphores_;
+    std::array<std::unique_ptr<VulkanSemaphore>, 2> renderFinishedSemaphores_;
+    std::array<std::unique_ptr<VulkanFence>, 2> inFlightFences_;
+    std::array<VkCommandBuffer, 2> commandBuffers_;
 };
