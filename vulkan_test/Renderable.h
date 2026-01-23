@@ -2,6 +2,8 @@
 
 #include "VkTypes.h"
 
+#include <glm/glm.hpp>
+
 /*
  Overview of Structure:
  
@@ -28,7 +30,6 @@ public:
     
     VkDescriptorSet* getDescriptorSet(uint32_t index) {
         return &descriptorSets_.at(index);
-        //return &descriptorSets_[index];
     }
     
     VkPipeline getPipeline() {
@@ -68,6 +69,11 @@ protected:
     std::unique_ptr<VulkanDescriptorPool> descriptorPool_;
     // TODO: max frames in flight refactor
     std::array<VkDescriptorSet, 2> descriptorSets_;
+};
+
+class ComputeMaterial : public Material {
+public:
+    virtual glm::vec3 getDispatchDimensions() = 0;
 };
 
 class Renderable {

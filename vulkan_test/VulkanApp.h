@@ -107,6 +107,62 @@ private: // Main initialize & run functions
         // Only reset fence here now that we know we will be doing work
         vkResetFences(**device_, 1, (*inFlightFences_[currentFrameIndex_]).get());
         
+        // If we have compute passes, dispatch those first
+        if (!computePasses_.empty()) {
+            // Make sure our sync objects are initialized
+            if (!computeSyncInitialized_) {
+                createComputeSyncObjects();
+            }
+            
+            // Grab Commmand Buffer
+            auto commandBuffer = computeCommandBuffers_[currentFrameIndex_];
+            
+            
+            for (int passIndex = 0; passIndex < computePasses_.size(); ++passIndex) {
+                // Grab & update compute material
+                auto& computePass = computePasses_.at(passIndex);
+                computePass->update(currentFrameIndex_, swapChainExtent_);
+                
+                // Start command buffer
+                VK_SUCCESS_OR_THROW(vkResetCommandBuffer(commandBuffer, 0), "Failed to reset compute cb");
+                VkCommandBufferBeginInfo beginInfo{};
+                beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                VK_SUCCESS_OR_THROW(vkBeginCommandBuffer(commandBuffer, &beginInfo),
+                                    "Failed to begin compute commmand buffer");
+
+                // Bind pipeline & descriptor sets
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePass->getPipeline());
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                        computePass->getPipelineLayout(),
+                                        0, 1,
+                                        computePass->getDescriptorSet(currentFrameIndex_),
+                                        0, 0);
+                // Dispatch workgroups
+                auto dispatchSize = computePass->getDispatchDimensions();
+                vkCmdDispatch(commandBuffer, dispatchSize.x, dispatchSize.y, dispatchSize.z);
+                
+                // End command buffer
+                vkEndCommandBuffer(commandBuffer);
+                
+                // Submit Work
+                VkSubmitInfo submitInfo{};
+                submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+                submitInfo.commandBufferCount = 1;
+                submitInfo.pCommandBuffers = &commandBuffer;
+                VkSemaphore wait[1];
+                if (passIndex > 0) {
+                    wait[0] = **computeSemaphores_[currentFrameIndex_][passIndex - 1];
+                    submitInfo.waitSemaphoreCount = 1;
+                    submitInfo.pWaitSemaphores = wait;
+                }
+                VkSemaphore signal[] = {**computeSemaphores_[currentFrameIndex_][passIndex]};
+                submitInfo.signalSemaphoreCount = 1;
+                submitInfo.pSignalSemaphores = signal;
+                VK_SUCCESS_OR_THROW(vkQueueSubmit(computeQueue_, 1, &submitInfo, VK_NULL_HANDLE),
+                                    "Failed to submit compute");
+            }
+        }
+        
         // Grab command buffer
         auto commandBuffer = commandBuffers_[currentFrameIndex_];
         
@@ -178,9 +234,6 @@ private: // Main initialize & run functions
                              0 /*offset into buffer*/,
                              0 /*offset to add to indices*/,
                              0 /* instancing offset*/);
-
-            // Record the renderable commands
-            //renderable->recordCommandBuffer(commandBuffer, currentFrameIndex_, swapChainExtent_);
         }
         
 
@@ -197,9 +250,14 @@ private: // Main initialize & run functions
         submitInfo.pCommandBuffers = &commandBuffer;
         // (it should wait for the swapchain image to be available before writing out to it)
         VkPipelineStageFlags waitStages[] {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        VkSemaphore wait[] = {**imageAvailableSemaphores_[currentFrameIndex_]};
+        VkSemaphore wait[2];
+        wait[0] = **imageAvailableSemaphores_[currentFrameIndex_];
+        // make sure any compute work was finished
+        if (!computePasses_.empty()) {
+            wait[1] = **computeSemaphores_[currentFrameIndex_].at(computePasses_.size() - 1);
+        }
         VkSemaphore signal[] = {**renderFinishedSemaphores_[currentFrameIndex_]};
-        submitInfo.waitSemaphoreCount = 1;//static_cast<uint32_t>(waitSemaphores.size());
+        submitInfo.waitSemaphoreCount = computePasses_.empty() ? 1 : 2;
         submitInfo.pWaitSemaphores = wait;
         submitInfo.pWaitDstStageMask = waitStages;
         submitInfo.commandBufferCount = 1;
@@ -209,14 +267,6 @@ private: // Main initialize & run functions
 
         VK_SUCCESS_OR_THROW(vkQueueSubmit(graphicsQueue_, 1, &submitInfo, **inFlightFences_[currentFrameIndex_]),
                             "Failed to submit draw command buffer.");
-
-        /*renderable->submit(imageIndex,
-                           commandBuffer,
-                           graphicsQueue_,
-                           **swapChain_,
-                           **inFlightFences_[currentFrameIndex_],
-                           {**imageAvailableSemaphores_[currentFrameIndex_]},
-                           {**renderFinishedSemaphores_[currentFrameIndex_]});*/
 
         // Submit present queue
         VkPresentInfoKHR presentInfo{};
@@ -331,6 +381,9 @@ private: // Vulkan Initialization Functions
         
         vkGetDeviceQueue(**device_, indices.graphicsFamily.value(), 0, &graphicsQueue_);
         vkGetDeviceQueue(**device_, indices.presentFamily.value(), 0, &presentQueue_);
+        // Compute queue technically same as graphics in current implementation
+        // Creating dedicated handle in case I ever actually implement the async queue
+        vkGetDeviceQueue(**device_, indices.graphicsFamily.value(), 0, &computeQueue_);
     }
     
     void createSwapChain() {
@@ -500,18 +553,32 @@ private: // Vulkan Initialization Functions
         }
     }
     
-    void createCommandBuffers() {
-        // TODO: maxframes refactor
+    void createComputeSyncObjects() {
+        VkSemaphoreCreateInfo semaphoreInfo{};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        
+        // TODO: maxFramesInFlight_ refactor
         for (int frameIndex = 0; frameIndex < maxFramesInFlight_; ++frameIndex) {
-            VkCommandBufferAllocateInfo allocInfo{};
-            allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-            allocInfo.commandPool = **commandPool_;
-            allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            allocInfo.commandBufferCount = 1;
-            
-            VK_SUCCESS_OR_THROW(vkAllocateCommandBuffers(**device_, &allocInfo, &commandBuffers_[frameIndex]),
-                                "Failed to allocate command buffers");
+            computeSemaphores_[frameIndex].resize(computePasses_.size());
+            for (int i = 0; i < computePasses_.size(); i++) {
+                VK_SUCCESS_OR_THROW(VulkanSemaphore::create(computeSemaphores_[frameIndex][i], **device_, semaphoreInfo),
+                                    "Failed to create compute semaphore");
+            }
         }
+    }
+    
+    void createCommandBuffers() {
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool = **commandPool_;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        // TODO: maxframes refactor
+        allocInfo.commandBufferCount = 2;
+        
+        VK_SUCCESS_OR_THROW(vkAllocateCommandBuffers(**device_, &allocInfo, commandBuffers_.data()),
+                            "Failed to allocate command buffers");
+        VK_SUCCESS_OR_THROW(vkAllocateCommandBuffers(**device_, &allocInfo, computeCommandBuffers_.data()),
+                            "Failed to allocate command buffers");
     }
     
 private: // Additional helper functions
@@ -547,9 +614,14 @@ private: // Additional helper functions
     }
     
 public:
-    // Add renderable to render pass
+    // Add renderable to main render pass
     void addRenderable(std::unique_ptr<Renderable>&& renderable) {
         renderables_.emplace_back(std::move(renderable));
+    }
+    
+    // Add compute stage to occur before graphics
+    void addComputeStage(std::unique_ptr<ComputeMaterial>&& computeMaterial) {
+        computePasses_.emplace_back(std::move(computeMaterial));
     }
     
 public: // Public getters
@@ -595,6 +667,7 @@ private: // Member variables
     // Hardware Queues
     VkQueue graphicsQueue_;
     VkQueue presentQueue_;
+    VkQueue computeQueue_;
     
     // Surface & Swapchain
     std::unique_ptr<VulkanSurface> surface_;
@@ -623,7 +696,13 @@ private: // Member variables
     std::array<std::unique_ptr<VulkanSemaphore>, 2> imageAvailableSemaphores_;
     std::array<std::unique_ptr<VulkanSemaphore>, 2> renderFinishedSemaphores_;
     std::array<std::unique_ptr<VulkanFence>, 2> inFlightFences_;
+    
     std::array<VkCommandBuffer, 2> commandBuffers_;
+    std::array<VkCommandBuffer, 2> computeCommandBuffers_;
     
     std::vector<std::unique_ptr<Renderable>> renderables_;
+    std::vector<std::unique_ptr<ComputeMaterial>> computePasses_;
+    
+    std::array<std::vector<std::unique_ptr<VulkanSemaphore>>, 2> computeSemaphores_;
+    bool computeSyncInitialized_ = false;
 };

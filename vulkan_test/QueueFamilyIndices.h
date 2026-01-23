@@ -26,7 +26,9 @@ QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surfa
     
     std::vector<VkQueueFamilyProperties> queueFamilies = readVkVectorVoid<VkQueueFamilyProperties, VkPhysicalDevice>(device, vkGetPhysicalDeviceQueueFamilyProperties);
     for (int i = 0; i < queueFamilies.size(); ++i) {
-        if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+        // Also requiring compute queue to avoid having to synchronize dedicated async compute
+        if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT
+            && queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
             indices.graphicsFamily = i;
         }
         
