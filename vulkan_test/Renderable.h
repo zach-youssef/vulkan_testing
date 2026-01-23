@@ -18,6 +18,8 @@
 
 class Material {
 public:
+    virtual ~Material() = default;
+    
     // Should get called at end of child constructors
     // TODO: Find a better pattern
     virtual void populateDescriptorSet(uint32_t frameIndex) = 0;
@@ -70,6 +72,8 @@ protected:
 
 class Renderable {
 public:
+    virtual ~Renderable() = default;
+    
     Material* getMaterial() {
         return material_.get();
     }
