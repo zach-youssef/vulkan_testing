@@ -1,7 +1,7 @@
 #version 450
 
-layout(binding = 0, rgba8) uniform readonly image2D inputImage;
-layout(binding = 1, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 0, rgba8) uniform image2D inputImage;
+layout(binding = 1, rgba8) uniform image2D outputImage;
 
 // 32 x 32 = 1024, which appears to be the limit on my device
 // (unclear if this is a standard or hardware specific)
