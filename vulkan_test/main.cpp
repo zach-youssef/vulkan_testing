@@ -51,13 +51,13 @@ public:
                      VkPhysicalDevice physicalDevice,
                      VkExtent2D swapchainExtent,
                      VkRenderPass renderPass,
-                     std::unique_ptr<Image>&& textureImage,
-                     std::unique_ptr<VulkanSampler>&& textureSampler,
+                     std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> textureImages,
+                     VkSampler textureSampler,
                      const std::vector<char>& vertSpirv,
                      const std::vector<char>& fragSpirv)
     : Material(device, physicalDevice),
-    textureImage_(std::move(textureImage)),
-    textureSampler_(std::move(textureSampler)) {
+    textureImages_(textureImages),
+    textureSampler_(textureSampler) {
         createDescriptorSetLayout();
         createDescriptorPool();
         createGraphicsPipeline(vertSpirv, fragSpirv, swapchainExtent, renderPass);
@@ -76,8 +76,8 @@ public:
         
         VkDescriptorImageInfo imageInfo{};
         imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfo.imageView = textureImage_->getImageView();
-        imageInfo.sampler = **textureSampler_;
+        imageInfo.imageView = textureImages_[frameIndex];
+        imageInfo.sampler = textureSampler_;
         
         VkWriteDescriptorSet bufferDescriptorWrite{};
         bufferDescriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -342,15 +342,17 @@ private:
 private:
     std::array<std::unique_ptr<Buffer<UniformBufferObject>>, MAX_FRAMES_IN_FLIGHT> uniformBuffers_;
     std::array<std::unique_ptr<UniformBufferObject, std::function<void(UniformBufferObject*)>>, MAX_FRAMES_IN_FLIGHT> mappedUniformBuffers_;
-    std::unique_ptr<Image> textureImage_;
-    std::unique_ptr<VulkanSampler> textureSampler_;
+    std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> textureImages_;
+    VkSampler textureSampler_;
 };
 
 class TestComputeMat : public ComputeMaterial {
     TestComputeMat(const std::vector<char>& computeShaderCode,
+                   std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> inImages,
+                   std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> outImages,
                    VkDevice device,
                    VkPhysicalDevice physicalDevice)
-    : ComputeMaterial(device, physicalDevice) {
+    : ComputeMaterial(device, physicalDevice), inImages_(inImages), outImages_(outImages) {
         createDescriptorSetLayout();
         createDescriptorPool();
         createComputePipeline(computeShaderCode);
@@ -362,7 +364,36 @@ class TestComputeMat : public ComputeMaterial {
     }
     
     void populateDescriptorSet(uint32_t frameIndex) {
-        // TODO
+        VkDescriptorImageInfo inImageInfo{};
+        inImageInfo.imageView = inImages_[frameIndex];
+        // TODO: is this ok?
+        inImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkDescriptorImageInfo outImageInfo{};
+        outImageInfo.imageView = outImages_[frameIndex];
+        // TODO: is this ok?
+        outImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        
+        VkWriteDescriptorSet inDescriptorWrite{};
+        inDescriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        inDescriptorWrite.dstSet = descriptorSets_[frameIndex];
+        inDescriptorWrite.dstBinding = 0;
+        inDescriptorWrite.dstArrayElement = 0;
+        inDescriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        inDescriptorWrite.descriptorCount = 1;
+        inDescriptorWrite.pImageInfo = &inImageInfo;
+        
+        VkWriteDescriptorSet outDescriptorWrite{};
+        outDescriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        outDescriptorWrite.dstSet = descriptorSets_[frameIndex];
+        outDescriptorWrite.dstBinding = 1;
+        outDescriptorWrite.dstArrayElement = 0;
+        outDescriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        outDescriptorWrite.descriptorCount = 1;
+        outDescriptorWrite.pImageInfo = &outImageInfo;
+        
+        std::array<VkWriteDescriptorSet, 2> descriptorWrites{inDescriptorWrite, outDescriptorWrite};
+        vkUpdateDescriptorSets(device_, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
     }
     
     void update(uint32_t currentImage, VkExtent2D swapChainExtent) {
@@ -447,6 +478,10 @@ private:
     void createDescriptorSets() {
         // TODO
     }
+private:
+    // TODO: MaxFramesPerFlight refactor
+    std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> inImages_;
+    std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> outImages_;
 };
 
 const std::vector<Vertex> vertexData = {
@@ -460,35 +495,32 @@ const std::vector<uint16_t> indexData = {
     2, 3, 0
 };
 
-void createTutorialMaterial(std::unique_ptr<TutorialMaterial>& outPtr, VulkanApp& app) {
-    std::unique_ptr<Image> texture;
-    Image::createFromFile(texture,
-                          "/Users/zyoussef/code/vulkan_test/vulkan_test/textures/texture.jpg",
-                          app.getGraphicsQueue(),
-                          app.getCommandPool(),
-                          app.getDevice(),
-                          app.getPhysicalDevice());
-    
-    std::unique_ptr<VulkanSampler> sampler;
-    VulkanSampler::createWithAddressMode(sampler, VK_SAMPLER_ADDRESS_MODE_REPEAT, app.getDevice(), app.getPhysicalDevice());
-
+void createTutorialMaterial(std::unique_ptr<TutorialMaterial>& outPtr,
+                            VkImageView imageView,
+                            VkSampler sampler,
+                            VulkanApp& app) {
     const std::string shaderPath = "/Users/zyoussef/code/vulkan_test/vulkan_test/shaders";
     auto vertShaderCode = readFile(shaderPath + "/vert.spv");
     auto fragShaderCode = readFile(shaderPath + "/frag.spv");
+    
+    std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> imageViews = {imageView, imageView};
     
     outPtr = std::make_unique<TutorialMaterial>(app.getDevice(),
                                                 app.getPhysicalDevice(),
                                                 app.getSwapchainExtent(),
                                                 app.getRenderPass(),
-                                                std::move(texture),
-                                                std::move(sampler),
+                                                imageViews,
+                                                sampler,
                                                 vertShaderCode,
                                                 fragShaderCode);
 }
 
-void createTutorialRenderable(std::unique_ptr<MeshRenderable<Vertex>>& outPtr, VulkanApp& app) {
+void createTutorialRenderable(std::unique_ptr<MeshRenderable<Vertex>>& outPtr,
+                              VkImageView textureImage,
+                              VkSampler textureSampler,
+                              VulkanApp& app) {
     std::unique_ptr<TutorialMaterial> material;
-    createTutorialMaterial(material, app);
+    createTutorialMaterial(material, textureImage, textureSampler, app);
     
     outPtr = std::make_unique<MeshRenderable<Vertex>>(vertexData,
                                                       indexData,
@@ -508,8 +540,22 @@ int main() {
     
     app.init();
     
+    std::unique_ptr<Image> texture;
+    Image::createFromFile(texture,
+                          "/Users/zyoussef/code/vulkan_test/vulkan_test/textures/texture.jpg",
+                          app.getGraphicsQueue(),
+                          app.getCommandPool(),
+                          app.getDevice(),
+                          app.getPhysicalDevice());
+    
+    std::unique_ptr<VulkanSampler> sampler;
+    VulkanSampler::createWithAddressMode(sampler,
+                                         VK_SAMPLER_ADDRESS_MODE_REPEAT,
+                                         app.getDevice(),
+                                         app.getPhysicalDevice());
+
     std::unique_ptr<MeshRenderable<Vertex>> renderable;
-    createTutorialRenderable(renderable, app);
+    createTutorialRenderable(renderable, texture->getImageView(), **sampler, app);
     
     app.addRenderable(std::move(renderable));
 
