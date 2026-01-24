@@ -18,6 +18,10 @@
     - Buffers / Samplers for descriptor set
  */
 
+namespace {
+    static const uint32_t maxFrames = 2;
+}
+
 class Material {
 public:
     virtual ~Material() = default;
