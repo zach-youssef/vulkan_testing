@@ -1,6 +1,7 @@
 #include "VulkanApp.h"
 #include "Renderable.h"
 #include "Ubo.h"
+#include "BasicMaterial.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
