@@ -103,6 +103,11 @@ private: // Main initialize & run functions
             recreateSwapChain();
             return;
         }
+
+        // Perform any pre-draw actions
+        for (auto& callback : preDrawCallbacks_) {
+            (*callback)(*this, currentFrameIndex_);
+        }
         
         // Only reset fence here now that we know we will be doing work
         vkResetFences(**device_, 1, (*inFlightFences_[currentFrameIndex_]).get());
@@ -623,6 +628,11 @@ public:
     void addComputeStage(std::unique_ptr<ComputeMaterial>&& computeMaterial) {
         computePasses_.emplace_back(std::move(computeMaterial));
     }
+
+    // Add callback to be called before drawing each frame
+    void addPreDrawCallback(std::shared_ptr<std::function<void(VulkanApp&, uint32_t)>>& callback) {
+        preDrawCallbacks_.push_back(callback);
+    }
     
 public: // Public getters
     VkDevice getDevice() {
@@ -700,8 +710,9 @@ private: // Member variables
     std::array<VkCommandBuffer, 2> commandBuffers_;
     std::array<VkCommandBuffer, 2> computeCommandBuffers_;
     
-    std::vector<std::unique_ptr<Renderable>> renderables_;
-    std::vector<std::unique_ptr<ComputeMaterial>> computePasses_;
+    std::vector<std::unique_ptr<Renderable>> renderables_{};
+    std::vector<std::unique_ptr<ComputeMaterial>> computePasses_{};
+    std::vector<std::shared_ptr<std::function<void(VulkanApp&,uint32_t)>>> preDrawCallbacks_{};
     
     std::array<std::vector<std::unique_ptr<VulkanSemaphore>>, 2> computeSemaphores_;
     bool computeSyncInitialized_ = false;
