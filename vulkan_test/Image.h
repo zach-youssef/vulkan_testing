@@ -132,17 +132,6 @@ public:
                                       VkCommandPool commandPool,
                                       VkDevice device,
                                       VkPhysicalDevice physicalDevice) {
-        std::unique_ptr<Buffer<uint8_t>> stagingBuffer;
-        VK_SUCCESS_OR_THROW(Buffer<uint8_t>::create(stagingBuffer, imageSize,
-                                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                                    device, physicalDevice),
-                            "Failed to create image staging buffer");
-        
-        stagingBuffer->mapAndExecute(0, imageSize, [pixels, imageSize] (void* data) {
-            memcpy(data, pixels, static_cast<size_t>(imageSize));
-        });
-        
         VK_SUCCESS_OR_THROW(Image::create(outImage,
                                           width, height,
                                           VK_FORMAT_R8G8B8A8_SRGB,
@@ -151,23 +140,8 @@ public:
                                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                           device, physicalDevice),
                             "Failed to create image.");
-        
-        transitionImageLayout(outImage->getImage(),
-                              VK_FORMAT_R8G8B8A8_SRGB,
-                              VK_IMAGE_LAYOUT_UNDEFINED,
-                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                              graphicsQueue, commandPool, device);
 
-        copyBufferToImage(stagingBuffer->getBuffer(),
-                          outImage->getImage(),
-                          width, height,
-                          graphicsQueue, commandPool, device);
-
-        transitionImageLayout(outImage->getImage(),
-                              VK_FORMAT_R8G8B8A8_SRGB,
-                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                              graphicsQueue, commandPool, device);
+        outImage->uploadUcharBufferToImage(pixels, imageSize, graphicsQueue, commandPool, physicalDevice);
     }
     
     // TODO: Could probably abstract this to make it more useful
@@ -192,6 +166,40 @@ public:
                               VK_IMAGE_LAYOUT_UNDEFINED,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                               queue, commandPool, device);
+    }
+
+    void uploadUcharBufferToImage(unsigned char* pixels, 
+                                  VkDeviceSize imageSize,
+                                  VkQueue graphicsQueue,
+                                  VkCommandPool commandPool,
+                                  VkPhysicalDevice physicalDevice) {
+        std::unique_ptr<Buffer<uint8_t>> stagingBuffer;
+        VK_SUCCESS_OR_THROW(Buffer<uint8_t>::create(stagingBuffer, imageSize,
+                                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                    device_, physicalDevice),
+                            "Failed to create image staging buffer");
+        
+        stagingBuffer->mapAndExecute(0, imageSize, [pixels, imageSize] (void* data) {
+            memcpy(data, pixels, static_cast<size_t>(imageSize));
+        });
+
+        transitionImageLayout(getImage(),
+                              VK_FORMAT_R8G8B8A8_SRGB,
+                              VK_IMAGE_LAYOUT_UNDEFINED,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              graphicsQueue, commandPool, device_);
+
+        copyBufferToImage(stagingBuffer->getBuffer(),
+                          getImage(),
+                          width_, height_,
+                          graphicsQueue, commandPool, device_);
+
+        transitionImageLayout(getImage(),
+                              VK_FORMAT_R8G8B8A8_SRGB,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              graphicsQueue, commandPool, device_);
     }
     
     static void transitionImageLayout(VkImage image,
