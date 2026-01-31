@@ -2,145 +2,38 @@
 
 #include "Ubo.h"
 #include "Renderable.h"
+#include "Descriptor.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-class BasicMaterial : public Material {
+template<uint MAX_FRAMES, uint VertexAttributes>
+class BasicMaterial : public Material<MAX_FRAMES> {
 public:
-    BasicMaterial(VkDevice device,
+    BasicMaterial<MAX_FRAMES>(VkDevice device,
                   VkPhysicalDevice physicalDevice,
+                  std::vector<std::shared_ptr<Descriptor>> descriptors,
                   VkExtent2D swapchainExtent,
                   VkRenderPass renderPass,
-                  // TODO max frames refactor
-                  std::array<VkImageView, 2> textureImages,
-                  VkSampler textureSampler,
                   const std::vector<char>& vertSpirv,
                   const std::vector<char>& fragSpirv,
                   VkVertexInputBindingDescription bindingDescription,
                   // TODO make that 2 customizable
-                  std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions)
-    : Material(device, physicalDevice),
-    textureImages_(textureImages),
-    textureSampler_(textureSampler) {
-        createDescriptorSetLayout();
-        createDescriptorPool();
+                  std::array<VkVertexInputAttributeDescription, VertexAttributes> attributeDescriptions)
+    : Material<MAX_FRAMES>(device, physicalDevice, descriptors) {
         createGraphicsPipeline(vertSpirv, fragSpirv, swapchainExtent, renderPass, bindingDescription, attributeDescriptions);
-        createDescriptorSets();
-        for (uint32_t frameIndex = 0; frameIndex < 2; ++frameIndex) {
-            createUniformBuffer(frameIndex);
-            populateDescriptorSet(frameIndex);
-        }
     }
     
-    void populateDescriptorSet(uint32_t frameIndex) {
-        VkDescriptorBufferInfo bufferInfo{};
-        bufferInfo.buffer = uniformBuffers_[frameIndex]->getBuffer();
-        bufferInfo.offset = 0;
-        bufferInfo.range = sizeof(UniformBufferObject);
-        
-        VkDescriptorImageInfo imageInfo{};
-        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfo.imageView = textureImages_[frameIndex];
-        imageInfo.sampler = textureSampler_;
-        
-        VkWriteDescriptorSet bufferDescriptorWrite{};
-        bufferDescriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        bufferDescriptorWrite.dstSet = descriptorSets_[frameIndex];
-        bufferDescriptorWrite.dstBinding = 0;
-        bufferDescriptorWrite.dstArrayElement = 0;
-        bufferDescriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        bufferDescriptorWrite.descriptorCount = 1;
-        bufferDescriptorWrite.pBufferInfo = &bufferInfo;
-        bufferDescriptorWrite.pImageInfo = nullptr; // Optional
-        bufferDescriptorWrite.pTexelBufferView = nullptr; // Optional
-        
-        VkWriteDescriptorSet imageDescriptorWrite{};
-        imageDescriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        imageDescriptorWrite.dstSet = descriptorSets_[frameIndex];
-        imageDescriptorWrite.dstBinding = 1;
-        imageDescriptorWrite.dstArrayElement = 0;
-        imageDescriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        imageDescriptorWrite.descriptorCount = 1;
-        imageDescriptorWrite.pImageInfo = &imageInfo;
-        
-        std::array<VkWriteDescriptorSet, 2> descriptorWrites{
-            bufferDescriptorWrite, imageDescriptorWrite
-        };
-        
-
-        vkUpdateDescriptorSets(device_, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
-    }
-    
-    void update(uint32_t currentImage, VkExtent2D swapChainExtent) {
-        auto model = glm::identity<glm::mat4>();
-        auto view = glm::identity<glm::mat4>();
-        auto projection = glm::ortho(-1.0, 1.0, -1.0, 1.0);
-        
-        // GLM was originally designed for OpenGL where the Y coordinate of the clip coordinates is inverted
-        projection[1][1] *= -1;
-
-        auto ubo = UniformBufferObject::fromModelViewProjection(model, view, projection);
-        
-        memcpy(mappedUniformBuffers_[currentImage].get(), &ubo, sizeof(ubo));
-    }
+    virtual void update(uint32_t currentImage, VkExtent2D swapChainExtent) override {}
 private:
-    void createDescriptorSetLayout() {
-        VkDescriptorSetLayoutBinding uboLayoutBinding{};
-        uboLayoutBinding.binding = 0;
-        uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        uboLayoutBinding.descriptorCount = 1;
-        uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        uboLayoutBinding.pImmutableSamplers = nullptr; // Optional, only relevant for image sampling
-        
-        VkDescriptorSetLayoutBinding imageLayoutBinding{};
-        imageLayoutBinding.binding = 1;
-        imageLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        imageLayoutBinding.descriptorCount = 1;
-        imageLayoutBinding.pImmutableSamplers = nullptr;
-        imageLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        std::array<VkDescriptorSetLayoutBinding, 2> layoutBindings {uboLayoutBinding, imageLayoutBinding};
-        
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = static_cast<uint32_t>(layoutBindings.size());
-        layoutInfo.pBindings = layoutBindings.data();
-        
-        VK_SUCCESS_OR_THROW(VulkanDescriptorSetLayout::create(descriptorSetLayout_, device_, layoutInfo),
-                            "Failed to create descriptor set layout.");
-    }
-    
-    // TODO: There's probably a way to abstract away the idea of creating a pool from a layout
-    void createDescriptorPool() {
-        std::array<VkDescriptorPoolSize, 2> poolSize{};
-        
-        poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSize[0].descriptorCount = static_cast<uint32_t>(2);
-        
-        poolSize[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSize[1].descriptorCount = static_cast<uint32_t>(2);
-        
-        
-        VkDescriptorPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSize.size());
-        poolInfo.pPoolSizes = poolSize.data();
-        poolInfo.maxSets = static_cast<uint32_t>(2);
-        
-        VK_SUCCESS_OR_THROW(VulkanDescriptorPool::create(descriptorPool_, device_, poolInfo),
-                            "Failed to create descriptor pool");
-    }
-    
     void createGraphicsPipeline(const std::vector<char>& vertShaderCode,
                                 const std::vector<char>& fragShaderCode,
                                 VkExtent2D swapChainExtent,
                                 VkRenderPass renderPass,
                                 VkVertexInputBindingDescription bindingDescription,
-                                //TODO make 2 configurable
-                                std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions) {
-        auto vertShaderModule = createShaderModule(vertShaderCode);
-        auto fragShaderModule = createShaderModule(fragShaderCode);
+                                std::array<VkVertexInputAttributeDescription, VertexAttributes> attributeDescriptions) {
+        auto vertShaderModule = Material<MAX_FRAMES>::createShaderModule(vertShaderCode);
+        auto fragShaderModule = Material<MAX_FRAMES>::createShaderModule(fragShaderCode);
         
         VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
         vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -245,11 +138,11 @@ private:
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = descriptorSetLayout_->get();
+        pipelineLayoutInfo.pSetLayouts = Material<MAX_FRAMES>::descriptorSetLayout_->get();
         pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
         pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
         
-        VK_SUCCESS_OR_THROW(VulkanPipelineLayout::create(pipelineLayout_, device_, pipelineLayoutInfo),
+        VK_SUCCESS_OR_THROW(VulkanPipelineLayout::create(Material<MAX_FRAMES>::pipelineLayout_, Material<MAX_FRAMES>::device_, pipelineLayoutInfo),
                             "Failed to create pipeline layout");
         
         VkGraphicsPipelineCreateInfo pipelineInfo{};
@@ -266,44 +159,14 @@ private:
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.pDynamicState = &dynamicState;
         
-        pipelineInfo.layout = **pipelineLayout_;
+        pipelineInfo.layout = **Material<MAX_FRAMES>::pipelineLayout_;
         pipelineInfo.renderPass = renderPass;
         pipelineInfo.subpass = 0;
 
         pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
         pipelineInfo.basePipelineIndex = -1; // Optional
         
-        VK_SUCCESS_OR_THROW(VulkanGraphicsPipeline::create(pipeline_, device_, pipelineInfo),
+        VK_SUCCESS_OR_THROW(VulkanGraphicsPipeline::create(Material<MAX_FRAMES>::pipeline_, Material<MAX_FRAMES>::device_, pipelineInfo),
                             "Failed to create graphics pipeline");
     }
-    
-    // TODO: this can probably be moved to the abstract material
-    void createDescriptorSets() {
-        std::vector<VkDescriptorSetLayout> layouts(2, **descriptorSetLayout_);
-        VkDescriptorSetAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = **descriptorPool_;
-        allocInfo.descriptorSetCount = static_cast<uint32_t>(2);
-        allocInfo.pSetLayouts = layouts.data();
-        
-        VK_SUCCESS_OR_THROW(vkAllocateDescriptorSets(device_, &allocInfo, descriptorSets_.data()),
-                            "Failed to allocate descriptor sets.");
-    }
-    
-    void createUniformBuffer(uint32_t frameIndex) {
-        VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(uniformBuffers_[frameIndex],
-                                                                1,
-                                                                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
-                                                                device_,
-                                                                physicalDevice_),
-                            "Failed to create uniform buffer.");
-        mappedUniformBuffers_[frameIndex] = uniformBuffers_[frameIndex]->getPersistentMapping(0, sizeof(UniformBufferObject));
-    }
-private:
-    // TODO: max frames refactor
-    std::array<std::unique_ptr<Buffer<UniformBufferObject>>, 2> uniformBuffers_;
-    std::array<std::unique_ptr<UniformBufferObject, std::function<void(UniformBufferObject*)>>, 2> mappedUniformBuffers_;
-    std::array<VkImageView, 2> textureImages_;
-    VkSampler textureSampler_;
 };

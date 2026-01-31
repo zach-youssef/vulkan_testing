@@ -29,15 +29,12 @@ const std::vector<const char*> validationLayers = {
     const bool enableValidationLayers = true;
 #endif
 
+template<uint MAX_FRAMES>
 class VulkanApp {
 public:
     VulkanApp(const uint32_t windowHeight,
-              const uint32_t windowWidth,
-              const uint32_t maxFramesInFlight)
-    : windowHeight_(windowHeight),
-    windowWidth_(windowWidth)
-    //,maxFramesInFlight_(maxFramesInFlight)
-    {}
+              const uint32_t windowWidth)
+    : windowHeight_(windowHeight), windowWidth_(windowWidth) {}
     
     void init() {
         initWindow();
@@ -288,7 +285,7 @@ private: // Main initialize & run functions
         vkQueuePresentKHR(presentQueue_, &presentInfo);
 
         // Increment frame index
-        currentFrameIndex_ = (this->currentFrameIndex_ + 1) % maxFramesInFlight_;
+        currentFrameIndex_ = (this->currentFrameIndex_ + 1) % MAX_FRAMES;
     }
     
 private: // Vulkan Initialization Functions
@@ -540,8 +537,7 @@ private: // Vulkan Initialization Functions
     }
     
     void createSyncObjects() {
-        // TODO: maxFramesInFlight_ refactor
-        for (int frameIndex = 0; frameIndex < maxFramesInFlight_; ++frameIndex) {
+        for (int frameIndex = 0; frameIndex < MAX_FRAMES; ++frameIndex) {
             VkSemaphoreCreateInfo semaphoreInfo{};
             semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
             
@@ -562,8 +558,7 @@ private: // Vulkan Initialization Functions
         VkSemaphoreCreateInfo semaphoreInfo{};
         semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         
-        // TODO: maxFramesInFlight_ refactor
-        for (int frameIndex = 0; frameIndex < maxFramesInFlight_; ++frameIndex) {
+        for (int frameIndex = 0; frameIndex < MAX_FRAMES; ++frameIndex) {
             computeSemaphores_[frameIndex].resize(computePasses_.size());
             for (int i = 0; i < computePasses_.size(); i++) {
                 VK_SUCCESS_OR_THROW(VulkanSemaphore::create(computeSemaphores_[frameIndex][i], **device_, semaphoreInfo),
@@ -577,8 +572,7 @@ private: // Vulkan Initialization Functions
         allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         allocInfo.commandPool = **commandPool_;
         allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        // TODO: maxframes refactor
-        allocInfo.commandBufferCount = 2;
+        allocInfo.commandBufferCount = MAX_FRAMES;
         
         VK_SUCCESS_OR_THROW(vkAllocateCommandBuffers(**device_, &allocInfo, commandBuffers_.data()),
                             "Failed to allocate command buffers");
@@ -620,12 +614,12 @@ private: // Additional helper functions
     
 public:
     // Add renderable to main render pass
-    void addRenderable(std::unique_ptr<Renderable>&& renderable) {
+    void addRenderable(std::unique_ptr<Renderable<MAX_FRAMES>>&& renderable) {
         renderables_.emplace_back(std::move(renderable));
     }
     
     // Add compute stage to occur before graphics
-    void addComputeStage(std::unique_ptr<ComputeMaterial>&& computeMaterial) {
+    void addComputeStage(std::unique_ptr<ComputeMaterial<MAX_FRAMES>>&& computeMaterial) {
         computePasses_.emplace_back(std::move(computeMaterial));
     }
 
@@ -662,8 +656,6 @@ private: // Member variables
     // Application constants
     const uint32_t windowHeight_;
     const uint32_t windowWidth_;
-    // TODO Use vectors everywhere so this can be customized
-    static const uint32_t maxFramesInFlight_ = 2;
 
     // GLFW Variables
     std::unique_ptr<GLFWwindow, std::function<void(GLFWwindow*)>> window_;
@@ -702,16 +694,15 @@ private: // Member variables
     // Current frame index
     uint32_t currentFrameIndex_ = 0;
     
-    // TODO: Replace 2 w/ constant max_frame_count
-    std::array<std::unique_ptr<VulkanSemaphore>, 2> imageAvailableSemaphores_;
-    std::array<std::unique_ptr<VulkanSemaphore>, 2> renderFinishedSemaphores_;
-    std::array<std::unique_ptr<VulkanFence>, 2> inFlightFences_;
+    std::array<std::unique_ptr<VulkanSemaphore>, MAX_FRAMES> imageAvailableSemaphores_;
+    std::array<std::unique_ptr<VulkanSemaphore>, MAX_FRAMES> renderFinishedSemaphores_;
+    std::array<std::unique_ptr<VulkanFence>, MAX_FRAMES> inFlightFences_;
     
-    std::array<VkCommandBuffer, 2> commandBuffers_;
-    std::array<VkCommandBuffer, 2> computeCommandBuffers_;
+    std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers_;
+    std::array<VkCommandBuffer, MAX_FRAMES> computeCommandBuffers_;
     
-    std::vector<std::unique_ptr<Renderable>> renderables_{};
-    std::vector<std::unique_ptr<ComputeMaterial>> computePasses_{};
+    std::vector<std::unique_ptr<Renderable<MAX_FRAMES>>> renderables_{};
+    std::vector<std::unique_ptr<ComputeMaterial<MAX_FRAMES>>> computePasses_{};
     std::vector<std::shared_ptr<std::function<void(VulkanApp&,uint32_t)>>> preDrawCallbacks_{};
     
     std::array<std::vector<std::unique_ptr<VulkanSemaphore>>, 2> computeSemaphores_;
