@@ -70,6 +70,7 @@ public:
         for (auto& descriptor : Material<MAX_FRAMES_IN_FLIGHT>::descriptors_) {
             if (descriptor->getType() == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
                 uboDesc = std::reinterpret_pointer_cast<UboDesc>(descriptor);
+                break;
             }
         }
         

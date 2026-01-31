@@ -201,7 +201,7 @@ protected:
 template<uint MAX_FRAMES>
 class Renderable {
 public:
-    virtual ~Renderable() = default;
+    virtual ~Renderable<MAX_FRAMES>() = default;
     
     Material<MAX_FRAMES>* getMaterial() {
         return material_.get();
@@ -216,7 +216,7 @@ public:
     virtual uint32_t getIndexCount() = 0;
     
 protected:
-    Renderable(std::unique_ptr<Material<MAX_FRAMES>>&& material) {
+    Renderable<MAX_FRAMES>(std::unique_ptr<Material<MAX_FRAMES>>&& material) {
         material_ = std::move(material);
     }
     
