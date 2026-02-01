@@ -3,6 +3,9 @@
 #include "Ubo.h"
 #include "BasicMaterial.h"
 #include "RenderGraph.h"
+#include "ComputeNode.h"
+#include "RenderableNode.h"
+#include "PresentNode.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>

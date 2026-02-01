@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Renderable.h"
 #include "VkTypes.h"
 
 #include <unordered_set>
@@ -18,6 +17,11 @@ public:
 protected:
     virtual NodeDevice getDeviceType() = 0;
     
+    virtual void submit(uint32_t frameIndex,
+                        VkExtent2D swapChainExtent,
+                        uint32_t imageIndex,
+                        VkFramebuffer framebuffer) = 0;
+
     RenderNode<MAX_FRAMES>(VkDevice device) : device_(device) {}
     
     void addSemaphoreEdgeTo(RenderNode<MAX_FRAMES>* other){
@@ -68,8 +72,6 @@ protected:
         return children_;
     }
     
-    virtual void submit(uint32_t frameIndex);
-    
 private:
     template<typename VkType, typename WrapperType>
     static std::array<VkType, MAX_FRAMES> unwrap(std::array<std::unique_ptr<WrapperType>, MAX_FRAMES>& wrapped) {
@@ -89,11 +91,16 @@ protected:
     std::array<std::vector<VkFence>, MAX_FRAMES> waitFences_;
 };
 
-// TODO: fill in render node functions on RenderGraph
 template<uint MAX_FRAMES>
 class RenderGraph : public RenderNode<MAX_FRAMES> {
 public:
     using NodeHandle = uint32_t;
+    
+    RenderGraph<MAX_FRAMES>(VkDevice device): RenderNode<MAX_FRAMES>(device) {}
+    
+    NodeDevice getDeviceType() override {
+        return NodeDevice::CPU;
+    }
     
     NodeHandle addNode(std::unique_ptr<RenderNode<MAX_FRAMES>>&& node) {
         nodes_.emplace_back(std::move(node));
@@ -123,10 +130,17 @@ public:
         return 0;
     }
     
-    // 'Presenter' here implies the last node(s) in the graph that must
-    // be completed before the graph is executed again.
-    void flagNodeAsPresenter(NodeHandle node) {
-        nodes_[node]->addFenceEdgeTo(this, true /* create signaled */);
+    // Marks a node as needing to be completed before
+    // starting the next frame
+    int flagNodeAsFrameBlocking(NodeHandle node) {
+        if (nodes_[node]->getDeviceType() == NodeDevice::GPU) {
+            nodes_[node]->addFenceEdgeTo(this, true /* createSignaled */);
+        } else {
+            // CPU -> CPU sync not supported yet
+            return EXIT_FAILURE;
+        }
+        
+        return 0;
     }
     
     void waitUntilComplete(uint32_t frameIndex) {
@@ -136,7 +150,10 @@ public:
         }
     }
     
-    void execute(uint32_t frameIndex) {
+    void submit(uint32_t frameIndex,
+                VkExtent2D swapchainExtent,
+                uint32_t imageIndex,
+                VkFramebuffer framebuffer) override {
         // Reset our fences
         for (VkFence& fence : RenderNode<MAX_FRAMES>::waitFences_[frameIndex]) {
             vkResetFences(RenderNode<MAX_FRAMES>::device_, 1, fence);
@@ -168,7 +185,7 @@ public:
             }
             
             // Kick off the node's work
-            node->submit(frameIndex);
+            node->submit(frameIndex, swapchainExtent, imageIndex, framebuffer);
 
             // Add the node's children to the queue
             for (auto& child : node->getChildren()) {

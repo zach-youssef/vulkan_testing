@@ -2,6 +2,7 @@
 
 #include "VkTypes.h"
 #include "Descriptor.h"
+#include "Buffer.h"
 
 #include <glm/glm.hpp>
 
