@@ -13,6 +13,7 @@
 #include "Image.h"
 #include "FileUtil.h"
 #include "Renderable.h"
+#include "RenderGraph.h"
 
 #include <glm/glm.hpp>
 
@@ -74,7 +75,6 @@ private: // Main initialize & run functions
         createRenderPass();
         createFramebuffers();
         createCommandPool();
-        createSyncObjects();
         createCommandBuffers();
     }
     
@@ -88,201 +88,35 @@ private: // Main initialize & run functions
     
     void drawFrame() {
         // Wait for previous frame to complete
-        vkWaitForFences(**device_, 1, (*inFlightFences_[currentFrameIndex_]).get(), VK_TRUE, UINT64_MAX);
+        renderGraph_->waitUntilComplete(currentFrameIndex_);
         
-        // Acquire index of next image in swapchain
-        uint32_t imageIndex;
-        auto result = vkAcquireNextImageKHR(**device_, **swapChain_, UINT64_MAX, **imageAvailableSemaphores_[currentFrameIndex_], VK_NULL_HANDLE, &imageIndex);
-        bool shouldRecreateSwapChain = result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR;
-
-        if (shouldRecreateSwapChain || frameBufferResized_) {
+        // If frame buffer has resized, first recreate the swapchain
+        if (frameBufferResized_) {
             frameBufferResized_ = false;
             recreateSwapChain();
             return;
         }
-
+        
         // Perform any pre-draw actions
         for (auto& callback : preDrawCallbacks_) {
             (*callback)(*this, currentFrameIndex_);
         }
-        
-        // Only reset fence here now that we know we will be doing work
-        vkResetFences(**device_, 1, (*inFlightFences_[currentFrameIndex_]).get());
-        
-        // If we have compute passes, dispatch those first
-        if (!computePasses_.empty()) {
-            // Make sure our sync objects are initialized
-            if (!computeSyncInitialized_) {
-                createComputeSyncObjects();
-            }
-            
-            // Grab Commmand Buffer
-            auto commandBuffer = computeCommandBuffers_[currentFrameIndex_];
-            
-            
-            for (int passIndex = 0; passIndex < computePasses_.size(); ++passIndex) {
-                // Grab & update compute material
-                auto& computePass = computePasses_.at(passIndex);
-                computePass->update(currentFrameIndex_, swapChainExtent_);
-                
-                // Start command buffer
-                VK_SUCCESS_OR_THROW(vkResetCommandBuffer(commandBuffer, 0), "Failed to reset compute cb");
-                VkCommandBufferBeginInfo beginInfo{};
-                beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                VK_SUCCESS_OR_THROW(vkBeginCommandBuffer(commandBuffer, &beginInfo),
-                                    "Failed to begin compute commmand buffer");
 
-                // Bind pipeline & descriptor sets
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePass->getPipeline());
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                        computePass->getPipelineLayout(),
-                                        0, 1,
-                                        computePass->getDescriptorSet(currentFrameIndex_),
-                                        0, 0);
-                // Dispatch workgroups
-                auto dispatchSize = computePass->getDispatchDimensions();
-                vkCmdDispatch(commandBuffer, dispatchSize.x, dispatchSize.y, dispatchSize.z);
-                
-                // End command buffer
-                vkEndCommandBuffer(commandBuffer);
-                
-                // Submit Work
-                VkSubmitInfo submitInfo{};
-                submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-                submitInfo.commandBufferCount = 1;
-                submitInfo.pCommandBuffers = &commandBuffer;
-                VkSemaphore wait[1];
-                if (passIndex > 0) {
-                    wait[0] = **computeSemaphores_[currentFrameIndex_][passIndex - 1];
-                    submitInfo.waitSemaphoreCount = 1;
-                    submitInfo.pWaitSemaphores = wait;
-                }
-                VkSemaphore signal[] = {**computeSemaphores_[currentFrameIndex_][passIndex]};
-                submitInfo.signalSemaphoreCount = 1;
-                submitInfo.pSignalSemaphores = signal;
-                VK_SUCCESS_OR_THROW(vkQueueSubmit(computeQueue_, 1, &submitInfo, VK_NULL_HANDLE),
-                                    "Failed to submit compute");
-            }
+        // Construct our evaluation context
+        RenderEvalContext ctx { currentFrameIndex_, swapChainExtent_, 0, {}, false };
+        for (auto& framebuffer : swapChainFramebuffers_) {
+            ctx.frameBuffers.push_back(**framebuffer);
         }
         
-        // Grab command buffer
-        auto commandBuffer = commandBuffers_[currentFrameIndex_];
+        // Attempt to exectue the render graph
+        renderGraph_->submit(ctx);
         
-        // Reset it
-        VK_SUCCESS_OR_THROW(vkResetCommandBuffer(commandBuffer, 0), "Failed to reset cb")
-
-        // Start recording
-        //startRenderPass(commandBuffer, imageIndex);
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = 0; // Optional
-        beginInfo.pInheritanceInfo = nullptr; // Optional
-        
-        VK_SUCCESS_OR_THROW(vkBeginCommandBuffer(commandBuffer, &beginInfo),
-                            "Failed to begin recording command buffer");
-        
-        VkRenderPassBeginInfo renderPassInfo{};
-        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        renderPassInfo.renderPass = **renderPass_;
-        renderPassInfo.framebuffer = **swapChainFramebuffers_[imageIndex];
-        
-        renderPassInfo.renderArea.offset = {0, 0};
-        renderPassInfo.renderArea.extent = swapChainExtent_;
-        
-        VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-        renderPassInfo.clearValueCount = 1;
-        renderPassInfo.pClearValues = &clearColor;
-
-        vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-        // TODO: 99% sure this loop does not work with more than one renderable
-        for (auto& renderable : renderables_) {
-            // Update the uniform buffer
-            renderable->update(currentFrameIndex_, swapChainExtent_);
-            
-            // Moving out of the renderable to here seems to get us farther
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              renderable->getMaterial()->getPipeline());
-            
-            VkDeviceSize offsets[] {0};
-            VkBuffer vertexBuffers[] {renderable->getVertexBuffer()};
-            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-            vkCmdBindIndexBuffer(commandBuffer, renderable->getIndexBuffer(), 0, VK_INDEX_TYPE_UINT16);
-            
-            vkCmdBindDescriptorSets(commandBuffer,
-                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    renderable->getMaterial()->getPipelineLayout(),
-                                    0, 1,
-                                    renderable->getMaterial()->getDescriptorSet(currentFrameIndex_),
-                                    0, nullptr);
-            
-            VkViewport viewport{};
-            viewport.x = 0.0f;
-            viewport.y = 0.0f;
-            viewport.width = static_cast<float>(swapChainExtent_.width);
-            viewport.height = static_cast<float>(swapChainExtent_.height);
-            viewport.minDepth = 0.0f;
-            viewport.maxDepth = 1.0f;
-            vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-
-            VkRect2D scissor{};
-            scissor.offset = {0, 0};
-            scissor.extent = swapChainExtent_;
-            vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-            
-            vkCmdDrawIndexed(commandBuffer,
-                             renderable->getIndexCount(),
-                             1 /*num instances*/,
-                             0 /*offset into buffer*/,
-                             0 /*offset to add to indices*/,
-                             0 /* instancing offset*/);
+        // The graph might have exited early if the swapchain is out of date
+        if (ctx.shouldRecreateSwapChain) {
+            frameBufferResized_ = false;
+            recreateSwapChain();
+            return;
         }
-        
-
-        // End render pass
-        vkCmdEndRenderPass(commandBuffer);
-        
-        // End command buffer
-        vkEndCommandBuffer(commandBuffer);
-        
-        // Submit to graphics queue
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffer;
-        // (it should wait for the swapchain image to be available before writing out to it)
-        VkPipelineStageFlags waitStages[] {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        VkSemaphore wait[2];
-        wait[0] = **imageAvailableSemaphores_[currentFrameIndex_];
-        // make sure any compute work was finished
-        if (!computePasses_.empty()) {
-            wait[1] = **computeSemaphores_[currentFrameIndex_].at(computePasses_.size() - 1);
-        }
-        VkSemaphore signal[] = {**renderFinishedSemaphores_[currentFrameIndex_]};
-        submitInfo.waitSemaphoreCount = computePasses_.empty() ? 1 : 2;
-        submitInfo.pWaitSemaphores = wait;
-        submitInfo.pWaitDstStageMask = waitStages;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffer;
-        submitInfo.signalSemaphoreCount = 1;//static_cast<uint32_t>(signalSemaphores.size());
-        submitInfo.pSignalSemaphores = signal;
-
-        VK_SUCCESS_OR_THROW(vkQueueSubmit(graphicsQueue_, 1, &submitInfo, **inFlightFences_[currentFrameIndex_]),
-                            "Failed to submit draw command buffer.");
-
-        // Submit present queue
-        VkPresentInfoKHR presentInfo{};
-        presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
-        presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = (*renderFinishedSemaphores_[currentFrameIndex_]).get();
-        VkSwapchainKHR swapChains[] = {**swapChain_};
-        presentInfo.swapchainCount = 1;
-        presentInfo.pSwapchains = swapChains;
-        presentInfo.pImageIndices = &imageIndex;
-        presentInfo.pResults = nullptr; // Array of VkResults to check for each swapchain?
-        
-        vkQueuePresentKHR(presentQueue_, &presentInfo);
 
         // Increment frame index
         currentFrameIndex_ = (this->currentFrameIndex_ + 1) % MAX_FRAMES;
@@ -536,37 +370,6 @@ private: // Vulkan Initialization Functions
                             "Failed to create command pool");
     }
     
-    void createSyncObjects() {
-        for (int frameIndex = 0; frameIndex < MAX_FRAMES; ++frameIndex) {
-            VkSemaphoreCreateInfo semaphoreInfo{};
-            semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            
-            VkFenceCreateInfo fenceInfo{};
-            fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-            fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // Init fence as signaled so first frame isn't blocked
-            
-            VK_SUCCESS_OR_THROW(VulkanSemaphore::create(imageAvailableSemaphores_[frameIndex], **device_, semaphoreInfo),
-                                "Failed to create image available semaphore.");
-            VK_SUCCESS_OR_THROW(VulkanSemaphore::create(renderFinishedSemaphores_[frameIndex], **device_, semaphoreInfo),
-                                "Failed to create render finished semaphore.");
-            VK_SUCCESS_OR_THROW(VulkanFence::create(inFlightFences_[frameIndex], **device_, fenceInfo),
-                                "Failed to create in-flight fence.");
-        }
-    }
-    
-    void createComputeSyncObjects() {
-        VkSemaphoreCreateInfo semaphoreInfo{};
-        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        
-        for (int frameIndex = 0; frameIndex < MAX_FRAMES; ++frameIndex) {
-            computeSemaphores_[frameIndex].resize(computePasses_.size());
-            for (int i = 0; i < computePasses_.size(); i++) {
-                VK_SUCCESS_OR_THROW(VulkanSemaphore::create(computeSemaphores_[frameIndex][i], **device_, semaphoreInfo),
-                                    "Failed to create compute semaphore");
-            }
-        }
-    }
-    
     void createCommandBuffers() {
         VkCommandBufferAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -613,19 +416,14 @@ private: // Additional helper functions
     }
     
 public:
-    // Add renderable to main render pass
-    void addRenderable(std::unique_ptr<Renderable<MAX_FRAMES>>&& renderable) {
-        renderables_.emplace_back(std::move(renderable));
-    }
-    
-    // Add compute stage to occur before graphics
-    void addComputeStage(std::unique_ptr<ComputeMaterial<MAX_FRAMES>>&& computeMaterial) {
-        computePasses_.emplace_back(std::move(computeMaterial));
-    }
-
+    // TODO: Replace with CPU render graph nodes
     // Add callback to be called before drawing each frame
     void addPreDrawCallback(std::shared_ptr<std::function<void(VulkanApp&, uint32_t)>>& callback) {
         preDrawCallbacks_.push_back(callback);
+    }
+    
+    void setRenderGraph(std::unique_ptr<RenderGraph<MAX_FRAMES>>&& renderGraph) {
+        renderGraph_ = std::move(renderGraph);
     }
     
 public: // Public getters
@@ -645,12 +443,32 @@ public: // Public getters
         return graphicsQueue_;
     }
     
+    VkQueue getComputeQueue() {
+        return computeQueue_;
+    }
+    
+    VkQueue getPresentQueue() {
+        return presentQueue_;
+    }
+
     VkExtent2D getSwapchainExtent() {
         return swapChainExtent_;
     }
     
     VkRenderPass getRenderPass() {
         return **renderPass_;
+    }
+    
+    VkSwapchainKHR getSwapchain() {
+        return **swapChain_;
+    }
+    
+    std::array<VkCommandBuffer, MAX_FRAMES> getGraphicsCommandBuffers() {
+        return commandBuffers_;
+    }
+    
+    std::array<VkCommandBuffer, MAX_FRAMES> getComputeCommandBuffers() {
+        return computeCommandBuffers_;
     }
 private: // Member variables
     // Application constants
@@ -681,7 +499,7 @@ private: // Member variables
     VkExtent2D swapChainExtent_;
     std::vector<std::unique_ptr<VulkanImageView>> swapChainImageViews_;
 
-    // TODO: Eventually create some kind of render graph system
+    // TODO: Move into RenderableNode
     std::unique_ptr<VulkanRenderPass> renderPass_;
 
     // Framebuffers
@@ -694,17 +512,9 @@ private: // Member variables
     // Current frame index
     uint32_t currentFrameIndex_ = 0;
     
-    std::array<std::unique_ptr<VulkanSemaphore>, MAX_FRAMES> imageAvailableSemaphores_;
-    std::array<std::unique_ptr<VulkanSemaphore>, MAX_FRAMES> renderFinishedSemaphores_;
-    std::array<std::unique_ptr<VulkanFence>, MAX_FRAMES> inFlightFences_;
-    
     std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers_;
     std::array<VkCommandBuffer, MAX_FRAMES> computeCommandBuffers_;
     
-    std::vector<std::unique_ptr<Renderable<MAX_FRAMES>>> renderables_{};
-    std::vector<std::unique_ptr<ComputeMaterial<MAX_FRAMES>>> computePasses_{};
     std::vector<std::shared_ptr<std::function<void(VulkanApp&,uint32_t)>>> preDrawCallbacks_{};
-    
-    std::array<std::vector<std::unique_ptr<VulkanSemaphore>>, 2> computeSemaphores_;
-    bool computeSyncInitialized_ = false;
+    std::unique_ptr<RenderGraph<MAX_FRAMES>> renderGraph_{};
 };

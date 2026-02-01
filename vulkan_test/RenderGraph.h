@@ -9,24 +9,39 @@ enum NodeDevice {
     CPU
 };
 
+struct RenderEvalContext {
+    const uint32_t frameIndex;
+    const VkExtent2D swapchainExtent;
+    uint32_t imageIndex;
+    std::vector<VkFramebuffer> frameBuffers;
+    bool shouldRecreateSwapChain;
+};
+
+template<uint MAX_FRAMES>
+class RenderGraph;
+
 template<uint MAX_FRAMES>
 class RenderNode {
+    friend class RenderGraph<MAX_FRAMES>;
 public:
     virtual ~RenderNode<MAX_FRAMES>() = default;
     
+    virtual void submit(RenderEvalContext& ctx) = 0;
+
 protected:
     virtual NodeDevice getDeviceType() = 0;
-    
-    virtual void submit(uint32_t frameIndex,
-                        VkExtent2D swapChainExtent,
-                        uint32_t imageIndex,
-                        VkFramebuffer framebuffer) = 0;
 
-    RenderNode<MAX_FRAMES>(VkDevice device) : device_(device) {}
+    RenderNode<MAX_FRAMES>(VkDevice device) : device_(device) {
+        // Initialize signal objects to VK_NULL_HANDLE
+        for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
+            signalFences_[frameIdx] = std::make_unique<VulkanFence>();
+            signalSemaphores_[frameIdx] = std::make_unique<VulkanSemaphore>();
+        }
+    }
     
     void addSemaphoreEdgeTo(RenderNode<MAX_FRAMES>* other){
         // If this is our first outgoing edge, initialize our semaphores
-        if (signalSemaphores_[0] == nullptr) {
+        if (**signalSemaphores_[0] == VK_NULL_HANDLE) {
             VkSemaphoreCreateInfo semaphoreInfo{};
             semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
             for (uint frameIndex = 0; frameIndex < MAX_FRAMES; ++frameIndex) {
@@ -35,7 +50,7 @@ protected:
             }
         }
         
-        other->addSemaphoreWait(unwrap(signalSemaphores_));
+        other->addSemaphoreWait(unwrap<VkSemaphore, VulkanSemaphore>(signalSemaphores_));
         children_.push_back(other);
     }
     
@@ -47,7 +62,7 @@ protected:
     
     void addFenceEdgeTo(RenderNode<MAX_FRAMES>* other, bool createSignaled = false) {
         // If this is our first outgoing edge, initialize our fences
-        if (signalFences_[0] == nullptr) {
+        if (**signalFences_[0] == VK_NULL_HANDLE) {
             VkFenceCreateInfo fenceInfo{};
             fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
             fenceInfo.flags = createSignaled ? VK_FENCE_CREATE_SIGNALED_BIT : 0;
@@ -58,7 +73,7 @@ protected:
             }
         }
         
-        other->addFenceWait(unwrap(signalFences_));
+        other->addFenceWait(unwrap<VkFence, VulkanFence>(signalFences_));
         children_.push_back(other);
     }
     
@@ -105,24 +120,24 @@ public:
     NodeHandle addNode(std::unique_ptr<RenderNode<MAX_FRAMES>>&& node) {
         nodes_.emplace_back(std::move(node));
         startNodes_.emplace_back(true);
-        return nodes_.size() - 1;
+        return static_cast<NodeHandle>(nodes_.size() - 1);
     }
     
     int addEdge(NodeHandle from, NodeHandle to) {
         startNodes_[to] = false;
-        if (nodes_.at(from).getDeviceType() == NodeDevice::GPU) {
-            if (nodes_.at(to).getDeviceType() == NodeDevice::GPU) {
+        if (nodes_.at(from)->getDeviceType() == NodeDevice::GPU) {
+            if (nodes_.at(to)->getDeviceType() == NodeDevice::GPU) {
                 // Semaphore case
                 nodes_.at(from)->addSemaphoreEdgeTo(nodes_.at(to).get());
-            } else if (nodes_.at(to).getDeviceType() == NodeDevice::CPU) {
+            } else if (nodes_.at(to)->getDeviceType() == NodeDevice::CPU) {
                 // Fence case
                 nodes_.at(from)->addFenceEdgeTo(nodes_.at(to).get());
             }
-        } else if (nodes_.at(from).getDeviceType() == NodeDevice::CPU) {
-            if (nodes_.at(to).getDeviceType() == NodeDevice::GPU) {
+        } else if (nodes_.at(from)->getDeviceType() == NodeDevice::CPU) {
+            if (nodes_.at(to)->getDeviceType() == NodeDevice::GPU) {
                 // TODO CPU -> GPU ???
                 return EXIT_FAILURE;
-            } else if (nodes_.at(to).getDeviceType() == NodeDevice::CPU) {
+            } else if (nodes_.at(to)->getDeviceType() == NodeDevice::CPU) {
                 // TODO CPU -> CPU ??
                 return EXIT_FAILURE;
             }
@@ -145,20 +160,17 @@ public:
     
     void waitUntilComplete(uint32_t frameIndex) {
         // Wait for the previous frame to finish
-        for (VkFence& fence : RenderNode<MAX_FRAMES>::waitFences_[frameIndex]) {
-            vkWaitForFences(RenderNode<MAX_FRAMES>::device_, 1, fence, VK_TRUE, UINT64_MAX);
+        auto& fences = RenderNode<MAX_FRAMES>::waitFences_[frameIndex];
+        for (uint idx = 0; idx < fences.size(); ++idx) {
+            vkWaitForFences(RenderNode<MAX_FRAMES>::device_, 1, &fences[idx], VK_TRUE, UINT64_MAX);
         }
     }
     
-    void submit(uint32_t frameIndex,
-                VkExtent2D swapchainExtent,
-                uint32_t imageIndex,
-                VkFramebuffer framebuffer) override {
+    void submit(RenderEvalContext& ctx) override {
         // Reset our fences
-        for (VkFence& fence : RenderNode<MAX_FRAMES>::waitFences_[frameIndex]) {
-            vkResetFences(RenderNode<MAX_FRAMES>::device_, 1, fence);
+        for (VkFence& fence : RenderNode<MAX_FRAMES>::waitFences_[ctx.frameIndex]) {
+            vkResetFences(RenderNode<MAX_FRAMES>::device_, 1, &fence);
         }
-        
         
         // Initialize the queue with all nodes without an incoming edge
         std::queue<RenderNode<MAX_FRAMES>*> nodeQueue;
@@ -185,7 +197,13 @@ public:
             }
             
             // Kick off the node's work
-            node->submit(frameIndex, swapchainExtent, imageIndex, framebuffer);
+            node->submit(ctx);
+            
+            // If we find out we need to recreate the swapchain,
+            // stop work and exit
+            if (ctx.shouldRecreateSwapChain) {
+                return;
+            }
 
             // Add the node's children to the queue
             for (auto& child : node->getChildren()) {

@@ -20,12 +20,12 @@ public:
         return NodeDevice::GPU;
     }
     
-    void submit(uint32_t frameIndex, VkExtent2D swapchainExtent, uint32_t, VkFramebuffer) override {
+    void submit(RenderEvalContext& ctx) override {
         // Update material
-        computePass_->update(frameIndex, swapchainExtent);
+        computePass_->update(ctx.frameIndex, ctx.swapchainExtent);
         
         // Start command buffer
-        auto& commandBuffer = commandBuffers_[frameIndex];
+        auto& commandBuffer = commandBuffers_[ctx.frameIndex];
         VK_SUCCESS_OR_THROW(vkResetCommandBuffer(commandBuffer, 0),
                             "Failed to reset compute command buffer");
         
@@ -39,7 +39,7 @@ public:
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 computePass_->getPipelineLayout(),
                                 0, 1,
-                                computePass_->getDescriptorSet(frameIndex),
+                                computePass_->getDescriptorSet(ctx.frameIndex),
                                 0, 0);
         // Dispatch workgroups
         auto dispatchSize = computePass_->getDispatchDimensions();
@@ -54,17 +54,17 @@ public:
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffer;
         
-        auto& waitSemaphores = RenderNode<MAX_FRAMES>::waitSemaphores_[frameIndex];
-        submitInfo.waitSemaphoreCount = waitSemaphores.size();
+        auto& waitSemaphores = RenderNode<MAX_FRAMES>::waitSemaphores_[ctx.frameIndex];
+        submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
         submitInfo.pWaitSemaphores = waitSemaphores.data();
-        std::array<VkSemaphore,1> signalSemaphores = {**RenderNode<MAX_FRAMES>::signalSemaphores_[frameIndex]};
-        submitInfo.signalSemaphoreCount = signalSemaphores.size();
+        std::array<VkSemaphore,1> signalSemaphores = {**RenderNode<MAX_FRAMES>::signalSemaphores_[ctx.frameIndex]};
+        submitInfo.signalSemaphoreCount = static_cast<uint32_t>(signalSemaphores.size());
         submitInfo.pSignalSemaphores = signalSemaphores.data();
         
         VK_SUCCESS_OR_THROW(vkQueueSubmit(computeQueue_,
                                           1,
                                           &submitInfo,
-                                          **RenderNode<MAX_FRAMES>::signalFences_[frameIndex]),
+                                          **RenderNode<MAX_FRAMES>::signalFences_[ctx.frameIndex]),
                             "Failed to submit compute");
     }
     

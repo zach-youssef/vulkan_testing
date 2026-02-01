@@ -22,12 +22,12 @@ public:
         return NodeDevice::GPU;
     }
     
-    void submit(uint32_t frameIndex, VkExtent2D swapchainExtent, uint32_t, VkFramebuffer framebuffer) override {
+    void submit(RenderEvalContext& ctx) override {
         // Update the renderable (probably a uniform buffer)
-        renderable_->update(frameIndex, swapchainExtent);
+        renderable_->update(ctx.frameIndex, ctx.swapchainExtent);
         
         // Start the command buffer
-        auto& commandBuffer = commandBuffers_[frameIndex];
+        auto& commandBuffer = commandBuffers_[ctx.frameIndex];
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         beginInfo.flags = 0; // Optional
@@ -40,10 +40,10 @@ public:
         VkRenderPassBeginInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         renderPassInfo.renderPass = renderPass_;
-        renderPassInfo.framebuffer = framebuffer;
+        renderPassInfo.framebuffer = ctx.frameBuffers.at(ctx.imageIndex);
         
         renderPassInfo.renderArea.offset = {0, 0};
-        renderPassInfo.renderArea.extent = swapchainExtent;
+        renderPassInfo.renderArea.extent = ctx.swapchainExtent;
         
         VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
         renderPassInfo.clearValueCount = 1;
@@ -62,21 +62,21 @@ public:
                                 VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 renderable_->getMaterial()->getPipelineLayout(),
                                 0, 1,
-                                renderable_->getMaterial()->getDescriptorSet(frameIndex),
+                                renderable_->getMaterial()->getDescriptorSet(ctx.frameIndex),
                                 0, nullptr);
         
         // Set up Viewport & Scissor
         VkViewport viewport{};
         viewport.x = 0.0f;
         viewport.y = 0.0f;
-        viewport.width = static_cast<float>(swapchainExtent.width);
-        viewport.height = static_cast<float>(swapchainExtent.height);
+        viewport.width = static_cast<float>(ctx.swapchainExtent.width);
+        viewport.height = static_cast<float>(ctx.swapchainExtent.height);
         viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
         VkRect2D scissor{};
         scissor.offset = {0, 0};
-        scissor.extent = swapchainExtent;
+        scissor.extent = ctx.swapchainExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
         // Issue draw command
@@ -100,17 +100,18 @@ public:
         submitInfo.pCommandBuffers = &commandBuffer;
         // (it should wait for the swapchain image to be available before writing out to it)
         VkPipelineStageFlags waitStages[] {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        auto& waitSemaphores = RenderNode<MAX_FRAMES>::waitSemaphores_[frameIndex];
-        submitInfo.waitSemaphoreCount = waitSemaphores.size();
+        submitInfo.pWaitDstStageMask = waitStages;
+        auto& waitSemaphores = RenderNode<MAX_FRAMES>::waitSemaphores_[ctx.frameIndex];
+        submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
         submitInfo.pWaitSemaphores = waitSemaphores.data();
-        std::array<VkSemaphore,1> signalSemaphores = {**RenderNode<MAX_FRAMES>::signalSemaphores_[frameIndex]};
+        std::array<VkSemaphore,1> signalSemaphores = {**RenderNode<MAX_FRAMES>::signalSemaphores_[ctx.frameIndex]};
         submitInfo.signalSemaphoreCount = signalSemaphores.size();
         submitInfo.pSignalSemaphores = signalSemaphores.data();
 
         VK_SUCCESS_OR_THROW(vkQueueSubmit(graphicsQueue_,
                                           1,
                                           &submitInfo,
-                                          **RenderNode<MAX_FRAMES>::signalFences_[frameIndex]),
+                                          **RenderNode<MAX_FRAMES>::signalFences_[ctx.frameIndex]),
                             "Failed to submit draw command buffer.");
     }
 

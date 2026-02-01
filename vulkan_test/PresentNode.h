@@ -16,17 +16,17 @@ public:
         return NodeDevice::GPU;
     }
     
-    void submit(uint32_t frameIndex, VkExtent2D, uint32_t imageIndex, VkFramebuffer) override {
+    void submit(RenderEvalContext& ctx) override {
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 
-        auto& waitSemaphores = RenderNode<MAX_FRAMES>::waitSemaphores_[frameIndex];
+        auto& waitSemaphores = RenderNode<MAX_FRAMES>::waitSemaphores_[ctx.frameIndex];
         presentInfo.waitSemaphoreCount = waitSemaphores.size();
         presentInfo.pWaitSemaphores = waitSemaphores.data();
         VkSwapchainKHR swapChains[] = {swapChain_};
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = swapChains;
-        presentInfo.pImageIndices = &imageIndex;
+        presentInfo.pImageIndices = &ctx.imageIndex;
         presentInfo.pResults = nullptr; // Array of VkResults to check for each swapchain?
         
         vkQueuePresentKHR(presentQueue_, &presentInfo);

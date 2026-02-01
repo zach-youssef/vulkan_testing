@@ -6,6 +6,7 @@
 #include "ComputeNode.h"
 #include "RenderableNode.h"
 #include "PresentNode.h"
+#include "AcquireImageNode.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -250,13 +251,12 @@ int main() {
                                          app.getPhysicalDevice());
     
 
-    // Create & add renderable
+    // Create renderable
     std::unique_ptr<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>> renderable;
     createTutorialRenderable(renderable, outputImages, **sampler, app);
     
-    app.addRenderable(std::move(renderable));
     
-    // Create and add compute material
+    // Create compute material
     std::unique_ptr<TestComputeMat> computeMaterial;
     createTestComputeMaterial(computeMaterial,
                               inputImages,
@@ -265,8 +265,35 @@ int main() {
                               texture->getHeight(),
                               app);
     
-    app.addComputeStage(std::move(computeMaterial));
+    // Instantiate our render graph
+    std::unique_ptr<RenderGraph<MAX_FRAMES_IN_FLIGHT>> renderGraph = std::make_unique<RenderGraph<MAX_FRAMES_IN_FLIGHT>>(app.getDevice());
+    
+    // Add Nodes
+    auto acquireImageNode = renderGraph->addNode(std::make_unique<AcquireImageNode<MAX_FRAMES_IN_FLIGHT>>(app.getDevice(),
+                                                                                                          app.getSwapchain()));
+    auto computeNode = renderGraph->addNode(std::make_unique<ComputeNode<MAX_FRAMES_IN_FLIGHT>>(std::move(computeMaterial),
+                                                                                               app.getDevice(),
+                                                                                               app.getComputeQueue(),
+                                                                                               app.getComputeCommandBuffers()));
+    auto graphicsNode = renderGraph->addNode(std::make_unique<RenderableNode<MAX_FRAMES_IN_FLIGHT>>(std::move(renderable),
+                                                                                                    app.getDevice(),
+                                                                                                    app.getGraphicsQueue(),
+                                                                                                    app.getRenderPass(),
+                                                                                                    app.getGraphicsCommandBuffers()));
+    auto presentNode = renderGraph->addNode(std::make_unique<PresentNode<MAX_FRAMES_IN_FLIGHT>>(app.getDevice(),
+                                                                                                app.getPresentQueue(),
+                                                                                                app.getSwapchain()));
+    
+    // Setup Edges
+    renderGraph->addEdge(acquireImageNode, graphicsNode);
+    renderGraph->addEdge(computeNode, graphicsNode);
+    renderGraph->addEdge(graphicsNode, presentNode);
+    renderGraph->flagNodeAsFrameBlocking(graphicsNode);
 
+    // Set on app
+    app.setRenderGraph(std::move(renderGraph));
+
+    // Run
     try {
         app.run();
     } catch (const std::exception& e) {

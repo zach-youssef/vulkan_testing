@@ -29,6 +29,7 @@ public:
         }
         return result;
     }
+    
 protected:
     VkType value_;
 };
@@ -76,7 +77,9 @@ public:                                                                         
         outResult = creator(device, &createInfo, nullptr, &value_);                                     \
     }                                                                                                   \
     ~ClassName() {                                                                                      \
-        deletor(device_, value_, nullptr);                                                              \
+        if (value_ != VK_NULL_HANDLE) {                                                                 \
+            deletor(device_, value_, nullptr);                                                          \
+        }                                                                                               \
     }                                                                                                   \
 private:                                                                                                \
     VkDevice device_;
@@ -143,9 +146,17 @@ VULKAN_DEVICE_CLASS(VulkanCommandPool, VkCommandPool, VkCommandPoolCreateInfo, v
 };
 
 VULKAN_DEVICE_CLASS(VulkanSemaphore, VkSemaphore, VkSemaphoreCreateInfo, vkCreateSemaphore, vkDestroySemaphore)
+public:
+    VulkanSemaphore() {
+        value_ = VK_NULL_HANDLE;
+    }
 };
 
 VULKAN_DEVICE_CLASS(VulkanFence, VkFence, VkFenceCreateInfo, vkCreateFence, vkDestroyFence)
+public:
+    VulkanFence() {
+        value_ = VK_NULL_HANDLE;
+    }
 };
 
 VULKAN_DEVICE_CLASS(VulkanShaderModule, VkShaderModule, VkShaderModuleCreateInfo, vkCreateShaderModule, vkDestroyShaderModule)
