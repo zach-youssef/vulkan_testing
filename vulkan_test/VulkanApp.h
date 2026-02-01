@@ -90,20 +90,20 @@ private: // Main initialize & run functions
         // Wait for previous frame to complete
         renderGraph_->waitUntilComplete(currentFrameIndex_);
         
-        // If frame buffer has resized, first recreate the swapchain
-        if (frameBufferResized_) {
-            frameBufferResized_ = false;
-            recreateSwapChain();
-            return;
-        }
-        
         // Perform any pre-draw actions
         for (auto& callback : preDrawCallbacks_) {
             (*callback)(*this, currentFrameIndex_);
         }
 
         // Construct our evaluation context
-        RenderEvalContext ctx { currentFrameIndex_, swapChainExtent_, 0, {}, false };
+        RenderEvalContext ctx {
+            currentFrameIndex_,
+            swapChainExtent_,
+            0, {},
+            **swapChain_,
+            frameBufferResized_,
+        };
+        
         for (auto& framebuffer : swapChainFramebuffers_) {
             ctx.frameBuffers.push_back(**framebuffer);
         }

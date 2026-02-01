@@ -14,6 +14,7 @@ struct RenderEvalContext {
     const VkExtent2D swapchainExtent;
     uint32_t imageIndex;
     std::vector<VkFramebuffer> frameBuffers;
+    VkSwapchainKHR swapChain;
     bool shouldRecreateSwapChain;
 };
 
@@ -219,12 +220,6 @@ public:
 
             // Kick off the node's work
             node->submit(ctx);
-            
-            // If we find out we need to recreate the swapchain,
-            // stop work and exit
-            if (ctx.shouldRecreateSwapChain) {
-                return;
-            }
 
             // Add the node's children to the queue
             for (auto& child : node->getChildren()) {

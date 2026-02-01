@@ -269,8 +269,7 @@ int main() {
     std::unique_ptr<RenderGraph<MAX_FRAMES_IN_FLIGHT>> renderGraph = std::make_unique<RenderGraph<MAX_FRAMES_IN_FLIGHT>>(app.getDevice());
     
     // Add Nodes
-    auto acquireImageNode = renderGraph->addNode(std::make_unique<AcquireImageNode<MAX_FRAMES_IN_FLIGHT>>(app.getDevice(),
-                                                                                                          app.getSwapchain()));
+    auto acquireImageNode = renderGraph->addNode(std::make_unique<AcquireImageNode<MAX_FRAMES_IN_FLIGHT>>(app.getDevice()));
     auto computeNode = renderGraph->addNode(std::make_unique<ComputeNode<MAX_FRAMES_IN_FLIGHT>>(std::move(computeMaterial),
                                                                                                app.getDevice(),
                                                                                                app.getComputeQueue(),
@@ -281,8 +280,7 @@ int main() {
                                                                                                     app.getRenderPass(),
                                                                                                     app.getGraphicsCommandBuffers()));
     auto presentNode = renderGraph->addNode(std::make_unique<PresentNode<MAX_FRAMES_IN_FLIGHT>>(app.getDevice(),
-                                                                                                app.getPresentQueue(),
-                                                                                                app.getSwapchain()));
+                                                                                                app.getPresentQueue()));
     
     // Setup Edges
     renderGraph->addEdge(acquireImageNode, graphicsNode);
