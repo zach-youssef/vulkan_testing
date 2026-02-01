@@ -2,6 +2,7 @@
 #include "Renderable.h"
 #include "Ubo.h"
 #include "BasicMaterial.h"
+#include "RenderGraph.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
