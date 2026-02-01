@@ -50,14 +50,15 @@ protected:
             }
         }
         
-        other->addSemaphoreWait(unwrap<VkSemaphore, VulkanSemaphore>(signalSemaphores_));
+        other->addSemaphoreWait(unwrap<VkSemaphore, VulkanSemaphore>(signalSemaphores_), this);
         children_.push_back(other);
     }
     
-    void addSemaphoreWait(std::array<VkSemaphore, MAX_FRAMES> semaphore) {
+    void addSemaphoreWait(std::array<VkSemaphore, MAX_FRAMES> semaphore, RenderNode<MAX_FRAMES>* parent) {
         for (uint idx = 0; idx < MAX_FRAMES; ++idx) {
             waitSemaphores_[idx].push_back(semaphore[idx]);
         }
+        parents_.push_back(parent);
     }
     
     void addFenceEdgeTo(RenderNode<MAX_FRAMES>* other, bool createSignaled = false) {
@@ -73,18 +74,28 @@ protected:
             }
         }
         
-        other->addFenceWait(unwrap<VkFence, VulkanFence>(signalFences_));
+        other->addFenceWait(unwrap<VkFence, VulkanFence>(signalFences_), this);
         children_.push_back(other);
     }
     
-    void addFenceWait(std::array<VkFence, MAX_FRAMES> fence) {
+    void addFenceWait(std::array<VkFence, MAX_FRAMES> fence, RenderNode<MAX_FRAMES>* parent) {
         for (uint idx = 0; idx < MAX_FRAMES; ++idx) {
             waitFences_[idx].push_back(fence[idx]);
         }
+        parents_.push_back(parent);
     }
     
     const std::vector<RenderNode<MAX_FRAMES>*> getChildren() {
         return children_;
+    }
+
+    bool allParentsVisited(const std::unordered_set<RenderNode<MAX_FRAMES>*>& visited) {
+        for (auto parent : parents_) {
+            if (visited.find(parent) == visited.end()) {
+                return false;
+            }
+        }
+        return true;
     }
     
 private:
@@ -104,6 +115,9 @@ protected:
     std::array<std::vector<VkSemaphore>, MAX_FRAMES> waitSemaphores_;
     std::array<std::unique_ptr<VulkanFence>, MAX_FRAMES> signalFences_;
     std::array<std::vector<VkFence>, MAX_FRAMES> waitFences_;
+
+private:
+    std::vector<RenderNode<MAX_FRAMES>*> parents_;
 };
 
 template<uint MAX_FRAMES>
@@ -182,12 +196,19 @@ public:
         // Keep track of nodes that have been visited
         std::unordered_set<RenderNode<MAX_FRAMES>*> visited;
         visited.emplace(this);
-        
+
         // Traverse the graph submitting work as we go
         while(nodeQueue.size() != 0) {
             // Grab the next node from the queue
             auto* node = nodeQueue.front();
             nodeQueue.pop();
+
+            // If this node's parents haven't been submitted,
+            // move it to the back of the queue
+            if (!node->allParentsVisited(visited)) {
+                nodeQueue.push(node);
+                continue;
+            }
             
             // Make sure we haven't been here already
             if (visited.find(node) == visited.end()) {
@@ -195,7 +216,7 @@ public:
             } else {
                 continue;
             }
-            
+
             // Kick off the node's work
             node->submit(ctx);
             
