@@ -216,21 +216,29 @@ public:
                                           VkSamplerAddressMode addressMode,
                                           VkDevice device,
                                           VkPhysicalDevice physicalDevice) {
+        return createWithModeAndFilter(outSampler, addressMode, VK_FILTER_LINEAR, device, physicalDevice);
+    }
+
+    static VkResult createWithModeAndFilter(std::unique_ptr<VulkanSampler>& outSampler,
+                                            VkSamplerAddressMode addressMode,
+                                            VkFilter filter,
+                                            VkDevice device,
+                                            VkPhysicalDevice physicalDevice) {
         VkSamplerCreateInfo samplerInfo{};
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         
         // Alternative is VK_FILTER_NEAREST
         // Mag is for oversampling, min is for undersampling
-        samplerInfo.magFilter = VK_FILTER_LINEAR;
-        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.magFilter = filter;
+        samplerInfo.minFilter = filter;
         
         // Alternatives are
         // - MIRRORED_REPEAT
         // - CLAMP_TO_EDGE (or MIRRORED_)
         // CLAMP_TO_BORDER
-        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeU = addressMode;
+        samplerInfo.addressModeV = addressMode;
+        samplerInfo.addressModeW = addressMode;
         
         // Can be set to false if device doesn't support it
         samplerInfo.anisotropyEnable = VK_TRUE;
