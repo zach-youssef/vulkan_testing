@@ -1,3 +1,5 @@
+#define VK_WRAP_UTIL_IMPL
+
 #include "VulkanApp.h"
 #include "Renderable.h"
 #include "Ubo.h"
@@ -7,9 +9,14 @@
 #include "RenderableNode.h"
 #include "PresentNode.h"
 #include "AcquireImageNode.h"
+#include "FileUtil.h"
+#include "Image.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
 
 const uint32_t WINDOW_WIDTH = 800;
 const uint32_t WINDOW_HEIGHT = 600;

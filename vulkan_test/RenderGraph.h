@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VkTypes.h"
+#include "VkUtil.h"
 
 #include <unordered_set>
 

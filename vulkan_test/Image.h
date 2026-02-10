@@ -1,9 +1,10 @@
 #pragma once
 
 #include "VkTypes.h"
+#include "VkUtil.h"
 #include "CommandUtil.h"
+#include "Buffer.h"
 
-#define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
 #define RETURN_IF_ERROR(expr)   \

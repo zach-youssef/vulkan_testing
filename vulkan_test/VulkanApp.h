@@ -3,16 +3,9 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-#include "VkTypes.h"
 #include "VkUtil.h"
 #include "DeviceSelection.h"
-#include "QueueFamilyIndices.h"
-#include "SwapChainSupportDetails.h"
-#include "VkTypes.h"
 #include "Buffer.h"
-#include "Image.h"
-#include "FileUtil.h"
-#include "Renderable.h"
 #include "RenderGraph.h"
 
 #include <glm/glm.hpp>

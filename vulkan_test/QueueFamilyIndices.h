@@ -21,6 +21,9 @@ struct QueueFamilyIndices {
     }
 };
 
+QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
+
+#ifdef VK_WRAP_UTIL_IMPL
 QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface) {
     QueueFamilyIndices indices;
     
@@ -46,3 +49,4 @@ QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surfa
     
     return indices;
 }
+#endif

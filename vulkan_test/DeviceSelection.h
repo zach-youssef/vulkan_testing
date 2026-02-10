@@ -4,6 +4,12 @@
 #include "QueueFamilyIndices.h"
 #include "SwapChainSupportDetails.h"
 
+bool checkDeviceExtensionSupport(VkPhysicalDevice device);
+VkPhysicalDeviceFeatures getSupportedFeatures(VkPhysicalDevice device);
+bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface);
+VkPhysicalDevice pickPhysicalDevice(VkInstance instance, VkSurfaceKHR surface);
+
+#ifdef VK_WRAP_UTIL_IMPL
 bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
     std::vector<VkExtensionProperties> availableExtensions = readVkVector<VkExtensionProperties, VkPhysicalDevice, const char*>(device, vkEnumerateDeviceExtensionProperties);
     std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
@@ -42,3 +48,4 @@ VkPhysicalDevice pickPhysicalDevice(VkInstance instance, VkSurfaceKHR surface) {
 
     return VK_NULL_HANDLE;
 }
+#endif

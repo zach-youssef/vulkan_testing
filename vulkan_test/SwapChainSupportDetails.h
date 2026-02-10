@@ -53,6 +53,9 @@ struct SwapChainSupportDetails {
     }
 };
 
+SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
+
+#ifdef VK_WRAP_UTIL_IMPL
 SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
     SwapChainSupportDetails details{};
     
@@ -63,3 +66,4 @@ SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurface
 
     return details;
 }
+#endif

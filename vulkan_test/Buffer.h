@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VkTypes.h"
+#include "CommandUtil.h"
 #include <functional>
 
 #define RETURN_IF_ERROR(expr)   \
@@ -51,10 +52,20 @@ public:
             vkCmdCopyBuffer(commandBuffer, src, dst, 1 /*regionCount*/, &copyRegion);
         }, graphicsQueue, device, commandPool);
     }
+    static void createAndInitialize(std::unique_ptr<Buffer<Data>>& buffer,
+                                    const std::vector<Data>& data,
+                                    VkBufferUsageFlags usage,
+                                    VkDevice device,
+                                    VkPhysicalDevice physicalDevice,
+                                    VkQueue graphicsQueue,
+                                    VkCommandPool commandPool) {
+        createAndInitialize(buffer, data, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device, physicalDevice, graphicsQueue, commandPool);
+    }
 
     static void createAndInitialize(std::unique_ptr<Buffer<Data>>& buffer,
                                     const std::vector<Data>& data,
                                     VkBufferUsageFlags usage,
+                                    VkMemoryPropertyFlags memFlags,
                                     VkDevice device,
                                     VkPhysicalDevice physicalDevice,
                                     VkQueue graphicsQueue,
@@ -77,7 +88,7 @@ public:
         VK_SUCCESS_OR_THROW(Buffer<Data>::create(buffer,
                                                  data.size(),
                                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
-                                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                                 memFlags,
                                                  device,
                                                  physicalDevice),
                             "Failed to create gpu buffer");

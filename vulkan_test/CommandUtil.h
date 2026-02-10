@@ -5,6 +5,12 @@
 void issueSingleTimeCommand(std::function<void(VkCommandBuffer)> op,
                             VkQueue queue,
                             VkDevice device,
+                            VkCommandPool commandPool);
+
+#ifdef VK_WRAP_UTIL_IMPL
+void issueSingleTimeCommand(std::function<void(VkCommandBuffer)> op,
+                            VkQueue queue,
+                            VkDevice device,
                             VkCommandPool commandPool) {
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -34,3 +40,4 @@ void issueSingleTimeCommand(std::function<void(VkCommandBuffer)> op,
     
     vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }
+#endif
