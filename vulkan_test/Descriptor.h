@@ -25,6 +25,30 @@ private:
     VkShaderStageFlags stageFlags_;
 };
 
+// Generic buffer descriptor
+template<typename Data, uint MAX_FRAMES>
+class BufferDescriptor : public Descriptor {
+public:
+    BufferDescriptor(VkDescriptorType type, VkShaderStageFlags stageFlags, 
+                     std::array<VkBuffer, MAX_FRAMES> buffers, int size)
+    : Descriptor(type, stageFlags) {
+        for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
+            bufferInfos_[frameIdx].buffer = buffers[frameIdx];
+            bufferInfos_[frameIdx].offset = 0;
+            bufferInfos_[frameIdx].range = sizeof(Data) * size;
+        }
+    }
+    VkDescriptorBufferInfo* getBufferInfo(const uint32_t frameIndex) override {
+        return &bufferInfos_.at(frameIndex);
+    }
+    
+    VkDescriptorImageInfo* getImageInfo(const uint32_t frameIndex) override {
+        return nullptr;
+    }
+private:
+    std::array<VkDescriptorBufferInfo, MAX_FRAMES> bufferInfos_;
+};
+
 // Descriptor for uniform buffers
 template<typename Ubo, uint MAX_FRAMES>
 class UniformBufferDescriptor : public Descriptor {
