@@ -17,7 +17,7 @@ public:
     
     virtual VkDescriptorBufferInfo* getBufferInfo(const uint32_t frameIndex) = 0;
     virtual VkDescriptorImageInfo* getImageInfo(const uint32_t frameIndex) = 0;
-    
+
 protected:
     Descriptor(VkDescriptorType type, VkShaderStageFlags stageFlags): type_(type), stageFlags_(stageFlags) {}
 private:
@@ -44,6 +44,11 @@ public:
     
     VkDescriptorImageInfo* getImageInfo(const uint32_t frameIndex) override {
         return nullptr;
+    }
+
+    void bindBuffer(VkBuffer buffer, int size, const uint32_t frameIndex = 0) {
+        bufferInfos_[frameIndex].buffer = buffer;
+        bufferInfos_[frameIndex].range = sizeof(data) * size;
     }
 private:
     std::array<VkDescriptorBufferInfo, MAX_FRAMES> bufferInfos_;
