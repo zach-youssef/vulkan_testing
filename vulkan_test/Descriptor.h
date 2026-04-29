@@ -48,7 +48,7 @@ public:
 
     void bindBuffer(VkBuffer buffer, int size, const uint32_t frameIndex = 0) {
         bufferInfos_[frameIndex].buffer = buffer;
-        bufferInfos_[frameIndex].range = sizeof(data) * size;
+        bufferInfos_[frameIndex].range = sizeof(Data) * size;
     }
 private:
     std::array<VkDescriptorBufferInfo, MAX_FRAMES> bufferInfos_;
