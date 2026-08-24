@@ -58,11 +58,15 @@ private:
 template<typename Ubo, uint MAX_FRAMES>
 class UniformBufferDescriptor : public Descriptor {
 public:
-    UniformBufferDescriptor<Ubo, MAX_FRAMES>(std::array<VkBuffer, MAX_FRAMES> buffers, VkShaderStageFlags stageFlags)
+    UniformBufferDescriptor<Ubo, MAX_FRAMES>(
+        std::array<VkBuffer, MAX_FRAMES> buffers, 
+        VkShaderStageFlags stageFlags,
+        bool offsetByFrame = false
+    )
     : Descriptor(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stageFlags) {
         for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
             bufferInfos_[frameIdx].buffer = buffers[frameIdx];
-            bufferInfos_[frameIdx].offset = 0;
+            bufferInfos_[frameIdx].offset = offsetByFrame? frameIdx * sizeof(Ubo) : 0;
             bufferInfos_[frameIdx].range = sizeof(Ubo);
         }
     }

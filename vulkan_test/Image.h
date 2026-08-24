@@ -23,14 +23,15 @@ public:
                            VkImageUsageFlags usage,
                            VkMemoryPropertyFlags properties,
                            VkDevice device,
-                           VkPhysicalDevice physicalDevice) {
+                           VkPhysicalDevice physicalDevice,
+                           VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
         VkResult result;
         
         outImage = std::make_unique<Image>(width, height,
                                            format, tiling,
                                            usage, properties,
                                            device, physicalDevice,
-                                           result);
+                                           result, aspect);
         
         return result;
     }
@@ -59,7 +60,8 @@ public:
           VkMemoryPropertyFlags properties,
           VkDevice device,
           VkPhysicalDevice physicalDevice,
-          VkResult& outResult) : device_(device), width_(width), height_(height) {
+          VkResult& outResult,
+          VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) : device_(device), width_(width), height_(height) {
         VkImageCreateInfo imageInfo{};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -91,7 +93,7 @@ public:
         
         vkBindImageMemory(device_, **image_, **memory_, 0);
         
-        RETURN_IF_ERROR(VulkanImageView::createForImageWithFormat(imageView_, device_, **image_, format));
+        RETURN_IF_ERROR(VulkanImageView::createForImageWithFormat(imageView_, device_, **image_, format, aspect));
     }
     
     
@@ -219,7 +221,8 @@ public:
                                       VkImageLayout newLayout,
                                       VkQueue graphicsQueue,
                                       VkCommandPool commandPool,
-                                      VkDevice device) {
+                                      VkDevice device,
+                                      VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
         issueSingleTimeCommand([=](VkCommandBuffer commandBuffer){
             VkImageMemoryBarrier barrier{};
             barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -231,7 +234,7 @@ public:
             barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             
             barrier.image = image;
-            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            barrier.subresourceRange.aspectMask = aspect;
             barrier.subresourceRange.baseMipLevel = 0;
             barrier.subresourceRange.levelCount = 1;
             barrier.subresourceRange.baseArrayLayer = 0;
@@ -282,14 +285,15 @@ public:
                                   uint32_t height,
                                   VkQueue graphicsQueue,
                                   VkCommandPool commandPool,
-                                  VkDevice device) {
+                                  VkDevice device,
+                                  VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
         issueSingleTimeCommand([=](VkCommandBuffer commandBuffer){
             VkBufferImageCopy region{};
             region.bufferOffset = 0;
             region.bufferRowLength = 0;
             region.bufferImageHeight = 0;
 
-            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.aspectMask = aspect;
             region.imageSubresource.mipLevel = 0;
             region.imageSubresource.baseArrayLayer = 0;
             region.imageSubresource.layerCount = 1;

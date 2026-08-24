@@ -42,9 +42,11 @@ public:
         renderPassInfo.renderArea.offset = {0, 0};
         renderPassInfo.renderArea.extent = ctx.swapchainExtent;
         
-        VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-        renderPassInfo.clearValueCount = 1;
-        renderPassInfo.pClearValues = &clearColor;
+        VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
+        VkClearValue clearDepth = {{1.0f, 0.0f}};
+        std::array<VkClearValue, 2> clearValues = {clearColor, clearDepth};
+        renderPassInfo.clearValueCount = 2;
+        renderPassInfo.pClearValues = clearValues.data();
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 

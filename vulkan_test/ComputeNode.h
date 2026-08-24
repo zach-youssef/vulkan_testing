@@ -64,7 +64,7 @@ public:
         VK_SUCCESS_OR_THROW(vkQueueSubmit(computeQueue_,
                                           1,
                                           &submitInfo,
-                                          **RenderNode<MAX_FRAMES>::signalFences_[ctx.frameIndex]),
+                                              **RenderNode<MAX_FRAMES>::signalFences_[ctx.frameIndex]),
                             "Failed to submit compute");
     }
     
