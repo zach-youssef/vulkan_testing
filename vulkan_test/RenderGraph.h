@@ -87,6 +87,17 @@ protected:
         parents_.push_back(parent);
     }
     
+    // Semaphores to signal when this node's work completes, for use in VkSubmitInfo.
+    // The count is 0 if the node has no outgoing semaphore edges, since VK_NULL_HANDLE
+    // may not be signaled.
+    uint32_t getSignalSemaphoreCount(uint32_t frameIndex) {
+        return **signalSemaphores_[frameIndex] == VK_NULL_HANDLE ? 0 : 1;
+    }
+    
+    VkSemaphore* getSignalSemaphores(uint32_t frameIndex) {
+        return signalSemaphores_[frameIndex]->get();
+    }
+    
     const std::vector<RenderNode<MAX_FRAMES>*> getChildren() {
         return children_;
     }

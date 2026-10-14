@@ -104,9 +104,8 @@ public:
         auto& waitSemaphores = RenderNode<MAX_FRAMES>::waitSemaphores_[ctx.frameIndex];
         submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
         submitInfo.pWaitSemaphores = waitSemaphores.data();
-        std::array<VkSemaphore,1> signalSemaphores = {**RenderNode<MAX_FRAMES>::signalSemaphores_[ctx.frameIndex]};
-        submitInfo.signalSemaphoreCount = signalSemaphores.size();
-        submitInfo.pSignalSemaphores = signalSemaphores.data();
+        submitInfo.signalSemaphoreCount = RenderNode<MAX_FRAMES>::getSignalSemaphoreCount(ctx.frameIndex);
+        submitInfo.pSignalSemaphores = RenderNode<MAX_FRAMES>::getSignalSemaphores(ctx.frameIndex);
 
         VK_SUCCESS_OR_THROW(vkQueueSubmit(graphicsQueue_,
                                           1,
