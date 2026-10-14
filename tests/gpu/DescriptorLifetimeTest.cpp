@@ -63,6 +63,7 @@ TEST_CASE_FIXTURE(GpuTest, "StorageImageDescriptor keeps its images alive") {
     auto descriptor = resources.create<StorageImageDescriptor<kFrames>>(
         VK_SHADER_STAGE_COMPUTE_BIT, std::array<Handle<Image>, kFrames>{image, image});
     CHECK(descriptor->getType() == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+    CHECK(descriptor->getImageInfo(0)->imageLayout == VK_IMAGE_LAYOUT_GENERAL);
     CHECK(image.useCount() == 3);
 
     image.reset();

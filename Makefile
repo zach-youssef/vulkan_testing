@@ -52,7 +52,8 @@ $(OUT)/vulkan_test: $(OBJS) | $(SHADERS)
 # ---------------------------------------------------------------------------
 TEST_DIR = tests
 TEST_OUT = $(OUT)/tests
-TEST_CFLAGS = $(CFLAGS) -I$(SRC) -Ithird_party -I$(TEST_DIR)
+TEST_SHADER_OUT = $(TEST_OUT)/shaders
+TEST_CFLAGS = $(CFLAGS) -I$(SRC) -Ithird_party -I$(TEST_DIR) -DTEST_SHADER_DIR='"$(abspath $(TEST_SHADER_OUT))"'
 TEST_HEADERS = $(HEADERS) $(wildcard $(TEST_DIR)/*/*.h)
 
 CPU_TEST_SRCS = $(wildcard $(TEST_DIR)/cpu/*.cpp)
@@ -60,6 +61,18 @@ CPU_TEST_OBJS = $(patsubst $(TEST_DIR)/%.cpp,$(TEST_OUT)/%.o,$(CPU_TEST_SRCS))
 
 GPU_TEST_SRCS = $(wildcard $(TEST_DIR)/gpu/*.cpp)
 GPU_TEST_OBJS = $(patsubst $(TEST_DIR)/%.cpp,$(TEST_OUT)/%.o,$(GPU_TEST_SRCS))
+
+# SPIR-V used by the GPU tests: test-only shaders plus the example's shaders,
+# compiled to $(TEST_SHADER_OUT)/<name>.<stage>.spv
+GPU_TEST_SHADER_SRCS = $(wildcard $(TEST_DIR)/gpu/shaders/*) $(wildcard $(SHADER_DIR)/*.vert $(SHADER_DIR)/*.frag $(SHADER_DIR)/*.comp)
+GPU_TEST_SHADERS = $(patsubst %,$(TEST_SHADER_OUT)/%.spv,$(notdir $(GPU_TEST_SHADER_SRCS)))
+
+$(TEST_SHADER_OUT)/%.spv : $(TEST_DIR)/gpu/shaders/%
+	@mkdir -p $(dir $@)
+	glslc $< -o $@
+$(TEST_SHADER_OUT)/%.spv : $(SHADER_DIR)/%
+	@mkdir -p $(dir $@)
+	glslc $< -o $@
 
 $(TEST_OUT)/%.o : $(TEST_DIR)/%.cpp $(TEST_HEADERS)
 	@mkdir -p $(dir $@)
@@ -69,7 +82,7 @@ $(TEST_OUT)/cpu_tests: $(CPU_TEST_OBJS)
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
-$(TEST_OUT)/gpu_tests: $(GPU_TEST_OBJS)
+$(TEST_OUT)/gpu_tests: $(GPU_TEST_OBJS) | $(GPU_TEST_SHADERS)
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
