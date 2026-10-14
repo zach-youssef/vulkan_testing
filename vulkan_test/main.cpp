@@ -60,7 +60,8 @@ struct Vertex {
 
 class TutorialMaterial : public BasicMaterial<MAX_FRAMES_IN_FLIGHT, 3> {
 public:
-    TutorialMaterial(VkDevice device,
+    TutorialMaterial(ResourceManager& resourceManager,
+                     VkDevice device,
                      VkPhysicalDevice physicalDevice,
                      VkExtent2D swapchainExtent,
                      VkRenderPass renderPass,
@@ -88,7 +89,7 @@ public:
         
         // Create & bind our uniform buffers
         for (uint frameIdx = 0; frameIdx < MAX_FRAMES_IN_FLIGHT; ++frameIdx) {
-            createUniformBuffer(frameIdx);
+            createUniformBuffer(resourceManager, frameIdx);
             uboDesc->bindBuffer(frameIdx, uniformBuffers_.at(frameIdx)->getBuffer());
             populateDescriptorSet(frameIdx);
         }
@@ -113,8 +114,9 @@ public:
         memcpy(mappedUniformBuffers_[currentImage].get(), &ubo, sizeof(ubo));
     }
 private:
-    void createUniformBuffer(uint32_t frameIndex) {
+    void createUniformBuffer(ResourceManager& resourceManager, uint32_t frameIndex) {
         VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(uniformBuffers_[frameIndex],
+                                                                resourceManager,
                                                                 1,
                                                                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -124,7 +126,7 @@ private:
         mappedUniformBuffers_[frameIndex] = uniformBuffers_[frameIndex]->getPersistentMapping(0, sizeof(UniformBufferObject));
     }
 private:
-    std::array<std::unique_ptr<Buffer<UniformBufferObject>>, MAX_FRAMES_IN_FLIGHT> uniformBuffers_;
+    std::array<Handle<Buffer<UniformBufferObject>>, MAX_FRAMES_IN_FLIGHT> uniformBuffers_;
     std::array<std::unique_ptr<UniformBufferObject, std::function<void(UniformBufferObject*)>>, MAX_FRAMES_IN_FLIGHT> mappedUniformBuffers_;
 };
 
@@ -196,7 +198,8 @@ void createTutorialMaterial(std::unique_ptr<TutorialMaterial>& outPtr,
                                                                                                                VK_SHADER_STAGE_VERTEX_BIT));
     descriptors.push_back(std::make_shared<CombinedImageSamplerDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_FRAGMENT_BIT, imageViews, sampler));
 
-    outPtr = std::make_unique<TutorialMaterial>(app.getDevice(),
+    outPtr = std::make_unique<TutorialMaterial>(app.getResourceManager(),
+                                                app.getDevice(),
                                                 app.getPhysicalDevice(),
                                                 app.getSwapchainExtent(),
                                                 app.getRenderPass(),
@@ -214,6 +217,7 @@ void createTutorialRenderable(std::unique_ptr<MeshRenderable<Vertex, MAX_FRAMES_
     
     outPtr = std::make_unique<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>>(vertexData, indexData,
                                                                             std::move(material),
+                                                                            app.getResourceManager(),
                                                                             app.getDevice(),
                                                                             app.getPhysicalDevice(),
                                                                             app.getGraphicsQueue(),
@@ -227,8 +231,9 @@ int main() {
     app.init();
     
     // Load texture file
-    std::unique_ptr<Image> texture;
+    Handle<Image> texture;
     Image::createFromFile(texture,
+                          app.getResourceManager(),
                           "/Users/zyoussef/code/vulkan_test/vulkan_test/textures/texture.jpg",
                           app.getGraphicsQueue(),
                           app.getCommandPool(),
@@ -237,9 +242,10 @@ int main() {
     std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> inputImages = {texture->getImageView(), texture->getImageView()};
 
     // Create output texture images
-    std::array<std::unique_ptr<Image>, MAX_FRAMES_IN_FLIGHT> outImages;
+    std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> outImages;
     for (int frameIdx = 0; frameIdx < MAX_FRAMES_IN_FLIGHT; ++frameIdx) {
         Image::createEmptyRGBA(outImages[frameIdx],
+                               app.getResourceManager(),
                                texture->getWidth(),
                                texture->getHeight(),
                                app.getGraphicsQueue(),

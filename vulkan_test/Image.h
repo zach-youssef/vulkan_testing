@@ -181,6 +181,76 @@ public:
                               queue, commandPool, device);
     }
 
+    // Managed variants of the above factories; resources are owned by the ResourceManager
+    static VkResult create(Handle<Image>& outImage,
+                           ResourceManager& resourceManager,
+                           uint32_t width,
+                           uint32_t height,
+                           VkFormat format,
+                           VkImageTiling tiling,
+                           VkImageUsageFlags usage,
+                           VkMemoryPropertyFlags properties,
+                           VkDevice device,
+                           VkPhysicalDevice physicalDevice,
+                           VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+        std::unique_ptr<Image> image;
+        VkResult result = create(image, width, height, format, tiling, usage, properties, device, physicalDevice, aspect);
+        outImage = resourceManager.adopt(std::move(image));
+        return result;
+    }
+
+    static void createFromFile(Handle<Image>& outImage,
+                               ResourceManager& resourceManager,
+                               const std::string& filePath,
+                               VkQueue graphicsQueue,
+                               VkCommandPool commandPool,
+                               VkDevice device,
+                               VkPhysicalDevice physicalDevice) {
+        std::unique_ptr<Image> image;
+        createFromFile(image, filePath, graphicsQueue, commandPool, device, physicalDevice);
+        outImage = resourceManager.adopt(std::move(image));
+    }
+
+    static void createFromUcharBuffer(Handle<Image>& outImage,
+                                      ResourceManager& resourceManager,
+                                      unsigned char* pixels,
+                                      uint32_t width,
+                                      uint32_t height,
+                                      VkDeviceSize imageSize,
+                                      VkQueue graphicsQueue,
+                                      VkCommandPool commandPool,
+                                      VkDevice device,
+                                      VkPhysicalDevice physicalDevice) {
+        std::unique_ptr<Image> image;
+        createFromUcharBuffer(image, pixels, width, height, imageSize, graphicsQueue, commandPool, device, physicalDevice);
+        outImage = resourceManager.adopt(std::move(image));
+    }
+
+    static void createEmptyRGBA(Handle<Image>& outImage,
+                                ResourceManager& resourceManager,
+                                uint32_t width,
+                                uint32_t height,
+                                VkQueue queue,
+                                VkCommandPool commandPool,
+                                VkDevice device,
+                                VkPhysicalDevice physicalDevice) {
+        createEmpty(outImage, resourceManager, VK_FORMAT_R8G8B8A8_SRGB, width, height, queue, commandPool, device, physicalDevice);
+    }
+
+    static void createEmpty(Handle<Image>& outImage,
+                            ResourceManager& resourceManager,
+                            VkFormat format,
+                            uint32_t width,
+                            uint32_t height,
+                            VkQueue queue,
+                            VkCommandPool commandPool,
+                            VkDevice device,
+                            VkPhysicalDevice physicalDevice) {
+        std::unique_ptr<Image> image;
+        createEmpty(image, format, width, height, queue, commandPool, device, physicalDevice);
+        outImage = resourceManager.adopt(std::move(image));
+    }
+
     void uploadUcharBufferToImage(unsigned char* pixels, 
                                   VkDeviceSize imageSize,
                                   VkQueue graphicsQueue,

@@ -233,12 +233,14 @@ public:
     MeshRenderable(const std::vector<VertexData>& vertexData,
                    const std::vector<uint16_t>& indexData,
                    std::unique_ptr<Material<MAX_FRAMES>>&& material,
+                   ResourceManager& resourceManager,
                    VkDevice device,
                    VkPhysicalDevice physicalDevice,
                    VkQueue graphicsQueue,
                    VkCommandPool commandPool)
     : Renderable<MAX_FRAMES>(std::move(material)), indexCount_(static_cast<uint32_t>(indexData.size())) {
         Buffer<VertexData>::createAndInitialize(vertexBuffer_,
+                                                resourceManager,
                                                 vertexData,
                                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                                                 device,
@@ -246,6 +248,7 @@ public:
                                                 graphicsQueue,
                                                 commandPool);
         Buffer<uint16_t>::createAndInitialize(indexBuffer_,
+                                              resourceManager,
                                               indexData,
                                               VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                                               device,
@@ -267,7 +270,7 @@ public:
     }
 
 private:
-    std::unique_ptr<Buffer<VertexData>> vertexBuffer_;
-    std::unique_ptr<Buffer<uint16_t>> indexBuffer_;
+    Handle<Buffer<VertexData>> vertexBuffer_;
+    Handle<Buffer<uint16_t>> indexBuffer_;
     uint32_t indexCount_;
 };

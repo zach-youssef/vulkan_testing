@@ -2,6 +2,7 @@
 
 #include "VkTypes.h"
 #include "CommandUtil.h"
+#include "ResourceManager.h"
 #include <functional>
 
 #define RETURN_IF_ERROR(expr)   \
@@ -35,6 +36,19 @@ public:
         
         outBuffer = std::make_unique<Buffer<Data>>(numElements, usage, properties, device, physicalDevice, result);
         
+        return result;
+    }
+
+    static VkResult create(Handle<Buffer>& outBuffer,
+                           ResourceManager& resourceManager,
+                           size_t numElements,
+                           VkBufferUsageFlags usage,
+                           VkMemoryPropertyFlags properties,
+                           VkDevice device,
+                           VkPhysicalDevice physicalDevice) {
+        std::unique_ptr<Buffer> buffer;
+        VkResult result = create(buffer, numElements, usage, properties, device, physicalDevice);
+        outBuffer = resourceManager.adopt(std::move(buffer));
         return result;
     }
 
@@ -99,6 +113,31 @@ public:
                    graphicsQueue,
                    device,
                    commandPool);
+    }
+
+    static void createAndInitialize(Handle<Buffer<Data>>& outBuffer,
+                                    ResourceManager& resourceManager,
+                                    const std::vector<Data>& data,
+                                    VkBufferUsageFlags usage,
+                                    VkDevice device,
+                                    VkPhysicalDevice physicalDevice,
+                                    VkQueue graphicsQueue,
+                                    VkCommandPool commandPool) {
+        createAndInitialize(outBuffer, resourceManager, data, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device, physicalDevice, graphicsQueue, commandPool);
+    }
+
+    static void createAndInitialize(Handle<Buffer<Data>>& outBuffer,
+                                    ResourceManager& resourceManager,
+                                    const std::vector<Data>& data,
+                                    VkBufferUsageFlags usage,
+                                    VkMemoryPropertyFlags memFlags,
+                                    VkDevice device,
+                                    VkPhysicalDevice physicalDevice,
+                                    VkQueue graphicsQueue,
+                                    VkCommandPool commandPool) {
+        std::unique_ptr<Buffer<Data>> buffer;
+        createAndInitialize(buffer, data, usage, memFlags, device, physicalDevice, graphicsQueue, commandPool);
+        outBuffer = resourceManager.adopt(std::move(buffer));
     }
 
     Buffer(size_t numElements,
