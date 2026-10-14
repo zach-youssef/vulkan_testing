@@ -48,12 +48,15 @@ $(OUT)/vulkan_test: $(OBJS) | $(SHADERS)
 #   make test-cpu   - unit tests that do not need a Vulkan device
 #   make test-gpu   - tests that run headless on a Vulkan device (no window)
 #   make test       - all tests
+#   make approve-screenshots - accept the screenshots from the last failed GPU test run
 # Arguments can be forwarded to doctest, e.g. make test-cpu TEST_ARGS='-tc="Handle*"'
 # ---------------------------------------------------------------------------
 TEST_DIR = tests
 TEST_OUT = $(OUT)/tests
 TEST_SHADER_OUT = $(TEST_OUT)/shaders
-TEST_CFLAGS = $(CFLAGS) -I$(SRC) -Ithird_party -I$(TEST_DIR) -DTEST_SHADER_DIR='"$(abspath $(TEST_SHADER_OUT))"'
+TEST_CFLAGS = $(CFLAGS) -I$(SRC) -Ithird_party -Ithird_party/approvaltests -Ithird_party/flip -I$(TEST_DIR) \
+              -DTEST_SHADER_DIR='"$(abspath $(TEST_SHADER_OUT))"' \
+              -DTEST_TEXTURE_DIR='"$(abspath $(SRC)/textures)"'
 TEST_HEADERS = $(HEADERS) $(wildcard $(TEST_DIR)/*/*.h)
 
 CPU_TEST_SRCS = $(wildcard $(TEST_DIR)/cpu/*.cpp)
@@ -74,9 +77,10 @@ $(TEST_SHADER_OUT)/%.spv : $(SHADER_DIR)/%
 	@mkdir -p $(dir $@)
 	glslc $< -o $@
 
+# Compiled from absolute paths so __FILE__ is absolute: ApprovalTests uses it to find approved images
 $(TEST_OUT)/%.o : $(TEST_DIR)/%.cpp $(TEST_HEADERS)
 	@mkdir -p $(dir $@)
-	$(CC) -c -o $@ $< $(TEST_CFLAGS)
+	$(CC) -c -o $@ $(abspath $<) $(TEST_CFLAGS)
 
 $(TEST_OUT)/cpu_tests: $(CPU_TEST_OBJS)
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
@@ -94,7 +98,16 @@ test-gpu: $(TEST_OUT)/gpu_tests
 
 test: test-cpu test-gpu
 
-.PHONY: clean shaders test test-cpu test-gpu
+SCREENSHOT_DIR = $(TEST_DIR)/gpu/approved
+
+approve-screenshots:
+	@find $(SCREENSHOT_DIR) -name '*.received.png' 2>/dev/null | while read -r received; do \
+		approved="$${received%.received.png}.approved.png"; \
+		mv "$$received" "$$approved" && echo "Approved $$approved"; \
+	done
+	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
+
+.PHONY: clean shaders test test-cpu test-gpu approve-screenshots
 
 shaders: $(SHADERS)
 
