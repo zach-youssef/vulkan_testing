@@ -8,6 +8,7 @@
 #include "Buffer.h"
 #include "RenderGraph.h"
 #include "Image.h"
+#include "ResourceManager.h"
 
 #include <glm/glm.hpp>
 
@@ -71,6 +72,7 @@ private: // Main initialize & run functions
         createSurface();
         choosePhysicalDevice();
         createLogicalDevice();
+        createResourceManager();
         createSwapChain();
         createSwapChainImageViews();
         createDepthTexture();
@@ -223,6 +225,10 @@ private: // Vulkan Initialization Functions
         // Compute queue technically same as graphics in current implementation
         // Creating dedicated handle in case I ever actually implement the async queue
         vkGetDeviceQueue(**device_, indices.graphicsFamily.value(), 0, &computeQueue_);
+    }
+    
+    void createResourceManager() {
+        resourceManager_ = std::make_unique<ResourceManager>();
     }
     
     void createSwapChain() {
@@ -467,6 +473,10 @@ public: // Public getters
         return **device_;
     }
     
+    ResourceManager& getResourceManager() {
+        return *resourceManager_;
+    }
+    
     VkPhysicalDevice getPhysicalDevice() {
         return physicalDevice_;
     }
@@ -527,6 +537,10 @@ private: // Member variables
     std::unique_ptr<VulkanInstance> instance_;
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     std::unique_ptr<VulkanDevice> device_;
+    
+    // Owner of shared resources. Declared after device_ so it is destroyed
+    // before the device, and before everything below that may hold Handles.
+    std::unique_ptr<ResourceManager> resourceManager_;
     
     // Hardware Queues
     VkQueue graphicsQueue_;
