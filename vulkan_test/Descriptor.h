@@ -113,12 +113,14 @@ public:
         return nullptr;
     }
 protected:
+    // layout is the layout the images will be in whenever the descriptor is used
     ImageDescriptor<MAX_FRAMES>(VkDescriptorType type,
                                 VkShaderStageFlags stageFlags,
-                                std::array<Handle<Image>, MAX_FRAMES> images)
+                                std::array<Handle<Image>, MAX_FRAMES> images,
+                                VkImageLayout layout)
     : Descriptor(type, stageFlags), images_(std::move(images)) {
         for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
-            imageInfos_[frameIdx].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfos_[frameIdx].imageLayout = layout;
             imageInfos_[frameIdx].imageView = images_[frameIdx]->getImageView();
         }
     }
@@ -128,13 +130,15 @@ protected:
     std::array<VkDescriptorImageInfo, MAX_FRAMES> imageInfos_;
 };
 
-// Store Image Descriptor
+// Storage Image Descriptor
+// Storage images must be in VK_IMAGE_LAYOUT_GENERAL (or SHARED_PRESENT_KHR) when used
 template<uint MAX_FRAMES>
 class StorageImageDescriptor : public ImageDescriptor<MAX_FRAMES> {
 public:
     StorageImageDescriptor<MAX_FRAMES>(VkShaderStageFlags stageFlags,
-                                       std::array<Handle<Image>, MAX_FRAMES> images)
-    : ImageDescriptor<MAX_FRAMES>(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, stageFlags, std::move(images)) {}
+                                       std::array<Handle<Image>, MAX_FRAMES> images,
+                                       VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL)
+    : ImageDescriptor<MAX_FRAMES>(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, stageFlags, std::move(images), layout) {}
 };
 
 // Combined Image Sampler Descriptor
@@ -143,8 +147,9 @@ class CombinedImageSamplerDescriptor : public ImageDescriptor<MAX_FRAMES> {
 public:
     CombinedImageSamplerDescriptor<MAX_FRAMES>(VkShaderStageFlags stageFlags,
                                                std::array<Handle<Image>, MAX_FRAMES> images,
-                                               Handle<VulkanSampler> sampler)
-    : ImageDescriptor<MAX_FRAMES>(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stageFlags, std::move(images)),
+                                               Handle<VulkanSampler> sampler,
+                                               VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+    : ImageDescriptor<MAX_FRAMES>(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stageFlags, std::move(images), layout),
     sampler_(std::move(sampler)) {
         for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
             ImageDescriptor<MAX_FRAMES>::imageInfos_[frameIdx].sampler = **sampler_;

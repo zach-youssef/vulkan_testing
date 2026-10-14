@@ -206,7 +206,8 @@ void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
     auto& resourceManager = app.getResourceManager();
     descriptors.push_back(resourceManager.create<UniformBufferDescriptor<UniformBufferObject, MAX_FRAMES_IN_FLIGHT>>(std::array<Handle<Buffer<UniformBufferObject>>, MAX_FRAMES_IN_FLIGHT>{},
                                                                                                                      VK_SHADER_STAGE_VERTEX_BIT));
-    descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_FRAGMENT_BIT, images, sampler));
+    descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_FRAGMENT_BIT, images, sampler,
+                                                                                                       VK_IMAGE_LAYOUT_GENERAL));
 
     outPtr = resourceManager.create<TutorialMaterial>(resourceManager,
                                                       app.getDevice(),
@@ -247,6 +248,9 @@ int main() {
                           app.getCommandPool(),
                           app.getDevice(),
                           app.getPhysicalDevice());
+    // The texture is read by the compute shader as a storage image, which must be in the GENERAL layout
+    texture->transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                              app.getGraphicsQueue(), app.getCommandPool());
     std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> inputImages = {texture, texture};
 
     // Create output texture images
@@ -260,6 +264,10 @@ int main() {
                                app.getCommandPool(),
                                app.getDevice(),
                                app.getPhysicalDevice());
+        // Written by the compute shader as a storage image and then sampled by the fragment
+        // shader, so keep it in the GENERAL layout (valid for both uses)
+        outImages[frameIdx]->transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                                              app.getGraphicsQueue(), app.getCommandPool());
     }
     
 

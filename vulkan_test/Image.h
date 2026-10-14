@@ -305,6 +305,33 @@ public:
                               graphicsQueue, commandPool, device_);
     }
     
+    // Access mask & pipeline stages to synchronize on for an image in a given layout
+    struct LayoutSync {
+        VkAccessFlags access;
+        VkPipelineStageFlags stages;
+    };
+    
+    static LayoutSync layoutSync(VkImageLayout layout) {
+        constexpr VkPipelineStageFlags shaderStages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        switch (layout) {
+            case VK_IMAGE_LAYOUT_UNDEFINED:
+                // Nothing to wait on; the earliest possible stage
+                return {0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT};
+            case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+                return {VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
+            case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+                return {VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
+            case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+                return {VK_ACCESS_SHADER_READ_BIT, shaderStages};
+            case VK_IMAGE_LAYOUT_GENERAL:
+                // Used for storage images, which shaders may read and write
+                return {VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, shaderStages};
+            default:
+                // TODO better handling
+                throw std::invalid_argument("unsupported layout transition!");
+        }
+    }
+    
     static void transitionImageLayout(VkImage image,
                                       VkFormat format,
                                       VkImageLayout oldLayout,
@@ -313,6 +340,14 @@ public:
                                       VkCommandPool commandPool,
                                       VkDevice device,
                                       VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+        // Resolve synchronization before recording, so unsupported layouts throw
+        // without leaving a command buffer mid-recording
+        const LayoutSync source = layoutSync(oldLayout);
+        const LayoutSync destination = layoutSync(newLayout);
+        if (newLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
+            throw std::invalid_argument("Cannot transition an image to VK_IMAGE_LAYOUT_UNDEFINED");
+        }
+        
         issueSingleTimeCommand([=](VkCommandBuffer commandBuffer){
             VkImageMemoryBarrier barrier{};
             barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -330,50 +365,13 @@ public:
             barrier.subresourceRange.baseArrayLayer = 0;
             barrier.subresourceRange.layerCount = 1;
             
-            VkPipelineStageFlags sourceStage;
-            VkPipelineStageFlags destinationStage;
-
-            if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-                barrier.srcAccessMask = 0; // Nothing to wait on
-                barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-                sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT; // Earliest possible stage
-                destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT; // Not a "real" stage, but is where transfers happen?
-            } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-                barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                
-                sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-                destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-            } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-                // Wait for any shader access before reading the image back
-                barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-                
-                sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-                destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-                barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                
-                sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-                destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-            } else if(oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-                barrier.srcAccessMask = 0; // Nothing to wait on
-                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                
-                sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-                destinationStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-            } else {
-                // TODO better handling
-                throw std::invalid_argument("unsupported layout transition!");
-            }
-
+            barrier.srcAccessMask = source.access;
+            barrier.dstAccessMask = destination.access;
             
             vkCmdPipelineBarrier(
                 commandBuffer,
-                sourceStage,
-                destinationStage,
+                source.stages,
+                destination.stages,
                 0,
                 0, nullptr,
                 0, nullptr,
@@ -382,8 +380,17 @@ public:
         }, graphicsQueue, device, commandPool);
     }
     
+    // Convenience wrapper around transitionImageLayout for this image
+    void transitionLayout(VkImageLayout oldLayout,
+                          VkImageLayout newLayout,
+                          VkQueue queue,
+                          VkCommandPool commandPool,
+                          VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+        transitionImageLayout(getImage(), format_, oldLayout, newLayout, queue, commandPool, device_, aspect);
+    }
+    
     // Copies the image's contents into host memory. The image must be in currentLayout
-    // (SHADER_READ_ONLY_OPTIMAL or TRANSFER_SRC_OPTIMAL) and is returned to it afterwards.
+    // (any layout supported by transitionImageLayout) and is returned to it afterwards.
     std::vector<uint8_t> readback(VkImageLayout currentLayout,
                                   VkQueue queue,
                                   VkCommandPool commandPool,
