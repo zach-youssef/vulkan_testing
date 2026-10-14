@@ -46,6 +46,7 @@ $(OUT)/vulkan_test: $(OBJS) | $(SHADERS)
 # ---------------------------------------------------------------------------
 # Tests
 #   make test-cpu   - unit tests that do not need a Vulkan device
+#   make test-gpu   - tests that run headless on a Vulkan device (no window)
 #   make test       - all tests
 # Arguments can be forwarded to doctest, e.g. make test-cpu TEST_ARGS='-tc="Handle*"'
 # ---------------------------------------------------------------------------
@@ -57,6 +58,9 @@ TEST_HEADERS = $(HEADERS) $(wildcard $(TEST_DIR)/*/*.h)
 CPU_TEST_SRCS = $(wildcard $(TEST_DIR)/cpu/*.cpp)
 CPU_TEST_OBJS = $(patsubst $(TEST_DIR)/%.cpp,$(TEST_OUT)/%.o,$(CPU_TEST_SRCS))
 
+GPU_TEST_SRCS = $(wildcard $(TEST_DIR)/gpu/*.cpp)
+GPU_TEST_OBJS = $(patsubst $(TEST_DIR)/%.cpp,$(TEST_OUT)/%.o,$(GPU_TEST_SRCS))
+
 $(TEST_OUT)/%.o : $(TEST_DIR)/%.cpp $(TEST_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -c -o $@ $< $(TEST_CFLAGS)
@@ -65,12 +69,19 @@ $(TEST_OUT)/cpu_tests: $(CPU_TEST_OBJS)
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
+$(TEST_OUT)/gpu_tests: $(GPU_TEST_OBJS)
+	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
+	install_name_tool -add_rpath /usr/local/lib ./$@
+
 test-cpu: $(TEST_OUT)/cpu_tests
 	./$< $(TEST_ARGS)
 
-test: test-cpu
+test-gpu: $(TEST_OUT)/gpu_tests
+	./$< $(TEST_ARGS)
 
-.PHONY: clean shaders test test-cpu
+test: test-cpu test-gpu
+
+.PHONY: clean shaders test test-cpu test-gpu
 
 shaders: $(SHADERS)
 
