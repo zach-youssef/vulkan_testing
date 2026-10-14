@@ -6,7 +6,7 @@
 #include "BasicMaterial.h"
 #include "RenderGraph.h"
 #include "ComputeNode.h"
-#include "RenderableNode.h"
+#include "RenderablesNode.h"
 #include "PresentNode.h"
 #include "AcquireImageNode.h"
 #include "FileUtil.h"
@@ -166,6 +166,14 @@ const std::vector<uint16_t> indexData = {
     2, 3, 0
 };
 
+std::vector<Vertex> transformVertices(const std::vector<Vertex>& vertices, float scale, glm::vec2 offset) {
+    std::vector<Vertex> transformed = vertices;
+    for (auto& vertex : transformed) {
+        vertex.pos = vertex.pos * scale + offset;
+    }
+    return transformed;
+}
+
 void createTestComputeMaterial(Handle<TestComputeMat>& outPtr,
                                std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> inViews,
                                std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> outViews,
@@ -211,14 +219,11 @@ void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
 }
 
 void createTutorialRenderable(Handle<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>>& outPtr,
-                              std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> textureImages,
-                              VkSampler textureSampler,
+                              const std::vector<Vertex>& vertices,
+                              Handle<Material<MAX_FRAMES_IN_FLIGHT>> material,
                               VulkanApp<MAX_FRAMES_IN_FLIGHT>& app) {
-    Handle<TutorialMaterial> material;
-    createTutorialMaterial(material, textureImages, textureSampler, app);
-    
     auto& resourceManager = app.getResourceManager();
-    outPtr = resourceManager.create<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>>(vertexData, indexData,
+    outPtr = resourceManager.create<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>>(vertices, indexData,
                                                                                   std::move(material),
                                                                                   resourceManager,
                                                                                   app.getDevice(),
@@ -268,9 +273,16 @@ int main() {
                                          app.getPhysicalDevice());
     
 
-    // Create renderable
-    Handle<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>> renderable;
-    createTutorialRenderable(renderable, outputImages, **sampler, app);
+    // Create a single material shared by two renderables
+    Handle<TutorialMaterial> material;
+    createTutorialMaterial(material, outputImages, **sampler, app);
+    
+    std::vector<Handle<Renderable<MAX_FRAMES_IN_FLIGHT>>> renderables;
+    for (glm::vec2 offset : {glm::vec2{-0.3f, 0.0f}, glm::vec2{0.3f, 0.0f}}) {
+        Handle<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>> renderable;
+        createTutorialRenderable(renderable, transformVertices(vertexData, 0.5f, offset), material, app);
+        renderables.push_back(std::move(renderable));
+    }
     
     
     // Create compute material
@@ -291,11 +303,11 @@ int main() {
                                                                                                app.getDevice(),
                                                                                                app.getComputeQueue(),
                                                                                                app.getComputeCommandBuffers()));
-    auto graphicsNode = renderGraph->addNode(std::make_unique<RenderableNode<MAX_FRAMES_IN_FLIGHT>>(std::move(renderable),
-                                                                                                    app.getDevice(),
-                                                                                                    app.getGraphicsQueue(),
-                                                                                                    app.getRenderPass(),
-                                                                                                    app.getGraphicsCommandBuffers()));
+    auto graphicsNode = renderGraph->addNode(std::make_unique<RenderablesNode<MAX_FRAMES_IN_FLIGHT>>(std::move(renderables),
+                                                                                                     app.getDevice(),
+                                                                                                     app.getGraphicsQueue(),
+                                                                                                     app.getRenderPass(),
+                                                                                                     app.getGraphicsCommandBuffers()));
     auto presentNode = renderGraph->addNode(std::make_unique<PresentNode<MAX_FRAMES_IN_FLIGHT>>(app.getDevice(),
                                                                                                 app.getPresentQueue()));
     
