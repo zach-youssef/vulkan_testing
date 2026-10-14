@@ -1,6 +1,9 @@
 #pragma once
 
 #include "VkTypes.h"
+#include "Buffer.h"
+#include "Image.h"
+#include "ResourceManager.h"
 
 // Abstract class representing any descriptor
 class Descriptor {
@@ -30,17 +33,17 @@ template<typename Data, uint MAX_FRAMES>
 class BufferDescriptor : public Descriptor {
 public:
     BufferDescriptor(VkDescriptorType type, VkShaderStageFlags stageFlags, 
-                     std::array<VkBuffer, MAX_FRAMES> buffers, int size, int offset)
-    : Descriptor(type, stageFlags) {
+                     std::array<Handle<Buffer<Data>>, MAX_FRAMES> buffers, int size, int offset)
+    : Descriptor(type, stageFlags), buffers_(std::move(buffers)) {
         for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
-            bufferInfos_[frameIdx].buffer = buffers[frameIdx];
+            bufferInfos_[frameIdx].buffer = buffers_[frameIdx] ? buffers_[frameIdx]->getBuffer() : VK_NULL_HANDLE;
             bufferInfos_[frameIdx].offset = offset;
             bufferInfos_[frameIdx].range = sizeof(Data) * size;
         }
     }
     BufferDescriptor(VkDescriptorType type, VkShaderStageFlags stageFlags, 
-                     std::array<VkBuffer, MAX_FRAMES> buffers, int size)
-    : BufferDescriptor(type, stageFlags, buffers, size, 0) {}
+                     std::array<Handle<Buffer<Data>>, MAX_FRAMES> buffers, int size)
+    : BufferDescriptor(type, stageFlags, std::move(buffers), size, 0) {}
 
     VkDescriptorBufferInfo* getBufferInfo(const uint32_t frameIndex) override {
         return &bufferInfos_.at(frameIndex);
@@ -50,11 +53,14 @@ public:
         return nullptr;
     }
 
-    void bindBuffer(VkBuffer buffer, int size, const uint32_t frameIndex = 0) {
-        bufferInfos_[frameIndex].buffer = buffer;
+    void bindBuffer(Handle<Buffer<Data>> buffer, int size, const uint32_t frameIndex = 0) {
+        bufferInfos_[frameIndex].buffer = buffer->getBuffer();
         bufferInfos_[frameIndex].range = sizeof(Data) * size;
+        buffers_[frameIndex] = std::move(buffer);
     }
 private:
+    // Keeps the referenced buffers alive for as long as this descriptor
+    std::array<Handle<Buffer<Data>>, MAX_FRAMES> buffers_;
     std::array<VkDescriptorBufferInfo, MAX_FRAMES> bufferInfos_;
 };
 
@@ -63,13 +69,13 @@ template<typename Ubo, uint MAX_FRAMES>
 class UniformBufferDescriptor : public Descriptor {
 public:
     UniformBufferDescriptor<Ubo, MAX_FRAMES>(
-        std::array<VkBuffer, MAX_FRAMES> buffers, 
+        std::array<Handle<Buffer<Ubo>>, MAX_FRAMES> buffers, 
         VkShaderStageFlags stageFlags,
         bool offsetByFrame = false
     )
-    : Descriptor(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stageFlags) {
+    : Descriptor(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stageFlags), buffers_(std::move(buffers)) {
         for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
-            bufferInfos_[frameIdx].buffer = buffers[frameIdx];
+            bufferInfos_[frameIdx].buffer = buffers_[frameIdx] ? buffers_[frameIdx]->getBuffer() : VK_NULL_HANDLE;
             bufferInfos_[frameIdx].offset = offsetByFrame? frameIdx * sizeof(Ubo) : 0;
             bufferInfos_[frameIdx].range = sizeof(Ubo);
         }
@@ -83,10 +89,13 @@ public:
         return nullptr;
     }
 
-    void bindBuffer(const uint32_t frameIndex, VkBuffer buffer) {
-        bufferInfos_[frameIndex].buffer = buffer;
+    void bindBuffer(const uint32_t frameIndex, Handle<Buffer<Ubo>> buffer) {
+        bufferInfos_[frameIndex].buffer = buffer->getBuffer();
+        buffers_[frameIndex] = std::move(buffer);
     }
 private:
+    // Keeps the referenced buffers alive for as long as this descriptor
+    std::array<Handle<Buffer<Ubo>>, MAX_FRAMES> buffers_;
     std::array<VkDescriptorBufferInfo, MAX_FRAMES> bufferInfos_;
 };
 
@@ -106,14 +115,16 @@ public:
 protected:
     ImageDescriptor<MAX_FRAMES>(VkDescriptorType type,
                                 VkShaderStageFlags stageFlags,
-                                std::array<VkImageView, MAX_FRAMES> imageViews)
-    : Descriptor(type, stageFlags) {
+                                std::array<Handle<Image>, MAX_FRAMES> images)
+    : Descriptor(type, stageFlags), images_(std::move(images)) {
         for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
             imageInfos_[frameIdx].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            imageInfos_[frameIdx].imageView = imageViews[frameIdx];
+            imageInfos_[frameIdx].imageView = images_[frameIdx]->getImageView();
         }
     }
 
+    // Keeps the referenced images alive for as long as this descriptor
+    std::array<Handle<Image>, MAX_FRAMES> images_;
     std::array<VkDescriptorImageInfo, MAX_FRAMES> imageInfos_;
 };
 
@@ -122,8 +133,8 @@ template<uint MAX_FRAMES>
 class StorageImageDescriptor : public ImageDescriptor<MAX_FRAMES> {
 public:
     StorageImageDescriptor<MAX_FRAMES>(VkShaderStageFlags stageFlags,
-                                       std::array<VkImageView, MAX_FRAMES> imageViews)
-    : ImageDescriptor<MAX_FRAMES>(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, stageFlags, imageViews) {}
+                                       std::array<Handle<Image>, MAX_FRAMES> images)
+    : ImageDescriptor<MAX_FRAMES>(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, stageFlags, std::move(images)) {}
 };
 
 // Combined Image Sampler Descriptor
@@ -131,11 +142,15 @@ template<uint MAX_FRAMES>
 class CombinedImageSamplerDescriptor : public ImageDescriptor<MAX_FRAMES> {
 public:
     CombinedImageSamplerDescriptor<MAX_FRAMES>(VkShaderStageFlags stageFlags,
-                                               std::array<VkImageView, MAX_FRAMES> imageViews,
-                                               VkSampler sampler)
-    : ImageDescriptor<MAX_FRAMES>(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stageFlags, imageViews) {
+                                               std::array<Handle<Image>, MAX_FRAMES> images,
+                                               Handle<VulkanSampler> sampler)
+    : ImageDescriptor<MAX_FRAMES>(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stageFlags, std::move(images)),
+    sampler_(std::move(sampler)) {
         for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
-            ImageDescriptor<MAX_FRAMES>::imageInfos_[frameIdx].sampler = sampler;
+            ImageDescriptor<MAX_FRAMES>::imageInfos_[frameIdx].sampler = **sampler_;
         }
     }
+private:
+    // Keeps the referenced sampler alive for as long as this descriptor
+    Handle<VulkanSampler> sampler_;
 };
