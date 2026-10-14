@@ -4,6 +4,8 @@
 #include "Renderable.h"
 #include "VkUtil.h"
 
+#include <unordered_set>
+
 template<uint MAX_FRAMES>
 class RenderablesNode : public RenderNode<MAX_FRAMES> {
 public:
@@ -16,7 +18,17 @@ public:
     graphicsQueue_(graphicsQueue),
     renderPass_(renderPass),
     commandBuffers_(commandBuffers),
-    renderables_(std::move(renderables)){}
+    renderables_(std::move(renderables)) {
+        // Renderables may share a material; collect each distinct material once
+        // so that it is only updated once per frame
+        std::unordered_set<Material<MAX_FRAMES>*> seen;
+        for (auto& renderable : renderables_) {
+            auto* material = renderable->getMaterial();
+            if (seen.insert(material).second) {
+                materials_.push_back(material);
+            }
+        }
+    }
 
     NodeDevice getDeviceType() override {
         return NodeDevice::GPU;
@@ -48,12 +60,14 @@ public:
         renderPassInfo.clearValueCount = 2;
         renderPassInfo.pClearValues = clearValues.data();
 
+        // Update each material (probably a uniform buffer)
+        for (auto* material : materials_) {
+            material->update(ctx.frameIndex, ctx.swapchainExtent);
+        }
+
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
         for (auto& renderable : renderables_) {
-            // Update the renderable (probably a uniform buffer)
-            renderable->update(ctx.frameIndex, ctx.swapchainExtent);
-
             // Bind our pipeline, descriptors, and buffers
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             renderable->getMaterial()->getPipeline());
@@ -124,4 +138,6 @@ private:
     VkRenderPass renderPass_;
     std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers_;
     std::vector<Handle<Renderable<MAX_FRAMES>>> renderables_;
+    // Distinct materials of renderables_ (kept alive by the renderables' handles)
+    std::vector<Material<MAX_FRAMES>*> materials_;
 };
