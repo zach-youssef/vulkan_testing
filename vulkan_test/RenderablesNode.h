@@ -7,7 +7,7 @@
 template<uint MAX_FRAMES>
 class RenderablesNode : public RenderNode<MAX_FRAMES> {
 public:
-    RenderablesNode<MAX_FRAMES>(std::vector<std::shared_ptr<Renderable<MAX_FRAMES>>>&& renderables,
+    RenderablesNode<MAX_FRAMES>(std::vector<Handle<Renderable<MAX_FRAMES>>> renderables,
                                VkDevice device,
                                VkQueue graphicsQueue,
                                VkRenderPass renderPass,
@@ -123,5 +123,5 @@ private:
     VkQueue graphicsQueue_;
     VkRenderPass renderPass_;
     std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers_;
-    std::vector<std::shared_ptr<Renderable<MAX_FRAMES>>> renderables_;
+    std::vector<Handle<Renderable<MAX_FRAMES>>> renderables_;
 };

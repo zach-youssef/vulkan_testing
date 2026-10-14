@@ -219,12 +219,11 @@ public:
     virtual uint32_t getIndexCount() = 0;
     
 protected:
-    Renderable<MAX_FRAMES>(std::unique_ptr<Material<MAX_FRAMES>>&& material) {
-        material_ = std::move(material);
-    }
+    Renderable<MAX_FRAMES>(Handle<Material<MAX_FRAMES>> material)
+    : material_(std::move(material)) {}
     
 protected:
-    std::unique_ptr<Material<MAX_FRAMES>> material_;
+    Handle<Material<MAX_FRAMES>> material_;
 };
 
 template<typename VertexData, uint MAX_FRAMES>
@@ -232,7 +231,7 @@ class MeshRenderable : public Renderable<MAX_FRAMES> {
 public:
     MeshRenderable(const std::vector<VertexData>& vertexData,
                    const std::vector<uint16_t>& indexData,
-                   std::unique_ptr<Material<MAX_FRAMES>>&& material,
+                   Handle<Material<MAX_FRAMES>> material,
                    ResourceManager& resourceManager,
                    VkDevice device,
                    VkPhysicalDevice physicalDevice,

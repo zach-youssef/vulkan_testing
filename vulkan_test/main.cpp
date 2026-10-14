@@ -166,7 +166,7 @@ const std::vector<uint16_t> indexData = {
     2, 3, 0
 };
 
-void createTestComputeMaterial(std::unique_ptr<TestComputeMat>& outPtr,
+void createTestComputeMaterial(Handle<TestComputeMat>& outPtr,
                                std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> inViews,
                                std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> outViews,
                                uint32_t width, uint32_t height,
@@ -179,14 +179,14 @@ void createTestComputeMaterial(std::unique_ptr<TestComputeMat>& outPtr,
     descriptors.push_back(resourceManager.create<StorageImageDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, inViews));
     descriptors.push_back(resourceManager.create<StorageImageDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, outViews));
 
-    outPtr = std::make_unique<TestComputeMat>(computeShaderCode,
-                                              descriptors,
-                                              width, height,
-                                              app.getDevice(),
-                                              app.getPhysicalDevice());
+    outPtr = resourceManager.create<TestComputeMat>(computeShaderCode,
+                                                    descriptors,
+                                                    width, height,
+                                                    app.getDevice(),
+                                                    app.getPhysicalDevice());
 }
 
-void createTutorialMaterial(std::unique_ptr<TutorialMaterial>& outPtr,
+void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
                             std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> imageViews,
                             VkSampler sampler,
                             VulkanApp<MAX_FRAMES_IN_FLIGHT>& app) {
@@ -200,30 +200,31 @@ void createTutorialMaterial(std::unique_ptr<TutorialMaterial>& outPtr,
                                                                                                                      VK_SHADER_STAGE_VERTEX_BIT));
     descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_FRAGMENT_BIT, imageViews, sampler));
 
-    outPtr = std::make_unique<TutorialMaterial>(app.getResourceManager(),
-                                                app.getDevice(),
-                                                app.getPhysicalDevice(),
-                                                app.getSwapchainExtent(),
-                                                app.getRenderPass(),
-                                                descriptors,
-                                                vertShaderCode,
-                                                fragShaderCode);
+    outPtr = resourceManager.create<TutorialMaterial>(resourceManager,
+                                                      app.getDevice(),
+                                                      app.getPhysicalDevice(),
+                                                      app.getSwapchainExtent(),
+                                                      app.getRenderPass(),
+                                                      descriptors,
+                                                      vertShaderCode,
+                                                      fragShaderCode);
 }
 
-void createTutorialRenderable(std::unique_ptr<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>>& outPtr,
+void createTutorialRenderable(Handle<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>>& outPtr,
                               std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> textureImages,
                               VkSampler textureSampler,
                               VulkanApp<MAX_FRAMES_IN_FLIGHT>& app) {
-    std::unique_ptr<TutorialMaterial> material;
+    Handle<TutorialMaterial> material;
     createTutorialMaterial(material, textureImages, textureSampler, app);
     
-    outPtr = std::make_unique<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>>(vertexData, indexData,
-                                                                            std::move(material),
-                                                                            app.getResourceManager(),
-                                                                            app.getDevice(),
-                                                                            app.getPhysicalDevice(),
-                                                                            app.getGraphicsQueue(),
-                                                                            app.getCommandPool());
+    auto& resourceManager = app.getResourceManager();
+    outPtr = resourceManager.create<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>>(vertexData, indexData,
+                                                                                  std::move(material),
+                                                                                  resourceManager,
+                                                                                  app.getDevice(),
+                                                                                  app.getPhysicalDevice(),
+                                                                                  app.getGraphicsQueue(),
+                                                                                  app.getCommandPool());
 }
 
 int main() {
@@ -268,12 +269,12 @@ int main() {
     
 
     // Create renderable
-    std::unique_ptr<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>> renderable;
+    Handle<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>> renderable;
     createTutorialRenderable(renderable, outputImages, **sampler, app);
     
     
     // Create compute material
-    std::unique_ptr<TestComputeMat> computeMaterial;
+    Handle<TestComputeMat> computeMaterial;
     createTestComputeMaterial(computeMaterial,
                               inputImages,
                               outputImages,

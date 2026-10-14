@@ -7,7 +7,7 @@
 template<uint MAX_FRAMES>
 class ComputeNode : public RenderNode<MAX_FRAMES> {
 public:
-    ComputeNode<MAX_FRAMES>(std::unique_ptr<ComputeMaterial<MAX_FRAMES>>&& computePass,
+    ComputeNode<MAX_FRAMES>(Handle<ComputeMaterial<MAX_FRAMES>> computePass,
                             VkDevice device,
                             VkQueue computeQueue,
                             std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers)
@@ -71,5 +71,5 @@ public:
 protected:
     VkQueue computeQueue_;
     std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers_;
-    std::unique_ptr<ComputeMaterial<MAX_FRAMES>> computePass_;
+    Handle<ComputeMaterial<MAX_FRAMES>> computePass_;
 };
