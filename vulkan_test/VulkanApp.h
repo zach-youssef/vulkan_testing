@@ -295,7 +295,8 @@ private: // Vulkan Initialization Functions
                                 "Failed to create image view for swapchain");
         }
     }
-    
+
+public:    
     void createRenderPass(bool forceFullFloatColor) {
         VkAttachmentDescription colorAttachment{};
         colorAttachment.format = forceFullFloatColor? VK_FORMAT_R32G32B32A32_SFLOAT : swapChainImageFormat_;
@@ -356,6 +357,7 @@ private: // Vulkan Initialization Functions
         VK_SUCCESS_OR_THROW(VulkanRenderPass::create(renderPass_, **device_, renderPassInfo),
                             "Failed to create render pass");
     }
+private:
     
     void createFramebuffers() {
         swapChainFramebuffers_.resize(swapChainImageViews_.size());
