@@ -52,6 +52,26 @@ public:
         return height_;
     }
     
+    VkFormat getFormat() {
+        return format_;
+    }
+    
+    // Size in bytes of a single texel for the formats this wrapper supports reading back
+    static VkDeviceSize bytesPerPixel(VkFormat format) {
+        switch (format) {
+            case VK_FORMAT_R8G8B8A8_UNORM:
+            case VK_FORMAT_R8G8B8A8_SRGB:
+            case VK_FORMAT_B8G8R8A8_UNORM:
+            case VK_FORMAT_B8G8R8A8_SRGB:
+            case VK_FORMAT_D32_SFLOAT:
+                return 4;
+            case VK_FORMAT_R32G32B32A32_SFLOAT:
+                return 16;
+            default:
+                throw std::invalid_argument("Unsupported format for bytesPerPixel");
+        }
+    }
+    
     Image(uint32_t width,
           uint32_t height,
           VkFormat format,
@@ -61,7 +81,7 @@ public:
           VkDevice device,
           VkPhysicalDevice physicalDevice,
           VkResult& outResult,
-          VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) : device_(device), width_(width), height_(height) {
+          VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) : device_(device), format_(format), width_(width), height_(height) {
         VkImageCreateInfo imageInfo{};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -325,6 +345,19 @@ public:
                 
                 sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
                 destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+                // Wait for any shader access before reading the image back
+                barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                
+                sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+                destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+                barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                
+                sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
             } else if(oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
                 barrier.srcAccessMask = 0; // Nothing to wait on
                 barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
@@ -347,6 +380,73 @@ public:
                 1, &barrier
             );
         }, graphicsQueue, device, commandPool);
+    }
+    
+    // Copies the image's contents into host memory. The image must be in currentLayout
+    // (SHADER_READ_ONLY_OPTIMAL or TRANSFER_SRC_OPTIMAL) and is returned to it afterwards.
+    std::vector<uint8_t> readback(VkImageLayout currentLayout,
+                                  VkQueue queue,
+                                  VkCommandPool commandPool,
+                                  VkPhysicalDevice physicalDevice,
+                                  VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+        const VkDeviceSize size = bytesPerPixel(format_) * width_ * height_;
+        
+        std::unique_ptr<Buffer<uint8_t>> stagingBuffer;
+        VK_SUCCESS_OR_THROW(Buffer<uint8_t>::create(stagingBuffer, size,
+                                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                    device_, physicalDevice),
+                            "Failed to create image readback buffer");
+        
+        if (currentLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+            transitionImageLayout(getImage(), format_, currentLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                  queue, commandPool, device_, aspect);
+        }
+        
+        copyImageToBuffer(getImage(), stagingBuffer->getBuffer(), width_, height_,
+                          queue, commandPool, device_, aspect);
+        
+        if (currentLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+            transitionImageLayout(getImage(), format_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, currentLayout,
+                                  queue, commandPool, device_, aspect);
+        }
+        
+        std::vector<uint8_t> pixels(size);
+        stagingBuffer->mapAndExecute(0, size, [&pixels, size](void* data) {
+            memcpy(pixels.data(), data, static_cast<size_t>(size));
+        });
+        return pixels;
+    }
+    
+    static void copyImageToBuffer(VkImage image,
+                                  VkBuffer buffer,
+                                  uint32_t width,
+                                  uint32_t height,
+                                  VkQueue queue,
+                                  VkCommandPool commandPool,
+                                  VkDevice device,
+                                  VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+        issueSingleTimeCommand([=](VkCommandBuffer commandBuffer){
+            VkBufferImageCopy region{};
+            region.bufferOffset = 0;
+            region.bufferRowLength = 0; // Tightly packed
+            region.bufferImageHeight = 0;
+            
+            region.imageSubresource.aspectMask = aspect;
+            region.imageSubresource.mipLevel = 0;
+            region.imageSubresource.baseArrayLayer = 0;
+            region.imageSubresource.layerCount = 1;
+            
+            region.imageOffset = {0, 0, 0};
+            region.imageExtent = {width, height, 1};
+            
+            vkCmdCopyImageToBuffer(commandBuffer,
+                                   image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   buffer,
+                                   1,
+                                   &region);
+        }, queue, device, commandPool);
     }
     
     static void copyBufferToImage(VkBuffer buffer,
@@ -393,6 +493,7 @@ private:
     std::unique_ptr<VulkanImageView> imageView_;
     std::unique_ptr<VulkanSampler> sampler_;
     
+    VkFormat format_;
     uint32_t width_;
     uint32_t height_;
 };
