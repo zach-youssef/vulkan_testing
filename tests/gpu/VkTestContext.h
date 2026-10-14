@@ -250,8 +250,11 @@ public:
         for (const auto& error : context().takeValidationErrors()) {
             FAIL_CHECK("Vulkan validation error: " << error);
         }
-        CHECK_MESSAGE(context().resources().size() == resourcesBefore_,
-                      "Test leaked handles to managed resources");
+        const size_t resourcesAfter = context().resources().size();
+        if (resourcesAfter != resourcesBefore_) {
+            FAIL_CHECK("Test leaked handles to managed resources: " << resourcesBefore_
+                       << " before, " << resourcesAfter << " after");
+        }
     }
 
 protected:
