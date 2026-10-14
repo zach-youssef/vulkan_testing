@@ -193,7 +193,8 @@ private:
         pipelineInfo.layout = **Material<MAX_FRAMES>::pipelineLayout_;
         pipelineInfo.stage = computeShaderStageInfo;
         
-        VulkanComputePipeline::create(computePipeline_, Material<MAX_FRAMES>::device_, pipelineInfo);//,
+        // The VkResult is intentionally left unchecked here (unlike other create calls)
+        VulkanComputePipeline::create(computePipeline_, Material<MAX_FRAMES>::device_, pipelineInfo);
     }
 
 protected:

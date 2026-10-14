@@ -118,7 +118,7 @@ VULKAN_DEVICE_CLASS(VulkanPipelineLayout, VkPipelineLayout, VkPipelineLayoutCrea
 
 class VulkanGraphicsPipeline final : public VkWrapper<VulkanGraphicsPipeline, VkPipeline, VkDevice, const VkGraphicsPipelineCreateInfo&> {
 public:
-    VulkanGraphicsPipeline(VkResult outResult, VkDevice device, const VkGraphicsPipelineCreateInfo& createInfo) : device_(device) {
+    VulkanGraphicsPipeline(VkResult& outResult, VkDevice device, const VkGraphicsPipelineCreateInfo& createInfo) : device_(device) {
         outResult = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &createInfo, nullptr, &value_);
     }
     ~VulkanGraphicsPipeline() {
@@ -130,7 +130,7 @@ private:
 
 class VulkanComputePipeline final : public VkWrapper<VulkanComputePipeline, VkPipeline, VkDevice, const VkComputePipelineCreateInfo&> {
 public:
-    VulkanComputePipeline(VkResult outResult, VkDevice device, const VkComputePipelineCreateInfo& createInfo): device_(device) {
+    VulkanComputePipeline(VkResult& outResult, VkDevice device, const VkComputePipelineCreateInfo& createInfo): device_(device) {
         outResult = vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &createInfo, nullptr, &value_);
     }
     ~VulkanComputePipeline() {
