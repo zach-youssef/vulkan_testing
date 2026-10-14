@@ -12,7 +12,7 @@ class BasicMaterial : public Material<MAX_FRAMES> {
 public:
     BasicMaterial<MAX_FRAMES>(VkDevice device,
                   VkPhysicalDevice physicalDevice,
-                  std::vector<std::shared_ptr<Descriptor>> descriptors,
+                  std::vector<Handle<Descriptor>> descriptors,
                   VkExtent2D swapchainExtent,
                   VkRenderPass renderPass,
                   const std::vector<char>& vertSpirv,

@@ -9,6 +9,8 @@
 
 #include <vulkan/vk_enum_string_helper.h>
 
+#include "ResourceManager.h"
+
 template<typename WrapperType, typename VkType, class... Args>
 class VkWrapper {
 public:
@@ -27,6 +29,13 @@ public:
             std::cerr << string_VkResult(result) << std::endl;
             //outPtr = nullptr;
         }
+        return result;
+    }
+    
+    static VkResult create(Handle<WrapperType>& outHandle, ResourceManager& resourceManager, Args... args) {
+        std::unique_ptr<WrapperType> ptr;
+        VkResult result = create(ptr, args...);
+        outHandle = resourceManager.adopt(std::move(ptr));
         return result;
     }
     
@@ -218,6 +227,26 @@ public:
                                           VkDevice device,
                                           VkPhysicalDevice physicalDevice) {
         return createWithModeAndFilter(outSampler, addressMode, VK_FILTER_LINEAR, device, physicalDevice);
+    }
+    
+    static VkResult createWithAddressMode(Handle<VulkanSampler>& outSampler,
+                                          ResourceManager& resourceManager,
+                                          VkSamplerAddressMode addressMode,
+                                          VkDevice device,
+                                          VkPhysicalDevice physicalDevice) {
+        return createWithModeAndFilter(outSampler, resourceManager, addressMode, VK_FILTER_LINEAR, device, physicalDevice);
+    }
+    
+    static VkResult createWithModeAndFilter(Handle<VulkanSampler>& outSampler,
+                                            ResourceManager& resourceManager,
+                                            VkSamplerAddressMode addressMode,
+                                            VkFilter filter,
+                                            VkDevice device,
+                                            VkPhysicalDevice physicalDevice) {
+        std::unique_ptr<VulkanSampler> sampler;
+        VkResult result = createWithModeAndFilter(sampler, addressMode, filter, device, physicalDevice);
+        outSampler = resourceManager.adopt(std::move(sampler));
+        return result;
     }
 
     static VkResult createWithModeAndFilter(std::unique_ptr<VulkanSampler>& outSampler,

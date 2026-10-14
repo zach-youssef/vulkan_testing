@@ -44,7 +44,7 @@ public:
 protected:
     Material<MAX_FRAMES>(VkDevice device,
              VkPhysicalDevice physicalDevice,
-             std::vector<std::shared_ptr<Descriptor>> descriptors)
+             std::vector<Handle<Descriptor>> descriptors)
     : device_(device), physicalDevice_(physicalDevice), descriptors_(descriptors) {
         createDescriptorSetLayout();
         createDescriptorPool();
@@ -142,7 +142,7 @@ private:
 protected:
     VkDevice device_;
     VkPhysicalDevice physicalDevice_;
-    std::vector<std::shared_ptr<Descriptor>> descriptors_;
+    std::vector<Handle<Descriptor>> descriptors_;
 
     std::unique_ptr<VulkanPipelineLayout> pipelineLayout_;
     std::unique_ptr<VulkanGraphicsPipeline> pipeline_;
@@ -163,7 +163,7 @@ public:
 protected:
     ComputeMaterial<MAX_FRAMES>(VkDevice device,
                                 VkPhysicalDevice physicalDevice,
-                                std::vector<std::shared_ptr<Descriptor>> descriptors,
+                                std::vector<Handle<Descriptor>> descriptors,
                                 const std::vector<char> & computeShaderCode)
     : Material<MAX_FRAMES>(device, physicalDevice, descriptors) {
         createComputePipeline(computeShaderCode);

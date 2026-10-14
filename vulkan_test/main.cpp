@@ -65,7 +65,7 @@ public:
                      VkPhysicalDevice physicalDevice,
                      VkExtent2D swapchainExtent,
                      VkRenderPass renderPass,
-                     std::vector<std::shared_ptr<Descriptor>> descriptors,
+                     std::vector<Handle<Descriptor>> descriptors,
                      const std::vector<char>& vertSpirv,
                      const std::vector<char>& fragSpirv)
     :  BasicMaterial<MAX_FRAMES_IN_FLIGHT, 3>(device,
@@ -79,10 +79,10 @@ public:
                                               Vertex::getAttributeDescriptions()){
         // JANK: Find the first uniform buffer object descriptor
         using UboDesc = UniformBufferDescriptor<UniformBufferObject, MAX_FRAMES_IN_FLIGHT>;
-        std::shared_ptr<UboDesc> uboDesc = nullptr;
+        Handle<UboDesc> uboDesc = nullptr;
         for (auto& descriptor : Material<MAX_FRAMES_IN_FLIGHT>::descriptors_) {
             if (descriptor->getType() == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
-                uboDesc = std::reinterpret_pointer_cast<UboDesc>(descriptor);
+                uboDesc = static_handle_cast<UboDesc>(descriptor);
                 break;
             }
         }
@@ -133,7 +133,7 @@ private:
 class TestComputeMat : public ComputeMaterial<MAX_FRAMES_IN_FLIGHT> {
 public:
     TestComputeMat(const std::vector<char>& computeShaderCode,
-                   std::vector<std::shared_ptr<Descriptor>> descriptors,
+                   std::vector<Handle<Descriptor>> descriptors,
                    uint32_t imageWidth, uint32_t imageHeight,
                    VkDevice device,
                    VkPhysicalDevice physicalDevice)
@@ -174,9 +174,10 @@ void createTestComputeMaterial(std::unique_ptr<TestComputeMat>& outPtr,
     const static std::string shaderPath = "/Users/zyoussef/code/vulkan_test/vulkan_test/shaders";
     auto computeShaderCode = readFile(shaderPath + "/compTest.spv");
     
-    std::vector<std::shared_ptr<Descriptor>> descriptors;
-    descriptors.push_back(std::make_shared<StorageImageDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, inViews));
-    descriptors.push_back(std::make_shared<StorageImageDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, outViews));
+    std::vector<Handle<Descriptor>> descriptors;
+    auto& resourceManager = app.getResourceManager();
+    descriptors.push_back(resourceManager.create<StorageImageDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, inViews));
+    descriptors.push_back(resourceManager.create<StorageImageDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, outViews));
 
     outPtr = std::make_unique<TestComputeMat>(computeShaderCode,
                                               descriptors,
@@ -193,10 +194,11 @@ void createTutorialMaterial(std::unique_ptr<TutorialMaterial>& outPtr,
     auto vertShaderCode = readFile(shaderPath + "/vert.spv");
     auto fragShaderCode = readFile(shaderPath + "/frag.spv");
     
-    std::vector<std::shared_ptr<Descriptor>> descriptors;
-    descriptors.push_back(std::make_shared<UniformBufferDescriptor<UniformBufferObject, MAX_FRAMES_IN_FLIGHT>>(std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT>{},
-                                                                                                               VK_SHADER_STAGE_VERTEX_BIT));
-    descriptors.push_back(std::make_shared<CombinedImageSamplerDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_FRAGMENT_BIT, imageViews, sampler));
+    std::vector<Handle<Descriptor>> descriptors;
+    auto& resourceManager = app.getResourceManager();
+    descriptors.push_back(resourceManager.create<UniformBufferDescriptor<UniformBufferObject, MAX_FRAMES_IN_FLIGHT>>(std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT>{},
+                                                                                                                     VK_SHADER_STAGE_VERTEX_BIT));
+    descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_FRAGMENT_BIT, imageViews, sampler));
 
     outPtr = std::make_unique<TutorialMaterial>(app.getResourceManager(),
                                                 app.getDevice(),
@@ -257,8 +259,9 @@ int main() {
     std::array<VkImageView, MAX_FRAMES_IN_FLIGHT> outputImages = {outImages[0]->getImageView(), outImages[1]->getImageView()};
 
     // Create texture sampler
-    std::unique_ptr<VulkanSampler> sampler;
+    Handle<VulkanSampler> sampler;
     VulkanSampler::createWithAddressMode(sampler,
+                                         app.getResourceManager(),
                                          VK_SAMPLER_ADDRESS_MODE_REPEAT,
                                          app.getDevice(),
                                          app.getPhysicalDevice());
