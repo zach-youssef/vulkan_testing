@@ -98,9 +98,35 @@ test-example-image_filter: $(IMAGE_FILTER_BIN) $(IMAGE_FILTER_DIFF)
 		--blur 2 --edges --validation
 	./$(IMAGE_FILTER_DIFF) $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(IMAGE_FILTER_TEST_OUT)/blur_edges.png 2
 
-examples: $(SIMPLE_OUT)/simple_example $(IMAGE_FILTER_BIN)
+# ---------------------------------------------------------------------------
+# Example: particles
+#   GPU particle simulation drawn in a window
+#   make test-example-particles - runs it headless for 120 frames with validation, capturing the last
+# ---------------------------------------------------------------------------
+PARTICLES_DIR = $(EXAMPLES_DIR)/particles
+PARTICLES_OUT = $(EXAMPLES_OUT)/particles
+PARTICLES_SHADER_SRCS = $(wildcard $(PARTICLES_DIR)/shaders/*)
+PARTICLES_SHADERS = $(patsubst $(PARTICLES_DIR)/shaders/%,$(PARTICLES_OUT)/shaders/%.spv,$(PARTICLES_SHADER_SRCS))
+PARTICLES_CFLAGS = $(CFLAGS) -DPARTICLES_SHADER_DIR='"$(abspath $(PARTICLES_OUT)/shaders)"'
 
-shaders: $(SIMPLE_SHADERS) $(IMAGE_FILTER_SHADERS)
+$(PARTICLES_OUT)/shaders/%.spv : $(PARTICLES_DIR)/shaders/% $(GLSL_INCLUDES)
+	@mkdir -p $(dir $@)
+	glslc $(GLSLC_FLAGS) $< -o $@
+
+$(PARTICLES_OUT)/particles.o : $(PARTICLES_DIR)/particles.cpp $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) -c -o $@ $< $(PARTICLES_CFLAGS)
+
+$(PARTICLES_OUT)/particles: $(PARTICLES_OUT)/particles.o | $(PARTICLES_SHADERS)
+	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
+	install_name_tool -add_rpath /usr/local/lib ./$@
+
+test-example-particles: $(PARTICLES_OUT)/particles
+	./$< --frames 120 --capture $(PARTICLES_OUT)/smoke.png
+
+examples: $(SIMPLE_OUT)/simple_example $(IMAGE_FILTER_BIN) $(PARTICLES_OUT)/particles
+
+shaders: $(SIMPLE_SHADERS) $(IMAGE_FILTER_SHADERS) $(PARTICLES_SHADERS)
 
 .DEFAULT_GOAL := examples
 
@@ -170,7 +196,7 @@ approve-screenshots:
 	done
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
-.PHONY: clean examples shaders test test-cpu test-gpu approve-screenshots test-example-image_filter
+.PHONY: clean examples shaders test test-cpu test-gpu approve-screenshots test-example-image_filter test-example-particles
 
 
 clean:
