@@ -52,9 +52,55 @@ $(SIMPLE_OUT)/simple_example: $(SIMPLE_OUT)/simple_example.o | $(SIMPLE_SHADERS)
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
-examples: $(SIMPLE_OUT)/simple_example
+# ---------------------------------------------------------------------------
+# Example: image_filter
+#   A headless command-line GPU image filter (no GLFW)
+#   make test-example-image_filter - smoke test with validation, plus golden image checks
+# ---------------------------------------------------------------------------
+IMAGE_FILTER_DIR = $(EXAMPLES_DIR)/image_filter
+IMAGE_FILTER_OUT = $(EXAMPLES_OUT)/image_filter
+IMAGE_FILTER_BIN = $(IMAGE_FILTER_OUT)/image_filter
+IMAGE_FILTER_SHADER_SRCS = $(wildcard $(IMAGE_FILTER_DIR)/shaders/*.comp)
+IMAGE_FILTER_SHADER_INCLUDES = $(wildcard $(IMAGE_FILTER_DIR)/shaders/*.glsl)
+IMAGE_FILTER_SHADERS = $(patsubst $(IMAGE_FILTER_DIR)/shaders/%,$(IMAGE_FILTER_OUT)/shaders/%.spv,$(IMAGE_FILTER_SHADER_SRCS))
+IMAGE_FILTER_CFLAGS = $(CFLAGS) -DIMAGE_FILTER_SHADER_DIR='"$(abspath $(IMAGE_FILTER_OUT)/shaders)"'
+IMAGE_FILTER_TEST_DIR = $(IMAGE_FILTER_DIR)/tests
+IMAGE_FILTER_TEST_OUT = $(IMAGE_FILTER_OUT)/tests
+IMAGE_FILTER_DIFF = $(IMAGE_FILTER_TEST_OUT)/image_diff
 
-shaders: $(SIMPLE_SHADERS)
+$(IMAGE_FILTER_OUT)/shaders/%.spv : $(IMAGE_FILTER_DIR)/shaders/% $(IMAGE_FILTER_SHADER_INCLUDES) $(GLSL_INCLUDES)
+	@mkdir -p $(dir $@)
+	glslc $(GLSLC_FLAGS) $< -o $@
+
+$(IMAGE_FILTER_OUT)/image_filter.o : $(IMAGE_FILTER_DIR)/image_filter.cpp $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) -c -o $@ $< $(IMAGE_FILTER_CFLAGS)
+
+$(IMAGE_FILTER_BIN): $(IMAGE_FILTER_OUT)/image_filter.o | $(IMAGE_FILTER_SHADERS)
+	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
+	install_name_tool -add_rpath /usr/local/lib ./$@
+
+$(IMAGE_FILTER_DIFF): $(IMAGE_FILTER_TEST_DIR)/image_diff.cpp
+	@mkdir -p $(dir $@)
+	$(CC) -o $@ $< $(CFLAGS)
+
+# Every pass on the simple example's texture with validation on (any message fails the run), then
+# golden checks on a small input: without filters the output must match the input (colour spaces
+# round trip), and blur plus edges must match the approved output within a tolerance. To approve a
+# new output, run the blur and edges command below and copy its output over the approved image.
+test-example-image_filter: $(IMAGE_FILTER_BIN) $(IMAGE_FILTER_DIFF)
+	@mkdir -p $(IMAGE_FILTER_TEST_OUT)
+	./$(IMAGE_FILTER_BIN) $(SIMPLE_DIR)/textures/texture.jpg $(IMAGE_FILTER_TEST_OUT)/all_passes.png \
+		--blur 2 --edges --threshold 0.15 --validation
+	./$(IMAGE_FILTER_BIN) $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_TEST_OUT)/identity.png --validation
+	./$(IMAGE_FILTER_DIFF) $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_TEST_OUT)/identity.png 1
+	./$(IMAGE_FILTER_BIN) $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_TEST_OUT)/blur_edges.png \
+		--blur 2 --edges --validation
+	./$(IMAGE_FILTER_DIFF) $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(IMAGE_FILTER_TEST_OUT)/blur_edges.png 2
+
+examples: $(SIMPLE_OUT)/simple_example $(IMAGE_FILTER_BIN)
+
+shaders: $(SIMPLE_SHADERS) $(IMAGE_FILTER_SHADERS)
 
 .DEFAULT_GOAL := examples
 
@@ -124,7 +170,7 @@ approve-screenshots:
 	done
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
-.PHONY: clean examples shaders test test-cpu test-gpu approve-screenshots
+.PHONY: clean examples shaders test test-cpu test-gpu approve-screenshots test-example-image_filter
 
 
 clean:
