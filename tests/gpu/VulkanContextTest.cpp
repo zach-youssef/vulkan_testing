@@ -195,3 +195,54 @@ TEST_CASE("VulkanContext supports recording on per-thread pools and submitting c
         CHECK(readFirst(*buffers[recordingThreads + t]) == 50000 + t * 1000 + iterations - 1);
     }
 }
+
+TEST_CASE("Frames in flight can change between frames, resizing per-frame resources") {
+    ValidatedContext validated;
+    auto& ctx = *validated.context;
+    CHECK(ctx.framesInFlight() == 2);
+    CHECK(ctx.currentFrame() == 0);
+
+    {
+        PerFrameHandles<Buffer<uint32_t>> buffers(ctx, [&ctx](uint32_t) { return createHostBuffer(ctx, 4); });
+        CHECK(buffers.size() == 2);
+        const size_t baseline = ctx.resources().size();
+
+        ctx.advanceFrame();
+        CHECK(ctx.currentFrame() == 1);
+
+        // Takes effect at the next frame boundary, not immediately
+        ctx.setFramesInFlight(3);
+        CHECK(ctx.framesInFlight() == 2);
+        CHECK(buffers.size() == 2);
+
+        ctx.advanceFrame();
+        CHECK(ctx.framesInFlight() == 3);
+        CHECK(ctx.currentFrame() == 0);
+        CHECK(buffers.size() == 3);
+        CHECK(ctx.resources().size() == baseline + 1);
+        CHECK(buffers[2]->getBuffer() != VK_NULL_HANDLE);
+
+        ctx.advanceFrame();
+        ctx.advanceFrame();
+        CHECK(ctx.currentFrame() == 2);
+        ctx.advanceFrame();
+        CHECK(ctx.currentFrame() == 0);
+
+        ctx.setFramesInFlight(1);
+        ctx.advanceFrame();
+        CHECK(buffers.size() == 1);
+        CHECK(ctx.resources().size() == baseline - 1);
+
+        CHECK_THROWS_AS(ctx.setFramesInFlight(0), std::invalid_argument);
+    }
+    CHECK(ctx.frames().size() == 0);
+}
+
+TEST_CASE("The initial number of frames in flight is configurable") {
+    VulkanContextConfig config;
+    config.framesInFlight = 3;
+    VulkanContext ctx(std::move(config));
+    CHECK(ctx.framesInFlight() == 3);
+    PerFrame<int> values(ctx, [](uint32_t frame) { return static_cast<int>(frame); });
+    CHECK(values.size() == 3);
+}

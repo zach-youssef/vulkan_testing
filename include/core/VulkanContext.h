@@ -4,8 +4,10 @@
 #include "core/VkUtil.h"
 #include "core/ResourceManager.h"
 #include "core/DeviceSelection.h"
+#include "core/FrameResources.h"
 
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <functional>
 #include <iostream>
@@ -22,6 +24,8 @@
       device, the device's queues and a ResourceManager
     - Serializes access to each queue (see "Thread safety" below)
     - Hands out CommandPools, and runs one-off commands with submitImmediate()
+    - Holds the number of frames in flight and the current frame, and keeps PerFrame collections
+      (see FrameResources.h) sized to match
 
  Thread safety:
     - Queues are externally synchronized in Vulkan. Submit, present and wait on queues through
@@ -31,6 +35,8 @@
       CommandPool below.
     - submitImmediate() may be called from any thread.
     - The ResourceManager is thread safe.
+    - PerFrame collections may be created and destroyed on any thread. advanceFrame() must only be
+      called by the thread driving frames.
 
  Lifetime:
     Everything created from the context (CommandPools, managed resources, wrappers holding the
@@ -132,6 +138,10 @@ struct VulkanContextConfig {
     // May be called from any thread that calls into Vulkan.
     std::function<void(VkDebugUtilsMessageSeverityFlagBitsEXT, const char*)> onValidationMessage;
 
+    // Number of frames the CPU may record while the GPU is still executing earlier ones. Can be
+    // changed later with VulkanContext::setFramesInFlight.
+    uint32_t framesInFlight = 2;
+
     // Creates the surface to present to. Without one the context is headless: no present
     // queue is available and devices are not required to support presentation.
     std::function<VkResult(VkInstance, VkSurfaceKHR*)> createSurface;
@@ -139,7 +149,8 @@ struct VulkanContextConfig {
 
 class VulkanContext {
 public:
-    explicit VulkanContext(VulkanContextConfig config) : config_(std::move(config)) {
+    explicit VulkanContext(VulkanContextConfig config)
+    : config_(std::move(config)), frames_(config_.framesInFlight) {
         if (!config_.onValidationMessage) {
             config_.onValidationMessage = [](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
                 const char* label = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ? "error" : "warning";
@@ -201,6 +212,37 @@ public: // Accessors
     // present() and waitIdle(), which hold the queue's lock.
     VkQueue queue(QueueType type) {
         return queueFor(type).queue;
+    }
+
+public: // Frames in flight
+    uint32_t framesInFlight() { return frames_.framesInFlight(); }
+
+    // Index of the frame being recorded, in [0, framesInFlight())
+    uint32_t currentFrame() { return frames_.currentFrame(); }
+
+    // Tracks the PerFrame collections created from this context
+    FrameRegistry& frames() { return frames_; }
+
+    // Requests a new number of frames in flight. It takes effect at the next advanceFrame(), so it
+    // may be called mid-frame (e.g. from a callback while a frame is recorded). Thread safe.
+    void setFramesInFlight(uint32_t count) {
+        if (count == 0) {
+            throw std::invalid_argument("At least one frame must be in flight");
+        }
+        pendingFramesInFlight_ = count;
+    }
+
+    // Ends the current frame and moves on to the next. If a new number of frames in flight was
+    // requested, waits for the device to be idle, resizes every PerFrame collection and restarts
+    // at frame 0.
+    void advanceFrame() {
+        uint32_t pending = pendingFramesInFlight_.exchange(0);
+        if (pending != 0 && pending != frames_.framesInFlight()) {
+            waitIdleAll();
+            frames_.resize(pending);
+        } else {
+            frames_.advance();
+        }
     }
 
 public: // Queue access (thread safe)
@@ -508,6 +550,10 @@ private:
 
     VulkanContextConfig config_;
 
+    // Declared first so it is destroyed last: PerFrame collections unregister when destroyed
+    FrameRegistry frames_;
+    std::atomic<uint32_t> pendingFramesInFlight_{0};
+
     std::unique_ptr<VulkanInstance> instance_;
     VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
     std::unique_ptr<VulkanSurface> surface_;
@@ -542,3 +588,7 @@ inline VkResult VulkanSampler::createWithModeAndFilter(Handle<VulkanSampler>& ou
     outSampler = context.resources().adopt(std::move(sampler));
     return result;
 }
+
+template<typename T>
+PerFrame<T>::PerFrame(VulkanContext& context, Create create, Destroy destroy)
+: PerFrame(context.frames(), std::move(create), std::move(destroy)) {}
