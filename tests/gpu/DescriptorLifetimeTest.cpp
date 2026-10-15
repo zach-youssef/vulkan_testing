@@ -80,9 +80,8 @@ TEST_CASE_FIXTURE(GpuTest, "UniformBufferDescriptor::bindBuffer binds and retain
     UniformBufferDescriptor<glm::mat4, kFrames> descriptor({}, VK_SHADER_STAGE_VERTEX_BIT);
 
     Handle<Buffer<glm::mat4>> buffer;
-    REQUIRE(Buffer<glm::mat4>::create(buffer, resources, 1, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                      ctx.device(), ctx.physicalDevice()) == VK_SUCCESS);
+    REQUIRE(Buffer<glm::mat4>::create(buffer, ctx.vulkan(), 1, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == VK_SUCCESS);
     const VkBuffer rawBuffer = buffer->getBuffer();
 
     descriptor.bindBuffer(1, buffer);

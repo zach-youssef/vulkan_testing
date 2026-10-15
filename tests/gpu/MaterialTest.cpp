@@ -67,9 +67,8 @@ TEST_CASE_FIXTURE(GpuTest, "Material tolerates descriptors whose buffers are bou
     // Binding the buffers later and re-populating writes them
     for (uint frame = 0; frame < kFrames; ++frame) {
         Handle<Buffer<UniformBufferObject>> buffer;
-        REQUIRE(Buffer<UniformBufferObject>::create(buffer, resources, 1, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                                    ctx.device(), ctx.physicalDevice()) == VK_SUCCESS);
+        REQUIRE(Buffer<UniformBufferObject>::create(buffer, ctx.vulkan(), 1, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == VK_SUCCESS);
         uboDescriptor->bindBuffer(frame, buffer);
         material->populateDescriptorSet(frame);
     }

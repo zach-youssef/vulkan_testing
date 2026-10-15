@@ -244,28 +244,10 @@ public:
     MeshRenderable(const std::vector<VertexData>& vertexData,
                    const std::vector<uint16_t>& indexData,
                    Handle<Material<MAX_FRAMES>> material,
-                   ResourceManager& resourceManager,
-                   VkDevice device,
-                   VkPhysicalDevice physicalDevice,
-                   VkQueue graphicsQueue,
-                   VkCommandPool commandPool)
+                   VulkanContext& context)
     : Renderable<MAX_FRAMES>(std::move(material)), indexCount_(static_cast<uint32_t>(indexData.size())) {
-        Buffer<VertexData>::createAndInitialize(vertexBuffer_,
-                                                resourceManager,
-                                                vertexData,
-                                                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                                device,
-                                                physicalDevice,
-                                                graphicsQueue,
-                                                commandPool);
-        Buffer<uint16_t>::createAndInitialize(indexBuffer_,
-                                              resourceManager,
-                                              indexData,
-                                              VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                                              device,
-                                              physicalDevice,
-                                              graphicsQueue,
-                                              commandPool);
+        Buffer<VertexData>::createAndInitialize(vertexBuffer_, context, vertexData, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        Buffer<uint16_t>::createAndInitialize(indexBuffer_, context, indexData, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     }
 
     VkBuffer getVertexBuffer() {

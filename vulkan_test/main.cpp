@@ -60,7 +60,7 @@ struct Vertex {
 
 class TutorialMaterial : public BasicMaterial<MAX_FRAMES_IN_FLIGHT, 3> {
 public:
-    TutorialMaterial(ResourceManager& resourceManager,
+    TutorialMaterial(VulkanContext& context,
                      VkDevice device,
                      VkPhysicalDevice physicalDevice,
                      VkExtent2D swapchainExtent,
@@ -89,7 +89,7 @@ public:
         
         // Create & bind our uniform buffers
         for (uint frameIdx = 0; frameIdx < MAX_FRAMES_IN_FLIGHT; ++frameIdx) {
-            createUniformBuffer(resourceManager, frameIdx);
+            createUniformBuffer(context, frameIdx);
             uboDesc->bindBuffer(frameIdx, uniformBuffers_.at(frameIdx));
             populateDescriptorSet(frameIdx);
         }
@@ -114,14 +114,12 @@ public:
         memcpy(mappedUniformBuffers_[currentImage].get(), &ubo, sizeof(ubo));
     }
 private:
-    void createUniformBuffer(ResourceManager& resourceManager, uint32_t frameIndex) {
+    void createUniformBuffer(VulkanContext& context, uint32_t frameIndex) {
         VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(uniformBuffers_[frameIndex],
-                                                                resourceManager,
+                                                                context,
                                                                 1,
                                                                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
-                                                                device_,
-                                                                physicalDevice_),
+                                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
                             "Failed to create uniform buffer.");
         mappedUniformBuffers_[frameIndex] = uniformBuffers_[frameIndex]->getPersistentMapping(0, sizeof(UniformBufferObject));
     }
@@ -209,7 +207,7 @@ void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
     descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_FRAGMENT_BIT, images, sampler,
                                                                                                        VK_IMAGE_LAYOUT_GENERAL));
 
-    outPtr = resourceManager.create<TutorialMaterial>(resourceManager,
+    outPtr = resourceManager.create<TutorialMaterial>(app.getContext(),
                                                       app.getDevice(),
                                                       app.getPhysicalDevice(),
                                                       app.getSwapchainExtent(),
@@ -226,11 +224,7 @@ void createTutorialRenderable(Handle<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT
     auto& resourceManager = app.getResourceManager();
     outPtr = resourceManager.create<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>>(vertices, indexData,
                                                                                   std::move(material),
-                                                                                  resourceManager,
-                                                                                  app.getDevice(),
-                                                                                  app.getPhysicalDevice(),
-                                                                                  app.getGraphicsQueue(),
-                                                                                  app.getCommandPool());
+                                                                                  app.getContext());
 }
 
 int main() {

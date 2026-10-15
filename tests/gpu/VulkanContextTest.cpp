@@ -37,10 +37,9 @@ struct ValidatedContext {
     }
 };
 
-std::unique_ptr<Buffer<uint32_t>> createHostBuffer(VulkanContext& ctx, size_t count) {
-    std::unique_ptr<Buffer<uint32_t>> buffer;
-    VK_SUCCESS_OR_THROW(Buffer<uint32_t>::create(buffer, count, VK_BUFFER_USAGE_TRANSFER_DST_BIT, kHostVisible,
-                                                 ctx.device(), ctx.physicalDevice()),
+Handle<Buffer<uint32_t>> createHostBuffer(VulkanContext& ctx, size_t count) {
+    Handle<Buffer<uint32_t>> buffer;
+    VK_SUCCESS_OR_THROW(Buffer<uint32_t>::create(buffer, ctx, count, VK_BUFFER_USAGE_TRANSFER_DST_BIT, kHostVisible),
                         "Failed to create buffer");
     return buffer;
 }
@@ -122,7 +121,7 @@ TEST_CASE("VulkanContext supports recording on per-thread pools and submitting c
     constexpr uint32_t immediateThreads = 2;
     constexpr uint32_t iterations = 25;
 
-    std::vector<std::unique_ptr<Buffer<uint32_t>>> buffers;
+    std::vector<Handle<Buffer<uint32_t>>> buffers;
     for (uint32_t i = 0; i < recordingThreads + immediateThreads; ++i) {
         buffers.push_back(createHostBuffer(ctx, 4));
     }

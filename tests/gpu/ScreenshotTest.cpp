@@ -97,10 +97,9 @@ public:
                             "Failed to create sampler");
 
         Handle<Buffer<UniformBufferObject>> uniformBuffer;
-        VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(uniformBuffer, resources, 1,
+        VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(uniformBuffer, ctx.vulkan(), 1,
                                                                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                                                ctx.device(), ctx.physicalDevice()),
+                                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
                             "Failed to create uniform buffer");
 
         std::vector<Handle<Descriptor>> descriptors{
@@ -130,8 +129,7 @@ public:
 
     Handle<Renderable<kFrames>> createQuad(float scale, glm::vec2 offset) {
         return ctx_.resources().create<MeshRenderable<Vertex, kFrames>>(
-            quad(scale, offset), kQuadIndices, material_, ctx_.resources(),
-            ctx_.device(), ctx_.physicalDevice(), ctx_.queue(), ctx_.commandPool());
+            quad(scale, offset), kQuadIndices, material_, ctx_.vulkan());
     }
 
     // Submits a node's work for frame 0 into the offscreen target and reads back the result

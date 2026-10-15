@@ -1,8 +1,8 @@
 #pragma once
 
 #include "VkTypes.h"
-#include "CommandUtil.h"
 #include "ResourceManager.h"
+#include "VulkanContext.h"
 #include <functional>
 
 #define RETURN_IF_ERROR(expr)   \
@@ -26,6 +26,8 @@ public:
         return sizeof(Data);
     }
     
+    // Low-level creation of a strictly scoped buffer (e.g. a staging buffer).
+    // TODO: Remove once Image moves onto VulkanContext
     static VkResult create(std::unique_ptr<Buffer>& outBuffer,
                            size_t numElements,
                            VkBufferUsageFlags usage,
@@ -39,105 +41,61 @@ public:
         return result;
     }
 
+    // Creates a buffer owned by the context's ResourceManager
     static VkResult create(Handle<Buffer>& outBuffer,
-                           ResourceManager& resourceManager,
+                           VulkanContext& context,
                            size_t numElements,
                            VkBufferUsageFlags usage,
-                           VkMemoryPropertyFlags properties,
-                           VkDevice device,
-                           VkPhysicalDevice physicalDevice) {
+                           VkMemoryPropertyFlags properties) {
         std::unique_ptr<Buffer> buffer;
-        VkResult result = create(buffer, numElements, usage, properties, device, physicalDevice);
-        outBuffer = resourceManager.adopt(std::move(buffer));
+        VkResult result = create(buffer, numElements, usage, properties, context.device(), context.physicalDevice());
+        outBuffer = context.resources().adopt(std::move(buffer));
         return result;
     }
 
-    static void copyBuffer(VkBuffer src,
+    // Copies size bytes from src to dst, blocking until the copy completes
+    static void copyBuffer(VulkanContext& context,
+                           VkBuffer src,
                            VkBuffer dst,
-                           VkDeviceSize size,
-                           VkQueue graphicsQueue,
-                           VkDevice device,
-                           VkCommandPool commandPool) {
-        issueSingleTimeCommand([src, dst, size](VkCommandBuffer commandBuffer){
+                           VkDeviceSize size) {
+        context.submitImmediate([src, dst, size](VkCommandBuffer commandBuffer){
             VkBufferCopy copyRegion{};
             copyRegion.srcOffset = 0;
             copyRegion.dstOffset = 0;
             copyRegion.size = size;
             vkCmdCopyBuffer(commandBuffer, src, dst, 1 /*regionCount*/, &copyRegion);
-        }, graphicsQueue, device, commandPool);
+        });
     }
-    static void createAndInitialize(std::unique_ptr<Buffer<Data>>& buffer,
+    
+    // Creates a managed buffer holding data, uploaded through a staging buffer
+    static void createAndInitialize(Handle<Buffer<Data>>& outBuffer,
+                                    VulkanContext& context,
                                     const std::vector<Data>& data,
                                     VkBufferUsageFlags usage,
-                                    VkDevice device,
-                                    VkPhysicalDevice physicalDevice,
-                                    VkQueue graphicsQueue,
-                                    VkCommandPool commandPool) {
-        createAndInitialize(buffer, data, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device, physicalDevice, graphicsQueue, commandPool);
-    }
-
-    static void createAndInitialize(std::unique_ptr<Buffer<Data>>& buffer,
-                                    const std::vector<Data>& data,
-                                    VkBufferUsageFlags usage,
-                                    VkMemoryPropertyFlags memFlags,
-                                    VkDevice device,
-                                    VkPhysicalDevice physicalDevice,
-                                    VkQueue graphicsQueue,
-                                    VkCommandPool commandPool) {
+                                    VkMemoryPropertyFlags memFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
         size_t bufferSize = sizeof(Data) * data.size();
         
         std::unique_ptr<Buffer<Data>> stagingBuffer;
         VK_SUCCESS_OR_THROW(Buffer<Data>::create(stagingBuffer,
-                                                   data.size(),
-                                                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                                   device,
-                                                   physicalDevice),
+                                                 data.size(),
+                                                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                 context.device(),
+                                                 context.physicalDevice()),
                             "Failed to create staging buffer");
         
         stagingBuffer->mapAndExecute(0, bufferSize, [bufferSize, &data] (void* mappedData){
             memcpy(mappedData, data.data(), bufferSize);
         });
         
-        VK_SUCCESS_OR_THROW(Buffer<Data>::create(buffer,
+        VK_SUCCESS_OR_THROW(Buffer<Data>::create(outBuffer,
+                                                 context,
                                                  data.size(),
                                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
-                                                 memFlags,
-                                                 device,
-                                                 physicalDevice),
+                                                 memFlags),
                             "Failed to create gpu buffer");
         
-        copyBuffer(stagingBuffer->getBuffer(),
-                   buffer->getBuffer(),
-                   bufferSize,
-                   graphicsQueue,
-                   device,
-                   commandPool);
-    }
-
-    static void createAndInitialize(Handle<Buffer<Data>>& outBuffer,
-                                    ResourceManager& resourceManager,
-                                    const std::vector<Data>& data,
-                                    VkBufferUsageFlags usage,
-                                    VkDevice device,
-                                    VkPhysicalDevice physicalDevice,
-                                    VkQueue graphicsQueue,
-                                    VkCommandPool commandPool) {
-        createAndInitialize(outBuffer, resourceManager, data, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device, physicalDevice, graphicsQueue, commandPool);
-    }
-
-    static void createAndInitialize(Handle<Buffer<Data>>& outBuffer,
-                                    ResourceManager& resourceManager,
-                                    const std::vector<Data>& data,
-                                    VkBufferUsageFlags usage,
-                                    VkMemoryPropertyFlags memFlags,
-                                    VkDevice device,
-                                    VkPhysicalDevice physicalDevice,
-                                    VkQueue graphicsQueue,
-                                    VkCommandPool commandPool) {
-        std::unique_ptr<Buffer<Data>> buffer;
-        createAndInitialize(buffer, data, usage, memFlags, device, physicalDevice, graphicsQueue, commandPool);
-        outBuffer = resourceManager.adopt(std::move(buffer));
+        copyBuffer(context, stagingBuffer->getBuffer(), outBuffer->getBuffer(), bufferSize);
     }
 
     Buffer(size_t numElements,
