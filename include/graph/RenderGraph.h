@@ -17,11 +17,15 @@ struct RenderEvalContext {
     uint32_t imageIndex;
     std::vector<VkFramebuffer> frameBuffers;
     VkSwapchainKHR swapChain;
+    // Set by nodes when the swapchain no longer matches the surface. It is recreated after the frame.
     bool shouldRecreateSwapChain;
     // One per swapchain image, signaled by the node whose work is presented and waited on by the
     // present. They are per image rather than per frame: the presentation engine may still be
     // using an image's semaphore until that image is acquired again.
     std::vector<VkSemaphore> renderFinishedSemaphores = {};
+    // Set by nodes when the rest of the frame cannot be submitted (e.g. no swapchain image could
+    // be acquired). No further nodes are submitted.
+    bool abortFrame = false;
 };
 
 class RenderGraph;
@@ -35,6 +39,12 @@ public:
 
 protected:
     virtual NodeDevice getDeviceType() = 0;
+
+    // Whether this node acquires the swapchain image. Such nodes are submitted before any other
+    // node without parents, since they may abort the frame (see RenderEvalContext::abortFrame).
+    virtual bool acquiresImage() {
+        return false;
+    }
 
     // Whether this node presents the swapchain image. Its parents then signal the acquired
     // image's render finished semaphore for it, rather than per-frame semaphores.
@@ -231,16 +241,14 @@ public:
     }
     
     void submit(RenderEvalContext& ctx) override {
-        // Reset our fences
-        for (VkFence fence : getWaitFences(ctx.frameIndex)) {
-            vkResetFences(device(), 1, &fence);
-        }
-        
-        // Initialize the queue with all nodes without an incoming edge
+        // Initialize the queue with all nodes without an incoming edge, starting with those
+        // that acquire images: if they abort the frame, nothing else has been submitted
         std::queue<RenderNode*> nodeQueue;
-        for (uint idx = 0; idx < nodes_.size(); ++idx) {
-            if (startNodes_[idx]) {
-                nodeQueue.push(nodes_.at(idx).get());
+        for (bool acquires : {true, false}) {
+            for (uint idx = 0; idx < nodes_.size(); ++idx) {
+                if (startNodes_[idx] && nodes_.at(idx)->acquiresImage() == acquires) {
+                    nodeQueue.push(nodes_.at(idx).get());
+                }
             }
         }
         // Keep track of nodes that have been visited
@@ -267,8 +275,18 @@ public:
                 continue;
             }
 
+            // Reset the node's fence just before submitting the work that signals it, so an
+            // aborted frame leaves the fence signaled for the next wait
+            VkFence fence = node->getSignalFence(ctx.frameIndex);
+            if (fence != VK_NULL_HANDLE) {
+                vkResetFences(device(), 1, &fence);
+            }
+
             // Kick off the node's work
             node->submit(ctx);
+            if (ctx.abortFrame) {
+                return;
+            }
 
             // Add the node's children to the queue
             for (auto& child : node->getChildren()) {

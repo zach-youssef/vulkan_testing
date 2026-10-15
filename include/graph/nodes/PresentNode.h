@@ -28,6 +28,12 @@ public:
         presentInfo.pImageIndices = &ctx.imageIndex;
         presentInfo.pResults = nullptr; // Array of VkResults to check for each swapchain?
         
-        context_->present(presentInfo);
+        VkResult result = context_->present(presentInfo);
+        // The image was still presented (or discarded) either way; recreate before the next frame
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+            ctx.shouldRecreateSwapChain = true;
+        } else {
+            VK_SUCCESS_OR_THROW(result, "Failed to present swapchain image");
+        }
     }
 };
