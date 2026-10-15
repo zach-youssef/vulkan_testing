@@ -1,21 +1,24 @@
 # vulkan_test
 
-A header-only C++20 Vulkan 1.3 wrapper (`include/`), an example (`examples/simple/`) and its tests
+A header-only C++20 Vulkan 1.3 wrapper (`include/`), examples (`examples/`) and its tests
 (`tests/`). This file is for agents building applications with the wrapper or working on it.
 Agents migrating code written against the pre-refactor wrapper (the `main` branch API, e.g. in
 `~/code/ppu`) should read `docs/MIGRATING.md` first.
 
 ## Building and testing
 
-- `make`: builds `build/examples/simple/simple_example` (shaders into `build/examples/simple/shaders`)
-- `make shaders`: rebuilds the example's SPIR-V (the running example reloads it)
+- `make`: builds the examples into `build/examples/<name>/` (shaders into `build/examples/<name>/shaders`)
+- `make shaders`: rebuilds the examples' SPIR-V (running examples reload it)
 - `make test-cpu`, `make test-gpu`, `make test`: build and run the tests (doctest). Forward
   arguments with `TEST_ARGS`, e.g. `make test-gpu TEST_ARGS='-tc="RenderGraph*"'`.
+- `make test-examples`: runs every example headless with validation and
+  synchronization validation; any message fails it. `make test-example-<name>` runs one.
 - `make approve-screenshots`: accept the screenshots of the last failed GPU run
   (`tests/gpu/approved/<device>/`). Never approve a changed screenshot without understanding why
   it changed.
 - `tools/verify_stack.sh <repo> <base> [head]`: builds and tests every commit in a range (builds and
-  CPU tests in parallel, GPU tests one at a time). Check its exit codes, not filtered output.
+  CPU tests in parallel, GPU tests and example smoke tests one at a time). Check its exit codes, not
+  filtered output.
 
 Requirements: the Vulkan SDK (path in the Makefile), `glslc`, GLFW and GLM. Development happens on an
 Apple M4 with MoltenVK, which exposes four queue families of one queue each.
@@ -49,7 +52,14 @@ images, define `STB_IMAGE_WRITE_IMPLEMENTATION` in one translation unit and incl
 
 ## Writing an application
 
-Read `examples/simple/simple_example.cpp` first: it uses every major feature.
+Read `examples/simple/simple_example.cpp` first: it uses every major feature. The other examples
+show common kinds of application:
+
+| Example | Shows |
+|---|---|
+| `examples/image_filter` | Headless use without `VulkanApp`: a chain of compute passes, `setEnabled`, push constant parameters, `ReadbackNode` |
+| `examples/particles` | Compute writing a graph buffer that a graphics pass reads (across queues), per-frame parameters, input, changing frames in flight at runtime |
+| `examples/scene` | A 3D renderer: shadow map, HDR target that follows window resizes, tonemapping, orbit camera, shader hot reload |
 
 ```cpp
 AppConfig config;

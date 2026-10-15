@@ -31,6 +31,10 @@ gpu_worker() {
         while [[ ! -f $d/build.status ]]; do sleep 1; done
         if [[ $(cat $d/build.status) == ok ]]; then
             (cd $d && ./build/tests/gpu_tests >gpu.log 2>&1); echo $? > $d/gpu.exit
+            # The examples' smoke tests use the GPU too; commits before they existed have none
+            if grep -q '^test-examples:' $d/Makefile; then
+                (cd $d && make test-examples >examples.log 2>&1); echo $? > $d/examples.exit
+            fi
         fi
     done
 }
@@ -44,6 +48,8 @@ for c in $commits; do
     d=$out/$c
     line=$(git -C $repo log --oneline -1 $c | cut -c1-64)
     if [[ $(cat $d/build.status) != ok ]]; then echo "$line: BUILD FAILED ($d/build.log)"; continue; fi
-    echo "$line: cpu exit $(cat $d/cpu.exit) [$(summary $d/cpu.log)], gpu exit $(cat $d/gpu.exit) [$(summary $d/gpu.log)]"
+    examples=""
+    if [[ -f $d/examples.exit ]]; then examples=", examples exit $(cat $d/examples.exit)"; fi
+    echo "$line: cpu exit $(cat $d/cpu.exit) [$(summary $d/cpu.log)], gpu exit $(cat $d/gpu.exit) [$(summary $d/gpu.log)]$examples"
 done
 echo "Logs: $out"

@@ -167,6 +167,7 @@ shaders: $(SIMPLE_SHADERS) $(IMAGE_FILTER_SHADERS) $(PARTICLES_SHADERS) $(SCENE_
 #   make test-cpu   - unit tests that do not need a Vulkan device
 #   make test-gpu   - tests that run headless on a Vulkan device (no window)
 #   make test       - all tests
+#   make test-examples - every example's smoke test (headless, with validation)
 #   make approve-screenshots - accept the screenshots from the last failed GPU test run
 # Arguments can be forwarded to doctest, e.g. make test-cpu TEST_ARGS='-tc="Handle*"'
 # ---------------------------------------------------------------------------
