@@ -1,6 +1,7 @@
 #include "core/VkTypes.h"
 #include "core/QueueFamilyIndices.h"
 #include "core/SwapChainSupportDetails.h"
+#include "core/DeviceFeatures.h"
 
 #include <doctest/doctest.h>
 
@@ -98,4 +99,26 @@ TEST_CASE("SwapChainSupportDetails::chooseSwapExtent clamps the framebuffer size
     CHECK(details.chooseSwapExtent({800, 600}).height == 600);
     CHECK(details.chooseSwapExtent({50, 4000}).width == 100);
     CHECK(details.chooseSwapExtent({50, 4000}).height == 1000);
+}
+
+TEST_CASE("DeviceFeatures reports the required features a device lacks") {
+    DeviceFeatures none;
+    auto missing = none.missingRequired();
+    CHECK(missing == std::vector<std::string>{"samplerAnisotropy", "timelineSemaphore", "synchronization2", "dynamicRendering"});
+
+    CHECK(DeviceFeatures::required().missingRequired().empty());
+
+    auto partial = DeviceFeatures::required();
+    partial.vulkan13.dynamicRendering = VK_FALSE;
+    CHECK(partial.missingRequired() == std::vector<std::string>{"dynamicRendering"});
+}
+
+TEST_CASE("DeviceFeatures keeps its pNext chain intact when copied") {
+    auto features = DeviceFeatures::required();
+    DeviceFeatures copy = features;
+    CHECK(copy.chain() == &copy.core);
+    CHECK(copy.core.pNext == &copy.vulkan12);
+    CHECK(copy.vulkan12.pNext == &copy.vulkan13);
+    CHECK(copy.vulkan13.pNext == nullptr);
+    CHECK(copy.vulkan13.dynamicRendering == VK_TRUE);
 }

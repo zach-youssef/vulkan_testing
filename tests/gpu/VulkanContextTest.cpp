@@ -246,3 +246,37 @@ TEST_CASE("The initial number of frames in flight is configurable") {
     PerFrame<int> values(ctx, [](uint32_t frame) { return static_cast<int>(frame); });
     CHECK(values.size() == 3);
 }
+
+TEST_CASE("Synchronization validation reports hazards when enabled") {
+    std::mutex mutex;
+    std::vector<std::string> errors;
+    VulkanContextConfig config;
+    config.enableValidation = true;
+    config.enableSynchronizationValidation = true;
+    config.onValidationMessage = [&](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
+        if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+            std::lock_guard<std::mutex> lock(mutex);
+            errors.emplace_back(message);
+        }
+    };
+    {
+        VulkanContext ctx(std::move(config));
+        if (!ctx.validationEnabled()) {
+            MESSAGE("Validation layer unavailable; skipping");
+            return;
+        }
+        Handle<Buffer<uint32_t>> buffer;
+        REQUIRE(Buffer<uint32_t>::create(buffer, ctx, 64, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_SUCCESS);
+        // Two writes to the same buffer without a barrier between them: a write-after-write hazard
+        ctx.submitImmediate([&buffer](VkCommandBuffer commandBuffer) {
+            vkCmdFillBuffer(commandBuffer, buffer->getBuffer(), 0, VK_WHOLE_SIZE, 1);
+            vkCmdFillBuffer(commandBuffer, buffer->getBuffer(), 0, VK_WHOLE_SIZE, 2);
+        });
+    }
+    bool hazard = false;
+    for (const auto& error : errors) {
+        hazard |= error.find("WRITE_AFTER_WRITE hazard") != std::string::npos;
+    }
+    CHECK(hazard);
+}

@@ -13,9 +13,10 @@
 /*
  Headless VulkanContext shared by all GPU tests.
 
- The Khronos validation layer is enabled when available, and every validation error is
- recorded so that tests can fail on API misuse (see GpuTest below). Set
- VK_TEST_DISABLE_VALIDATION=1 to run without it.
+ The Khronos validation layer is enabled when available, with synchronization validation, and
+ every validation error is recorded so that tests can fail on API misuse and synchronization
+ hazards (see GpuTest below). Set VK_TEST_DISABLE_VALIDATION=1 to run without validation, or
+ VK_TEST_DISABLE_SYNC_VALIDATION=1 to run without synchronization validation only.
  */
 class VkTestContext {
 public:
@@ -53,7 +54,9 @@ private:
 
         VulkanContextConfig config;
         config.applicationName = "vulkan_test GPU tests";
+        const char* disableSyncValidation = std::getenv("VK_TEST_DISABLE_SYNC_VALIDATION");
         config.enableValidation = !(disableValidation && strcmp(disableValidation, "1") == 0);
+        config.enableSynchronizationValidation = !(disableSyncValidation && strcmp(disableSyncValidation, "1") == 0);
         config.onValidationMessage = [this](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
             if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
                 std::lock_guard<std::mutex> lock(mutex_);

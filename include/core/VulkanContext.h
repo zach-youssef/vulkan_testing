@@ -4,6 +4,7 @@
 #include "core/VkUtil.h"
 #include "core/ResourceManager.h"
 #include "core/DeviceSelection.h"
+#include "core/DeviceFeatures.h"
 #include "core/FrameResources.h"
 
 #include <array>
@@ -133,6 +134,10 @@ struct VulkanContextConfig {
     // Enables the Khronos validation layer. If the layer is unavailable a warning is printed
     // and the context is created without it.
     bool enableValidation = false;
+
+    // With validation, also enables synchronization validation, which reports missing or
+    // insufficient barriers and semaphores (hazards) as errors. Slower.
+    bool enableSynchronizationValidation = false;
 
     // Receives validation messages (warnings and errors). Defaults to printing to std::cerr.
     // May be called from any thread that calls into Vulkan.
@@ -343,9 +348,13 @@ private:
         return false;
     }
 
-    static bool hasInstanceExtension(const char* name) {
-        for (const auto& extension :
-             readVkVector<VkExtensionProperties, const char*>(vkEnumerateInstanceExtensionProperties)) {
+    // Whether the instance (or, with layer, that layer) provides an extension
+    static bool hasInstanceExtension(const char* name, const char* layer = nullptr) {
+        uint32_t count = 0;
+        vkEnumerateInstanceExtensionProperties(layer, &count, nullptr);
+        std::vector<VkExtensionProperties> extensions(count);
+        vkEnumerateInstanceExtensionProperties(layer, &count, extensions.data());
+        for (const auto& extension : extensions) {
             if (strcmp(extension.extensionName, name) == 0) {
                 return true;
             }
@@ -399,10 +408,30 @@ private:
         appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
         appInfo.pEngineName = "No Engine";
         appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.apiVersion = VK_API_VERSION_1_0;
+        appInfo.apiVersion = VK_API_VERSION_1_3;
+
+        // Synchronization validation is enabled through VK_EXT_validation_features, which the
+        // validation layer provides
+        VkValidationFeatureEnableEXT enabledValidationFeatures[] = {
+            VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT,
+        };
+        VkValidationFeaturesEXT validationFeatures{};
+        validationFeatures.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
+        validationFeatures.enabledValidationFeatureCount = 1;
+        validationFeatures.pEnabledValidationFeatures = enabledValidationFeatures;
+        const bool useSyncValidation = useValidation && config_.enableSynchronizationValidation
+                                       && hasInstanceExtension(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, validationLayer);
+        if (useValidation && config_.enableSynchronizationValidation && !useSyncValidation) {
+            std::cerr << "Synchronization validation requested but " << VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME
+                      << " is unavailable; continuing without it" << std::endl;
+        }
+        if (useSyncValidation) {
+            extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+        }
 
         VkInstanceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+        createInfo.pNext = useSyncValidation ? &validationFeatures : nullptr;
         createInfo.flags = flags;
         createInfo.pApplicationInfo = &appInfo;
         createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
@@ -454,7 +483,18 @@ private:
     }
 
     void pickPhysicalDevice() {
+        std::string rejections;
         for (auto device : readVkVector<VkPhysicalDevice, VkInstance>(**instance_, vkEnumeratePhysicalDevices)) {
+            auto shortcomings = deviceShortcomings(device);
+            if (!shortcomings.empty()) {
+                VkPhysicalDeviceProperties properties{};
+                vkGetPhysicalDeviceProperties(device, &properties);
+                rejections += std::string("\n  ") + properties.deviceName + " lacks:";
+                for (auto& shortcoming : shortcomings) {
+                    rejections += " " + shortcoming;
+                }
+                continue;
+            }
             if (hasSurface()) {
                 if (isDeviceSuitable(device, **surface_)) {
                     auto indices = findQueueFamilies(device, **surface_);
@@ -463,7 +503,7 @@ private:
                     presentFamily_ = indices.presentFamily;
                     return;
                 }
-            } else if (getSupportedFeatures(device).samplerAnisotropy) {
+            } else {
                 if (auto family = findGraphicsComputeFamily(device)) {
                     physicalDevice_ = device;
                     graphicsFamily_ = *family;
@@ -471,7 +511,7 @@ private:
                 }
             }
         }
-        throw std::runtime_error("Failed to find a suitable GPU.");
+        throw std::runtime_error("Failed to find a suitable GPU." + rejections);
     }
 
     void createDevice() {
@@ -491,10 +531,8 @@ private:
             queueCreateInfos.push_back(queueInfo);
         }
 
-        // Samplers are always created with anisotropic filtering enabled; support for it is
-        // required when picking the physical device
-        VkPhysicalDeviceFeatures features{};
-        features.samplerAnisotropy = VK_TRUE;
+        // Every required feature was checked when picking the physical device
+        const DeviceFeatures features = DeviceFeatures::required();
 
         std::vector<const char*> extensions;
         if (hasSurface()) {
@@ -509,7 +547,7 @@ private:
         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
         createInfo.pQueueCreateInfos = queueCreateInfos.data();
-        createInfo.pEnabledFeatures = &features;
+        createInfo.pNext = features.chain();
         createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
         createInfo.ppEnabledExtensionNames = extensions.data();
 
