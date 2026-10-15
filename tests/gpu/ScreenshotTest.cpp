@@ -159,7 +159,7 @@ TEST_CASE_FIXTURE(GpuTest, "Screenshot - RenderableNode draws a textured quad") 
     {
         TexturedScene scene(ctx);
         RenderableNode<kFrames> node(scene.createQuad(1.0f, {0.0f, 0.0f}),
-                                     ctx.device(), ctx.queue(), scene.renderPass(), scene.commandBuffers());
+                                     ctx.vulkan(), scene.renderPass(), scene.commandBuffers());
         pixels = scene.render(node);
     }
     verifyScreenshot(pixels, kWidth, kHeight);
@@ -177,7 +177,7 @@ TEST_CASE_FIXTURE(GpuTest, "Screenshot - RenderablesNode draws two quads sharing
         CHECK(renderables[0]->getMaterial() == renderables[1]->getMaterial());
 
         RenderablesNode<kFrames> node(std::move(renderables),
-                                      ctx.device(), ctx.queue(), scene.renderPass(), scene.commandBuffers());
+                                      ctx.vulkan(), scene.renderPass(), scene.commandBuffers());
         pixels = scene.render(node);
     }
     verifyScreenshot(pixels, kWidth, kHeight);

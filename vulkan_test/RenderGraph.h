@@ -2,6 +2,7 @@
 
 #include "VkTypes.h"
 #include "VkUtil.h"
+#include "VulkanContext.h"
 
 #include <unordered_set>
 
@@ -33,7 +34,7 @@ public:
 protected:
     virtual NodeDevice getDeviceType() = 0;
 
-    RenderNode<MAX_FRAMES>(VkDevice device) : device_(device) {
+    RenderNode<MAX_FRAMES>(VulkanContext& context) : context_(&context) {
         // Initialize signal objects to VK_NULL_HANDLE
         for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
             signalFences_[frameIdx] = std::make_unique<VulkanFence>();
@@ -47,7 +48,7 @@ protected:
             VkSemaphoreCreateInfo semaphoreInfo{};
             semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
             for (uint frameIndex = 0; frameIndex < MAX_FRAMES; ++frameIndex) {
-                VK_SUCCESS_OR_THROW(VulkanSemaphore::create(signalSemaphores_[frameIndex], device_, semaphoreInfo),
+                VK_SUCCESS_OR_THROW(VulkanSemaphore::create(signalSemaphores_[frameIndex], device(), semaphoreInfo),
                                     "Failed to create semaphore");
             }
         }
@@ -71,7 +72,7 @@ protected:
             fenceInfo.flags = createSignaled ? VK_FENCE_CREATE_SIGNALED_BIT : 0;
             
             for (uint frameIndex = 0; frameIndex < MAX_FRAMES; ++frameIndex) {
-                VK_SUCCESS_OR_THROW(VulkanFence::create(signalFences_[frameIndex], device_, fenceInfo),
+                VK_SUCCESS_OR_THROW(VulkanFence::create(signalFences_[frameIndex], device(), fenceInfo),
                                     "Failed to create fence");
             }
         }
@@ -122,7 +123,11 @@ private:
     }
     
 protected:
-    VkDevice device_;
+    VkDevice device() {
+        return context_->device();
+    }
+    
+    VulkanContext* context_;
     std::vector<RenderNode<MAX_FRAMES>*> children_;
     std::array<std::unique_ptr<VulkanSemaphore>, MAX_FRAMES> signalSemaphores_;
     std::array<std::vector<VkSemaphore>, MAX_FRAMES> waitSemaphores_;
@@ -138,7 +143,7 @@ class RenderGraph : public RenderNode<MAX_FRAMES> {
 public:
     using NodeHandle = uint32_t;
     
-    RenderGraph<MAX_FRAMES>(VkDevice device): RenderNode<MAX_FRAMES>(device) {}
+    RenderGraph<MAX_FRAMES>(VulkanContext& context): RenderNode<MAX_FRAMES>(context) {}
     
     NodeDevice getDeviceType() override {
         return NodeDevice::CPU;
@@ -189,14 +194,14 @@ public:
         // Wait for the previous frame to finish
         auto& fences = RenderNode<MAX_FRAMES>::waitFences_[frameIndex];
         for (uint idx = 0; idx < fences.size(); ++idx) {
-            vkWaitForFences(RenderNode<MAX_FRAMES>::device_, 1, &fences[idx], VK_TRUE, UINT64_MAX);
+            vkWaitForFences(RenderNode<MAX_FRAMES>::device(), 1, &fences[idx], VK_TRUE, UINT64_MAX);
         }
     }
     
     void submit(RenderEvalContext& ctx) override {
         // Reset our fences
         for (VkFence& fence : RenderNode<MAX_FRAMES>::waitFences_[ctx.frameIndex]) {
-            vkResetFences(RenderNode<MAX_FRAMES>::device_, 1, &fence);
+            vkResetFences(RenderNode<MAX_FRAMES>::device(), 1, &fence);
         }
         
         // Initialize the queue with all nodes without an incoming edge

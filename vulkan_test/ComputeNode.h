@@ -8,11 +8,9 @@ template<uint MAX_FRAMES>
 class ComputeNode : public RenderNode<MAX_FRAMES> {
 public:
     ComputeNode<MAX_FRAMES>(Handle<ComputeMaterial<MAX_FRAMES>> computePass,
-                            VkDevice device,
-                            VkQueue computeQueue,
+                            VulkanContext& context,
                             std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers)
-    : RenderNode<MAX_FRAMES>(device),
-    computeQueue_(computeQueue),
+    : RenderNode<MAX_FRAMES>(context),
     commandBuffers_(commandBuffers),
     computePass_(std::move(computePass)) {}
     
@@ -60,15 +58,13 @@ public:
         submitInfo.signalSemaphoreCount = RenderNode<MAX_FRAMES>::getSignalSemaphoreCount(ctx.frameIndex);
         submitInfo.pSignalSemaphores = RenderNode<MAX_FRAMES>::getSignalSemaphores(ctx.frameIndex);
         
-        VK_SUCCESS_OR_THROW(vkQueueSubmit(computeQueue_,
-                                          1,
-                                          &submitInfo,
-                                              **RenderNode<MAX_FRAMES>::signalFences_[ctx.frameIndex]),
+        VK_SUCCESS_OR_THROW(RenderNode<MAX_FRAMES>::context_->submit(QueueType::Compute,
+                                                                     submitInfo,
+                                                                     **RenderNode<MAX_FRAMES>::signalFences_[ctx.frameIndex]),
                             "Failed to submit compute");
     }
     
 protected:
-    VkQueue computeQueue_;
     std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers_;
     Handle<ComputeMaterial<MAX_FRAMES>> computePass_;
 };

@@ -5,10 +5,8 @@
 template<uint MAX_FRAMES>
 class PresentNode : public RenderNode<MAX_FRAMES> {
 public:
-    PresentNode<MAX_FRAMES>(VkDevice device,
-                            VkQueue presentQueue)
-    : RenderNode<MAX_FRAMES>(device),
-    presentQueue_(presentQueue) {}
+    PresentNode<MAX_FRAMES>(VulkanContext& context)
+    : RenderNode<MAX_FRAMES>(context) {}
     
     NodeDevice getDeviceType() override {
         return NodeDevice::GPU;
@@ -27,8 +25,6 @@ public:
         presentInfo.pImageIndices = &ctx.imageIndex;
         presentInfo.pResults = nullptr; // Array of VkResults to check for each swapchain?
         
-        vkQueuePresentKHR(presentQueue_, &presentInfo);
+        RenderNode<MAX_FRAMES>::context_->present(presentInfo);
     }
-private:
-    VkQueue presentQueue_;
 };

@@ -8,12 +8,10 @@ template<uint MAX_FRAMES>
 class RenderableNode : public RenderNode<MAX_FRAMES> {
 public:
     RenderableNode<MAX_FRAMES>(Handle<Renderable<MAX_FRAMES>> renderable,
-                               VkDevice device,
-                               VkQueue graphicsQueue,
+                               VulkanContext& context,
                                VkRenderPass renderPass,
                                std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers)
-    : RenderNode<MAX_FRAMES>(device),
-    graphicsQueue_(graphicsQueue),
+    : RenderNode<MAX_FRAMES>(context),
     renderPass_(renderPass),
     commandBuffers_(commandBuffers),
     renderable_(std::move(renderable)){}
@@ -110,15 +108,13 @@ public:
         submitInfo.signalSemaphoreCount = RenderNode<MAX_FRAMES>::getSignalSemaphoreCount(ctx.frameIndex);
         submitInfo.pSignalSemaphores = RenderNode<MAX_FRAMES>::getSignalSemaphores(ctx.frameIndex);
 
-        VK_SUCCESS_OR_THROW(vkQueueSubmit(graphicsQueue_,
-                                          1,
-                                          &submitInfo,
-                                          **RenderNode<MAX_FRAMES>::signalFences_[ctx.frameIndex]),
+        VK_SUCCESS_OR_THROW(RenderNode<MAX_FRAMES>::context_->submit(QueueType::Graphics,
+                                                                     submitInfo,
+                                                                     **RenderNode<MAX_FRAMES>::signalFences_[ctx.frameIndex]),
                             "Failed to submit draw command buffer.");
     }
 
 private:
-    VkQueue graphicsQueue_;
     VkRenderPass renderPass_;
     std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers_;
     Handle<Renderable<MAX_FRAMES>> renderable_;

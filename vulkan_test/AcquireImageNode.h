@@ -5,15 +5,15 @@
 template<uint MAX_FRAMES>
 class AcquireImageNode : public RenderNode<MAX_FRAMES> {
 public:
-    AcquireImageNode<MAX_FRAMES>(VkDevice device)
-    : RenderNode<MAX_FRAMES>(device){}
+    AcquireImageNode<MAX_FRAMES>(VulkanContext& context)
+    : RenderNode<MAX_FRAMES>(context){}
     
     NodeDevice getDeviceType() override {
         return NodeDevice::GPU;
     }
     
     void submit(RenderEvalContext& ctx) override {
-        auto result = vkAcquireNextImageKHR(RenderNode<MAX_FRAMES>::device_,
+        auto result = vkAcquireNextImageKHR(RenderNode<MAX_FRAMES>::device(),
                                             ctx.swapChain,
                                             UINT64_MAX,
                                             **RenderNode<MAX_FRAMES>::signalSemaphores_[ctx.frameIndex],
