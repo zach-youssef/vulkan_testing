@@ -5,6 +5,9 @@
 #include "materials/Material.h"
 #include "resources/Buffer.h"
 
+#include <cstring>
+#include <type_traits>
+
 /*
  A Renderable is something a RenderablesNode draws: vertex and index buffers drawn with a material.
  */
@@ -12,7 +15,7 @@
 class Renderable {
 public:
     virtual ~Renderable() = default;
-    
+
     Material* getMaterial() {
         return material_.get();
     }
@@ -20,45 +23,79 @@ public:
     Handle<Material> getMaterialHandle() {
         return material_;
     }
-    
+
     virtual VkBuffer getVertexBuffer() = 0;
     virtual VkBuffer getIndexBuffer() = 0;
+    virtual VkIndexType getIndexType() = 0;
     virtual uint32_t getIndexCount() = 0;
-    
+
 protected:
     Renderable(Handle<Material> material)
     : material_(std::move(material)) {}
-    
+
 protected:
     Handle<Material> material_;
 };
 
-template<typename VertexData>
-class MeshRenderable : public Renderable {
+/*
+ Vertices and 16- or 32-bit indices in device-local buffers, shared by any number of renderables
+ (e.g. a shadow pass and a lit pass drawing the same geometry with different materials):
+
+    auto mesh = ctx.resources().create<Mesh>(ctx, vertices, indices);
+    auto lit = ctx.resources().create<MeshRenderable>(mesh, litMaterial);
+    auto shadow = ctx.resources().create<MeshRenderable>(mesh, shadowMaterial);
+ */
+class Mesh {
 public:
-    MeshRenderable(const std::vector<VertexData>& vertexData,
-                   const std::vector<uint16_t>& indexData,
-                   Handle<Material> material,
-                   VulkanContext& context)
-    : Renderable(std::move(material)), indexCount_(static_cast<uint32_t>(indexData.size())) {
-        Buffer<VertexData>::createAndInitialize(vertexBuffer_, context, vertexData, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        Buffer<uint16_t>::createAndInitialize(indexBuffer_, context, indexData, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    template<typename Vertex, typename Index>
+    Mesh(VulkanContext& context, const std::vector<Vertex>& vertices, const std::vector<Index>& indices)
+    : indexType_(indexTypeOf<Index>()), indexCount_(static_cast<uint32_t>(indices.size())) {
+        static_assert(std::is_trivially_copyable_v<Vertex>);
+        Buffer<uint8_t>::createAndInitialize(vertexBuffer_, context, bytesOf(vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        Buffer<uint8_t>::createAndInitialize(indexBuffer_, context, bytesOf(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     }
 
-    VkBuffer getVertexBuffer() {
-        return vertexBuffer_->getBuffer();
-    }
-    
-    VkBuffer getIndexBuffer() {
-        return indexBuffer_->getBuffer();
-    }
-    
-    uint32_t getIndexCount() {
-        return indexCount_;
-    }
+    VkBuffer vertexBuffer() { return vertexBuffer_->getBuffer(); }
+    VkBuffer indexBuffer() { return indexBuffer_->getBuffer(); }
+    VkIndexType indexType() const { return indexType_; }
+    uint32_t indexCount() const { return indexCount_; }
 
 private:
-    Handle<Buffer<VertexData>> vertexBuffer_;
-    Handle<Buffer<uint16_t>> indexBuffer_;
+    template<typename Index>
+    static constexpr VkIndexType indexTypeOf() {
+        static_assert(std::is_same_v<Index, uint16_t> || std::is_same_v<Index, uint32_t>,
+                      "Mesh indices are uint16_t or uint32_t");
+        return std::is_same_v<Index, uint16_t> ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+    }
+
+    template<typename T>
+    static std::vector<uint8_t> bytesOf(const std::vector<T>& data) {
+        std::vector<uint8_t> bytes(sizeof(T) * data.size());
+        if (!bytes.empty()) {
+            memcpy(bytes.data(), data.data(), bytes.size());
+        }
+        return bytes;
+    }
+
+    Handle<Buffer<uint8_t>> vertexBuffer_;
+    Handle<Buffer<uint8_t>> indexBuffer_;
+    VkIndexType indexType_;
     uint32_t indexCount_;
+};
+
+// A mesh drawn with a material
+class MeshRenderable : public Renderable {
+public:
+    MeshRenderable(Handle<Mesh> mesh, Handle<Material> material)
+    : Renderable(std::move(material)), mesh_(std::move(mesh)) {}
+
+    VkBuffer getVertexBuffer() override { return mesh_->vertexBuffer(); }
+    VkBuffer getIndexBuffer() override { return mesh_->indexBuffer(); }
+    VkIndexType getIndexType() override { return mesh_->indexType(); }
+    uint32_t getIndexCount() override { return mesh_->indexCount(); }
+
+    const Handle<Mesh>& mesh() const { return mesh_; }
+
+private:
+    Handle<Mesh> mesh_;
 };

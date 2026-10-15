@@ -211,8 +211,53 @@ VULKAN_DEVICE_CLASS(VulkanDescriptorPool, VkDescriptorPool, VkDescriptorPoolCrea
 VULKAN_DEVICE_CLASS(VulkanImage, VkImage, VkImageCreateInfo, vkCreateImage, vkDestroyImage)
 };
 
+// How a sampler filters and addresses images
+struct SamplerDesc {
+    VkFilter filter = VK_FILTER_LINEAR;   // Magnification and minification
+    VkSamplerMipmapMode mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    VkBorderColor borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;   // For CLAMP_TO_BORDER
+    // Depth comparison (e.g. VK_COMPARE_OP_LESS_OR_EQUAL for shadow maps, sampled with
+    // sampler2DShadow): sampling returns the fraction of texels passing instead of their values
+    std::optional<VkCompareOp> compareOp;
+    // The device's maximum anisotropy, or none
+    bool anisotropy = true;
+    float maxLod = 0.0f;
+};
+
 VULKAN_DEVICE_CLASS(VulkanSampler, VkSampler, VkSamplerCreateInfo, vkCreateSampler, vkDestroySampler)
 public:
+    // From a VkSamplerCreateInfo
+    using VkWrapper<VulkanSampler, VkSampler, VkDevice, const VkSamplerCreateInfo&>::create;
+
+    static VkResult create(std::unique_ptr<VulkanSampler>& outSampler,
+                           const SamplerDesc& desc,
+                           VkDevice device,
+                           VkPhysicalDevice physicalDevice) {
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = desc.filter;
+        samplerInfo.minFilter = desc.filter;
+        samplerInfo.mipmapMode = desc.mipmapMode;
+        samplerInfo.addressModeU = desc.addressMode;
+        samplerInfo.addressModeV = desc.addressMode;
+        samplerInfo.addressModeW = desc.addressMode;
+        samplerInfo.borderColor = desc.borderColor;
+        if (desc.anisotropy) {
+            VkPhysicalDeviceProperties properties{};
+            vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+            samplerInfo.anisotropyEnable = VK_TRUE;
+            samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+        }
+        samplerInfo.compareEnable = desc.compareOp.has_value();
+        samplerInfo.compareOp = desc.compareOp.value_or(VK_COMPARE_OP_ALWAYS);
+        samplerInfo.maxLod = desc.maxLod;
+        return VulkanSampler::create(outSampler, device, samplerInfo);
+    }
+
+    // Managed samplers, owned by the context's ResourceManager. Defined in VulkanContext.h.
+    static VkResult create(Handle<VulkanSampler>& outSampler, VulkanContext& context, const SamplerDesc& desc);
+
     static VkResult createWithAddressMode(std::unique_ptr<VulkanSampler>& outSampler,
                                           VkSamplerAddressMode addressMode,
                                           VkDevice device,
@@ -220,7 +265,7 @@ public:
         return createWithModeAndFilter(outSampler, addressMode, VK_FILTER_LINEAR, device, physicalDevice);
     }
     
-    // Managed samplers, owned by the context's ResourceManager. Defined in VulkanContext.h.
+    // Shorthands for SamplerDesc with an address mode (and filter)
     static VkResult createWithAddressMode(Handle<VulkanSampler>& outSampler,
                                           VulkanContext& context,
                                           VkSamplerAddressMode addressMode);
@@ -235,44 +280,6 @@ public:
                                             VkFilter filter,
                                             VkDevice device,
                                             VkPhysicalDevice physicalDevice) {
-        VkSamplerCreateInfo samplerInfo{};
-        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        
-        // Alternative is VK_FILTER_NEAREST
-        // Mag is for oversampling, min is for undersampling
-        samplerInfo.magFilter = filter;
-        samplerInfo.minFilter = filter;
-        
-        // Alternatives are
-        // - MIRRORED_REPEAT
-        // - CLAMP_TO_EDGE (or MIRRORED_)
-        // CLAMP_TO_BORDER
-        samplerInfo.addressModeU = addressMode;
-        samplerInfo.addressModeV = addressMode;
-        samplerInfo.addressModeW = addressMode;
-        
-        // Can be set to false if device doesn't support it
-        samplerInfo.anisotropyEnable = VK_TRUE;
-        VkPhysicalDeviceProperties properties{};
-        vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-        samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-        
-        // Only relevant if using CLAMP_TO_BORDER adress mode
-        samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-        
-        // Use real coordinates instead of UVs
-        samplerInfo.unnormalizedCoordinates = VK_FALSE;
-        
-        // I don't understand this but it has some use with shadow maps?
-        samplerInfo.compareEnable = VK_FALSE;
-        samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-        
-        // To be revisted when we implement mip maps
-        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        samplerInfo.mipLodBias = 0.0f;
-        samplerInfo.minLod = 0.0f;
-        samplerInfo.maxLod = 0.0f;
-        
-        return VulkanSampler::create(outSampler, device, samplerInfo);
+        return create(outSampler, SamplerDesc{.filter = filter, .addressMode = addressMode}, device, physicalDevice);
     }
 };

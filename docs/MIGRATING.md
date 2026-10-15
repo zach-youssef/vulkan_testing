@@ -85,7 +85,7 @@ direct equivalents.
 | `BasicMaterial<MAX_FRAMES, N>(device, physicalDevice, descriptors, swapchainExtent, renderPass, vertSpirv, fragSpirv, binding, attributes)` | `GraphicsMaterial(ctx, bindings, graph.formats(target), ctx.shaders().get("x.vert"), ctx.shaders().get("x.frag"), GraphicsPipelineOptions{.vertexLayout = VertexLayout{{binding}, {attributes...}}})`. The old pipeline state (triangle lists, back faces culled, opaque, depth tested) is the options' default. |
 | `ComputeMaterial<MAX_FRAMES>(device, physicalDevice, descriptors, spirv)` | `ComputeMaterial(ctx, bindings, ctx.shaders().get("x.comp"))` |
 | `material->getDescriptorSet(frame)`, binding sets yourself | `material->bind(commandBuffer, frameIndex)` (pipeline and push constants). The graph binds the universal set; outside a graph, call `ctx.descriptors().bind(commandBuffer, bindPoint)`. |
-| `MeshRenderable<V, MAX_FRAMES>(vertices, indices, std::move(material), device, physicalDevice, queue, pool)` with a `unique_ptr` material | `ctx.resources().create<MeshRenderable<V>>(vertices, indices, materialHandle, ctx)`. Materials are `Handle<Material>` and can be shared between renderables. |
+| `MeshRenderable<V, MAX_FRAMES>(vertices, indices, std::move(material), device, physicalDevice, queue, pool)` with a `unique_ptr` material | `auto mesh = ctx.resources().create<Mesh>(ctx, vertices, indices)`, then `ctx.resources().create<MeshRenderable>(mesh, materialHandle)`. Meshes and materials (`Handle<Material>`) can be shared between renderables. |
 | `update(frame, swapchainExtent)` called by each node | `update(frameIndex, surfaceExtent)` called once per frame per distinct material by the graph |
 
 ### Shaders

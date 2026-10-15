@@ -5,9 +5,8 @@
 
 /*
  Draws renderables into a render target. Each renderable's material is updated once per frame by
- the graph, however many renderables (or nodes) share it.
-
- Resources the materials' descriptors reference must be declared separately (graph.node(id).read(...)).
+ the graph, however many renderables (or nodes) share it, and the resources of its bindings are
+ declared automatically.
  */
 class RenderablesNode : public GraphicsNode {
 public:
@@ -27,7 +26,7 @@ public:
             VkDeviceSize offsets[] {0};
             VkBuffer vertexBuffers[] {renderable->getVertexBuffer()};
             vkCmdBindVertexBuffers(context.commandBuffer, 0, 1, vertexBuffers, offsets);
-            vkCmdBindIndexBuffer(context.commandBuffer, renderable->getIndexBuffer(), 0, VK_INDEX_TYPE_UINT16);
+            vkCmdBindIndexBuffer(context.commandBuffer, renderable->getIndexBuffer(), 0, renderable->getIndexType());
             vkCmdDrawIndexed(context.commandBuffer, renderable->getIndexCount(), 1, 0, 0, 0);
         }
     }

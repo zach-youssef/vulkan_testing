@@ -113,3 +113,11 @@ TEST_CASE("Image::bytesPerPixel") {
     CHECK(Image::bytesPerPixel(VK_FORMAT_R32G32B32A32_SFLOAT) == 16);
     CHECK_THROWS_AS(Image::bytesPerPixel(VK_FORMAT_R8_UNORM), std::invalid_argument);
 }
+
+TEST_CASE_FIXTURE(GpuTest, "Loading an image that can't be read names the file and the reason") {
+    auto& ctx = context();
+    Handle<Image> image;
+    CHECK_THROWS_WITH_AS(Image::createFromFile(image, ctx, "missing/texture.png"),
+                         doctest::Contains("'missing/texture.png': can't fopen"), std::runtime_error);
+    CHECK_FALSE(image);
+}

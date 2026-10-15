@@ -26,4 +26,12 @@ layout(set = 0, binding = 2) uniform image2D bindlessStorageImages[];
 #define BINDLESS_BUFFER(qualifiers, BlockName, Type, name) \
     layout(set = 0, binding = 3) qualifiers buffer BlockName { Type data; } name[]
 
+// Declares an array of storage buffers each holding an array of `Type` sized by the buffer, e.g.
+//     struct Particle { vec4 position; vec4 velocity; };
+//     BINDLESS_BUFFER_ARRAY(, ParticleBuffer, Particle, particles);
+//     ... particles[indices.particles].data[gl_GlobalInvocationID.x] ...
+// Pass the element count (e.g. as a push constant): MoltenVK can't compile .length() on these.
+#define BINDLESS_BUFFER_ARRAY(qualifiers, BlockName, Type, name) \
+    layout(set = 0, binding = 3) qualifiers buffer BlockName { Type data[]; } name[]
+
 #endif

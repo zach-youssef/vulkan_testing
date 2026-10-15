@@ -962,8 +962,12 @@ inline VkResult VulkanSampler::createWithModeAndFilter(Handle<VulkanSampler>& ou
                                                        VulkanContext& context,
                                                        VkSamplerAddressMode addressMode,
                                                        VkFilter filter) {
+    return create(outSampler, context, SamplerDesc{.filter = filter, .addressMode = addressMode});
+}
+
+inline VkResult VulkanSampler::create(Handle<VulkanSampler>& outSampler, VulkanContext& context, const SamplerDesc& desc) {
     std::unique_ptr<VulkanSampler> sampler;
-    VkResult result = createWithModeAndFilter(sampler, addressMode, filter, context.device(), context.physicalDevice());
+    VkResult result = create(sampler, desc, context.device(), context.physicalDevice());
     outSampler = context.resources().adopt(std::move(sampler));
     return result;
 }

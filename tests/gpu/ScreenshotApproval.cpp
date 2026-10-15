@@ -5,7 +5,7 @@
 #include "FLIP.h"
 
 #include <stb_image.h>
-#include <stb_image_write.h>
+#include "util/StbImageWrite.h"
 
 #include <algorithm>
 #include <cctype>

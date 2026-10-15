@@ -120,7 +120,7 @@ public:
         stbi_uc* pixels = stbi_load((filePath).c_str(), &width, &height, &channels, STBI_rgb_alpha);
 
         if (!pixels) {
-            throw std::runtime_error("Failed to load texture image.");
+            throw std::runtime_error("Failed to load image '" + filePath + "': " + stbi_failure_reason());
         }
 
         VkDeviceSize imageSize = width * height * 4;

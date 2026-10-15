@@ -102,8 +102,8 @@ public:
     }
 
     Handle<Renderable> createQuad(float scale, glm::vec2 offset) {
-        return ctx_.resources().create<MeshRenderable<Vertex>>(
-            quad(scale, offset), kQuadIndices, material_, ctx_);
+        auto mesh = ctx_.resources().create<Mesh>(ctx_, quad(scale, offset), kQuadIndices);
+        return ctx_.resources().create<MeshRenderable>(std::move(mesh), material_);
     }
 
     // Draws renderables in a frame and reads back the result

@@ -160,14 +160,12 @@ std::vector<Vertex> transformVertices(const std::vector<Vertex>& vertices, float
     return transformed;
 }
 
-void createTutorialRenderable(Handle<MeshRenderable<Vertex>>& outPtr,
-                              const std::vector<Vertex>& vertices,
-                              Handle<Material> material,
-                              VulkanApp& app) {
-    auto& resourceManager = app.getContext().resources();
-    outPtr = resourceManager.create<MeshRenderable<Vertex>>(vertices, indexData,
-                                                            std::move(material),
-                                                            app.getContext());
+Handle<Renderable> createTutorialRenderable(const std::vector<Vertex>& vertices,
+                                            Handle<Material> material,
+                                            VulkanApp& app) {
+    auto& context = app.getContext();
+    auto mesh = context.resources().create<Mesh>(context, vertices, indexData);
+    return context.resources().create<MeshRenderable>(std::move(mesh), std::move(material));
 }
 
 int main() {
@@ -224,9 +222,7 @@ int main() {
 
     std::vector<Handle<Renderable>> renderables;
     for (glm::vec2 offset : {glm::vec2{-0.3f, 0.0f}, glm::vec2{0.3f, 0.0f}}) {
-        Handle<MeshRenderable<Vertex>> renderable;
-        createTutorialRenderable(renderable, transformVertices(vertexData, 0.5f, offset), material, app);
-        renderables.push_back(std::move(renderable));
+        renderables.push_back(createTutorialRenderable(transformVertices(vertexData, 0.5f, offset), material, app));
     }
 
     // Nodes. The graph orders them, picks queues and synchronizes them from the materials'

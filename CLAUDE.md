@@ -33,16 +33,19 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | `include/core` | `VulkanContext` (instance, device, queues, timelines, frames, deferred destruction), `ResourceManager`/`Handle`, `PerFrame`/`FrameBinding`, Vulkan object wrappers, device feature requirements |
 | `include/resources` | `Buffer<T>`, `Image` |
 | `include/descriptors` | `DescriptorHeap`: the universal descriptor set and `DescriptorEntry` |
-| `include/shaders` | `ShaderLibrary` and `Shader` (SPIR-V loading and reloading) |
-| `include/materials` | `Material`, `ComputeMaterial`, `GraphicsMaterial`, `MaterialBinding`, `Renderable`, `MeshRenderable`, `AttachmentFormats` |
+| `include/shaders` | `ShaderLibrary` and `Shader` (SPIR-V loading and reloading), `SpirvReflection` (what shaders write) |
+| `include/materials` | `Material`, `ComputeMaterial`, `GraphicsMaterial`, `MaterialBinding`, `Renderable`, `Mesh`, `MeshRenderable`, `AttachmentFormats` |
 | `include/graph` | `RenderGraph` (runtime), `Node`/`NodeBuilder`, the pure compiler (`GraphCompiler.h`) and synchronization state machine (`GraphSync.h`), `nodes/` (`RenderablesNode`, `DispatchNode`, `ReadbackNode`) |
 | `include/targets` | `RenderTarget`, `Swapchain` |
 | `include/app` | `VulkanApp` (the only GLFW user) |
 | `include/glsl` | `bindless.glsl`, included by shaders (`glslc -I include/glsl`) |
+| `include/util` | `StbImageWrite.h`: `stb_image_write` without its deprecation warnings |
 
 Include headers relative to `include/`, e.g. `#include "graph/RenderGraph.h"`. Exactly one
 translation unit must `#define VK_WRAP_UTIL_IMPL` before including the wrapper and
-`#define STB_IMAGE_IMPLEMENTATION` before including `<stb_image.h>` (see the example).
+`#define STB_IMAGE_IMPLEMENTATION` before including `<stb_image.h>` (see the example). To write
+images, define `STB_IMAGE_WRITE_IMPLEMENTATION` in one translation unit and include
+`"util/StbImageWrite.h"` rather than `<stb_image_write.h>`.
 
 ## Writing an application
 
@@ -192,6 +195,8 @@ app.run();
 - The wrapper doesn't compile GLSL. Compile to SPIR-V (`glslc -I include/glsl --target-env=vulkan1.3`;
   the Makefile has rules) and load with `ctx.shaders().get("name.stage")`, which finds
   `<name.stage>.spv` in the search paths. The stage comes from the extension.
+- `BINDLESS_BUFFER_ARRAY(qualifiers, Block, Type, name)` declares buffers holding arrays sized by the
+  buffer (`name[i].data[j]`); pass element counts yourself, as MoltenVK can't compile `.length()`.
 - `app.reloadShaders()` (or `AppConfig::autoReloadShaders`) reloads changed SPIR-V. Materials rebuild
   their pipelines, and failures keep the previous version and are reported.
 
@@ -200,6 +205,11 @@ app.run();
 - `Image::createFromFile` / `createFromUcharBuffer` / `createEmptyRGBA` make sampled sRGB images.
   `Image::createStorage` makes storage images, and throws for formats the device can't store to
   (e.g. any sRGB format). `Image::supportsUsage` checks a format first.
+- Samplers: `VulkanSampler::create(handle, ctx, SamplerDesc{...})` (filter, address mode, a
+  `compareOp` for shadow maps, anisotropy); `createWithAddressMode` is shorthand.
+- Meshes: `ctx.resources().create<Mesh>(ctx, vertices, indices)` (16- or 32-bit indices) holds the
+  buffers; `create<MeshRenderable>(mesh, material)` draws one with a material, so passes can share
+  geometry.
 - Colours: textures are sRGB and sampling decodes them to linear. The swapchain is preferably
   `B8G8R8A8_SRGB`, so shaders output linear values.
 

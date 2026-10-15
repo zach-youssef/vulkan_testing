@@ -14,9 +14,10 @@ public:
     TestComputeMaterial(VulkanContext& context,
                         std::vector<MaterialBinding> bindings,
                         Handle<Shader> shader,
-                        glm::vec3 dispatchDimensions)
+                        glm::vec3 dispatchDimensions,
+                        std::vector<uint32_t> extraPushConstants = {})
     : ComputeMaterial(context, std::move(bindings), std::move(shader)),
-    dispatchDimensions_(dispatchDimensions) {}
+    dispatchDimensions_(dispatchDimensions), extraPushConstants_(std::move(extraPushConstants)) {}
 
     void update(uint32_t, VkExtent2D) override {}
 
@@ -24,8 +25,18 @@ public:
         return dispatchDimensions_;
     }
 
+protected:
+    void writePushConstants(uint32_t, std::vector<uint8_t>& data) override {
+        const size_t offset = data.size();
+        data.resize(offset + extraPushConstants_.size() * sizeof(uint32_t));
+        if (!extraPushConstants_.empty()) {
+            memcpy(data.data() + offset, extraPushConstants_.data(), extraPushConstants_.size() * sizeof(uint32_t));
+        }
+    }
+
 private:
     glm::vec3 dispatchDimensions_;
+    std::vector<uint32_t> extraPushConstants_;
 };
 
 // Records and synchronously executes a single dispatch of the material
@@ -161,4 +172,37 @@ TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies a sampled sRG
         }
     }
     CHECK(mismatches == 0);
+}
+
+TEST_CASE_FIXTURE(GpuTest, "BINDLESS_BUFFER_ARRAY declares buffers of runtime-sized arrays") {
+    auto& ctx = context();
+    constexpr uint32_t kCount = 100;
+    auto hostBuffer = [&ctx](uint32_t count) {
+        Handle<Buffer<uint32_t>> buffer;
+        VK_SUCCESS_OR_THROW(Buffer<uint32_t>::create(buffer, ctx, count, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+                            "Failed to create buffer");
+        return buffer;
+    };
+    auto source = hostBuffer(kCount);
+    auto target = hostBuffer(kCount);
+    source->mapAndExecute(0, sizeof(uint32_t) * kCount, [](void* data) {
+        auto* values = static_cast<uint32_t*>(data);
+        for (uint32_t i = 0; i < kCount; ++i) values[i] = i;
+    });
+    auto& heap = ctx.descriptors();
+    {
+        TestComputeMaterial material(ctx, {
+            MaterialBinding::storageBuffer(heap.storageBuffer(source), Access::StorageBufferRead),
+            MaterialBinding::storageBuffer(heap.storageBuffer(target), Access::StorageBufferWrite),
+        }, testShader(ctx, "buffer_array.comp"), glm::vec3{(kCount + 63) / 64, 1, 1}, {kCount});
+        dispatch(ctx, material);
+    }
+    target->mapAndExecute(0, sizeof(uint32_t) * kCount, [](void* data) {
+        auto* values = static_cast<uint32_t*>(data);
+        for (uint32_t i = 0; i < kCount; ++i) {
+            CAPTURE(i);
+            CHECK(values[i] == 2 * i);
+        }
+    });
 }
