@@ -237,7 +237,7 @@ int main() {
     VulkanApp<MAX_FRAMES_IN_FLIGHT> app(WINDOW_HEIGHT, WINDOW_WIDTH);
     
     // Initialize Window & Vulkan
-    app.init();
+    app.init(false /* forceFullFloatColor */, true /* enableValidation */);
     
     // Load texture file
     Handle<Image> texture;

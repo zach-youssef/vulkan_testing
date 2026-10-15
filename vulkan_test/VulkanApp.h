@@ -9,21 +9,11 @@
 #include "RenderGraph.h"
 #include "Image.h"
 #include "ResourceManager.h"
+#include "VulkanContext.h"
 
 #include <glm/glm.hpp>
 
 #include <iostream>
-
-const std::vector<const char*> validationLayers = {
-    "VK_LAYER_KHRONOS_validation"
-};
-
-#ifdef NDEBUG
-    const bool enableValidationLayers = false;
-#else
-    [[maybe_unused]]
-    const bool enableValidationLayers = true;
-#endif
 
 template<uint MAX_FRAMES>
 class VulkanApp {
@@ -32,9 +22,11 @@ public:
               const uint32_t windowWidth)
     : windowHeight_(windowHeight), windowWidth_(windowWidth) {}
     
-    void init(bool forceFullFloatColor=false) {
+    // enableValidation turns on the Khronos validation layer (when installed), which reports
+    // API misuse to std::cerr
+    void init(bool forceFullFloatColor=false, bool enableValidation=false) {
         initWindow();
-        initVulkan(forceFullFloatColor);
+        initVulkan(forceFullFloatColor, enableValidation);
     }
     
     void run() {
@@ -45,7 +37,7 @@ public:
         while(!glfwWindowShouldClose(window_.get())) {
             // Do nothing
         }
-        vkDeviceWaitIdle(**device_);
+        context_->waitIdleAll();
     }
 private: // Main initialize & run functions
     void initWindow() {
@@ -67,12 +59,8 @@ private: // Main initialize & run functions
         app->frameBufferResized_ = true;
     }
 
-    void initVulkan(bool forceFullFloatColor) {
-        createInstance();
-        createSurface();
-        choosePhysicalDevice();
-        createLogicalDevice();
-        createResourceManager();
+    void initVulkan(bool forceFullFloatColor, bool enableValidation) {
+        createContext(enableValidation);
         createSwapChain();
         createSwapChainImageViews();
         createDepthTexture();
@@ -87,7 +75,7 @@ private: // Main initialize & run functions
             glfwPollEvents();
             drawFrame();
         }
-        vkDeviceWaitIdle(**device_);
+        context_->waitIdleAll();
     }
     
 public:
@@ -128,114 +116,27 @@ public:
     }
     
 private: // Vulkan Initialization Functions
-    void createInstance() {
+    void createContext(bool enableValidation) {
         logSupportedExtensions();
         logAvailableLayers();
-#ifndef __APPLE__
-        //TODO: Figure out why validation layers aren't available
-        // MoltenVK logs in XCode seem to give us plenty of info as it is? ¯\_(ツ)_/¯
-        if (enableValidationLayers && !checkValidationLayerSupport()) {
-            throw std::runtime_error("Validation layers requested but not available!");
-        }
-#endif
         
-        VkApplicationInfo appInfo{};
-        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        appInfo.pApplicationName = "VulkanApp";
-        appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.pEngineName = "No Engine";
-        appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.apiVersion = VK_API_VERSION_1_0;
-        
-        VkInstanceCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-        createInfo.pApplicationInfo = &appInfo;
+        VulkanContextConfig config;
+        config.applicationName = "VulkanApp";
+        config.enableValidation = enableValidation;
         
         uint32_t glfwExtensionCount = 0;
-        const char** glfwExtensions;
-
-        glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-
-        std::vector<const char*> requiredExtensions;
-
-        for(uint32_t i = 0; i < glfwExtensionCount; i++) {
-            requiredExtensions.emplace_back(glfwExtensions[i]);
-        }
-
-        requiredExtensions.emplace_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
-
-        createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
-
-        createInfo.enabledExtensionCount = (uint32_t) requiredExtensions.size();
-        createInfo.ppEnabledExtensionNames = requiredExtensions.data();
+        const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+        config.instanceExtensions.assign(glfwExtensions, glfwExtensions + glfwExtensionCount);
         
-        createInfo.enabledLayerCount = 0;
+        config.createSurface = [window = window_.get()](VkInstance instance, VkSurfaceKHR* surface) {
+            return glfwCreateWindowSurface(instance, window, nullptr, surface);
+        };
         
-        VK_SUCCESS_OR_THROW(VulkanInstance::create(instance_, createInfo),
-                            "Failed to create Instance!");
-    }
-    
-    void createSurface() {
-        VK_SUCCESS_OR_THROW(VulkanSurface::create(surface_, **instance_, window_.get()),
-                            "Failed to create window surface");
-    }
-    
-    void choosePhysicalDevice() {
-        physicalDevice_ = pickPhysicalDevice(**instance_, **surface_);
-        
-        if (physicalDevice_ == VK_NULL_HANDLE) {
-            throw std::runtime_error("Failed to find a suitable GPU.");
-        }
-    }
-    
-    void createLogicalDevice() {
-        QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, **surface_);
-        
-        std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-        
-        float queuePriority = 1.0f; // Required even if only 1 queue
-        for (uint32_t queueFamily : indices.uniqueQueueFamilies()) {
-            VkDeviceQueueCreateInfo queueCreateInfo{};
-            queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-            queueCreateInfo.queueFamilyIndex = queueFamily;
-            queueCreateInfo.queueCount = 1;
-            queueCreateInfo.pQueuePriorities = &queuePriority;
-            
-            queueCreateInfos.push_back(queueCreateInfo);
-        }
-        
-        // Samplers are always created with anisotropic filtering enabled. Support for it
-        // is required when picking the physical device (see isDeviceSuitable).
-        VkPhysicalDeviceFeatures deviceFeatures{};
-        deviceFeatures.samplerAnisotropy = VK_TRUE;
-        
-        VkDeviceCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        
-        createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
-        createInfo.pQueueCreateInfos = queueCreateInfos.data();
-        createInfo.pEnabledFeatures = &deviceFeatures;
-        
-        createInfo.enabledLayerCount = 0;
-        createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
-        createInfo.ppEnabledExtensionNames = deviceExtensions.data();
-        
-        VK_SUCCESS_OR_THROW(VulkanDevice::create(device_, physicalDevice_, createInfo),
-                            "Failed to create logical device.");
-        
-        vkGetDeviceQueue(**device_, indices.graphicsFamily.value(), 0, &graphicsQueue_);
-        vkGetDeviceQueue(**device_, indices.presentFamily.value(), 0, &presentQueue_);
-        // Compute queue technically same as graphics in current implementation
-        // Creating dedicated handle in case I ever actually implement the async queue
-        vkGetDeviceQueue(**device_, indices.graphicsFamily.value(), 0, &computeQueue_);
-    }
-    
-    void createResourceManager() {
-        resourceManager_ = std::make_unique<ResourceManager>();
+        context_ = std::make_unique<VulkanContext>(std::move(config));
     }
     
     void createSwapChain() {
-        SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice_, **surface_);
+        SwapChainSupportDetails swapChainSupport = querySwapChainSupport(context_->physicalDevice(), context_->surface());
         
         auto surfaceFormat = swapChainSupport.chooseSwapSurfaceFormat();
         auto presentMode = swapChainSupport.chooseSwapPresentMode();
@@ -246,7 +147,7 @@ private: // Vulkan Initialization Functions
         
         VkSwapchainCreateInfoKHR createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-        createInfo.surface = **surface_;
+        createInfo.surface = context_->surface();
         createInfo.minImageCount = imageCount;
         createInfo.imageFormat = surfaceFormat.format;
         createInfo.imageColorSpace = surfaceFormat.colorSpace;
@@ -255,9 +156,8 @@ private: // Vulkan Initialization Functions
         createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         
         // Set sharing mode based on if a single present/graphics queue will be accessing the swapchain or 2 separate queues
-        QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, **surface_);
-        uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(), indices.presentFamily.value()};
-        if (indices.graphicsFamily != indices.presentFamily) {
+        uint32_t queueFamilyIndices[] = {context_->queueFamily(QueueType::Graphics), context_->queueFamily(QueueType::Present)};
+        if (queueFamilyIndices[0] != queueFamilyIndices[1]) {
             createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
             createInfo.queueFamilyIndexCount = 2;
             createInfo.pQueueFamilyIndices = queueFamilyIndices;
@@ -281,11 +181,11 @@ private: // Vulkan Initialization Functions
             createInfo.oldSwapchain = VK_NULL_HANDLE;
         }
         
-        VK_SUCCESS_OR_THROW(VulkanSwapchain::create(swapChain_, **device_, createInfo),
+        VK_SUCCESS_OR_THROW(VulkanSwapchain::create(swapChain_, context_->device(), createInfo),
                             "Failed to create swap chain.");
         
         // Retrieve swapchain images
-        swapChainImages_ = readVkVector<VkImage, VkDevice, VkSwapchainKHR>(**device_, **swapChain_,
+        swapChainImages_ = readVkVector<VkImage, VkDevice, VkSwapchainKHR>(context_->device(), **swapChain_,
                                                                                 vkGetSwapchainImagesKHR);
         
         // Cache swapchain properties
@@ -298,7 +198,7 @@ private: // Vulkan Initialization Functions
         
         for (size_t i = 0; i < swapChainImages_.size(); ++i) {
             VK_SUCCESS_OR_THROW(VulkanImageView::createForImageWithFormat(swapChainImageViews_[i],
-                                                                          **device_,
+                                                                          context_->device(),
                                                                           swapChainImages_[i],
                                                                           swapChainImageFormat_),
                                 "Failed to create image view for swapchain");
@@ -308,7 +208,7 @@ private: // Vulkan Initialization Functions
 public:    
     void createRenderPass(bool forceFullFloatColor) {
         VK_SUCCESS_OR_THROW(VulkanRenderPass::createColorDepth(renderPass_,
-                                                               **device_,
+                                                               context_->device(),
                                                                forceFullFloatColor? VK_FORMAT_R32G32B32A32_SFLOAT : swapChainImageFormat_,
                                                                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR),
                             "Failed to create render pass");
@@ -332,34 +232,18 @@ private:
             framebufferInfo.height = swapChainExtent_.height;
             framebufferInfo.layers = 1;
             
-            VK_SUCCESS_OR_THROW(VulkanFramebuffer::create(swapChainFramebuffers_[i], **device_, framebufferInfo),
+            VK_SUCCESS_OR_THROW(VulkanFramebuffer::create(swapChainFramebuffers_[i], context_->device(), framebufferInfo),
                                 "Failed to create framebuffer");
         }
     }
     
     void createCommandPool() {
-        QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice_, **surface_);
-
-        VkCommandPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
-        
-        VK_SUCCESS_OR_THROW(VulkanCommandPool::create(commandPool_, **device_, poolInfo),
-                            "Failed to create command pool");
+        commandPool_ = context_->createCommandPool(QueueType::Graphics);
     }
     
     void createCommandBuffers() {
-        VkCommandBufferAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.commandPool = **commandPool_;
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandBufferCount = MAX_FRAMES;
-        
-        VK_SUCCESS_OR_THROW(vkAllocateCommandBuffers(**device_, &allocInfo, commandBuffers_.data()),
-                            "Failed to allocate command buffers");
-        VK_SUCCESS_OR_THROW(vkAllocateCommandBuffers(**device_, &allocInfo, computeCommandBuffers_.data()),
-                            "Failed to allocate command buffers");
+        commandBuffers_ = commandPool_->allocateArray<MAX_FRAMES>();
+        computeCommandBuffers_ = commandPool_->allocateArray<MAX_FRAMES>();
     }
 
     void createDepthTexture() {
@@ -384,7 +268,7 @@ private: // Additional helper functions
             glfwGetFramebufferSize(window_.get(), &width, &height);
             glfwWaitEvents(); // Sleep the thread until something happens to the window
         }
-        vkDeviceWaitIdle(**device_);
+        context_->waitIdleAll();
         
         createSwapChain();
         createSwapChainImageViews();
@@ -420,31 +304,35 @@ public:
     
 public: // Public getters
     VkDevice getDevice() {
-        return **device_;
+        return context_->device();
+    }
+    
+    VulkanContext& getContext() {
+        return *context_;
     }
     
     ResourceManager& getResourceManager() {
-        return *resourceManager_;
+        return context_->resources();
     }
     
     VkPhysicalDevice getPhysicalDevice() {
-        return physicalDevice_;
+        return context_->physicalDevice();
     }
     
     VkCommandPool getCommandPool() {
-        return **commandPool_;
+        return commandPool_->get();
     }
     
     VkQueue getGraphicsQueue() {
-        return graphicsQueue_;
+        return context_->queue(QueueType::Graphics);
     }
     
     VkQueue getComputeQueue() {
-        return computeQueue_;
+        return context_->queue(QueueType::Compute);
     }
     
     VkQueue getPresentQueue() {
-        return presentQueue_;
+        return context_->queue(QueueType::Present);
     }
 
     VkExtent2D getSwapchainExtent() {
@@ -483,22 +371,11 @@ private: // Member variables
     std::unique_ptr<GLFWwindow, std::function<void(GLFWwindow*)>> window_;
     bool frameBufferResized_;
 
-    // Vulkan Instance & Device Handles
-    std::unique_ptr<VulkanInstance> instance_;
-    VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
-    std::unique_ptr<VulkanDevice> device_;
+    // Instance, device, queues & managed resources. Declared after the window (which its
+    // surface depends on) and before everything below, which must be destroyed first.
+    std::unique_ptr<VulkanContext> context_;
     
-    // Owner of shared resources. Declared after device_ so it is destroyed
-    // before the device, and before everything below that may hold Handles.
-    std::unique_ptr<ResourceManager> resourceManager_;
-    
-    // Hardware Queues
-    VkQueue graphicsQueue_;
-    VkQueue presentQueue_;
-    VkQueue computeQueue_;
-    
-    // Surface & Swapchain
-    std::unique_ptr<VulkanSurface> surface_;
+    // Swapchain
     std::unique_ptr<VulkanSwapchain> swapChain_;
     
     // Swap Chain Images
@@ -518,7 +395,7 @@ private: // Member variables
     
     // Command & Descriptor Pools
     // TODO: Can be owned here but need to match what is needed
-    std::unique_ptr<VulkanCommandPool> commandPool_;
+    std::unique_ptr<CommandPool> commandPool_;
     
     // Current frame index
     uint32_t currentFrameIndex_ = 0;

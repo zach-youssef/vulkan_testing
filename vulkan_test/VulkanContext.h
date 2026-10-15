@@ -141,8 +141,9 @@ class VulkanContext {
 public:
     explicit VulkanContext(VulkanContextConfig config) : config_(std::move(config)) {
         if (!config_.onValidationMessage) {
-            config_.onValidationMessage = [](VkDebugUtilsMessageSeverityFlagBitsEXT, const char* message) {
-                std::cerr << "[Vulkan validation] " << message << std::endl;
+            config_.onValidationMessage = [](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
+                const char* label = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ? "error" : "warning";
+                std::cerr << "[Vulkan validation " << label << "] " << message << std::endl;
             };
         }
         createInstance();
