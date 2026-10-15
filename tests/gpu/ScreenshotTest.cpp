@@ -11,7 +11,6 @@
 
 namespace {
 
-constexpr uint kFrames = 1;
 constexpr uint32_t kWidth = 256;
 constexpr uint32_t kHeight = 256;
 
@@ -55,14 +54,14 @@ const std::vector<uint16_t> kQuadIndices = {0, 1, 2, 2, 3, 0};
 
 // The example's textured material (shader.vert / shader.frag) with a fixed camera, so
 // renders are deterministic: the example's view at time = 0
-class FixedCameraMaterial : public BasicMaterial<kFrames, 3> {
+class FixedCameraMaterial : public BasicMaterial<3> {
 public:
     FixedCameraMaterial(VulkanContext& context,
                         VkExtent2D extent,
                         VkRenderPass renderPass,
                         std::vector<Handle<Descriptor>> descriptors,
                         Handle<Buffer<UniformBufferObject>> uniformBuffer)
-    : BasicMaterial<kFrames, 3>(context, descriptors, extent, renderPass,
+    : BasicMaterial<3>(context, descriptors, extent, renderPass,
                                 loadTestShader("shader.vert"), loadTestShader("shader.frag"),
                                 Vertex::getBindingDescription(), Vertex::getAttributeDescriptions()) {
         auto view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
@@ -99,33 +98,28 @@ public:
                             "Failed to create uniform buffer");
 
         std::vector<Handle<Descriptor>> descriptors{
-            resources.create<UniformBufferDescriptor<UniformBufferObject, kFrames>>(
-                std::array<Handle<Buffer<UniformBufferObject>>, kFrames>{uniformBuffer}, VK_SHADER_STAGE_VERTEX_BIT),
-            resources.create<CombinedImageSamplerDescriptor<kFrames>>(
-                VK_SHADER_STAGE_FRAGMENT_BIT, std::array<Handle<Image>, kFrames>{texture}, sampler),
+            resources.create<UniformBufferDescriptor<UniformBufferObject>>(uniformBuffer, VK_SHADER_STAGE_VERTEX_BIT),
+            resources.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_FRAGMENT_BIT, texture, sampler),
         };
 
         material_ = resources.create<FixedCameraMaterial>(ctx,
                                                           target_.getExtent(), target_.getRenderPass(),
                                                           descriptors, uniformBuffer);
-
-        commandPool_ = ctx.createCommandPool(QueueType::Graphics);
-        commandBuffers_ = commandPool_->allocateArray<kFrames>();
     }
 
     ~TexturedScene() {
         ctx_.waitIdle(QueueType::Graphics);
     }
 
-    Handle<Renderable<kFrames>> createQuad(float scale, glm::vec2 offset) {
-        return ctx_.resources().create<MeshRenderable<Vertex, kFrames>>(
+    Handle<Renderable> createQuad(float scale, glm::vec2 offset) {
+        return ctx_.resources().create<MeshRenderable<Vertex>>(
             quad(scale, offset), kQuadIndices, material_, ctx_);
     }
 
-    // Submits a node's work for frame 0 into the offscreen target and reads back the result
-    std::vector<uint8_t> render(RenderNode<kFrames>& node) {
+    // Submits a node's work for a frame into the offscreen target and reads back the result
+    std::vector<uint8_t> render(RenderNode& node, uint32_t frameIndex = 0) {
         RenderEvalContext renderContext{
-            0, target_.getExtent(),
+            frameIndex, target_.getExtent(),
             0, {target_.getFramebuffer()},
             VK_NULL_HANDLE,
             false,
@@ -136,14 +130,11 @@ public:
     }
 
     VkRenderPass renderPass() { return target_.getRenderPass(); }
-    std::array<VkCommandBuffer, kFrames> commandBuffers() { return commandBuffers_; }
 
 private:
     VulkanContext& ctx_;
     OffscreenRenderTarget target_;
-    Handle<Material<kFrames>> material_;
-    std::unique_ptr<CommandPool> commandPool_;
-    std::array<VkCommandBuffer, kFrames> commandBuffers_{};
+    Handle<Material> material_;
 };
 
 } // namespace
@@ -153,8 +144,7 @@ TEST_CASE_FIXTURE(GpuTest, "Screenshot - RenderableNode draws a textured quad") 
     std::vector<uint8_t> pixels;
     {
         TexturedScene scene(ctx);
-        RenderableNode<kFrames> node(scene.createQuad(1.0f, {0.0f, 0.0f}),
-                                     ctx, scene.renderPass(), scene.commandBuffers());
+        RenderableNode node(scene.createQuad(1.0f, {0.0f, 0.0f}), ctx, scene.renderPass());
         pixels = scene.render(node);
     }
     verifyScreenshot(pixels, kWidth, kHeight);
@@ -165,17 +155,34 @@ TEST_CASE_FIXTURE(GpuTest, "Screenshot - RenderablesNode draws two quads sharing
     std::vector<uint8_t> pixels;
     {
         TexturedScene scene(ctx);
-        std::vector<Handle<Renderable<kFrames>>> renderables{
+        std::vector<Handle<Renderable>> renderables{
             scene.createQuad(0.5f, {-0.3f, 0.0f}),
             scene.createQuad(0.5f, {0.3f, 0.0f}),
         };
         CHECK(renderables[0]->getMaterial() == renderables[1]->getMaterial());
 
-        RenderablesNode<kFrames> node(std::move(renderables),
-                                      ctx, scene.renderPass(), scene.commandBuffers());
+        RenderablesNode node(std::move(renderables), ctx, scene.renderPass());
         pixels = scene.render(node);
     }
     verifyScreenshot(pixels, kWidth, kHeight);
+}
+
+TEST_CASE_FIXTURE(GpuTest, "Frames added at runtime render the same as existing frames") {
+    auto& ctx = context();
+    const uint32_t originalFrames = ctx.framesInFlight();
+
+    TexturedScene scene(ctx);
+    RenderableNode node(scene.createQuad(1.0f, {0.0f, 0.0f}), ctx, scene.renderPass());
+    const auto expected = scene.render(node, 0);
+
+    // The node's command buffers and the material's descriptor sets grow with the frames in flight
+    ctx.setFramesInFlight(originalFrames + 1);
+    ctx.advanceFrame();
+    CHECK(scene.render(node, originalFrames) == expected);
+
+    ctx.setFramesInFlight(originalFrames);
+    ctx.advanceFrame();
+    CHECK(scene.render(node, originalFrames - 1) == expected);
 }
 
 TEST_CASE("compareWithFlip passes identical images and flags visibly different ones") {

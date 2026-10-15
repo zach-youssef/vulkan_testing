@@ -20,90 +20,95 @@ struct RenderEvalContext {
     bool shouldRecreateSwapChain;
 };
 
-template<uint MAX_FRAMES>
 class RenderGraph;
 
-template<uint MAX_FRAMES>
 class RenderNode {
-    friend class RenderGraph<MAX_FRAMES>;
+    friend class RenderGraph;
 public:
-    virtual ~RenderNode<MAX_FRAMES>() = default;
+    virtual ~RenderNode() = default;
     
     virtual void submit(RenderEvalContext& ctx) = 0;
 
 protected:
     virtual NodeDevice getDeviceType() = 0;
 
-    RenderNode<MAX_FRAMES>(VulkanContext& context) : context_(&context) {
-        // Initialize signal objects to VK_NULL_HANDLE
-        for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
-            signalFences_[frameIdx] = std::make_unique<VulkanFence>();
-            signalSemaphores_[frameIdx] = std::make_unique<VulkanSemaphore>();
-        }
-    }
+    RenderNode(VulkanContext& context) : context_(&context) {}
     
-    void addSemaphoreEdgeTo(RenderNode<MAX_FRAMES>* other){
-        // If this is our first outgoing edge, initialize our semaphores
-        if (**signalSemaphores_[0] == VK_NULL_HANDLE) {
-            VkSemaphoreCreateInfo semaphoreInfo{};
-            semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            for (uint frameIndex = 0; frameIndex < MAX_FRAMES; ++frameIndex) {
-                VK_SUCCESS_OR_THROW(VulkanSemaphore::create(signalSemaphores_[frameIndex], device(), semaphoreInfo),
+    void addSemaphoreEdgeTo(RenderNode* other){
+        // If this is our first outgoing edge, create our semaphores
+        if (signalSemaphores_.empty()) {
+            signalSemaphores_ = PerFrame<std::unique_ptr<VulkanSemaphore>>(*context_, [device = device()](uint32_t) {
+                VkSemaphoreCreateInfo semaphoreInfo{};
+                semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+                std::unique_ptr<VulkanSemaphore> semaphore;
+                VK_SUCCESS_OR_THROW(VulkanSemaphore::create(semaphore, device, semaphoreInfo),
                                     "Failed to create semaphore");
-            }
+                return semaphore;
+            });
         }
         
-        other->addSemaphoreWait(unwrap<VkSemaphore, VulkanSemaphore>(signalSemaphores_), this);
+        other->semaphoreParents_.push_back(this);
+        other->parents_.push_back(this);
         children_.push_back(other);
     }
     
-    void addSemaphoreWait(std::array<VkSemaphore, MAX_FRAMES> semaphore, RenderNode<MAX_FRAMES>* parent) {
-        for (uint idx = 0; idx < MAX_FRAMES; ++idx) {
-            waitSemaphores_[idx].push_back(semaphore[idx]);
-        }
-        parents_.push_back(parent);
-    }
-    
-    void addFenceEdgeTo(RenderNode<MAX_FRAMES>* other, bool createSignaled = false) {
-        // If this is our first outgoing edge, initialize our fences
-        if (**signalFences_[0] == VK_NULL_HANDLE) {
-            VkFenceCreateInfo fenceInfo{};
-            fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-            fenceInfo.flags = createSignaled ? VK_FENCE_CREATE_SIGNALED_BIT : 0;
-            
-            for (uint frameIndex = 0; frameIndex < MAX_FRAMES; ++frameIndex) {
-                VK_SUCCESS_OR_THROW(VulkanFence::create(signalFences_[frameIndex], device(), fenceInfo),
+    void addFenceEdgeTo(RenderNode* other, bool createSignaled = false) {
+        // If this is our first outgoing edge, create our fences
+        if (signalFences_.empty()) {
+            signalFences_ = PerFrame<std::unique_ptr<VulkanFence>>(*context_, [device = device(), createSignaled](uint32_t) {
+                VkFenceCreateInfo fenceInfo{};
+                fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+                fenceInfo.flags = createSignaled ? VK_FENCE_CREATE_SIGNALED_BIT : 0;
+                std::unique_ptr<VulkanFence> fence;
+                VK_SUCCESS_OR_THROW(VulkanFence::create(fence, device, fenceInfo),
                                     "Failed to create fence");
-            }
+                return fence;
+            });
         }
         
-        other->addFenceWait(unwrap<VkFence, VulkanFence>(signalFences_), this);
+        other->fenceParents_.push_back(this);
+        other->parents_.push_back(this);
         children_.push_back(other);
     }
     
-    void addFenceWait(std::array<VkFence, MAX_FRAMES> fence, RenderNode<MAX_FRAMES>* parent) {
-        for (uint idx = 0; idx < MAX_FRAMES; ++idx) {
-            waitFences_[idx].push_back(fence[idx]);
+    // Semaphores signaled for this frame by the nodes this node waits on
+    std::vector<VkSemaphore> getWaitSemaphores(uint32_t frameIndex) {
+        std::vector<VkSemaphore> semaphores;
+        for (auto* parent : semaphoreParents_) {
+            semaphores.push_back(**parent->signalSemaphores_[frameIndex]);
         }
-        parents_.push_back(parent);
+        return semaphores;
+    }
+    
+    // Fences signaled for this frame by the nodes this node waits on
+    std::vector<VkFence> getWaitFences(uint32_t frameIndex) {
+        std::vector<VkFence> fences;
+        for (auto* parent : fenceParents_) {
+            fences.push_back(**parent->signalFences_[frameIndex]);
+        }
+        return fences;
     }
     
     // Semaphores to signal when this node's work completes, for use in VkSubmitInfo.
-    // The count is 0 if the node has no outgoing semaphore edges, since VK_NULL_HANDLE
-    // may not be signaled.
+    // The count is 0 if the node has no outgoing semaphore edges.
     uint32_t getSignalSemaphoreCount(uint32_t frameIndex) {
-        return **signalSemaphores_[frameIndex] == VK_NULL_HANDLE ? 0 : 1;
+        return signalSemaphores_.empty() ? 0 : 1;
     }
     
     VkSemaphore* getSignalSemaphores(uint32_t frameIndex) {
-        return signalSemaphores_[frameIndex]->get();
+        return signalSemaphores_.empty() ? nullptr : signalSemaphores_[frameIndex]->get();
     }
     
-    const std::vector<RenderNode<MAX_FRAMES>*> getChildren() {
+    // Fence to signal when this node's work completes, or VK_NULL_HANDLE if no node waits on it
+    VkFence getSignalFence(uint32_t frameIndex) {
+        return signalFences_.empty() ? VK_NULL_HANDLE : **signalFences_[frameIndex];
+    }
+    
+    const std::vector<RenderNode*> getChildren() {
         return children_;
     }
 
-    bool allParentsVisited(const std::unordered_set<RenderNode<MAX_FRAMES>*>& visited) {
+    bool allParentsVisited(const std::unordered_set<RenderNode*>& visited) {
         for (auto parent : parents_) {
             if (visited.find(parent) == visited.end()) {
                 return false;
@@ -112,44 +117,41 @@ protected:
         return true;
     }
     
-private:
-    template<typename VkType, typename WrapperType>
-    static std::array<VkType, MAX_FRAMES> unwrap(std::array<std::unique_ptr<WrapperType>, MAX_FRAMES>& wrapped) {
-        std::array<VkType, MAX_FRAMES> unwrapped;
-        for (uint idx = 0; idx < MAX_FRAMES; ++idx) {
-            unwrapped[idx] = **wrapped[idx];
-        }
-        return unwrapped;
-    }
-    
 protected:
     VkDevice device() {
         return context_->device();
     }
     
+    // A command buffer per frame in flight, allocated from pool (which must outlive them)
+    PerFrame<VkCommandBuffer> allocateCommandBuffers(CommandPool& pool) {
+        return PerFrame<VkCommandBuffer>(*context_,
+                                         [&pool](uint32_t) { return pool.allocateOne(); },
+                                         [&pool](VkCommandBuffer& commandBuffer) { pool.free(commandBuffer); });
+    }
+    
     VulkanContext* context_;
-    std::vector<RenderNode<MAX_FRAMES>*> children_;
-    std::array<std::unique_ptr<VulkanSemaphore>, MAX_FRAMES> signalSemaphores_;
-    std::array<std::vector<VkSemaphore>, MAX_FRAMES> waitSemaphores_;
-    std::array<std::unique_ptr<VulkanFence>, MAX_FRAMES> signalFences_;
-    std::array<std::vector<VkFence>, MAX_FRAMES> waitFences_;
+    std::vector<RenderNode*> children_;
 
 private:
-    std::vector<RenderNode<MAX_FRAMES>*> parents_;
+    // Created on the first outgoing edge of each kind, with one per frame in flight
+    PerFrame<std::unique_ptr<VulkanSemaphore>> signalSemaphores_;
+    PerFrame<std::unique_ptr<VulkanFence>> signalFences_;
+    std::vector<RenderNode*> semaphoreParents_;
+    std::vector<RenderNode*> fenceParents_;
+    std::vector<RenderNode*> parents_;
 };
 
-template<uint MAX_FRAMES>
-class RenderGraph : public RenderNode<MAX_FRAMES> {
+class RenderGraph : public RenderNode {
 public:
     using NodeHandle = uint32_t;
     
-    RenderGraph<MAX_FRAMES>(VulkanContext& context): RenderNode<MAX_FRAMES>(context) {}
+    RenderGraph(VulkanContext& context): RenderNode(context) {}
     
     NodeDevice getDeviceType() override {
         return NodeDevice::CPU;
     }
     
-    NodeHandle addNode(std::unique_ptr<RenderNode<MAX_FRAMES>>&& node) {
+    NodeHandle addNode(std::unique_ptr<RenderNode>&& node) {
         nodes_.emplace_back(std::move(node));
         startNodes_.emplace_back(true);
         return static_cast<NodeHandle>(nodes_.size() - 1);
@@ -192,27 +194,26 @@ public:
     
     void waitUntilComplete(uint32_t frameIndex) {
         // Wait for the previous frame to finish
-        auto& fences = RenderNode<MAX_FRAMES>::waitFences_[frameIndex];
-        for (uint idx = 0; idx < fences.size(); ++idx) {
-            vkWaitForFences(RenderNode<MAX_FRAMES>::device(), 1, &fences[idx], VK_TRUE, UINT64_MAX);
+        for (VkFence fence : getWaitFences(frameIndex)) {
+            vkWaitForFences(device(), 1, &fence, VK_TRUE, UINT64_MAX);
         }
     }
     
     void submit(RenderEvalContext& ctx) override {
         // Reset our fences
-        for (VkFence& fence : RenderNode<MAX_FRAMES>::waitFences_[ctx.frameIndex]) {
-            vkResetFences(RenderNode<MAX_FRAMES>::device(), 1, &fence);
+        for (VkFence fence : getWaitFences(ctx.frameIndex)) {
+            vkResetFences(device(), 1, &fence);
         }
         
         // Initialize the queue with all nodes without an incoming edge
-        std::queue<RenderNode<MAX_FRAMES>*> nodeQueue;
+        std::queue<RenderNode*> nodeQueue;
         for (uint idx = 0; idx < nodes_.size(); ++idx) {
             if (startNodes_[idx]) {
                 nodeQueue.push(nodes_.at(idx).get());
             }
         }
         // Keep track of nodes that have been visited
-        std::unordered_set<RenderNode<MAX_FRAMES>*> visited;
+        std::unordered_set<RenderNode*> visited;
         visited.emplace(this);
 
         // Traverse the graph submitting work as we go
@@ -248,6 +249,6 @@ public:
     }
     
 private:
-    std::vector<std::unique_ptr<RenderNode<MAX_FRAMES>>> nodes_;
+    std::vector<std::unique_ptr<RenderNode>> nodes_;
     std::vector<bool> startNodes_;
 };

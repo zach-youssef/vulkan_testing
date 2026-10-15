@@ -6,20 +6,19 @@
 
 #include <unordered_set>
 
-template<uint MAX_FRAMES>
-class RenderablesNode : public RenderNode<MAX_FRAMES> {
+class RenderablesNode : public RenderNode {
 public:
-    RenderablesNode<MAX_FRAMES>(std::vector<Handle<Renderable<MAX_FRAMES>>> renderables,
+    RenderablesNode(std::vector<Handle<Renderable>> renderables,
                                VulkanContext& context,
-                               VkRenderPass renderPass,
-                               std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers)
-    : RenderNode<MAX_FRAMES>(context),
+                               VkRenderPass renderPass)
+    : RenderNode(context),
     renderPass_(renderPass),
-    commandBuffers_(commandBuffers),
+    commandPool_(context.createCommandPool(QueueType::Graphics)),
+    commandBuffers_(allocateCommandBuffers(*commandPool_)),
     renderables_(std::move(renderables)) {
         // Renderables may share a material; collect each distinct material once
         // so that it is only updated once per frame
-        std::unordered_set<Material<MAX_FRAMES>*> seen;
+        std::unordered_set<Material*> seen;
         for (auto& renderable : renderables_) {
             auto* material = renderable->getMaterial();
             if (seen.insert(material).second) {
@@ -117,22 +116,23 @@ public:
         // (it should wait for the swapchain image to be available before writing out to it)
         VkPipelineStageFlags waitStages[] {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         submitInfo.pWaitDstStageMask = waitStages;
-        auto& waitSemaphores = RenderNode<MAX_FRAMES>::waitSemaphores_[ctx.frameIndex];
+        auto waitSemaphores = getWaitSemaphores(ctx.frameIndex);
         submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
         submitInfo.pWaitSemaphores = waitSemaphores.data();
-        submitInfo.signalSemaphoreCount = RenderNode<MAX_FRAMES>::getSignalSemaphoreCount(ctx.frameIndex);
-        submitInfo.pSignalSemaphores = RenderNode<MAX_FRAMES>::getSignalSemaphores(ctx.frameIndex);
+        submitInfo.signalSemaphoreCount = getSignalSemaphoreCount(ctx.frameIndex);
+        submitInfo.pSignalSemaphores = getSignalSemaphores(ctx.frameIndex);
 
-        VK_SUCCESS_OR_THROW(RenderNode<MAX_FRAMES>::context_->submit(QueueType::Graphics,
+        VK_SUCCESS_OR_THROW(context_->submit(QueueType::Graphics,
                                                                      submitInfo,
-                                                                     **RenderNode<MAX_FRAMES>::signalFences_[ctx.frameIndex]),
+                                                                     getSignalFence(ctx.frameIndex)),
                             "Failed to submit draw command buffer.");
     }
 
 private:
     VkRenderPass renderPass_;
-    std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers_;
-    std::vector<Handle<Renderable<MAX_FRAMES>>> renderables_;
+    std::unique_ptr<CommandPool> commandPool_;
+    PerFrame<VkCommandBuffer> commandBuffers_;
+    std::vector<Handle<Renderable>> renderables_;
     // Distinct materials of renderables_ (kept alive by the renderables' handles)
-    std::vector<Material<MAX_FRAMES>*> materials_;
+    std::vector<Material*> materials_;
 };

@@ -1,25 +1,37 @@
 #pragma once
 
 #include "core/VkTypes.h"
+#include "core/FrameResources.h"
+#include "core/ResourceManager.h"
 #include "resources/Buffer.h"
 #include "resources/Image.h"
-#include "core/ResourceManager.h"
+
+#include <optional>
+
+/*
+ Descriptors describe one binding of a material's descriptor set. The resources they reference are
+ given as FrameBindings: either one resource shared by every frame in flight (for static data such
+ as a loaded texture) or a PerFrameHandles collection with a resource per frame (for data written
+ every frame, such as uniform buffers). Descriptors keep the resources they reference alive.
+ */
 
 // Abstract class representing any descriptor
 class Descriptor {
 public:
     virtual ~Descriptor() = default;
-    
+
     VkDescriptorType getType() {
         return type_;
     }
-    
+
     VkShaderStageFlags getStageFlags() {
         return stageFlags_;
     }
-    
-    virtual VkDescriptorBufferInfo* getBufferInfo(const uint32_t frameIndex) = 0;
-    virtual VkDescriptorImageInfo* getImageInfo(const uint32_t frameIndex) = 0;
+
+    // What to write for a frame. Empty if this is not a buffer (or image) descriptor. Resources
+    // that are not bound yet are VK_NULL_HANDLE.
+    virtual std::optional<VkDescriptorBufferInfo> getBufferInfo(uint32_t frameIndex) = 0;
+    virtual std::optional<VkDescriptorImageInfo> getImageInfo(uint32_t frameIndex) = 0;
 
 protected:
     Descriptor(VkDescriptorType type, VkShaderStageFlags stageFlags): type_(type), stageFlags_(stageFlags) {}
@@ -28,133 +40,136 @@ private:
     VkShaderStageFlags stageFlags_;
 };
 
-// Generic buffer descriptor
-template<typename Data, uint MAX_FRAMES>
+// Generic buffer descriptor, covering size elements of Data from offset bytes into each buffer
+template<typename Data>
 class BufferDescriptor : public Descriptor {
 public:
-    BufferDescriptor(VkDescriptorType type, VkShaderStageFlags stageFlags, 
-                     std::array<Handle<Buffer<Data>>, MAX_FRAMES> buffers, int size, int offset)
-    : Descriptor(type, stageFlags), buffers_(std::move(buffers)) {
-        for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
-            bufferInfos_[frameIdx].buffer = buffers_[frameIdx] ? buffers_[frameIdx]->getBuffer() : VK_NULL_HANDLE;
-            bufferInfos_[frameIdx].offset = offset;
-            bufferInfos_[frameIdx].range = sizeof(Data) * size;
-        }
-    }
-    BufferDescriptor(VkDescriptorType type, VkShaderStageFlags stageFlags, 
-                     std::array<Handle<Buffer<Data>>, MAX_FRAMES> buffers, int size)
-    : BufferDescriptor(type, stageFlags, std::move(buffers), size, 0) {}
+    BufferDescriptor(VkDescriptorType type, VkShaderStageFlags stageFlags,
+                     FrameBinding<Buffer<Data>> buffers, int size, int offset = 0)
+    : Descriptor(type, stageFlags), buffers_(std::move(buffers)), size_(size), offset_(offset) {}
 
-    VkDescriptorBufferInfo* getBufferInfo(const uint32_t frameIndex) override {
-        return &bufferInfos_.at(frameIndex);
-    }
-    
-    VkDescriptorImageInfo* getImageInfo(const uint32_t frameIndex) override {
-        return nullptr;
+    std::optional<VkDescriptorBufferInfo> getBufferInfo(uint32_t frameIndex) override {
+        auto buffer = buffers_.get(frameIndex);
+        VkDescriptorBufferInfo info{};
+        info.buffer = buffer ? buffer->getBuffer() : VK_NULL_HANDLE;
+        info.offset = offset_;
+        info.range = sizeof(Data) * size_;
+        return info;
     }
 
-    void bindBuffer(Handle<Buffer<Data>> buffer, int size, const uint32_t frameIndex = 0) {
-        bufferInfos_[frameIndex].buffer = buffer->getBuffer();
-        bufferInfos_[frameIndex].range = sizeof(Data) * size;
-        buffers_[frameIndex] = std::move(buffer);
+    std::optional<VkDescriptorImageInfo> getImageInfo(uint32_t) override {
+        return std::nullopt;
     }
+
+    // Binds new buffers, each holding size elements. Materials must re-populate their
+    // descriptor sets afterwards.
+    void bind(FrameBinding<Buffer<Data>> buffers, int size) {
+        buffers_ = std::move(buffers);
+        size_ = size;
+    }
+
 private:
-    // Keeps the referenced buffers alive for as long as this descriptor
-    std::array<Handle<Buffer<Data>>, MAX_FRAMES> buffers_;
-    std::array<VkDescriptorBufferInfo, MAX_FRAMES> bufferInfos_;
+    FrameBinding<Buffer<Data>> buffers_;
+    int size_;
+    int offset_;
 };
 
 // Descriptor for uniform buffers
-template<typename Ubo, uint MAX_FRAMES>
+template<typename Ubo>
 class UniformBufferDescriptor : public Descriptor {
 public:
-    UniformBufferDescriptor<Ubo, MAX_FRAMES>(
-        std::array<Handle<Buffer<Ubo>>, MAX_FRAMES> buffers, 
-        VkShaderStageFlags stageFlags,
-        bool offsetByFrame = false
-    )
-    : Descriptor(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stageFlags), buffers_(std::move(buffers)) {
-        for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
-            bufferInfos_[frameIdx].buffer = buffers_[frameIdx] ? buffers_[frameIdx]->getBuffer() : VK_NULL_HANDLE;
-            bufferInfos_[frameIdx].offset = offsetByFrame? frameIdx * sizeof(Ubo) : 0;
-            bufferInfos_[frameIdx].range = sizeof(Ubo);
-        }
-    }
-    
-    VkDescriptorBufferInfo* getBufferInfo(const uint32_t frameIndex) override {
-        return &bufferInfos_.at(frameIndex);
-    }
-    
-    VkDescriptorImageInfo* getImageInfo(const uint32_t frameIndex) override {
-        return nullptr;
+    // With offsetByFrame, frame i reads the i-th Ubo of its buffer, so a single buffer holding a
+    // Ubo per frame can be shared by every frame
+    UniformBufferDescriptor(FrameBinding<Buffer<Ubo>> buffers,
+                            VkShaderStageFlags stageFlags,
+                            bool offsetByFrame = false)
+    : Descriptor(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stageFlags),
+    buffers_(std::move(buffers)),
+    offsetByFrame_(offsetByFrame) {}
+
+    std::optional<VkDescriptorBufferInfo> getBufferInfo(uint32_t frameIndex) override {
+        auto buffer = buffers_.get(frameIndex);
+        VkDescriptorBufferInfo info{};
+        info.buffer = buffer ? buffer->getBuffer() : VK_NULL_HANDLE;
+        info.offset = offsetByFrame_ ? frameIndex * sizeof(Ubo) : 0;
+        info.range = sizeof(Ubo);
+        return info;
     }
 
-    void bindBuffer(const uint32_t frameIndex, Handle<Buffer<Ubo>> buffer) {
-        bufferInfos_[frameIndex].buffer = buffer->getBuffer();
-        buffers_[frameIndex] = std::move(buffer);
+    std::optional<VkDescriptorImageInfo> getImageInfo(uint32_t) override {
+        return std::nullopt;
     }
+
+    // Binds new buffers. Materials must re-populate their descriptor sets afterwards.
+    void bind(FrameBinding<Buffer<Ubo>> buffers) {
+        buffers_ = std::move(buffers);
+    }
+
 private:
-    // Keeps the referenced buffers alive for as long as this descriptor
-    std::array<Handle<Buffer<Ubo>>, MAX_FRAMES> buffers_;
-    std::array<VkDescriptorBufferInfo, MAX_FRAMES> bufferInfos_;
+    FrameBinding<Buffer<Ubo>> buffers_;
+    bool offsetByFrame_;
 };
 
 // Abstract image desriptor
-template<uint MAX_FRAMES>
 class ImageDescriptor : public Descriptor {
 public:
     virtual ~ImageDescriptor() = default;
-    
-    VkDescriptorImageInfo* getImageInfo(const uint32_t frameIndex) override {
-        return &imageInfos_.at(frameIndex);
-    }
-    
-    VkDescriptorBufferInfo* getBufferInfo(const uint32_t frameIndex) override {
-        return nullptr;
-    }
-protected:
-    // layout is the layout the images will be in whenever the descriptor is used
-    ImageDescriptor<MAX_FRAMES>(VkDescriptorType type,
-                                VkShaderStageFlags stageFlags,
-                                std::array<Handle<Image>, MAX_FRAMES> images,
-                                VkImageLayout layout)
-    : Descriptor(type, stageFlags), images_(std::move(images)) {
-        for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
-            imageInfos_[frameIdx].imageLayout = layout;
-            imageInfos_[frameIdx].imageView = images_[frameIdx]->getImageView();
-        }
+
+    std::optional<VkDescriptorImageInfo> getImageInfo(uint32_t frameIndex) override {
+        auto image = images_.get(frameIndex);
+        VkDescriptorImageInfo info{};
+        info.imageLayout = layout_;
+        info.imageView = image ? image->getImageView() : VK_NULL_HANDLE;
+        info.sampler = getSampler();
+        return info;
     }
 
-    // Keeps the referenced images alive for as long as this descriptor
-    std::array<Handle<Image>, MAX_FRAMES> images_;
-    std::array<VkDescriptorImageInfo, MAX_FRAMES> imageInfos_;
+    std::optional<VkDescriptorBufferInfo> getBufferInfo(uint32_t) override {
+        return std::nullopt;
+    }
+
+protected:
+    // layout is the layout the images will be in whenever the descriptor is used
+    ImageDescriptor(VkDescriptorType type,
+                    VkShaderStageFlags stageFlags,
+                    FrameBinding<Image> images,
+                    VkImageLayout layout)
+    : Descriptor(type, stageFlags), images_(std::move(images)), layout_(layout) {}
+
+    virtual VkSampler getSampler() {
+        return VK_NULL_HANDLE;
+    }
+
+private:
+    FrameBinding<Image> images_;
+    VkImageLayout layout_;
 };
 
 // Storage Image Descriptor
 // Storage images must be in VK_IMAGE_LAYOUT_GENERAL (or SHARED_PRESENT_KHR) when used
-template<uint MAX_FRAMES>
-class StorageImageDescriptor : public ImageDescriptor<MAX_FRAMES> {
+class StorageImageDescriptor : public ImageDescriptor {
 public:
-    StorageImageDescriptor<MAX_FRAMES>(VkShaderStageFlags stageFlags,
-                                       std::array<Handle<Image>, MAX_FRAMES> images,
-                                       VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL)
-    : ImageDescriptor<MAX_FRAMES>(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, stageFlags, std::move(images), layout) {}
+    StorageImageDescriptor(VkShaderStageFlags stageFlags,
+                           FrameBinding<Image> images,
+                           VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL)
+    : ImageDescriptor(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, stageFlags, std::move(images), layout) {}
 };
 
 // Combined Image Sampler Descriptor
-template<uint MAX_FRAMES>
-class CombinedImageSamplerDescriptor : public ImageDescriptor<MAX_FRAMES> {
+class CombinedImageSamplerDescriptor : public ImageDescriptor {
 public:
-    CombinedImageSamplerDescriptor<MAX_FRAMES>(VkShaderStageFlags stageFlags,
-                                               std::array<Handle<Image>, MAX_FRAMES> images,
-                                               Handle<VulkanSampler> sampler,
-                                               VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-    : ImageDescriptor<MAX_FRAMES>(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stageFlags, std::move(images), layout),
-    sampler_(std::move(sampler)) {
-        for (uint frameIdx = 0; frameIdx < MAX_FRAMES; ++frameIdx) {
-            ImageDescriptor<MAX_FRAMES>::imageInfos_[frameIdx].sampler = **sampler_;
-        }
+    CombinedImageSamplerDescriptor(VkShaderStageFlags stageFlags,
+                                   FrameBinding<Image> images,
+                                   Handle<VulkanSampler> sampler,
+                                   VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+    : ImageDescriptor(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stageFlags, std::move(images), layout),
+    sampler_(std::move(sampler)) {}
+
+protected:
+    VkSampler getSampler() override {
+        return **sampler_;
     }
+
 private:
     // Keeps the referenced sampler alive for as long as this descriptor
     Handle<VulkanSampler> sampler_;

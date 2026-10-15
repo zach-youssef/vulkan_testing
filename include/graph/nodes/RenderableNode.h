@@ -4,16 +4,15 @@
 #include "materials/Renderable.h"
 #include "core/VkUtil.h"
 
-template<uint MAX_FRAMES>
-class RenderableNode : public RenderNode<MAX_FRAMES> {
+class RenderableNode : public RenderNode {
 public:
-    RenderableNode<MAX_FRAMES>(Handle<Renderable<MAX_FRAMES>> renderable,
+    RenderableNode(Handle<Renderable> renderable,
                                VulkanContext& context,
-                               VkRenderPass renderPass,
-                               std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers)
-    : RenderNode<MAX_FRAMES>(context),
+                               VkRenderPass renderPass)
+    : RenderNode(context),
     renderPass_(renderPass),
-    commandBuffers_(commandBuffers),
+    commandPool_(context.createCommandPool(QueueType::Graphics)),
+    commandBuffers_(allocateCommandBuffers(*commandPool_)),
     renderable_(std::move(renderable)){}
     
     NodeDevice getDeviceType() override {
@@ -102,20 +101,21 @@ public:
         // (it should wait for the swapchain image to be available before writing out to it)
         VkPipelineStageFlags waitStages[] {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         submitInfo.pWaitDstStageMask = waitStages;
-        auto& waitSemaphores = RenderNode<MAX_FRAMES>::waitSemaphores_[ctx.frameIndex];
+        auto waitSemaphores = getWaitSemaphores(ctx.frameIndex);
         submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
         submitInfo.pWaitSemaphores = waitSemaphores.data();
-        submitInfo.signalSemaphoreCount = RenderNode<MAX_FRAMES>::getSignalSemaphoreCount(ctx.frameIndex);
-        submitInfo.pSignalSemaphores = RenderNode<MAX_FRAMES>::getSignalSemaphores(ctx.frameIndex);
+        submitInfo.signalSemaphoreCount = getSignalSemaphoreCount(ctx.frameIndex);
+        submitInfo.pSignalSemaphores = getSignalSemaphores(ctx.frameIndex);
 
-        VK_SUCCESS_OR_THROW(RenderNode<MAX_FRAMES>::context_->submit(QueueType::Graphics,
+        VK_SUCCESS_OR_THROW(context_->submit(QueueType::Graphics,
                                                                      submitInfo,
-                                                                     **RenderNode<MAX_FRAMES>::signalFences_[ctx.frameIndex]),
+                                                                     getSignalFence(ctx.frameIndex)),
                             "Failed to submit draw command buffer.");
     }
 
 private:
     VkRenderPass renderPass_;
-    std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers_;
-    Handle<Renderable<MAX_FRAMES>> renderable_;
+    std::unique_ptr<CommandPool> commandPool_;
+    PerFrame<VkCommandBuffer> commandBuffers_;
+    Handle<Renderable> renderable_;
 };

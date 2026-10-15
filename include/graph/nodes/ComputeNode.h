@@ -4,14 +4,13 @@
 #include "materials/Renderable.h"
 #include "core/VkUtil.h"
 
-template<uint MAX_FRAMES>
-class ComputeNode : public RenderNode<MAX_FRAMES> {
+class ComputeNode : public RenderNode {
 public:
-    ComputeNode<MAX_FRAMES>(Handle<ComputeMaterial<MAX_FRAMES>> computePass,
-                            VulkanContext& context,
-                            std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers)
-    : RenderNode<MAX_FRAMES>(context),
-    commandBuffers_(commandBuffers),
+    ComputeNode(Handle<ComputeMaterial> computePass,
+                            VulkanContext& context)
+    : RenderNode(context),
+    commandPool_(context.createCommandPool(QueueType::Compute)),
+    commandBuffers_(allocateCommandBuffers(*commandPool_)),
     computePass_(std::move(computePass)) {}
     
     NodeDevice getDeviceType() override {
@@ -52,19 +51,20 @@ public:
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffer;
         
-        auto& waitSemaphores = RenderNode<MAX_FRAMES>::waitSemaphores_[ctx.frameIndex];
+        auto waitSemaphores = getWaitSemaphores(ctx.frameIndex);
         submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
         submitInfo.pWaitSemaphores = waitSemaphores.data();
-        submitInfo.signalSemaphoreCount = RenderNode<MAX_FRAMES>::getSignalSemaphoreCount(ctx.frameIndex);
-        submitInfo.pSignalSemaphores = RenderNode<MAX_FRAMES>::getSignalSemaphores(ctx.frameIndex);
+        submitInfo.signalSemaphoreCount = getSignalSemaphoreCount(ctx.frameIndex);
+        submitInfo.pSignalSemaphores = getSignalSemaphores(ctx.frameIndex);
         
-        VK_SUCCESS_OR_THROW(RenderNode<MAX_FRAMES>::context_->submit(QueueType::Compute,
+        VK_SUCCESS_OR_THROW(context_->submit(QueueType::Compute,
                                                                      submitInfo,
-                                                                     **RenderNode<MAX_FRAMES>::signalFences_[ctx.frameIndex]),
+                                                                     getSignalFence(ctx.frameIndex)),
                             "Failed to submit compute");
     }
     
 protected:
-    std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers_;
-    Handle<ComputeMaterial<MAX_FRAMES>> computePass_;
+    std::unique_ptr<CommandPool> commandPool_;
+    PerFrame<VkCommandBuffer> commandBuffers_;
+    Handle<ComputeMaterial> computePass_;
 };

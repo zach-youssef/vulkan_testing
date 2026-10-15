@@ -23,15 +23,20 @@
  */
 
 
-template<uint MAX_FRAMES>
 class Material {
 public:
     virtual ~Material() = default;
     
     virtual void update(uint32_t currentImage, VkExtent2D swapChainExtent) = 0;
     
+    // The frame's descriptor set. Each frame's set is written the first time it is requested,
+    // including frames added when the number of frames in flight grows.
     VkDescriptorSet* getDescriptorSet(uint32_t index) {
-        return &descriptorSets_.at(index);
+        auto& frameSet = descriptorSets_[index];
+        if (!frameSet.populated) {
+            populateDescriptorSet(index);
+        }
+        return &frameSet.set;
     }
     
     virtual VkPipeline getPipeline() {
@@ -43,15 +48,13 @@ public:
     }
 
 protected:
-    Material<MAX_FRAMES>(VulkanContext& context,
+    Material(VulkanContext& context,
              std::vector<Handle<Descriptor>> descriptors)
     : context_(&context), descriptors_(descriptors) {
         createDescriptorSetLayout();
-        createDescriptorPool();
-        createDescriptorSets();
-        for (uint32_t frameIndex = 0; frameIndex < MAX_FRAMES; ++frameIndex) {
-            populateDescriptorSet(frameIndex);
-        }
+        descriptorSets_ = PerFrame<FrameDescriptorSet>(context, [this](uint32_t) {
+            return createDescriptorSet();
+        });
     }
     
     std::unique_ptr<VulkanShaderModule> createShaderModule(const std::vector<char>& code) {
@@ -72,12 +75,15 @@ protected:
     // Writes the descriptors' current resources into the frame's descriptor set. Descriptors whose
     // resources are not bound yet (VK_NULL_HANDLE) are skipped; call this again once they are.
     void populateDescriptorSet(uint32_t frameIndex) {
+        auto& frameSet = descriptorSets_[frameIndex];
         std::vector<VkWriteDescriptorSet> descriptorWrites;
-        descriptorWrites.reserve(descriptors_.size());
+        // Referenced by descriptorWrites, so sized up front to keep their addresses stable
+        std::vector<VkDescriptorBufferInfo> bufferInfos(descriptors_.size());
+        std::vector<VkDescriptorImageInfo> imageInfos(descriptors_.size());
         
         for (uint idx = 0; idx < descriptors_.size(); ++idx) {
-            auto* bufferInfo = descriptors_.at(idx)->getBufferInfo(frameIndex);
-            auto* imageInfo = descriptors_.at(idx)->getImageInfo(frameIndex);
+            auto bufferInfo = descriptors_.at(idx)->getBufferInfo(frameIndex);
+            auto imageInfo = descriptors_.at(idx)->getImageInfo(frameIndex);
             const bool bound = (bufferInfo && bufferInfo->buffer != VK_NULL_HANDLE)
                                || (imageInfo && imageInfo->imageView != VK_NULL_HANDLE);
             if (!bound) {
@@ -86,20 +92,35 @@ protected:
             
             VkWriteDescriptorSet write{};
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = descriptorSets_.at(frameIndex);
+            write.dstSet = frameSet.set;
             write.dstBinding = idx;
             write.dstArrayElement = 0;
             write.descriptorType = descriptors_.at(idx)->getType();
             write.descriptorCount = 1;
-            write.pBufferInfo = bufferInfo;
-            write.pImageInfo = imageInfo;
+            if (bufferInfo) {
+                bufferInfos[idx] = *bufferInfo;
+                write.pBufferInfo = &bufferInfos[idx];
+            }
+            if (imageInfo) {
+                imageInfos[idx] = *imageInfo;
+                write.pImageInfo = &imageInfos[idx];
+            }
             descriptorWrites.push_back(write);
         }
         
         vkUpdateDescriptorSets(device(), static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+        frameSet.populated = true;
     }
     
 private:
+    // A frame's descriptor set, allocated from a pool of its own so that frames can be added
+    // and removed independently
+    struct FrameDescriptorSet {
+        std::unique_ptr<VulkanDescriptorPool> pool;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        bool populated = false;
+    };
+
     void createDescriptorSetLayout() {
         std::vector<VkDescriptorSetLayoutBinding> layoutBindings;
         layoutBindings.resize(descriptors_.size());
@@ -120,35 +141,32 @@ private:
                             "Failed to create descriptor set layout.");
     }
     
-    void createDescriptorPool() {
+    FrameDescriptorSet createDescriptorSet() {
+        FrameDescriptorSet frameSet;
+
         std::vector<VkDescriptorPoolSize> poolSizes{};
         poolSizes.resize(descriptors_.size());
-        
         for(uint idx = 0; idx < descriptors_.size(); ++idx) {
             poolSizes[idx].type = descriptors_.at(idx)->getType();
-            poolSizes[idx].descriptorCount = static_cast<uint32_t>(MAX_FRAMES);
+            poolSizes[idx].descriptorCount = 1;
         }
         
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
         poolInfo.pPoolSizes = poolSizes.data();
-        poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES);
-        
-        VK_SUCCESS_OR_THROW(VulkanDescriptorPool::create(descriptorPool_, device(), poolInfo),
+        poolInfo.maxSets = 1;
+        VK_SUCCESS_OR_THROW(VulkanDescriptorPool::create(frameSet.pool, device(), poolInfo),
                             "Failed to create descriptor pool");
-    }
-    
-    void createDescriptorSets() {
-        std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES, **descriptorSetLayout_);
+
         VkDescriptorSetAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = **descriptorPool_;
-        allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES);
-        allocInfo.pSetLayouts = layouts.data();
-        
-        VK_SUCCESS_OR_THROW(vkAllocateDescriptorSets(device(), &allocInfo, descriptorSets_.data()),
+        allocInfo.descriptorPool = **frameSet.pool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = descriptorSetLayout_->get();
+        VK_SUCCESS_OR_THROW(vkAllocateDescriptorSets(device(), &allocInfo, &frameSet.set),
                             "Failed to allocate descriptor sets.");
+        return frameSet;
     }
 
 protected:
@@ -163,12 +181,11 @@ protected:
     std::unique_ptr<VulkanGraphicsPipeline> pipeline_;
 
     std::unique_ptr<VulkanDescriptorSetLayout> descriptorSetLayout_;
-    std::unique_ptr<VulkanDescriptorPool> descriptorPool_;
-    std::array<VkDescriptorSet, MAX_FRAMES> descriptorSets_;
+    // Destroyed before the layout. Sets are freed with their pools.
+    PerFrame<FrameDescriptorSet> descriptorSets_;
 };
 
-template<uint MAX_FRAMES>
-class ComputeMaterial : public Material<MAX_FRAMES> {
+class ComputeMaterial : public Material {
 public:
     virtual glm::vec3 getDispatchDimensions() = 0;
     
@@ -176,10 +193,10 @@ public:
         return **computePipeline_;
     }
 protected:
-    ComputeMaterial<MAX_FRAMES>(VulkanContext& context,
+    ComputeMaterial(VulkanContext& context,
                                 std::vector<Handle<Descriptor>> descriptors,
                                 const std::vector<char> & computeShaderCode)
-    : Material<MAX_FRAMES>(context, descriptors) {
+    : Material(context, descriptors) {
         createComputePipeline(computeShaderCode);
     }
     
@@ -188,13 +205,13 @@ private:
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = Material<MAX_FRAMES>::descriptorSetLayout_->get();
-        VK_SUCCESS_OR_THROW(VulkanPipelineLayout::create(Material<MAX_FRAMES>::pipelineLayout_,
-                                                         Material<MAX_FRAMES>::device(),
+        pipelineLayoutInfo.pSetLayouts = descriptorSetLayout_->get();
+        VK_SUCCESS_OR_THROW(VulkanPipelineLayout::create(pipelineLayout_,
+                                                         device(),
                                                          pipelineLayoutInfo),
                             "Failed to create compute pipeline layout");
         
-        auto computeShaderModule = Material<MAX_FRAMES>::createShaderModule(computeShaderCode);
+        auto computeShaderModule = createShaderModule(computeShaderCode);
         
         VkPipelineShaderStageCreateInfo computeShaderStageInfo{};
         computeShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -204,23 +221,22 @@ private:
         
         VkComputePipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipelineInfo.layout = **Material<MAX_FRAMES>::pipelineLayout_;
+        pipelineInfo.layout = **pipelineLayout_;
         pipelineInfo.stage = computeShaderStageInfo;
         
         // The VkResult is intentionally left unchecked here (unlike other create calls)
-        VulkanComputePipeline::create(computePipeline_, Material<MAX_FRAMES>::device(), pipelineInfo);
+        VulkanComputePipeline::create(computePipeline_, device(), pipelineInfo);
     }
 
 protected:
     std::unique_ptr<VulkanComputePipeline> computePipeline_;
 };
 
-template<uint MAX_FRAMES>
 class Renderable {
 public:
-    virtual ~Renderable<MAX_FRAMES>() = default;
+    virtual ~Renderable() = default;
     
-    Material<MAX_FRAMES>* getMaterial() {
+    Material* getMaterial() {
         return material_.get();
     }
     
@@ -233,21 +249,21 @@ public:
     virtual uint32_t getIndexCount() = 0;
     
 protected:
-    Renderable<MAX_FRAMES>(Handle<Material<MAX_FRAMES>> material)
+    Renderable(Handle<Material> material)
     : material_(std::move(material)) {}
     
 protected:
-    Handle<Material<MAX_FRAMES>> material_;
+    Handle<Material> material_;
 };
 
-template<typename VertexData, uint MAX_FRAMES>
-class MeshRenderable : public Renderable<MAX_FRAMES> {
+template<typename VertexData>
+class MeshRenderable : public Renderable {
 public:
     MeshRenderable(const std::vector<VertexData>& vertexData,
                    const std::vector<uint16_t>& indexData,
-                   Handle<Material<MAX_FRAMES>> material,
+                   Handle<Material> material,
                    VulkanContext& context)
-    : Renderable<MAX_FRAMES>(std::move(material)), indexCount_(static_cast<uint32_t>(indexData.size())) {
+    : Renderable(std::move(material)), indexCount_(static_cast<uint32_t>(indexData.size())) {
         Buffer<VertexData>::createAndInitialize(vertexBuffer_, context, vertexData, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         Buffer<uint16_t>::createAndInitialize(indexBuffer_, context, indexData, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     }

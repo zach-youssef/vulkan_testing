@@ -20,7 +20,6 @@
 
 const uint32_t WINDOW_WIDTH = 800;
 const uint32_t WINDOW_HEIGHT = 600;
-const int MAX_FRAMES_IN_FLIGHT = 2;
 
 // Defined by the Makefile
 #ifndef SIMPLE_EXAMPLE_SHADER_DIR
@@ -68,7 +67,7 @@ struct Vertex {
     }
 };
 
-class TutorialMaterial : public BasicMaterial<MAX_FRAMES_IN_FLIGHT, 3> {
+class TutorialMaterial : public BasicMaterial<3> {
 public:
     TutorialMaterial(VulkanContext& context,
                      VkExtent2D swapchainExtent,
@@ -76,7 +75,7 @@ public:
                      std::vector<Handle<Descriptor>> descriptors,
                      const std::vector<char>& vertSpirv,
                      const std::vector<char>& fragSpirv)
-    :  BasicMaterial<MAX_FRAMES_IN_FLIGHT, 3>(context,
+    :  BasicMaterial<3>(context,
                                               descriptors,
                                               swapchainExtent,
                                               renderPass,
@@ -85,21 +84,23 @@ public:
                                               Vertex::getBindingDescription(),
                                               Vertex::getAttributeDescriptions()){
         // JANK: Find the first uniform buffer object descriptor
-        using UboDesc = UniformBufferDescriptor<UniformBufferObject, MAX_FRAMES_IN_FLIGHT>;
+        using UboDesc = UniformBufferDescriptor<UniformBufferObject>;
         Handle<UboDesc> uboDesc = nullptr;
-        for (auto& descriptor : Material<MAX_FRAMES_IN_FLIGHT>::descriptors_) {
+        for (auto& descriptor : descriptors_) {
             if (descriptor->getType() == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
                 uboDesc = static_handle_cast<UboDesc>(descriptor);
                 break;
             }
         }
         
-        // Create & bind our uniform buffers
-        for (uint frameIdx = 0; frameIdx < MAX_FRAMES_IN_FLIGHT; ++frameIdx) {
-            createUniformBuffer(context, frameIdx);
-            uboDesc->bindBuffer(frameIdx, uniformBuffers_.at(frameIdx));
-            populateDescriptorSet(frameIdx);
-        }
+        // Create & bind a uniform buffer per frame. The mappings are created after the buffers,
+        // so they are also resized after them when the number of frames in flight changes.
+        uniformBuffers_ = context.resources().create<PerFrameHandles<Buffer<UniformBufferObject>>>(
+            context, [ctx = &context](uint32_t) { return createUniformBuffer(*ctx); });
+        mappedUniformBuffers_ = PerFrame<Mapping>(context, [this](uint32_t frameIdx) {
+            return (*uniformBuffers_)[frameIdx]->getPersistentMapping(0, sizeof(UniformBufferObject));
+        });
+        uboDesc->bind(uniformBuffers_);
     }
     
     void update(uint32_t currentImage, VkExtent2D swapChainExtent) {
@@ -121,27 +122,29 @@ public:
         memcpy(mappedUniformBuffers_[currentImage].get(), &ubo, sizeof(ubo));
     }
 private:
-    void createUniformBuffer(VulkanContext& context, uint32_t frameIndex) {
-        VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(uniformBuffers_[frameIndex],
+    static Handle<Buffer<UniformBufferObject>> createUniformBuffer(VulkanContext& context) {
+        Handle<Buffer<UniformBufferObject>> buffer;
+        VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(buffer,
                                                                 context,
                                                                 1,
                                                                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
                             "Failed to create uniform buffer.");
-        mappedUniformBuffers_[frameIndex] = uniformBuffers_[frameIndex]->getPersistentMapping(0, sizeof(UniformBufferObject));
+        return buffer;
     }
 private:
-    std::array<Handle<Buffer<UniformBufferObject>>, MAX_FRAMES_IN_FLIGHT> uniformBuffers_;
-    std::array<std::unique_ptr<UniformBufferObject, std::function<void(UniformBufferObject*)>>, MAX_FRAMES_IN_FLIGHT> mappedUniformBuffers_;
+    using Mapping = std::unique_ptr<UniformBufferObject, std::function<void(UniformBufferObject*)>>;
+    Handle<PerFrameHandles<Buffer<UniformBufferObject>>> uniformBuffers_;
+    PerFrame<Mapping> mappedUniformBuffers_;
 };
 
-class TestComputeMat : public ComputeMaterial<MAX_FRAMES_IN_FLIGHT> {
+class TestComputeMat : public ComputeMaterial {
 public:
     TestComputeMat(const std::vector<char>& computeShaderCode,
                    std::vector<Handle<Descriptor>> descriptors,
                    uint32_t imageWidth, uint32_t imageHeight,
                    VulkanContext& context)
-    : ComputeMaterial<MAX_FRAMES_IN_FLIGHT>(context, descriptors, computeShaderCode),
+    : ComputeMaterial(context, descriptors, computeShaderCode),
     imageWidth_(imageWidth),
     imageHeight_(imageHeight){}
     
@@ -179,17 +182,17 @@ std::vector<Vertex> transformVertices(const std::vector<Vertex>& vertices, float
 }
 
 void createTestComputeMaterial(Handle<TestComputeMat>& outPtr,
-                               std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> inImages,
+                               FrameBinding<Image> inImages,
                                Handle<VulkanSampler> sampler,
-                               std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> outImages,
+                               FrameBinding<Image> outImages,
                                uint32_t width, uint32_t height,
-                               VulkanApp<MAX_FRAMES_IN_FLIGHT>& app){
+                               VulkanApp& app){
     auto computeShaderCode = readFile(shaderDir + "/test.comp.spv");
     
     std::vector<Handle<Descriptor>> descriptors;
     auto& resourceManager = app.getContext().resources();
-    descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, inImages, sampler));
-    descriptors.push_back(resourceManager.create<StorageImageDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, outImages));
+    descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, inImages, sampler));
+    descriptors.push_back(resourceManager.create<StorageImageDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, outImages));
 
     outPtr = resourceManager.create<TestComputeMat>(computeShaderCode,
                                                     descriptors,
@@ -198,18 +201,18 @@ void createTestComputeMaterial(Handle<TestComputeMat>& outPtr,
 }
 
 void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
-                            std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> images,
+                            FrameBinding<Image> images,
                             Handle<VulkanSampler> sampler,
-                            VulkanApp<MAX_FRAMES_IN_FLIGHT>& app) {
+                            VulkanApp& app) {
     auto vertShaderCode = readFile(shaderDir + "/shader.vert.spv");
     auto fragShaderCode = readFile(shaderDir + "/shader.frag.spv");
     
     std::vector<Handle<Descriptor>> descriptors;
     auto& resourceManager = app.getContext().resources();
-    descriptors.push_back(resourceManager.create<UniformBufferDescriptor<UniformBufferObject, MAX_FRAMES_IN_FLIGHT>>(std::array<Handle<Buffer<UniformBufferObject>>, MAX_FRAMES_IN_FLIGHT>{},
-                                                                                                                     VK_SHADER_STAGE_VERTEX_BIT));
-    descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_FRAGMENT_BIT, images, sampler,
-                                                                                                       VK_IMAGE_LAYOUT_GENERAL));
+    // The uniform buffers are created and bound by the material
+    descriptors.push_back(resourceManager.create<UniformBufferDescriptor<UniformBufferObject>>(nullptr, VK_SHADER_STAGE_VERTEX_BIT));
+    descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_FRAGMENT_BIT, images, sampler,
+                                                                                 VK_IMAGE_LAYOUT_GENERAL));
 
     outPtr = resourceManager.create<TutorialMaterial>(app.getContext(),
                                                       app.getSwapchainExtent(),
@@ -219,18 +222,18 @@ void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
                                                       fragShaderCode);
 }
 
-void createTutorialRenderable(Handle<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>>& outPtr,
+void createTutorialRenderable(Handle<MeshRenderable<Vertex>>& outPtr,
                               const std::vector<Vertex>& vertices,
-                              Handle<Material<MAX_FRAMES_IN_FLIGHT>> material,
-                              VulkanApp<MAX_FRAMES_IN_FLIGHT>& app) {
+                              Handle<Material> material,
+                              VulkanApp& app) {
     auto& resourceManager = app.getContext().resources();
-    outPtr = resourceManager.create<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>>(vertices, indexData,
-                                                                                  std::move(material),
-                                                                                  app.getContext());
+    outPtr = resourceManager.create<MeshRenderable<Vertex>>(vertices, indexData,
+                                                            std::move(material),
+                                                            app.getContext());
 }
 
 int main() {
-    VulkanApp<MAX_FRAMES_IN_FLIGHT> app(WINDOW_HEIGHT, WINDOW_WIDTH);
+    VulkanApp app(WINDOW_HEIGHT, WINDOW_WIDTH);
     
     // Initialize Window & Vulkan
     app.init(false /* forceFullFloatColor */, true /* enableValidation */);
@@ -240,21 +243,21 @@ int main() {
     Image::createFromFile(texture,
                           app.getContext(),
                           textureDir + "/texture.jpg");
-    std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> inputImages = {texture, texture};
-
-    // Create output texture images
-    std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> outImages;
-    for (int frameIdx = 0; frameIdx < MAX_FRAMES_IN_FLIGHT; ++frameIdx) {
+    // Create an output image per frame in flight
+    auto& context = app.getContext();
+    auto outImages = context.resources().create<PerFrameHandles<Image>>(context, [&context, texture](uint32_t) {
         // Linear half floats: storage images cannot be sRGB, and 8 bits would band in linear space.
         // Must match the rgba16f format declared by test.comp.
         // Written by the compute shader as a storage image and then sampled by the fragment
         // shader, so it stays in the GENERAL layout (valid for both uses)
-        Image::createStorage(outImages[frameIdx],
-                             app.getContext(),
+        Handle<Image> image;
+        Image::createStorage(image,
+                             context,
                              VK_FORMAT_R16G16B16A16_SFLOAT,
                              texture->getWidth(),
                              texture->getHeight());
-    }
+        return image;
+    });
     
 
     // Create texture sampler
@@ -268,9 +271,9 @@ int main() {
     Handle<TutorialMaterial> material;
     createTutorialMaterial(material, outImages, sampler, app);
     
-    std::vector<Handle<Renderable<MAX_FRAMES_IN_FLIGHT>>> renderables;
+    std::vector<Handle<Renderable>> renderables;
     for (glm::vec2 offset : {glm::vec2{-0.3f, 0.0f}, glm::vec2{0.3f, 0.0f}}) {
-        Handle<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>> renderable;
+        Handle<MeshRenderable<Vertex>> renderable;
         createTutorialRenderable(renderable, transformVertices(vertexData, 0.5f, offset), material, app);
         renderables.push_back(std::move(renderable));
     }
@@ -278,8 +281,9 @@ int main() {
     
     // Create compute material
     Handle<TestComputeMat> computeMaterial;
+    // The input texture is static, so every frame shares it
     createTestComputeMaterial(computeMaterial,
-                              inputImages,
+                              texture,
                               sampler,
                               outImages,
                               texture->getWidth(),
@@ -287,18 +291,15 @@ int main() {
                               app);
     
     // Instantiate our render graph
-    std::unique_ptr<RenderGraph<MAX_FRAMES_IN_FLIGHT>> renderGraph = std::make_unique<RenderGraph<MAX_FRAMES_IN_FLIGHT>>(app.getContext());
+    auto renderGraph = std::make_unique<RenderGraph>(context);
     
     // Add Nodes
-    auto acquireImageNode = renderGraph->addNode(std::make_unique<AcquireImageNode<MAX_FRAMES_IN_FLIGHT>>(app.getContext()));
-    auto computeNode = renderGraph->addNode(std::make_unique<ComputeNode<MAX_FRAMES_IN_FLIGHT>>(std::move(computeMaterial),
-                                                                                               app.getContext(),
-                                                                                               app.getComputeCommandBuffers()));
-    auto graphicsNode = renderGraph->addNode(std::make_unique<RenderablesNode<MAX_FRAMES_IN_FLIGHT>>(std::move(renderables),
-                                                                                                     app.getContext(),
-                                                                                                     app.getRenderPass(),
-                                                                                                     app.getGraphicsCommandBuffers()));
-    auto presentNode = renderGraph->addNode(std::make_unique<PresentNode<MAX_FRAMES_IN_FLIGHT>>(app.getContext()));
+    auto acquireImageNode = renderGraph->addNode(std::make_unique<AcquireImageNode>(context));
+    auto computeNode = renderGraph->addNode(std::make_unique<ComputeNode>(std::move(computeMaterial), context));
+    auto graphicsNode = renderGraph->addNode(std::make_unique<RenderablesNode>(std::move(renderables),
+                                                                               context,
+                                                                               app.getRenderPass()));
+    auto presentNode = renderGraph->addNode(std::make_unique<PresentNode>(context));
     
     // Setup Edges
     renderGraph->addEdge(acquireImageNode, graphicsNode);

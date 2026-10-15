@@ -15,7 +15,6 @@
 
 #include <iostream>
 
-template<uint MAX_FRAMES>
 class VulkanApp {
 public:
     VulkanApp(const uint32_t windowHeight,
@@ -66,8 +65,6 @@ private: // Main initialize & run functions
         createDepthTexture();
         createRenderPass(forceFullFloatColor);
         createFramebuffers();
-        createCommandPool();
-        createCommandBuffers();
     }
     
     void mainLoop() {
@@ -80,17 +77,19 @@ private: // Main initialize & run functions
     
 public:
     void drawFrame() {
+        const uint32_t frameIndex = context_->currentFrame();
+
         // Wait for previous frame to complete
-        renderGraph_->waitUntilComplete(currentFrameIndex_);
+        renderGraph_->waitUntilComplete(frameIndex);
         
         // Perform any pre-draw actions
         for (auto& callback : preDrawCallbacks_) {
-            (*callback)(*this, currentFrameIndex_);
+            (*callback)(*this, frameIndex);
         }
 
         // Construct our evaluation context
         RenderEvalContext ctx {
-            currentFrameIndex_,
+            frameIndex,
             swapChainExtent_,
             0, {},
             **swapChain_,
@@ -111,8 +110,8 @@ public:
             return;
         }
 
-        // Increment frame index
-        currentFrameIndex_ = (this->currentFrameIndex_ + 1) % MAX_FRAMES;
+        // Move on to the next frame (applying any change to the number of frames in flight)
+        context_->advanceFrame();
     }
     
 private: // Vulkan Initialization Functions
@@ -239,15 +238,6 @@ private:
         }
     }
     
-    void createCommandPool() {
-        commandPool_ = context_->createCommandPool(QueueType::Graphics);
-    }
-    
-    void createCommandBuffers() {
-        commandBuffers_ = commandPool_->allocateArray<MAX_FRAMES>();
-        computeCommandBuffers_ = commandPool_->allocateArray<MAX_FRAMES>();
-    }
-
     void createDepthTexture() {
         VK_SUCCESS_OR_THROW(Image::create(depthTexture_,
                                           *context_,
@@ -300,7 +290,7 @@ public:
         preDrawCallbacks_.push_back(callback);
     }
     
-    void setRenderGraph(std::unique_ptr<RenderGraph<MAX_FRAMES>>&& renderGraph) {
+    void setRenderGraph(std::unique_ptr<RenderGraph>&& renderGraph) {
         renderGraph_ = std::move(renderGraph);
     }
     
@@ -321,14 +311,6 @@ public: // Public getters
         return **swapChain_;
     }
     
-    std::array<VkCommandBuffer, MAX_FRAMES> getGraphicsCommandBuffers() {
-        return commandBuffers_;
-    }
-    
-    std::array<VkCommandBuffer, MAX_FRAMES> getComputeCommandBuffers() {
-        return computeCommandBuffers_;
-    }
-
     VkImage getSwapchainImage(size_t frameIndex) {
         return swapChainImages_.at(frameIndex);
     }
@@ -367,16 +349,6 @@ private: // Member variables
     // Framebuffers
     std::vector<std::unique_ptr<VulkanFramebuffer>> swapChainFramebuffers_;
     
-    // Command & Descriptor Pools
-    // TODO: Can be owned here but need to match what is needed
-    std::unique_ptr<CommandPool> commandPool_;
-    
-    // Current frame index
-    uint32_t currentFrameIndex_ = 0;
-    
-    std::array<VkCommandBuffer, MAX_FRAMES> commandBuffers_;
-    std::array<VkCommandBuffer, MAX_FRAMES> computeCommandBuffers_;
-    
     std::vector<std::shared_ptr<std::function<void(VulkanApp&,uint32_t)>>> preDrawCallbacks_{};
-    std::unique_ptr<RenderGraph<MAX_FRAMES>> renderGraph_{};
+    std::unique_ptr<RenderGraph> renderGraph_{};
 };

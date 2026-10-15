@@ -8,15 +8,13 @@
 
 namespace {
 
-constexpr uint kFrames = 1;
-
-class TestComputeMaterial : public ComputeMaterial<kFrames> {
+class TestComputeMaterial : public ComputeMaterial {
 public:
     TestComputeMaterial(VulkanContext& context,
                         std::vector<Handle<Descriptor>> descriptors,
                         const std::vector<char>& shaderCode,
                         glm::vec3 dispatchDimensions)
-    : ComputeMaterial<kFrames>(context, descriptors, shaderCode),
+    : ComputeMaterial(context, descriptors, shaderCode),
     dispatchDimensions_(dispatchDimensions) {}
 
     void update(uint32_t, VkExtent2D) override {}
@@ -30,7 +28,7 @@ private:
 };
 
 // Records and synchronously executes a single dispatch of the material
-void dispatch(VulkanContext& ctx, ComputeMaterial<kFrames>& material) {
+void dispatch(VulkanContext& ctx, ComputeMaterial& material) {
     ctx.submitImmediate([&material](VkCommandBuffer commandBuffer) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, material.getPipeline());
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -87,8 +85,7 @@ TEST_CASE_FIXTURE(GpuTest, "ComputeMaterial dispatch writes every texel of a sto
     auto output = createStorageImage(ctx, VK_FORMAT_R8G8B8A8_UNORM, width, height);
     {
         std::vector<Handle<Descriptor>> descriptors{
-            ctx.resources().create<StorageImageDescriptor<kFrames>>(VK_SHADER_STAGE_COMPUTE_BIT,
-                                                                    std::array<Handle<Image>, kFrames>{output}),
+            ctx.resources().create<StorageImageDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, output),
         };
         auto material = ctx.resources().create<TestComputeMaterial>(
             ctx, descriptors, loadTestShader("pattern.comp"),
@@ -137,11 +134,8 @@ TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies a sampled sRG
                                                    VK_FILTER_NEAREST) == VK_SUCCESS);
     {
         std::vector<Handle<Descriptor>> descriptors{
-            ctx.resources().create<CombinedImageSamplerDescriptor<kFrames>>(VK_SHADER_STAGE_COMPUTE_BIT,
-                                                                            std::array<Handle<Image>, kFrames>{input},
-                                                                            sampler),
-            ctx.resources().create<StorageImageDescriptor<kFrames>>(VK_SHADER_STAGE_COMPUTE_BIT,
-                                                                    std::array<Handle<Image>, kFrames>{output}),
+            ctx.resources().create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, input, sampler),
+            ctx.resources().create<StorageImageDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, output),
         };
         auto material = ctx.resources().create<TestComputeMaterial>(
             ctx, descriptors, loadTestShader("test.comp"),

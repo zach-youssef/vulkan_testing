@@ -2,11 +2,10 @@
 
 #include "graph/RenderGraph.h"
 
-template<uint MAX_FRAMES>
-class PresentNode : public RenderNode<MAX_FRAMES> {
+class PresentNode : public RenderNode {
 public:
-    PresentNode<MAX_FRAMES>(VulkanContext& context)
-    : RenderNode<MAX_FRAMES>(context) {}
+    PresentNode(VulkanContext& context)
+    : RenderNode(context) {}
     
     NodeDevice getDeviceType() override {
         return NodeDevice::GPU;
@@ -16,7 +15,7 @@ public:
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 
-        auto& waitSemaphores = RenderNode<MAX_FRAMES>::waitSemaphores_[ctx.frameIndex];
+        auto waitSemaphores = getWaitSemaphores(ctx.frameIndex);
         presentInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
         presentInfo.pWaitSemaphores = waitSemaphores.data();
         VkSwapchainKHR swapChains[] = {ctx.swapChain};
@@ -25,6 +24,6 @@ public:
         presentInfo.pImageIndices = &ctx.imageIndex;
         presentInfo.pResults = nullptr; // Array of VkResults to check for each swapchain?
         
-        RenderNode<MAX_FRAMES>::context_->present(presentInfo);
+        context_->present(presentInfo);
     }
 };

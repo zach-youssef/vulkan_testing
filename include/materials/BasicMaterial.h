@@ -7,10 +7,10 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-template<uint MAX_FRAMES, uint VertexAttributes>
-class BasicMaterial : public Material<MAX_FRAMES> {
+template<uint VertexAttributes>
+class BasicMaterial : public Material {
 public:
-    BasicMaterial<MAX_FRAMES>(VulkanContext& context,
+    BasicMaterial(VulkanContext& context,
                   std::vector<Handle<Descriptor>> descriptors,
                   VkExtent2D swapchainExtent,
                   VkRenderPass renderPass,
@@ -19,7 +19,7 @@ public:
                   VkVertexInputBindingDescription bindingDescription,
                   // TODO make that 2 customizable
                   std::array<VkVertexInputAttributeDescription, VertexAttributes> attributeDescriptions)
-    : Material<MAX_FRAMES>(context, descriptors) {
+    : Material(context, descriptors) {
         createGraphicsPipeline(vertSpirv, fragSpirv, swapchainExtent, renderPass, bindingDescription, attributeDescriptions);
     }
     
@@ -31,8 +31,8 @@ private:
                                 VkRenderPass renderPass,
                                 VkVertexInputBindingDescription bindingDescription,
                                 std::array<VkVertexInputAttributeDescription, VertexAttributes> attributeDescriptions) {
-        auto vertShaderModule = Material<MAX_FRAMES>::createShaderModule(vertShaderCode);
-        auto fragShaderModule = Material<MAX_FRAMES>::createShaderModule(fragShaderCode);
+        auto vertShaderModule = createShaderModule(vertShaderCode);
+        auto fragShaderModule = createShaderModule(fragShaderCode);
         
         VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
         vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -137,11 +137,11 @@ private:
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = Material<MAX_FRAMES>::descriptorSetLayout_->get();
+        pipelineLayoutInfo.pSetLayouts = descriptorSetLayout_->get();
         pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
         pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
         
-        VK_SUCCESS_OR_THROW(VulkanPipelineLayout::create(Material<MAX_FRAMES>::pipelineLayout_, Material<MAX_FRAMES>::device(), pipelineLayoutInfo),
+        VK_SUCCESS_OR_THROW(VulkanPipelineLayout::create(pipelineLayout_, device(), pipelineLayoutInfo),
                             "Failed to create pipeline layout");
 
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
@@ -166,14 +166,14 @@ private:
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.pDynamicState = &dynamicState;
         
-        pipelineInfo.layout = **Material<MAX_FRAMES>::pipelineLayout_;
+        pipelineInfo.layout = **pipelineLayout_;
         pipelineInfo.renderPass = renderPass;
         pipelineInfo.subpass = 0;
 
         pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
         pipelineInfo.basePipelineIndex = -1; // Optional
         
-        VK_SUCCESS_OR_THROW(VulkanGraphicsPipeline::create(Material<MAX_FRAMES>::pipeline_, Material<MAX_FRAMES>::device(), pipelineInfo),
+        VK_SUCCESS_OR_THROW(VulkanGraphicsPipeline::create(pipeline_, device(), pipelineInfo),
                             "Failed to create graphics pipeline");
     }
 };

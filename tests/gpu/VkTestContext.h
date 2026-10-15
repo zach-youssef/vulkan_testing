@@ -71,14 +71,18 @@ private:
 };
 
 /*
- doctest fixture for GPU tests. Fails the test if it produced validation errors or
- left resources alive in the shared ResourceManager.
+ doctest fixture for GPU tests. Fails the test if it produced validation errors, left
+ resources alive in the shared ResourceManager, left PerFrame collections alive or changed the
+ number of frames in flight (tests that change it must restore it).
 
      TEST_CASE_FIXTURE(GpuTest, "...") { VulkanContext& ctx = context(); ... }
  */
 class GpuTest {
 public:
-    GpuTest() : resourcesBefore_(context().resources().size()) {
+    GpuTest()
+    : resourcesBefore_(context().resources().size()),
+    collectionsBefore_(context().frames().size()),
+    framesInFlightBefore_(context().framesInFlight()) {
         // Errors raised outside of a test (e.g. creating the context) are reported here
         for (const auto& error : VkTestContext::get().takeValidationErrors()) {
             FAIL_CHECK("Vulkan validation error before this test: " << error);
@@ -95,6 +99,15 @@ public:
             FAIL_CHECK("Test leaked handles to managed resources: " << resourcesBefore_
                        << " before, " << resourcesAfter << " after");
         }
+        const size_t collectionsAfter = context().frames().size();
+        if (collectionsAfter != collectionsBefore_) {
+            FAIL_CHECK("Test leaked PerFrame collections: " << collectionsBefore_
+                       << " before, " << collectionsAfter << " after");
+        }
+        if (context().framesInFlight() != framesInFlightBefore_) {
+            FAIL_CHECK("Test changed the number of frames in flight from " << framesInFlightBefore_
+                       << " to " << context().framesInFlight());
+        }
     }
 
 protected:
@@ -104,4 +117,6 @@ protected:
 
 private:
     size_t resourcesBefore_;
+    size_t collectionsBefore_;
+    uint32_t framesInFlightBefore_;
 };
