@@ -11,11 +11,15 @@ public:
         return NodeDevice::GPU;
     }
     
+    bool presentsImage() override {
+        return true;
+    }
+    
     void submit(RenderEvalContext& ctx) override {
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 
-        auto waitSemaphores = getWaitSemaphores(ctx.frameIndex);
+        auto waitSemaphores = getWaitSemaphores(ctx);
         presentInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
         presentInfo.pWaitSemaphores = waitSemaphores.data();
         VkSwapchainKHR swapChains[] = {ctx.swapChain};

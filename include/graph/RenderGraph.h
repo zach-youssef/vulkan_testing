@@ -18,6 +18,10 @@ struct RenderEvalContext {
     std::vector<VkFramebuffer> frameBuffers;
     VkSwapchainKHR swapChain;
     bool shouldRecreateSwapChain;
+    // One per swapchain image, signaled by the node whose work is presented and waited on by the
+    // present. They are per image rather than per frame: the presentation engine may still be
+    // using an image's semaphore until that image is acquired again.
+    std::vector<VkSemaphore> renderFinishedSemaphores = {};
 };
 
 class RenderGraph;
@@ -32,10 +36,24 @@ public:
 protected:
     virtual NodeDevice getDeviceType() = 0;
 
+    // Whether this node presents the swapchain image. Its parents then signal the acquired
+    // image's render finished semaphore for it, rather than per-frame semaphores.
+    virtual bool presentsImage() {
+        return false;
+    }
+
     RenderNode(VulkanContext& context) : context_(&context) {}
     
     void addSemaphoreEdgeTo(RenderNode* other){
-        // If this is our first outgoing edge, create our semaphores
+        if (other->presentsImage()) {
+            signalsRenderFinished_ = true;
+            other->waitsForRenderFinished_ = true;
+            other->parents_.push_back(this);
+            children_.push_back(other);
+            return;
+        }
+        
+        // If this is our first outgoing per-frame semaphore edge, create our semaphores
         if (signalSemaphores_.empty()) {
             signalSemaphores_ = PerFrame<std::unique_ptr<VulkanSemaphore>>(*context_, [device = device()](uint32_t) {
                 VkSemaphoreCreateInfo semaphoreInfo{};
@@ -72,10 +90,13 @@ protected:
     }
     
     // Semaphores signaled for this frame by the nodes this node waits on
-    std::vector<VkSemaphore> getWaitSemaphores(uint32_t frameIndex) {
+    std::vector<VkSemaphore> getWaitSemaphores(const RenderEvalContext& ctx) {
         std::vector<VkSemaphore> semaphores;
         for (auto* parent : semaphoreParents_) {
-            semaphores.push_back(**parent->signalSemaphores_[frameIndex]);
+            semaphores.push_back(**parent->signalSemaphores_[ctx.frameIndex]);
+        }
+        if (waitsForRenderFinished_) {
+            semaphores.push_back(ctx.renderFinishedSemaphores.at(ctx.imageIndex));
         }
         return semaphores;
     }
@@ -90,13 +111,21 @@ protected:
     }
     
     // Semaphores to signal when this node's work completes, for use in VkSubmitInfo.
-    // The count is 0 if the node has no outgoing semaphore edges.
-    uint32_t getSignalSemaphoreCount(uint32_t frameIndex) {
-        return signalSemaphores_.empty() ? 0 : 1;
+    // Empty if the node has no outgoing semaphore edges.
+    std::vector<VkSemaphore> getSignalSemaphores(const RenderEvalContext& ctx) {
+        std::vector<VkSemaphore> semaphores;
+        if (!signalSemaphores_.empty()) {
+            semaphores.push_back(getFrameSignalSemaphore(ctx.frameIndex));
+        }
+        if (signalsRenderFinished_) {
+            semaphores.push_back(ctx.renderFinishedSemaphores.at(ctx.imageIndex));
+        }
+        return semaphores;
     }
     
-    VkSemaphore* getSignalSemaphores(uint32_t frameIndex) {
-        return signalSemaphores_.empty() ? nullptr : signalSemaphores_[frameIndex]->get();
+    // This node's per-frame signal semaphore, which children other than present nodes wait on
+    VkSemaphore getFrameSignalSemaphore(uint32_t frameIndex) {
+        return **signalSemaphores_[frameIndex];
     }
     
     // Fence to signal when this node's work completes, or VK_NULL_HANDLE if no node waits on it
@@ -138,6 +167,8 @@ private:
     PerFrame<std::unique_ptr<VulkanFence>> signalFences_;
     std::vector<RenderNode*> semaphoreParents_;
     std::vector<RenderNode*> fenceParents_;
+    bool signalsRenderFinished_ = false;
+    bool waitsForRenderFinished_ = false;
     std::vector<RenderNode*> parents_;
 };
 

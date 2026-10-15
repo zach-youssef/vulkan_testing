@@ -100,7 +100,7 @@ public:
         submitInfo.pCommandBuffers = &commandBuffer;
         // Parents may produce the swapchain image (written as a color attachment) or resources
         // read by the shaders, so wait for them before either
-        auto waitSemaphores = getWaitSemaphores(ctx.frameIndex);
+        auto waitSemaphores = getWaitSemaphores(ctx);
         std::vector<VkPipelineStageFlags> waitStages(waitSemaphores.size(),
                                                      VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
                                                      | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
@@ -108,8 +108,9 @@ public:
         submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
         submitInfo.pWaitSemaphores = waitSemaphores.data();
         submitInfo.pWaitDstStageMask = waitStages.data();
-        submitInfo.signalSemaphoreCount = getSignalSemaphoreCount(ctx.frameIndex);
-        submitInfo.pSignalSemaphores = getSignalSemaphores(ctx.frameIndex);
+        auto signalSemaphores = getSignalSemaphores(ctx);
+        submitInfo.signalSemaphoreCount = static_cast<uint32_t>(signalSemaphores.size());
+        submitInfo.pSignalSemaphores = signalSemaphores.data();
 
         VK_SUCCESS_OR_THROW(context_->submit(QueueType::Graphics,
                                                                      submitInfo,

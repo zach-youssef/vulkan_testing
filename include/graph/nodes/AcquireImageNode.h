@@ -15,7 +15,7 @@ public:
         auto result = vkAcquireNextImageKHR(device(),
                                             ctx.swapChain,
                                             UINT64_MAX,
-                                            *getSignalSemaphores(ctx.frameIndex),
+                                            getFrameSignalSemaphore(ctx.frameIndex),
                                             VK_NULL_HANDLE,
                                             &ctx.imageIndex);
         ctx.shouldRecreateSwapChain |= result == VK_ERROR_OUT_OF_DATE_KHR

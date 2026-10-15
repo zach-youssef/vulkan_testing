@@ -99,6 +99,9 @@ public:
         for (auto& framebuffer : swapChainFramebuffers_) {
             ctx.frameBuffers.push_back(**framebuffer);
         }
+        for (auto& semaphore : renderFinishedSemaphores_) {
+            ctx.renderFinishedSemaphores.push_back(**semaphore);
+        }
         
         // Attempt to exectue the render graph
         renderGraph_->submit(ctx);
@@ -192,6 +195,15 @@ private: // Vulkan Initialization Functions
         // Cache swapchain properties
         swapChainImageFormat_ = surfaceFormat.format;
         swapChainExtent_ = extent;
+        
+        // A semaphore per image, signaled when rendering to it finishes and waited on by its present
+        renderFinishedSemaphores_.resize(swapChainImages_.size());
+        for (auto& semaphore : renderFinishedSemaphores_) {
+            VkSemaphoreCreateInfo semaphoreInfo{};
+            semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            VK_SUCCESS_OR_THROW(VulkanSemaphore::create(semaphore, context_->device(), semaphoreInfo),
+                                "Failed to create semaphore");
+        }
     }
     
     void createSwapChainImageViews() {
@@ -339,6 +351,7 @@ private: // Member variables
     VkFormat swapChainImageFormat_;
     VkExtent2D swapChainExtent_;
     std::vector<std::unique_ptr<VulkanImageView>> swapChainImageViews_;
+    std::vector<std::unique_ptr<VulkanSemaphore>> renderFinishedSemaphores_;
 
     // Depth Texture
     Handle<Image> depthTexture_;
