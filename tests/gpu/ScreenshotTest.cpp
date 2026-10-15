@@ -2,7 +2,7 @@
 #include "VkTestContext.h"
 #include "TestShaders.h"
 #include "ScreenshotApproval.h"
-#include "materials/BasicMaterial.h"
+#include "materials/GraphicsMaterial.h"
 #include "graph/nodes/ReadbackNode.h"
 #include "graph/nodes/RenderablesNode.h"
 
@@ -19,20 +19,12 @@ struct Vertex {
     glm::vec3 color;
     glm::vec2 texCoord0;
 
-    static VkVertexInputBindingDescription getBindingDescription() {
-        VkVertexInputBindingDescription bindingDescription{};
-        bindingDescription.binding = 0;
-        bindingDescription.stride = sizeof(Vertex);
-        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-        return bindingDescription;
-    }
-
-    static std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions() {
-        std::array<VkVertexInputAttributeDescription, 3> attributes{};
-        attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, pos)};
-        attributes[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)};
-        attributes[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord0)};
-        return attributes;
+    static VertexLayout layout() {
+        return VertexLayout::interleaved(sizeof(Vertex), {
+            {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, pos)},
+            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)},
+            {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord0)},
+        });
     }
 };
 
@@ -53,16 +45,16 @@ const std::vector<uint16_t> kQuadIndices = {0, 1, 2, 2, 3, 0};
 
 // The example's textured material (shader.vert / shader.frag) with a fixed camera, so
 // renders are deterministic: the example's view at time = 0
-class FixedCameraMaterial : public BasicMaterial<3> {
+class FixedCameraMaterial : public GraphicsMaterial {
 public:
     FixedCameraMaterial(VulkanContext& context,
                         VkExtent2D extent,
                         AttachmentFormats formats,
                         std::vector<MaterialBinding> bindings,
                         Handle<Buffer<UniformBufferObject>> uniformBuffer)
-    : BasicMaterial<3>(context, std::move(bindings), std::move(formats),
-                                testShader(context, "shader.vert"), testShader(context, "shader.frag"),
-                                Vertex::getBindingDescription(), Vertex::getAttributeDescriptions()) {
+    : GraphicsMaterial(context, std::move(bindings), std::move(formats),
+                       testShader(context, "shader.vert"), testShader(context, "shader.frag"),
+                       GraphicsPipelineOptions{.vertexLayout = Vertex::layout()}) {
         auto view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
         auto projection = glm::perspective(glm::radians(45.0f), extent.width / (float) extent.height, 0.1f, 10.0f);
         projection[1][1] *= -1; // GLM's clip space Y is inverted relative to Vulkan's

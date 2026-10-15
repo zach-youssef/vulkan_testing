@@ -34,7 +34,7 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | `include/resources` | `Buffer<T>`, `Image` |
 | `include/descriptors` | `DescriptorHeap`: the universal descriptor set and `DescriptorEntry` |
 | `include/shaders` | `ShaderLibrary` and `Shader` (SPIR-V loading and reloading) |
-| `include/materials` | `Material`, `ComputeMaterial`, `BasicMaterial`, `MaterialBinding`, `Renderable`, `MeshRenderable`, `AttachmentFormats` |
+| `include/materials` | `Material`, `ComputeMaterial`, `GraphicsMaterial`, `MaterialBinding`, `Renderable`, `MeshRenderable`, `AttachmentFormats` |
 | `include/graph` | `RenderGraph` (runtime), `Node`/`NodeBuilder`, the pure compiler (`GraphCompiler.h`) and synchronization state machine (`GraphSync.h`), `nodes/` (`RenderablesNode`, `DispatchNode`, `ReadbackNode`) |
 | `include/targets` | `RenderTarget`, `Swapchain` |
 | `include/app` | `VulkanApp` (the only GLFW user) |
@@ -144,9 +144,10 @@ app.run();
   declared as a read is a silent race. The graph throws when a material's shaders write storage
   images or buffers and none of its bindings declares such a write (reflected from the SPIR-V), but
   it can't tell which binding a write goes through.
-- Subclass `ComputeMaterial` (implement `getDispatchDimensions`, `update`) or `BasicMaterial<N>`
-  (vertex and fragment shaders, `AttachmentFormats` of the target, vertex layout). Graphics
-  materials must be built for the formats of the target they draw into:
+- Subclass `ComputeMaterial` (implement `getDispatchDimensions`, `update`). Use or subclass
+  `GraphicsMaterial` (vertex and fragment shaders, `AttachmentFormats` of the target and
+  `GraphicsPipelineOptions`: vertex layout or none, topology, culling, blend modes, depth test and
+  bias). Graphics materials must be built for the formats of the target they draw into:
   `graph.formats(renderTarget)`. A derived constructor may set `bindings_` before the material is
   used (see `TutorialMaterial`).
 - `update(frameIndex, surfaceExtent)` is called by the graph once per frame per distinct material.

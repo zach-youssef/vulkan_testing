@@ -4,7 +4,8 @@
 #include "materials/Renderable.h"
 #include "descriptors/DescriptorHeap.h"
 #include "resources/Ubo.h"
-#include "materials/BasicMaterial.h"
+#include "materials/GraphicsMaterial.h"
+#include "resources/Ubo.h"
 #include "graph/RenderGraph.h"
 #include "graph/nodes/DispatchNode.h"
 #include "graph/nodes/RenderablesNode.h"
@@ -33,40 +34,19 @@ struct Vertex {
     glm::vec3 color;
     glm::vec2 texCoord0;
     
-    static VkVertexInputBindingDescription getBindingDescription() {
-        VkVertexInputBindingDescription bindingDescription{};
-        bindingDescription.binding = 0;
-        bindingDescription.stride = sizeof(Vertex);
-        // Move to next data entry after each vertex (alternative is after each instance)
-        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-        return bindingDescription;
-    }
-    
-    static std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions() {
-        std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
-        
-        attributeDescriptions[0].binding = 0;
-        attributeDescriptions[0].location = 0;
-        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
-        attributeDescriptions[0].offset = offsetof(Vertex, pos);
-        
-        attributeDescriptions[1].binding = 0;
-        attributeDescriptions[1].location = 1;
-        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[1].offset = offsetof(Vertex, color);
-        
-        attributeDescriptions[2].binding = 0;
-        attributeDescriptions[2].location = 2;
-        attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
-        attributeDescriptions[2].offset = offsetof(Vertex, texCoord0);
-
-        return attributeDescriptions;
+    // One interleaved buffer of these, read by shader.vert's inputs at locations 0-2
+    static VertexLayout layout() {
+        return VertexLayout::interleaved(sizeof(Vertex), {
+            {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, pos)},
+            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)},
+            {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord0)},
+        });
     }
 };
 
 // Draws a texture with a rotating camera. Its shaders (shader.vert, shader.frag) find a uniform
 // buffer, the texture and a sampler by the indices of its bindings, in that order.
-class TutorialMaterial : public BasicMaterial<3> {
+class TutorialMaterial : public GraphicsMaterial {
 public:
     TutorialMaterial(VulkanContext& context,
                      AttachmentFormats formats,
@@ -74,13 +54,12 @@ public:
                      FrameBinding<DescriptorEntry> sampler,
                      Handle<Shader> vertexShader,
                      Handle<Shader> fragmentShader)
-    :  BasicMaterial<3>(context,
+    :  GraphicsMaterial(context,
                         {},
                         std::move(formats),
                         std::move(vertexShader),
                         std::move(fragmentShader),
-                        Vertex::getBindingDescription(),
-                        Vertex::getAttributeDescriptions()){
+                        GraphicsPipelineOptions{.vertexLayout = Vertex::layout()}) {
         // A uniform buffer per frame (read by the vertex shader as a storage buffer), and its
         // descriptor entries and mappings. They are created in that order, so they are also resized
         // in that order when the number of frames in flight changes.

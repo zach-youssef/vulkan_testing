@@ -24,7 +24,7 @@ to see a full migration.
 ## Build
 
 - Headers moved from `vulkan_test/` to `include/<area>/`. Add `-I<wrapper>/include` and include e.g.
-  `"app/VulkanApp.h"`, `"graph/RenderGraph.h"`, `"materials/BasicMaterial.h"`.
+  `"app/VulkanApp.h"`, `"graph/RenderGraph.h"`, `"materials/GraphicsMaterial.h"`.
 - Shaders must be compiled with `-I<wrapper>/include/glsl` and `--target-env=vulkan1.3`.
 - Devices must support Vulkan 1.3 plus the features listed in `include/core/DeviceFeatures.h`
   (descriptor indexing, synchronization2, dynamic rendering, timeline semaphores, storage images
@@ -82,7 +82,7 @@ direct equivalents.
 | `layout(binding = N) ...` in GLSL | `#include "bindless.glsl"` and a push constant block of `uint` indices in binding order |
 | `uboDescriptor->bindBuffer(frame, buffer)` then `populateDescriptorSet(frame)` (the "JANK" pattern) | Create the per-frame buffers and entries in the material's constructor and set `bindings_` there (see `TutorialMaterial` in the example) |
 | `Material<MAX_FRAMES>(device, physicalDevice, descriptors)` | `Material(ctx, bindings)`. Subclasses implement `createPipeline()` only if they're new material kinds. |
-| `BasicMaterial<MAX_FRAMES, N>(device, physicalDevice, descriptors, swapchainExtent, renderPass, vertSpirv, fragSpirv, binding, attributes)` | `BasicMaterial<N>(ctx, bindings, graph.formats(target), ctx.shaders().get("x.vert"), ctx.shaders().get("x.frag"), binding, attributes)` |
+| `BasicMaterial<MAX_FRAMES, N>(device, physicalDevice, descriptors, swapchainExtent, renderPass, vertSpirv, fragSpirv, binding, attributes)` | `GraphicsMaterial(ctx, bindings, graph.formats(target), ctx.shaders().get("x.vert"), ctx.shaders().get("x.frag"), GraphicsPipelineOptions{.vertexLayout = VertexLayout{{binding}, {attributes...}}})`. The old pipeline state (triangle lists, back faces culled, opaque, depth tested) is the options' default. |
 | `ComputeMaterial<MAX_FRAMES>(device, physicalDevice, descriptors, spirv)` | `ComputeMaterial(ctx, bindings, ctx.shaders().get("x.comp"))` |
 | `material->getDescriptorSet(frame)`, binding sets yourself | `material->bind(commandBuffer, frameIndex)` (pipeline and push constants). The graph binds the universal set; outside a graph, call `ctx.descriptors().bind(commandBuffer, bindPoint)`. |
 | `MeshRenderable<V, MAX_FRAMES>(vertices, indices, std::move(material), device, physicalDevice, queue, pool)` with a `unique_ptr` material | `ctx.resources().create<MeshRenderable<V>>(vertices, indices, materialHandle, ctx)`. Materials are `Handle<Material>` and can be shared between renderables. |
