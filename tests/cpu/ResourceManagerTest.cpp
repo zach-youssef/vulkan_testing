@@ -2,6 +2,7 @@
 
 #include <doctest/doctest.h>
 
+#include <atomic>
 #include <thread>
 #include <vector>
 
@@ -9,7 +10,8 @@ namespace {
 
 // Counts live instances so tests can observe when the manager frees a resource
 struct Tracked {
-    static inline int alive = 0;
+    // Atomic since resources may be destroyed concurrently on different threads
+    static inline std::atomic<int> alive = 0;
 
     Tracked() { ++alive; }
     virtual ~Tracked() { --alive; }
