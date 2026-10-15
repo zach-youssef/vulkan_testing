@@ -124,9 +124,41 @@ $(PARTICLES_OUT)/particles: $(PARTICLES_OUT)/particles.o | $(PARTICLES_SHADERS)
 test-example-particles: $(PARTICLES_OUT)/particles
 	./$< --frames 120 --capture $(PARTICLES_OUT)/smoke.png
 
-examples: $(SIMPLE_OUT)/simple_example $(IMAGE_FILTER_BIN) $(PARTICLES_OUT)/particles
+# ---------------------------------------------------------------------------
+# Example: scene
+#   A lit 3D scene: shadow map, forward PBR into HDR, tonemap
+#   make test-example-scene - headless smoke test (validation on, fails on any message)
+# ---------------------------------------------------------------------------
+SCENE_DIR = $(EXAMPLES_DIR)/scene
+SCENE_OUT = $(EXAMPLES_OUT)/scene
+# Stages only; scene.glsl is included by them
+SCENE_SHADER_SRCS = $(wildcard $(SCENE_DIR)/shaders/*.vert $(SCENE_DIR)/shaders/*.frag)
+SCENE_SHADER_INCLUDES = $(wildcard $(SCENE_DIR)/shaders/*.glsl)
+SCENE_SHADERS = $(patsubst $(SCENE_DIR)/shaders/%,$(SCENE_OUT)/shaders/%.spv,$(SCENE_SHADER_SRCS))
+SCENE_CFLAGS = $(CFLAGS) -DSCENE_EXAMPLE_SHADER_DIR='"$(abspath $(SCENE_OUT)/shaders)"'
 
-shaders: $(SIMPLE_SHADERS) $(IMAGE_FILTER_SHADERS) $(PARTICLES_SHADERS)
+$(SCENE_OUT)/shaders/%.spv : $(SCENE_DIR)/shaders/% $(GLSL_INCLUDES) $(SCENE_SHADER_INCLUDES)
+	@mkdir -p $(dir $@)
+	glslc $(GLSLC_FLAGS) $< -o $@
+
+$(SCENE_OUT)/scene_example.o : $(SCENE_DIR)/scene_example.cpp $(wildcard $(SCENE_DIR)/*.h) $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) -c -o $@ $< $(SCENE_CFLAGS)
+
+$(SCENE_OUT)/scene_example: $(SCENE_OUT)/scene_example.o | $(SCENE_SHADERS)
+	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
+	install_name_tool -add_rpath /usr/local/lib ./$@
+
+# Renders frames headless, toggling shadows midway, and captures the last one
+test-example-scene: $(SCENE_OUT)/scene_example
+	./$< --frames 60 --size 640x360 --capture $(SCENE_OUT)/smoke.png
+
+# All the examples' smoke tests
+test-examples: test-example-image_filter test-example-particles test-example-scene
+
+examples: $(SIMPLE_OUT)/simple_example $(IMAGE_FILTER_BIN) $(PARTICLES_OUT)/particles $(SCENE_OUT)/scene_example
+
+shaders: $(SIMPLE_SHADERS) $(IMAGE_FILTER_SHADERS) $(PARTICLES_SHADERS) $(SCENE_SHADERS)
 
 .DEFAULT_GOAL := examples
 
@@ -196,7 +228,7 @@ approve-screenshots:
 	done
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
-.PHONY: clean examples shaders test test-cpu test-gpu approve-screenshots test-example-image_filter test-example-particles
+.PHONY: clean examples shaders test test-cpu test-gpu approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples
 
 
 clean:
