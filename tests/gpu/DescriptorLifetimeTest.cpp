@@ -7,9 +7,9 @@ namespace {
 
 constexpr uint kFrames = 2;
 
-Handle<Image> makeImage(VkTestContext& ctx) {
+Handle<Image> makeImage(VulkanContext& ctx) {
     Handle<Image> image;
-    Image::createEmptyRGBA(image, ctx.vulkan(), 8, 8);
+    Image::createEmptyRGBA(image, ctx, 8, 8);
     return image;
 }
 
@@ -23,7 +23,7 @@ TEST_CASE_FIXTURE(GpuTest, "CombinedImageSamplerDescriptor keeps its images and 
     auto imageA = makeImage(ctx);
     auto imageB = makeImage(ctx);
     Handle<VulkanSampler> sampler;
-    REQUIRE(VulkanSampler::createWithAddressMode(sampler, ctx.vulkan(), VK_SAMPLER_ADDRESS_MODE_REPEAT) == VK_SUCCESS);
+    REQUIRE(VulkanSampler::createWithAddressMode(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT) == VK_SUCCESS);
 
     const VkImageView viewA = imageA->getImageView();
     const VkImageView viewB = imageB->getImageView();
@@ -78,7 +78,7 @@ TEST_CASE_FIXTURE(GpuTest, "UniformBufferDescriptor::bindBuffer binds and retain
     UniformBufferDescriptor<glm::mat4, kFrames> descriptor({}, VK_SHADER_STAGE_VERTEX_BIT);
 
     Handle<Buffer<glm::mat4>> buffer;
-    REQUIRE(Buffer<glm::mat4>::create(buffer, ctx.vulkan(), 1, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+    REQUIRE(Buffer<glm::mat4>::create(buffer, ctx, 1, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == VK_SUCCESS);
     const VkBuffer rawBuffer = buffer->getBuffer();
 

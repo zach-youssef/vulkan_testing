@@ -177,7 +177,7 @@ void createTestComputeMaterial(Handle<TestComputeMat>& outPtr,
     auto computeShaderCode = readFile(shaderPath + "/compTest.spv");
     
     std::vector<Handle<Descriptor>> descriptors;
-    auto& resourceManager = app.getResourceManager();
+    auto& resourceManager = app.getContext().resources();
     descriptors.push_back(resourceManager.create<StorageImageDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, inImages));
     descriptors.push_back(resourceManager.create<StorageImageDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, outImages));
 
@@ -196,7 +196,7 @@ void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
     auto fragShaderCode = readFile(shaderPath + "/frag.spv");
     
     std::vector<Handle<Descriptor>> descriptors;
-    auto& resourceManager = app.getResourceManager();
+    auto& resourceManager = app.getContext().resources();
     descriptors.push_back(resourceManager.create<UniformBufferDescriptor<UniformBufferObject, MAX_FRAMES_IN_FLIGHT>>(std::array<Handle<Buffer<UniformBufferObject>>, MAX_FRAMES_IN_FLIGHT>{},
                                                                                                                      VK_SHADER_STAGE_VERTEX_BIT));
     descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_FRAGMENT_BIT, images, sampler,
@@ -214,7 +214,7 @@ void createTutorialRenderable(Handle<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT
                               const std::vector<Vertex>& vertices,
                               Handle<Material<MAX_FRAMES_IN_FLIGHT>> material,
                               VulkanApp<MAX_FRAMES_IN_FLIGHT>& app) {
-    auto& resourceManager = app.getResourceManager();
+    auto& resourceManager = app.getContext().resources();
     outPtr = resourceManager.create<MeshRenderable<Vertex, MAX_FRAMES_IN_FLIGHT>>(vertices, indexData,
                                                                                   std::move(material),
                                                                                   app.getContext());

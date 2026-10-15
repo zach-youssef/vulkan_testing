@@ -28,8 +28,8 @@ private:
 };
 
 // Records and synchronously executes a single dispatch of the material
-void dispatch(VkTestContext& ctx, ComputeMaterial<kFrames>& material) {
-    ctx.vulkan().submitImmediate([&material](VkCommandBuffer commandBuffer) {
+void dispatch(VulkanContext& ctx, ComputeMaterial<kFrames>& material) {
+    ctx.submitImmediate([&material](VkCommandBuffer commandBuffer) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, material.getPipeline());
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 material.getPipelineLayout(),
@@ -44,18 +44,18 @@ void dispatch(VkTestContext& ctx, ComputeMaterial<kFrames>& material) {
 }
 
 // Storage images must be in the GENERAL layout when used by a shader
-void makeStorageImage(VkTestContext& ctx, Image& image) {
+void makeStorageImage(VulkanContext& ctx, Image& image) {
     image.transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 }
 
-Handle<Image> createStorageImage(VkTestContext& ctx, VkFormat format, uint32_t width, uint32_t height) {
+Handle<Image> createStorageImage(VulkanContext& ctx, VkFormat format, uint32_t width, uint32_t height) {
     Handle<Image> image;
-    Image::createEmpty(image, ctx.vulkan(), format, width, height);
+    Image::createEmpty(image, ctx, format, width, height);
     makeStorageImage(ctx, *image);
     return image;
 }
 
-std::vector<uint8_t> readback(VkTestContext& ctx, Image& image) {
+std::vector<uint8_t> readback(VulkanContext& ctx, Image& image) {
     return image.readback(VK_IMAGE_LAYOUT_GENERAL);
 }
 
@@ -74,7 +74,7 @@ TEST_CASE_FIXTURE(GpuTest, "ComputeMaterial dispatch writes every texel of a sto
                                                                     std::array<Handle<Image>, kFrames>{output}),
         };
         auto material = ctx.resources().create<TestComputeMaterial>(
-            ctx.vulkan(), descriptors, loadTestShader("pattern.comp"),
+            ctx, descriptors, loadTestShader("pattern.comp"),
             glm::vec3{(width + 7) / 8, (height + 7) / 8, 1});
 
         dispatch(ctx, *material);
@@ -112,7 +112,7 @@ TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies its input ima
     }
 
     Handle<Image> input;
-    Image::createFromUcharBuffer(input, ctx.vulkan(), source.data(), width, height, source.size());
+    Image::createFromUcharBuffer(input, ctx, source.data(), width, height, source.size());
     makeStorageImage(ctx, *input);
     // Copy into an image of the same format as the input, so the bytes should match exactly
     auto output = createStorageImage(ctx, input->getFormat(), width, height);
@@ -124,7 +124,7 @@ TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies its input ima
                                                                     std::array<Handle<Image>, kFrames>{output}),
         };
         auto material = ctx.resources().create<TestComputeMaterial>(
-            ctx.vulkan(), descriptors, loadTestShader("test.comp"),
+            ctx, descriptors, loadTestShader("test.comp"),
             glm::vec3{width / 32, height / 32, 1});
 
         dispatch(ctx, *material);

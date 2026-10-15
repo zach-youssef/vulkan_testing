@@ -81,19 +81,19 @@ public:
 // Everything needed to draw the example's textured quads into an offscreen target
 class TexturedScene {
 public:
-    explicit TexturedScene(VkTestContext& ctx)
+    explicit TexturedScene(VulkanContext& ctx)
     : ctx_(ctx),
-    target_(ctx.vulkan(), kWidth, kHeight, VK_FORMAT_R8G8B8A8_SRGB) {
+    target_(ctx, kWidth, kHeight, VK_FORMAT_R8G8B8A8_SRGB) {
         auto& resources = ctx.resources();
 
         Handle<Image> texture;
-        Image::createFromFile(texture, ctx.vulkan(), std::string(TEST_TEXTURE_DIR) + "/texture.jpg");
+        Image::createFromFile(texture, ctx, std::string(TEST_TEXTURE_DIR) + "/texture.jpg");
         Handle<VulkanSampler> sampler;
-        VK_SUCCESS_OR_THROW(VulkanSampler::createWithAddressMode(sampler, ctx.vulkan(), VK_SAMPLER_ADDRESS_MODE_REPEAT),
+        VK_SUCCESS_OR_THROW(VulkanSampler::createWithAddressMode(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT),
                             "Failed to create sampler");
 
         Handle<Buffer<UniformBufferObject>> uniformBuffer;
-        VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(uniformBuffer, ctx.vulkan(), 1,
+        VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(uniformBuffer, ctx, 1,
                                                                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
                             "Failed to create uniform buffer");
@@ -105,27 +105,21 @@ public:
                 VK_SHADER_STAGE_FRAGMENT_BIT, std::array<Handle<Image>, kFrames>{texture}, sampler),
         };
 
-        material_ = resources.create<FixedCameraMaterial>(ctx.vulkan(),
+        material_ = resources.create<FixedCameraMaterial>(ctx,
                                                           target_.getExtent(), target_.getRenderPass(),
                                                           descriptors, uniformBuffer);
 
-        VkCommandBufferAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.commandPool = ctx.commandPool();
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandBufferCount = kFrames;
-        VK_SUCCESS_OR_THROW(vkAllocateCommandBuffers(ctx.device(), &allocInfo, commandBuffers_.data()),
-                            "Failed to allocate command buffers");
+        commandPool_ = ctx.createCommandPool(QueueType::Graphics);
+        commandBuffers_ = commandPool_->allocateArray<kFrames>();
     }
 
     ~TexturedScene() {
-        vkQueueWaitIdle(ctx_.queue());
-        vkFreeCommandBuffers(ctx_.device(), ctx_.commandPool(), kFrames, commandBuffers_.data());
+        ctx_.waitIdle(QueueType::Graphics);
     }
 
     Handle<Renderable<kFrames>> createQuad(float scale, glm::vec2 offset) {
         return ctx_.resources().create<MeshRenderable<Vertex, kFrames>>(
-            quad(scale, offset), kQuadIndices, material_, ctx_.vulkan());
+            quad(scale, offset), kQuadIndices, material_, ctx_);
     }
 
     // Submits a node's work for frame 0 into the offscreen target and reads back the result
@@ -137,7 +131,7 @@ public:
             false,
         };
         node.submit(renderContext);
-        vkQueueWaitIdle(ctx_.queue());
+        ctx_.waitIdle(QueueType::Graphics);
         return target_.readback();
     }
 
@@ -145,9 +139,10 @@ public:
     std::array<VkCommandBuffer, kFrames> commandBuffers() { return commandBuffers_; }
 
 private:
-    VkTestContext& ctx_;
+    VulkanContext& ctx_;
     OffscreenRenderTarget target_;
     Handle<Material<kFrames>> material_;
+    std::unique_ptr<CommandPool> commandPool_;
     std::array<VkCommandBuffer, kFrames> commandBuffers_{};
 };
 
@@ -159,7 +154,7 @@ TEST_CASE_FIXTURE(GpuTest, "Screenshot - RenderableNode draws a textured quad") 
     {
         TexturedScene scene(ctx);
         RenderableNode<kFrames> node(scene.createQuad(1.0f, {0.0f, 0.0f}),
-                                     ctx.vulkan(), scene.renderPass(), scene.commandBuffers());
+                                     ctx, scene.renderPass(), scene.commandBuffers());
         pixels = scene.render(node);
     }
     verifyScreenshot(pixels, kWidth, kHeight);
@@ -177,7 +172,7 @@ TEST_CASE_FIXTURE(GpuTest, "Screenshot - RenderablesNode draws two quads sharing
         CHECK(renderables[0]->getMaterial() == renderables[1]->getMaterial());
 
         RenderablesNode<kFrames> node(std::move(renderables),
-                                      ctx.vulkan(), scene.renderPass(), scene.commandBuffers());
+                                      ctx, scene.renderPass(), scene.commandBuffers());
         pixels = scene.render(node);
     }
     verifyScreenshot(pixels, kWidth, kHeight);

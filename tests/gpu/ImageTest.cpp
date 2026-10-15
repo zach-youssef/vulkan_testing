@@ -26,7 +26,7 @@ TEST_CASE_FIXTURE(GpuTest, "Image::createFromUcharBuffer uploads pixels that rea
     auto pixels = makePattern(width, height);
 
     Handle<Image> image;
-    Image::createFromUcharBuffer(image, ctx.vulkan(), pixels.data(), width, height, pixels.size());
+    Image::createFromUcharBuffer(image, ctx, pixels.data(), width, height, pixels.size());
     REQUIRE(image);
     CHECK(image->getWidth() == width);
     CHECK(image->getHeight() == height);
@@ -44,7 +44,7 @@ TEST_CASE_FIXTURE(GpuTest, "Image::createEmpty creates an image of the requested
     auto& ctx = context();
 
     Handle<Image> image;
-    Image::createEmpty(image, ctx.vulkan(), VK_FORMAT_R8G8B8A8_UNORM, 64, 32);
+    Image::createEmpty(image, ctx, VK_FORMAT_R8G8B8A8_UNORM, 64, 32);
     REQUIRE(image);
     CHECK(image->getFormat() == VK_FORMAT_R8G8B8A8_UNORM);
     CHECK(image->getWidth() == 64);

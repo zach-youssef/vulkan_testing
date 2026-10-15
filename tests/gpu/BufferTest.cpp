@@ -24,7 +24,7 @@ TEST_CASE_FIXTURE(GpuTest, "Host visible Buffer round trips data through mapAndE
     std::iota(data.begin(), data.end(), 100u);
 
     Handle<Buffer<uint32_t>> buffer;
-    REQUIRE(Buffer<uint32_t>::create(buffer, ctx.vulkan(), data.size(),
+    REQUIRE(Buffer<uint32_t>::create(buffer, ctx, data.size(),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kHostVisible) == VK_SUCCESS);
     CHECK(buffer->getStride() == sizeof(uint32_t));
 
@@ -43,15 +43,15 @@ TEST_CASE_FIXTURE(GpuTest, "Buffer::createAndInitialize uploads data to device l
     }
 
     Handle<Buffer<float>> deviceBuffer;
-    Buffer<float>::createAndInitialize(deviceBuffer, ctx.vulkan(), data,
+    Buffer<float>::createAndInitialize(deviceBuffer, ctx, data,
                                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
     REQUIRE(deviceBuffer);
 
     // Device local memory may not be mappable, so copy it back through a host visible buffer
     Handle<Buffer<float>> readbackBuffer;
-    REQUIRE(Buffer<float>::create(readbackBuffer, ctx.vulkan(), data.size(),
+    REQUIRE(Buffer<float>::create(readbackBuffer, ctx, data.size(),
                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT, kHostVisible) == VK_SUCCESS);
-    Buffer<float>::copyBuffer(ctx.vulkan(), deviceBuffer->getBuffer(), readbackBuffer->getBuffer(),
+    Buffer<float>::copyBuffer(ctx, deviceBuffer->getBuffer(), readbackBuffer->getBuffer(),
                               data.size() * sizeof(float));
 
     CHECK(readBuffer(*readbackBuffer, data.size()) == data);
@@ -62,7 +62,7 @@ TEST_CASE_FIXTURE(GpuTest, "Buffer persistent mappings stay valid until released
     struct Pair { int a; int b; };
 
     Handle<Buffer<Pair>> buffer;
-    REQUIRE(Buffer<Pair>::create(buffer, ctx.vulkan(), 1,
+    REQUIRE(Buffer<Pair>::create(buffer, ctx, 1,
                                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, kHostVisible) == VK_SUCCESS);
     {
         auto mapping = buffer->getPersistentMapping(0, sizeof(Pair));

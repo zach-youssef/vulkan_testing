@@ -6,12 +6,12 @@ TEST_CASE_FIXTURE(GpuTest, "OffscreenRenderTarget clears and reads back its colo
     constexpr uint32_t width = 33;
     constexpr uint32_t height = 17;
 
-    OffscreenRenderTarget target(ctx.vulkan(), width, height, VK_FORMAT_R8G8B8A8_UNORM);
+    OffscreenRenderTarget target(ctx, width, height, VK_FORMAT_R8G8B8A8_UNORM);
     CHECK(target.getExtent().width == width);
     CHECK(target.getExtent().height == height);
     CHECK(target.getColorImage()->getFormat() == VK_FORMAT_R8G8B8A8_UNORM);
 
-    ctx.vulkan().submitImmediate([&target](VkCommandBuffer commandBuffer) {
+    ctx.submitImmediate([&target](VkCommandBuffer commandBuffer) {
         // 51 / 255 = 0.2 etc., so the cleared values are exact in UNORM
         std::array<VkClearValue, 2> clearValues{};
         clearValues[0].color = {{51.0f / 255.0f, 102.0f / 255.0f, 153.0f / 255.0f, 1.0f}};

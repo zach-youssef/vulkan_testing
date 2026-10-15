@@ -196,7 +196,7 @@ void verifyScreenshot(const std::vector<uint8_t>& rgbaPixels,
         ApprovalTests::FileApprover::registerComparatorForExtension(".png", comparator);
     comparator->setTolerance(tolerance);
 
-    const std::string subdirectoryName = "approved/" + sanitizeForPath(VkTestContext::get().deviceName());
+    const std::string subdirectoryName = "approved/" + sanitizeForPath(VkTestContext::get().vulkan().deviceName());
     // ApprovalTests only creates a single missing directory level (with 0733 permissions), so
     // create the per-device directory ourselves. Screenshot tests live alongside this file.
     std::filesystem::create_directories(std::filesystem::path(__FILE__).parent_path() / subdirectoryName);

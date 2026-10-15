@@ -5,7 +5,6 @@
 // Header-only library implementations, compiled exactly once per test binary
 #define VK_WRAP_UTIL_IMPL
 #include "VkTypes.h"
-#include "CommandUtil.h"
 #include "DeviceSelection.h"
 
 #define STB_IMAGE_IMPLEMENTATION

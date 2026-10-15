@@ -303,38 +303,10 @@ public:
     }
     
 public: // Public getters
-    VkDevice getDevice() {
-        return context_->device();
-    }
-    
     VulkanContext& getContext() {
         return *context_;
     }
     
-    ResourceManager& getResourceManager() {
-        return context_->resources();
-    }
-    
-    VkPhysicalDevice getPhysicalDevice() {
-        return context_->physicalDevice();
-    }
-    
-    VkCommandPool getCommandPool() {
-        return commandPool_->get();
-    }
-    
-    VkQueue getGraphicsQueue() {
-        return context_->queue(QueueType::Graphics);
-    }
-    
-    VkQueue getComputeQueue() {
-        return context_->queue(QueueType::Compute);
-    }
-    
-    VkQueue getPresentQueue() {
-        return context_->queue(QueueType::Present);
-    }
-
     VkExtent2D getSwapchainExtent() {
         return swapChainExtent_;
     }

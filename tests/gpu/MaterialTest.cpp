@@ -24,9 +24,9 @@ std::array<VkVertexInputAttributeDescription, 3> attributes() {
 
 class TestMaterial : public BasicMaterial<kFrames, 3> {
 public:
-    TestMaterial(VkTestContext& ctx, VkExtent2D extent, VkRenderPass renderPass,
+    TestMaterial(VulkanContext& ctx, VkExtent2D extent, VkRenderPass renderPass,
                  std::vector<Handle<Descriptor>> descriptors)
-    : BasicMaterial<kFrames, 3>(ctx.vulkan(), descriptors, extent, renderPass,
+    : BasicMaterial<kFrames, 3>(ctx, descriptors, extent, renderPass,
                                 loadTestShader("shader.vert"), loadTestShader("shader.frag"),
                                 {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX}, attributes()) {}
 
@@ -42,12 +42,12 @@ TEST_CASE_FIXTURE(GpuTest, "Material tolerates descriptors whose buffers are bou
     auto& ctx = context();
     auto& resources = ctx.resources();
 
-    OffscreenRenderTarget target(ctx.vulkan(), 16, 16, VK_FORMAT_R8G8B8A8_UNORM);
+    OffscreenRenderTarget target(ctx, 16, 16, VK_FORMAT_R8G8B8A8_UNORM);
 
     Handle<Image> texture;
-    Image::createEmptyRGBA(texture, ctx.vulkan(), 4, 4);
+    Image::createEmptyRGBA(texture, ctx, 4, 4);
     Handle<VulkanSampler> sampler;
-    REQUIRE(VulkanSampler::createWithAddressMode(sampler, ctx.vulkan(), VK_SAMPLER_ADDRESS_MODE_REPEAT) == VK_SUCCESS);
+    REQUIRE(VulkanSampler::createWithAddressMode(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT) == VK_SUCCESS);
 
     // The uniform buffers are not known yet when the material is created
     using UboDescriptor = UniformBufferDescriptor<UniformBufferObject, kFrames>;
@@ -66,7 +66,7 @@ TEST_CASE_FIXTURE(GpuTest, "Material tolerates descriptors whose buffers are bou
     // Binding the buffers later and re-populating writes them
     for (uint frame = 0; frame < kFrames; ++frame) {
         Handle<Buffer<UniformBufferObject>> buffer;
-        REQUIRE(Buffer<UniformBufferObject>::create(buffer, ctx.vulkan(), 1, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        REQUIRE(Buffer<UniformBufferObject>::create(buffer, ctx, 1, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == VK_SUCCESS);
         uboDescriptor->bindBuffer(frame, buffer);
         material->populateDescriptorSet(frame);

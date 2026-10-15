@@ -36,13 +36,6 @@ public:
         return result;
     }
     
-    static VkResult create(Handle<WrapperType>& outHandle, ResourceManager& resourceManager, Args... args) {
-        std::unique_ptr<WrapperType> ptr;
-        VkResult result = create(ptr, args...);
-        outHandle = resourceManager.adopt(std::move(ptr));
-        return result;
-    }
-    
 protected:
     VkType value_;
 };

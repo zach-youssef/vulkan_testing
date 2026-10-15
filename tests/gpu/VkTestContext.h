@@ -16,9 +16,6 @@
  The Khronos validation layer is enabled when available, and every validation error is
  recorded so that tests can fail on API misuse (see GpuTest below). Set
  VK_TEST_DISABLE_VALIDATION=1 to run without it.
-
- Also provides a command pool for APIs that still take one. Tests run on a single thread,
- so sharing it is safe.
  */
 class VkTestContext {
 public:
@@ -38,26 +35,12 @@ public:
 
     VulkanContext& vulkan() { return *context_; }
 
-    VkInstance instance() { return context_->instance(); }
-    VkPhysicalDevice physicalDevice() { return context_->physicalDevice(); }
-    VkDevice device() { return context_->device(); }
-    VkQueue queue() { return context_->queue(QueueType::Graphics); }
-    uint32_t queueFamily() { return context_->queueFamily(QueueType::Graphics); }
-    VkCommandPool commandPool() { return commandPool_->get(); }
-    ResourceManager& resources() { return context_->resources(); }
-    bool validationEnabled() { return context_->validationEnabled(); }
-    std::string deviceName() { return context_->deviceName(); }
-
     // Returns and clears the validation errors recorded so far
     std::vector<std::string> takeValidationErrors() {
         std::lock_guard<std::mutex> lock(mutex_);
         return std::exchange(validationErrors_, {});
     }
 
-    ~VkTestContext() {
-        commandPool_.reset();
-        context_.reset();
-    }
 
 private:
     static std::unique_ptr<VkTestContext>& storage() {
@@ -79,34 +62,32 @@ private:
         };
 
         context_ = std::make_unique<VulkanContext>(std::move(config));
-        commandPool_ = context_->createCommandPool(QueueType::Graphics);
     }
 
     std::mutex mutex_;
     std::vector<std::string> validationErrors_;
 
     std::unique_ptr<VulkanContext> context_;
-    std::unique_ptr<CommandPool> commandPool_;
 };
 
 /*
  doctest fixture for GPU tests. Fails the test if it produced validation errors or
  left resources alive in the shared ResourceManager.
 
-     TEST_CASE_FIXTURE(GpuTest, "...") { auto& ctx = context(); ... }
+     TEST_CASE_FIXTURE(GpuTest, "...") { VulkanContext& ctx = context(); ... }
  */
 class GpuTest {
 public:
     GpuTest() : resourcesBefore_(context().resources().size()) {
         // Errors raised outside of a test (e.g. creating the context) are reported here
-        for (const auto& error : context().takeValidationErrors()) {
+        for (const auto& error : VkTestContext::get().takeValidationErrors()) {
             FAIL_CHECK("Vulkan validation error before this test: " << error);
         }
     }
 
     ~GpuTest() {
-        vkDeviceWaitIdle(context().device());
-        for (const auto& error : context().takeValidationErrors()) {
+        context().waitIdleAll();
+        for (const auto& error : VkTestContext::get().takeValidationErrors()) {
             FAIL_CHECK("Vulkan validation error: " << error);
         }
         const size_t resourcesAfter = context().resources().size();
@@ -117,8 +98,8 @@ public:
     }
 
 protected:
-    static VkTestContext& context() {
-        return VkTestContext::get();
+    static VulkanContext& context() {
+        return VkTestContext::get().vulkan();
     }
 
 private:
