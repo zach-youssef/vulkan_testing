@@ -258,10 +258,8 @@ int main() {
     // Create texture sampler
     Handle<VulkanSampler> sampler;
     VulkanSampler::createWithAddressMode(sampler,
-                                         app.getResourceManager(),
-                                         VK_SAMPLER_ADDRESS_MODE_REPEAT,
-                                         app.getDevice(),
-                                         app.getPhysicalDevice());
+                                         app.getContext(),
+                                         VK_SAMPLER_ADDRESS_MODE_REPEAT);
     
 
     // Create a single material shared by two renderables

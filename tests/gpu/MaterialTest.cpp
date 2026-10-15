@@ -47,8 +47,7 @@ TEST_CASE_FIXTURE(GpuTest, "Material tolerates descriptors whose buffers are bou
     Handle<Image> texture;
     Image::createEmptyRGBA(texture, ctx.vulkan(), 4, 4);
     Handle<VulkanSampler> sampler;
-    REQUIRE(VulkanSampler::createWithAddressMode(sampler, resources, VK_SAMPLER_ADDRESS_MODE_REPEAT,
-                                                 ctx.device(), ctx.physicalDevice()) == VK_SUCCESS);
+    REQUIRE(VulkanSampler::createWithAddressMode(sampler, ctx.vulkan(), VK_SAMPLER_ADDRESS_MODE_REPEAT) == VK_SUCCESS);
 
     // The uniform buffers are not known yet when the material is created
     using UboDescriptor = UniformBufferDescriptor<UniformBufferObject, kFrames>;

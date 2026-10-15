@@ -23,8 +23,7 @@ TEST_CASE_FIXTURE(GpuTest, "CombinedImageSamplerDescriptor keeps its images and 
     auto imageA = makeImage(ctx);
     auto imageB = makeImage(ctx);
     Handle<VulkanSampler> sampler;
-    REQUIRE(VulkanSampler::createWithAddressMode(sampler, resources, VK_SAMPLER_ADDRESS_MODE_REPEAT,
-                                                 ctx.device(), ctx.physicalDevice()) == VK_SUCCESS);
+    REQUIRE(VulkanSampler::createWithAddressMode(sampler, ctx.vulkan(), VK_SAMPLER_ADDRESS_MODE_REPEAT) == VK_SUCCESS);
 
     const VkImageView viewA = imageA->getImageView();
     const VkImageView viewB = imageB->getImageView();

@@ -91,8 +91,7 @@ public:
         Handle<Image> texture;
         Image::createFromFile(texture, ctx.vulkan(), std::string(TEST_TEXTURE_DIR) + "/texture.jpg");
         Handle<VulkanSampler> sampler;
-        VK_SUCCESS_OR_THROW(VulkanSampler::createWithAddressMode(sampler, resources, VK_SAMPLER_ADDRESS_MODE_REPEAT,
-                                                                 ctx.device(), ctx.physicalDevice()),
+        VK_SUCCESS_OR_THROW(VulkanSampler::createWithAddressMode(sampler, ctx.vulkan(), VK_SAMPLER_ADDRESS_MODE_REPEAT),
                             "Failed to create sampler");
 
         Handle<Buffer<UniformBufferObject>> uniformBuffer;

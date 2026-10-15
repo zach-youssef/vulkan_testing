@@ -13,6 +13,8 @@
 
 #include "ResourceManager.h"
 
+class VulkanContext;
+
 template<typename WrapperType, typename VkType, class... Args>
 class VkWrapper {
 public:
@@ -306,25 +308,15 @@ public:
         return createWithModeAndFilter(outSampler, addressMode, VK_FILTER_LINEAR, device, physicalDevice);
     }
     
+    // Managed samplers, owned by the context's ResourceManager. Defined in VulkanContext.h.
     static VkResult createWithAddressMode(Handle<VulkanSampler>& outSampler,
-                                          ResourceManager& resourceManager,
-                                          VkSamplerAddressMode addressMode,
-                                          VkDevice device,
-                                          VkPhysicalDevice physicalDevice) {
-        return createWithModeAndFilter(outSampler, resourceManager, addressMode, VK_FILTER_LINEAR, device, physicalDevice);
-    }
+                                          VulkanContext& context,
+                                          VkSamplerAddressMode addressMode);
     
     static VkResult createWithModeAndFilter(Handle<VulkanSampler>& outSampler,
-                                            ResourceManager& resourceManager,
+                                            VulkanContext& context,
                                             VkSamplerAddressMode addressMode,
-                                            VkFilter filter,
-                                            VkDevice device,
-                                            VkPhysicalDevice physicalDevice) {
-        std::unique_ptr<VulkanSampler> sampler;
-        VkResult result = createWithModeAndFilter(sampler, addressMode, filter, device, physicalDevice);
-        outSampler = resourceManager.adopt(std::move(sampler));
-        return result;
-    }
+                                            VkFilter filter);
 
     static VkResult createWithModeAndFilter(std::unique_ptr<VulkanSampler>& outSampler,
                                             VkSamplerAddressMode addressMode,

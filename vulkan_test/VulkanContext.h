@@ -525,3 +525,20 @@ private:
 
     std::unique_ptr<ResourceManager> resourceManager_;
 };
+
+// VulkanSampler's managed factories, defined here since VkTypes.h cannot depend on VulkanContext
+inline VkResult VulkanSampler::createWithAddressMode(Handle<VulkanSampler>& outSampler,
+                                                     VulkanContext& context,
+                                                     VkSamplerAddressMode addressMode) {
+    return createWithModeAndFilter(outSampler, context, addressMode, VK_FILTER_LINEAR);
+}
+
+inline VkResult VulkanSampler::createWithModeAndFilter(Handle<VulkanSampler>& outSampler,
+                                                       VulkanContext& context,
+                                                       VkSamplerAddressMode addressMode,
+                                                       VkFilter filter) {
+    std::unique_ptr<VulkanSampler> sampler;
+    VkResult result = createWithModeAndFilter(sampler, addressMode, filter, context.device(), context.physicalDevice());
+    outSampler = context.resources().adopt(std::move(sampler));
+    return result;
+}
