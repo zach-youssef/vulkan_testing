@@ -873,6 +873,11 @@ private:
         }
         for (uint32_t node : plan.order) {
             const auto& record = nodes_[node];
+            for (const auto& material : record.materials) {
+                if (auto error = material->undeclaredWrites(); !error.empty()) {
+                    throw GraphError("Node '" + record.name + "': " + error);
+                }
+            }
             if (record.node->kind() == NodeKind::Graphics && !record.target) {
                 throw GraphError("Graphics node '" + record.name + "' has no render target (see NodeBuilder::renderTo)");
             }

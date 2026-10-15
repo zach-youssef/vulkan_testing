@@ -3,6 +3,7 @@
 #include "core/VkTypes.h"
 #include "core/VkUtil.h"
 #include "core/VulkanContext.h"
+#include "shaders/SpirvReflection.h"
 
 #include <cstring>
 #include <filesystem>
@@ -76,6 +77,12 @@ public:
         return **module_;
     }
 
+    // The bindings of the universal descriptor set the current code writes through
+    SpirvDescriptorWrites descriptorWrites() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return descriptorWrites_;
+    }
+
     // Incremented each time the shader is reloaded with new code
     uint64_t version() {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -125,6 +132,12 @@ private:
         if (auto error = checkSpirv(code); !error.empty()) {
             return "Shader '" + name_ + "' (" + path_.string() + ") is " + error;
         }
+        SpirvDescriptorWrites writes;
+        try {
+            writes = reflectDescriptorWrites(code);
+        } catch (const std::exception& e) {
+            return "Shader '" + name_ + "' (" + path_.string() + "): " + e.what();
+        }
 
         std::lock_guard<std::mutex> lock(mutex_);
         if (module_ && code == code_) {
@@ -147,6 +160,7 @@ private:
         }
         module_ = std::move(module);
         code_ = std::move(code);
+        descriptorWrites_ = std::move(writes);
         changed = true;
         return {};
     }
@@ -192,6 +206,7 @@ private:
     std::mutex mutex_;
     std::unique_ptr<VulkanShaderModule> module_;
     std::vector<char> code_;
+    SpirvDescriptorWrites descriptorWrites_;
     std::optional<std::filesystem::file_time_type> modified_;
     uint64_t version_ = 0;
     std::map<ListenerId, Listener> listeners_;

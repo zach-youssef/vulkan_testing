@@ -11,7 +11,9 @@
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <optional>
+#include <string>
 #include <vector>
 
 /*
@@ -30,6 +32,12 @@
  when any of them is reloaded (ShaderLibrary::reload); if rebuilding fails the material keeps its
  previous pipeline and the reload reports the error. Replaced pipelines are destroyed once
  in-flight work has finished.
+
+ Declared accesses are all the render graph synchronizes on: synchronization validation can't see
+ accesses through the bindless arrays. So materials check their shaders' code: a material whose
+ shaders write storage images (or storage buffers) must have a binding declaring such a write, or
+ the graph throws when compiling (and reloading such a shader fails). Which binding a write goes
+ through isn't checked, so declare each binding's access accurately.
  */
 
 struct MaterialBinding {
@@ -135,9 +143,43 @@ public:
         return context_->descriptors().pipelineLayout();
     }
 
+    // Why the bindings don't declare what the shaders write, or empty if they do
+    std::string undeclaredWrites() {
+        struct Kind {
+            DescriptorType type;
+            const char* name;
+            Access write;
+            Access readWrite;
+        };
+        const Kind kinds[] = {
+            {DescriptorType::StorageImage, "storage images", Access::StorageWrite, Access::StorageReadWrite},
+            {DescriptorType::StorageBuffer, "storage buffers", Access::StorageBufferWrite, Access::StorageBufferReadWrite},
+        };
+        for (const auto& shader : shaders_) {
+            const SpirvDescriptorWrites writes = shader->descriptorWrites();
+            for (const auto& kind : kinds) {
+                if (!writes.writes(static_cast<uint32_t>(kind.type))) {
+                    continue;
+                }
+                const bool declared = std::any_of(bindings_.begin(), bindings_.end(), [&kind](const MaterialBinding& binding) {
+                    return binding.access == kind.write || binding.access == kind.readWrite;
+                });
+                if (!declared) {
+                    return std::string("Shader '") + shader->name() + "' writes " + kind.name
+                           + ", but none of its material's bindings declares a write (Access::" + accessName(kind.write)
+                           + " or " + accessName(kind.readWrite) + "), so the writes wouldn't be synchronized";
+                }
+            }
+        }
+        return {};
+    }
+
     // Rebuilds the pipeline from the shaders' current modules. Throws (keeping the previous
-    // pipeline) if that fails.
+    // pipeline) if that fails, or if the shaders now write what the bindings don't declare.
     void rebuildPipeline() {
+        if (auto error = undeclaredWrites(); !error.empty()) {
+            throw std::logic_error(error);
+        }
         VkPipeline pipeline = createPipeline();
         retirePipeline();
         pipeline_ = pipeline;
@@ -154,6 +196,7 @@ protected:
     // Builds the first pipeline and rebuilds it whenever one of shaders is reloaded. Derived
     // constructors call this once they're ready to create pipelines.
     void initPipeline(const std::vector<Handle<Shader>>& shaders) {
+        shaders_ = shaders;
         pipeline_ = createPipeline();
         for (const auto& shader : shaders) {
             auto id = shader->addListener([this](Shader&) { rebuildPipeline(); });
@@ -192,6 +235,7 @@ private:
 
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     uint64_t pipelineVersion_ = 0;
+    std::vector<Handle<Shader>> shaders_;
     std::vector<std::pair<Handle<Shader>, Shader::ListenerId>> shaderListeners_;
 };
 

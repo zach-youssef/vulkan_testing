@@ -1,0 +1,13 @@
+#version 450
+#include "bindless.glsl"
+
+// Writes a value into a storage buffer
+layout(push_constant) uniform Indices { uint image; uint target; } indices;
+struct Value { uint value; };
+BINDLESS_BUFFER(, ValueBuffers, Value, values);
+
+layout(local_size_x = 1) in;
+
+void main() {
+    values[indices.target].data.value = 42;
+}

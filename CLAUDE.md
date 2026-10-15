@@ -139,6 +139,11 @@ app.run();
   format (`bindlessStorageImages[]`). Vertex and fragment shaders of one material share the block.
   Give every `BINDLESS_BUFFER` in a shader the same qualifiers: MoltenVK can't alias a `readonly`
   block with a writable one (pipeline creation fails).
+- **Declare every binding's access accurately.** The graph synchronizes only on declared accesses,
+  and synchronization validation can't see accesses through the bindless arrays, so a write
+  declared as a read is a silent race. The graph throws when a material's shaders write storage
+  images or buffers and none of its bindings declares such a write (reflected from the SPIR-V), but
+  it can't tell which binding a write goes through.
 - Subclass `ComputeMaterial` (implement `getDispatchDimensions`, `update`) or `BasicMaterial<N>`
   (vertex and fragment shaders, `AttachmentFormats` of the target, vertex layout). Graphics
   materials must be built for the formats of the target they draw into:

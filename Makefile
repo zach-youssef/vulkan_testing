@@ -97,7 +97,8 @@ $(TEST_OUT)/%.o : $(TEST_DIR)/%.cpp $(TEST_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -c -o $@ $(abspath $<) $(TEST_CFLAGS)
 
-$(TEST_OUT)/cpu_tests: $(CPU_TEST_OBJS)
+# The CPU tests reflect on compiled test shaders
+$(TEST_OUT)/cpu_tests: $(CPU_TEST_OBJS) | $(GPU_TEST_SHADERS)
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
