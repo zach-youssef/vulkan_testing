@@ -82,8 +82,20 @@ TEST_CASE("SwapChainSupportDetails::chooseSwapExtent uses the surface's current 
     SwapChainSupportDetails details{};
     details.capabilities.currentExtent = {640, 480};
 
-    // The window is only queried when the surface leaves the extent up to the application
-    const auto extent = details.chooseSwapExtent(nullptr);
+    // The framebuffer size is only used when the surface leaves the extent up to the application
+    const auto extent = details.chooseSwapExtent({1024, 768});
     CHECK(extent.width == 640);
     CHECK(extent.height == 480);
+}
+
+TEST_CASE("SwapChainSupportDetails::chooseSwapExtent clamps the framebuffer size when the surface leaves it undefined") {
+    SwapChainSupportDetails details{};
+    details.capabilities.currentExtent = {UINT32_MAX, UINT32_MAX};
+    details.capabilities.minImageExtent = {100, 100};
+    details.capabilities.maxImageExtent = {2000, 1000};
+
+    CHECK(details.chooseSwapExtent({800, 600}).width == 800);
+    CHECK(details.chooseSwapExtent({800, 600}).height == 600);
+    CHECK(details.chooseSwapExtent({50, 4000}).width == 100);
+    CHECK(details.chooseSwapExtent({50, 4000}).height == 1000);
 }

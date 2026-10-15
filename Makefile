@@ -9,7 +9,9 @@ CXXFLAGS = $(CFLAGS)
 # Library paths
 LDFLAGS = -L/opt/homebrew/lib -L/usr/local/lib
 
-LDLIBS = -lglfw -lvulkan
+LDLIBS = -lvulkan
+# Only the app layer (include/app) uses GLFW
+GLFW_LDLIBS = -lglfw
 
 OUT = build
 INCLUDE_DIR = include
@@ -43,7 +45,7 @@ $(SIMPLE_OUT)/simple_example.o : $(SIMPLE_DIR)/simple_example.cpp $(HEADERS)
 	$(CC) -c -o $@ $< $(SIMPLE_CFLAGS)
 
 $(SIMPLE_OUT)/simple_example: $(SIMPLE_OUT)/simple_example.o | $(SIMPLE_SHADERS)
-	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
+	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
 examples: $(SIMPLE_OUT)/simple_example

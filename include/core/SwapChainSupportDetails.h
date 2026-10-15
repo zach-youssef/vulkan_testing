@@ -1,9 +1,9 @@
 #pragma once
 
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-
 #include "core/VkUtil.h"
+
+#include <algorithm>
+#include <limits>
 
 struct SwapChainSupportDetails {
     VkSurfaceCapabilitiesKHR capabilities;
@@ -35,17 +35,13 @@ struct SwapChainSupportDetails {
         return VK_PRESENT_MODE_FIFO_KHR;
     }
     
-    VkExtent2D chooseSwapExtent(GLFWwindow* window) {
+    // framebufferSize is the window's size in pixels, used when the surface leaves the extent
+    // up to the application
+    VkExtent2D chooseSwapExtent(VkExtent2D framebufferSize) {
         if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
            return capabilities.currentExtent;
        } else {
-           int width, height;
-           glfwGetFramebufferSize(window, &width, &height);
-
-           VkExtent2D actualExtent = {
-               static_cast<uint32_t>(width),
-               static_cast<uint32_t>(height)
-           };
+           VkExtent2D actualExtent = framebufferSize;
 
            actualExtent.width = std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
            actualExtent.height = std::clamp(actualExtent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);

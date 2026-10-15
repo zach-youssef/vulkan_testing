@@ -140,7 +140,9 @@ private: // Vulkan Initialization Functions
         
         auto surfaceFormat = swapChainSupport.chooseSwapSurfaceFormat();
         auto presentMode = swapChainSupport.chooseSwapPresentMode();
-        auto extent = swapChainSupport.chooseSwapExtent(window_.get());
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(window_.get(), &width, &height);
+        auto extent = swapChainSupport.chooseSwapExtent({static_cast<uint32_t>(width), static_cast<uint32_t>(height)});
         
         uint32_t imageCount = std::min(swapChainSupport.capabilities.minImageCount + 1,
                                        swapChainSupport.capabilities.maxImageCount);

@@ -1,7 +1,6 @@
 #pragma once
 
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
+#include <vulkan/vulkan.h>
 
 #include <array>
 #include <memory>
@@ -62,12 +61,8 @@ public:
     }
 };
 
-class VulkanSurface final : public VkWrapper<VulkanSurface, VkSurfaceKHR, VkInstance, GLFWwindow*> {
+class VulkanSurface final : public VkWrapper<VulkanSurface, VkSurfaceKHR> {
 public:
-    VulkanSurface(VkResult& outResult, VkInstance instance, GLFWwindow* window): instance_(instance) {
-        outResult = glfwCreateWindowSurface(instance, window, nullptr, &value_);
-    }
-    
     // Takes ownership of an already created surface
     VulkanSurface(VkInstance instance, VkSurfaceKHR surface): instance_(instance) {
         value_ = surface;
