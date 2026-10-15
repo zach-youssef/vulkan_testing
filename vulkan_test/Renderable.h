@@ -69,19 +69,31 @@ protected:
         return shaderModule;
     }
     
+    // Writes the descriptors' current resources into the frame's descriptor set. Descriptors whose
+    // resources are not bound yet (VK_NULL_HANDLE) are skipped; call this again once they are.
     void populateDescriptorSet(uint32_t frameIndex) {
         std::vector<VkWriteDescriptorSet> descriptorWrites;
-        descriptorWrites.resize(descriptors_.size());
+        descriptorWrites.reserve(descriptors_.size());
         
         for (uint idx = 0; idx < descriptors_.size(); ++idx) {
-            descriptorWrites[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrites[idx].dstSet = descriptorSets_.at(frameIndex);
-            descriptorWrites[idx].dstBinding = idx;
-            descriptorWrites[idx].dstArrayElement = 0;
-            descriptorWrites[idx].descriptorType = descriptors_.at(idx)->getType();
-            descriptorWrites[idx].descriptorCount = 1;
-            descriptorWrites[idx].pBufferInfo = descriptors_.at(idx)->getBufferInfo(frameIndex);
-            descriptorWrites[idx].pImageInfo = descriptors_.at(idx)->getImageInfo(frameIndex);
+            auto* bufferInfo = descriptors_.at(idx)->getBufferInfo(frameIndex);
+            auto* imageInfo = descriptors_.at(idx)->getImageInfo(frameIndex);
+            const bool bound = (bufferInfo && bufferInfo->buffer != VK_NULL_HANDLE)
+                               || (imageInfo && imageInfo->imageView != VK_NULL_HANDLE);
+            if (!bound) {
+                continue;
+            }
+            
+            VkWriteDescriptorSet write{};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = descriptorSets_.at(frameIndex);
+            write.dstBinding = idx;
+            write.dstArrayElement = 0;
+            write.descriptorType = descriptors_.at(idx)->getType();
+            write.descriptorCount = 1;
+            write.pBufferInfo = bufferInfo;
+            write.pImageInfo = imageInfo;
+            descriptorWrites.push_back(write);
         }
         
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
