@@ -52,6 +52,19 @@ TEST_CASE("SwapChainSupportDetails::chooseSwapSurfaceFormat falls back to the fi
     CHECK(details.chooseSwapSurfaceFormat().format == VK_FORMAT_R8G8B8A8_UNORM);
 }
 
+TEST_CASE("SwapChainSupportDetails::chooseSwapSurfaceFormat prefers B8G8R8A8_SRGB with an sRGB color space") {
+    SwapChainSupportDetails details{};
+    details.formats = {
+        {VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},
+        {VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT},
+        {VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},
+    };
+
+    const auto chosen = details.chooseSwapSurfaceFormat();
+    CHECK(chosen.format == VK_FORMAT_B8G8R8A8_SRGB);
+    CHECK(chosen.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+}
+
 TEST_CASE("SwapChainSupportDetails::chooseSwapPresentMode prefers mailbox, else FIFO") {
     SwapChainSupportDetails details{};
 

@@ -15,8 +15,10 @@ struct SwapChainSupportDetails {
     }
     
     VkSurfaceFormatKHR chooseSwapSurfaceFormat(){
+        // Prefer an 8-bit sRGB format, so shader output is gamma encoded on presentation
         for (const auto& availableFormat : formats) {
-            if (availableFormat.format == VK_FORMAT_B8G8R8_SRGB) {
+            if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB
+                && availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
                 return availableFormat;
             }
         }
