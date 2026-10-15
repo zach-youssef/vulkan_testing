@@ -31,7 +31,7 @@ struct FrameContext {
     RenderGraph& graph;
     uint32_t frameIndex;        // context.currentFrame(): indexes PerFrame collections
     uint64_t frameNumber;       // context.frameNumber() when the frame started
-    VkExtent2D surfaceExtent;   // {0, 0} without a surface
+    VkExtent2D surfaceExtent;   // RenderGraph::surfaceExtent(): {0, 0} without a surface or one set headless
 };
 
 struct RecordContext : FrameContext {

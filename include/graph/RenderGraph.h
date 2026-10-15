@@ -59,7 +59,8 @@ struct FixedExtent {
     VkExtent2D extent;
 };
 
-// A multiple of the surface's extent; requires a graph with a surface
+// A multiple of the surface's extent; requires a graph with a surface, or a headless graph given a
+// surface extent (RenderGraph::setSurfaceExtent)
 struct SurfaceRelative {
     float scale = 1.0f;
 };
@@ -215,8 +216,9 @@ public: // Resources
     // extraUsage). Whether it has a copy per frame in flight is a required choice.
     ImageId createImage(std::string name, FrameMode mode, VkFormat format, ImageExtent extent,
                         VkImageUsageFlags extraUsage = 0) {
-        if (std::holds_alternative<SurfaceRelative>(extent) && !swapchain_) {
-            throw GraphError("Image '" + name + "' is surface relative, but the graph has no surface");
+        if (std::holds_alternative<SurfaceRelative>(extent) && !swapchain_ && !headlessSurfaceExtent_) {
+            throw GraphError("Image '" + name + "' is surface relative, but the graph has no surface (headless graphs "
+                             "can set one's extent with setSurfaceExtent)");
         }
         ImageRecord record;
         record.name = std::move(name);
@@ -341,6 +343,28 @@ public: // Descriptor entries for graph resources
 public: // Surface
     bool hasSurface() { return swapchain_ != nullptr; }
 
+    // Gives a headless graph a surface extent for SurfaceRelative images and materials' update()
+    // to follow, e.g. the size of offscreen output. Changing it recreates those images at the next
+    // frame, as a window resize does. Graphs with a surface follow its swapchain instead.
+    void setSurfaceExtent(VkExtent2D extent) {
+        if (swapchain_) {
+            throw std::logic_error("The graph's surface extent is its swapchain's");
+        }
+        if (extent.width == 0 || extent.height == 0) {
+            throw std::invalid_argument("A surface extent can't be empty");
+        }
+        headlessSurfaceExtent_ = extent;
+    }
+
+    // The extent SurfaceRelative images are relative to: the swapchain's, or one set with
+    // setSurfaceExtent. {0, 0} for headless graphs without one.
+    VkExtent2D surfaceExtent() {
+        if (swapchain_) {
+            return swapchain_->getExtent();
+        }
+        return headlessSurfaceExtent_.value_or(VkExtent2D{0, 0});
+    }
+
     SurfaceInfo surface() {
         requireSurface();
         return {surfaceImage_, swapchain_->getFormat(), swapchain_->getExtent()};
@@ -417,7 +441,7 @@ public: // Compiling and running
         }
 
         FrameContext frameContext{*context_, *this, frame, context_->frameNumber(),
-                                  swapchain_ ? swapchain_->getExtent() : VkExtent2D{0, 0}};
+                                  surfaceExtent()};
 
         // Each distinct material is updated once, just before the first submission recording it,
         // so CPU nodes ordered before its nodes have run
@@ -689,7 +713,7 @@ private:
             return fixed->extent;
         }
         const float scale = std::get<SurfaceRelative>(extent).scale;
-        const VkExtent2D surface = swapchain_->getExtent();
+        const VkExtent2D surface = surfaceExtent();
         return {std::max(1u, static_cast<uint32_t>(surface.width * scale)),
                 std::max(1u, static_cast<uint32_t>(surface.height * scale))};
     }
@@ -713,6 +737,8 @@ private:
                 plans_.clear();   // Material formats are checked against the surface's when compiling
             }
             surfaceExtent_ = extent;
+        } else if (headlessSurfaceExtent_) {
+            surfaceExtent_ = *headlessSurfaceExtent_;
         }
         if (!structureDirty_ && realizedSurfaceExtent_.width == surfaceExtent_.width
             && realizedSurfaceExtent_.height == surfaceExtent_.height) {
@@ -1354,6 +1380,7 @@ private:
     VkFormat surfaceFormat_ = VK_FORMAT_UNDEFINED;
     VkExtent2D surfaceExtent_{0, 0};
     VkExtent2D realizedSurfaceExtent_{0, 0};
+    std::optional<VkExtent2D> headlessSurfaceExtent_;
     std::map<VkFormat, ImageId> surfaceDepth_;
 
     std::vector<NodeRecord> nodes_;

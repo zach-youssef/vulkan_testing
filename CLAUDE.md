@@ -182,6 +182,9 @@ app.run();
 - **The surface:** `graph.surfaceTarget()` writes the swapchain image. Acquire and present are
   automatic, at most one node may write it, and nodes may read it afterwards. A graph without a
   surface use is headless.
+- Headless graphs can still have `SurfaceRelative` images: `graph.setSurfaceExtent(extent)` gives
+  them (and materials' `update()`) an extent, and changing it recreates them like a window resize,
+  so resize handling can be tested without a window.
 - `setEnabled(node, bool)` toggles nodes. Plans are cached per set of enabled nodes. CPU nodes
   replace per-frame callbacks.
 - `VulkanApp` owns graphs: `createGraph()`, `setActiveGraph()`, `destroyGraph()`. Headless code can

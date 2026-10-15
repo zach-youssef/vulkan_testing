@@ -62,13 +62,13 @@ Handle<Image> storageImage(VulkanContext& ctx) {
     return image;
 }
 
-bool hasPattern(const std::vector<uint8_t>& pixels) {
-    if (pixels.size() != kWidth * kHeight * 4) {
+bool hasPattern(const std::vector<uint8_t>& pixels, uint32_t width = kWidth, uint32_t height = kHeight) {
+    if (pixels.size() != width * height * 4) {
         return false;
     }
-    for (uint32_t y = 0; y < kHeight; ++y) {
-        for (uint32_t x = 0; x < kWidth; ++x) {
-            const uint8_t* pixel = &pixels[(y * kWidth + x) * 4];
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            const uint8_t* pixel = &pixels[(y * width + x) * 4];
             const int expected[4] = {int(x % 256), int(y % 256), int((x + y) % 256), 255};
             for (int channel = 0; channel < 4; ++channel) {
                 if (std::abs(pixel[channel] - expected[channel]) > 1) {
@@ -297,10 +297,11 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph reports invalid graphs when compiling") 
         CHECK_THROWS_AS(graph.addCompute("bad", [&](NodeBuilder& b) { b.read(image, Access::StorageWrite); }, nullptr),
                         GraphError);
     }
-    SUBCASE("surface relative images need a surface") {
+    SUBCASE("surface relative images need a surface, or a headless surface extent") {
         RenderGraph graph(ctx);
-        CHECK_THROWS_AS(graph.createImage("image", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, SurfaceRelative{}),
-                        GraphError);
+        CHECK_THROWS_WITH_AS(graph.createImage("image", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, SurfaceRelative{}),
+                             doctest::Contains("setSurfaceExtent"), GraphError);
+        CHECK_THROWS_AS(graph.setSurfaceExtent({0, 4}), std::invalid_argument);
     }
 }
 
@@ -415,5 +416,38 @@ TEST_CASE_FIXTURE(GpuTest, "Materials update after the CPU nodes ordered before 
     graph.execute();
     CHECK(late->updates == 3);
     CHECK(early->updates == 4);
+    ctx.waitIdleAll();
+}
+
+TEST_CASE_FIXTURE(GpuTest, "Headless graphs resize surface relative images to the surface extent they're given") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    CHECK(graph.surfaceExtent().width == 0);
+    graph.setSurfaceExtent({16, 8});
+    ImageId image = graph.createImage("half", FrameMode::PerFrame, VK_FORMAT_R8G8B8A8_UNORM, SurfaceRelative{0.5f});
+
+    // Covers the largest extent below; pattern.comp skips texels outside the image
+    auto material = patternMaterial(ctx, graph.storageEntry(image));
+    VkExtent2D seenExtent{};
+    graph.addCpu("extent", nullptr, [&](FrameContext& frame) { seenExtent = frame.surfaceExtent; });
+    graph.add<DispatchNode>("pattern", material);
+    NodeId readback = graph.add<ReadbackNode>("readback", image);
+
+    graph.execute();
+    CHECK(seenExtent.width == 16);
+    CHECK(seenExtent.height == 8);
+    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels(), 8, 4));
+
+    // Every frame's image is recreated at the new size, and the material's entries follow
+    graph.setSurfaceExtent({kWidth * 2, kHeight * 2});
+    for (uint32_t frame = 0; frame < ctx.framesInFlight(); ++frame) {
+        graph.execute();
+    }
+    for (uint32_t frame = 0; frame < ctx.framesInFlight(); ++frame) {
+        CHECK(graph.imageExtent(image, frame).width == kWidth);
+        CHECK(graph.imageExtent(image, frame).height == kHeight);
+    }
+    CHECK(seenExtent.width == kWidth * 2);
+    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels(), kWidth, kHeight));
     ctx.waitIdleAll();
 }

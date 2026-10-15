@@ -80,7 +80,7 @@ public:
     // Called by the render graph once per frame, e.g. to write uniform buffers: just before the
     // first submission recording a node that uses the material, so after CPU nodes ordered before
     // that node (by declared uses or addDependency). Materials of disabled nodes aren't updated.
-    // surfaceExtent is {0, 0} without a surface.
+    // surfaceExtent is the graph's surfaceExtent(): {0, 0} without a surface or one set headless.
     virtual void update(uint32_t frameIndex, VkExtent2D surfaceExtent) = 0;
 
     // Binds the pipeline and pushes the frame's binding indices (and any extra push constants).
