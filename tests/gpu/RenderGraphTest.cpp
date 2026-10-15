@@ -379,3 +379,41 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph keeps its descriptor entries current as 
     ctx.setFramesInFlight(originalFrames);
     graph.execute();
 }
+
+TEST_CASE_FIXTURE(GpuTest, "Materials update after the CPU nodes ordered before their nodes") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    ImageId first = graph.createImage("first", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{{kWidth, kHeight}});
+    ImageId second = graph.createImage("second", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{{kWidth, kHeight}});
+    auto early = patternMaterial(ctx, graph.storageEntry(first));
+    auto late = patternMaterial(ctx, graph.storageEntry(second));
+
+    // A CPU node between two dispatches: the first's material updates before it runs, the
+    // second's (which depends on it) after
+    int cpuRuns = 0;
+    int earlyUpdatesSeen = -1, lateUpdatesSeen = -1;
+    graph.add<DispatchNode>("early", early);
+    NodeId cpu = graph.addCpu("input", nullptr, [&](FrameContext&) {
+        ++cpuRuns;
+        earlyUpdatesSeen = early->updates;
+        lateUpdatesSeen = late->updates;
+    });
+    NodeId lateNode = graph.add<DispatchNode>("late", late);
+    graph.addDependency(cpu, lateNode);
+
+    for (int frame = 1; frame <= 3; ++frame) {
+        graph.execute();
+        CAPTURE(frame);
+        CHECK(cpuRuns == frame);
+        CHECK(earlyUpdatesSeen == frame);
+        CHECK(lateUpdatesSeen == frame - 1);
+        CHECK(late->updates == frame);
+    }
+
+    // Disabled nodes' materials aren't updated
+    graph.setEnabled(lateNode, false);
+    graph.execute();
+    CHECK(late->updates == 3);
+    CHECK(early->updates == 4);
+    ctx.waitIdleAll();
+}

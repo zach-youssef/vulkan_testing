@@ -77,8 +77,10 @@ public:
         retirePipeline();
     }
 
-    // Called by the render graph once per frame before any node records, e.g. to write uniform
-    // buffers. surfaceExtent is {0, 0} without a surface.
+    // Called by the render graph once per frame, e.g. to write uniform buffers: just before the
+    // first submission recording a node that uses the material, so after CPU nodes ordered before
+    // that node (by declared uses or addDependency). Materials of disabled nodes aren't updated.
+    // surfaceExtent is {0, 0} without a surface.
     virtual void update(uint32_t frameIndex, VkExtent2D surfaceExtent) = 0;
 
     // Binds the pipeline and pushes the frame's binding indices (and any extra push constants).

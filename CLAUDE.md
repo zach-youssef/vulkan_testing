@@ -150,8 +150,11 @@ app.run();
   bias). Graphics materials must be built for the formats of the target they draw into:
   `graph.formats(renderTarget)`. A derived constructor may set `bindings_` before the material is
   used (see `TutorialMaterial`).
-- `update(frameIndex, surfaceExtent)` is called by the graph once per frame per distinct material.
-  Write per-frame data (e.g. a uniform buffer per frame) there.
+- `update(frameIndex, surfaceExtent)` is called by the graph once per frame per distinct material,
+  just before the first submission recording it. Write per-frame data (e.g. a uniform buffer per
+  frame) there. A CPU node ordered before the material's node (by declared uses or
+  `addDependency(cpuNode, node)`) runs first, so it can feed `update()` in the same frame. Materials
+  of disabled nodes aren't updated.
 
 ### Render graphs
 

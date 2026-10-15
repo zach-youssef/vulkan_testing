@@ -374,8 +374,8 @@ public: // Compiling and running
     }
 
     // Runs one frame: waits for the frame slot's previous use, acquires the surface image if the
-    // plan uses it, updates materials, runs CPU nodes and records and submits GPU nodes in order,
-    // presents, and advances the context's frame.
+    // plan uses it, runs CPU nodes and records and submits GPU nodes in order (updating materials
+    // before the first submission using them), presents, and advances the context's frame.
     FrameResult execute() {
         context_->beginFrame();
         const uint32_t frame = context_->currentFrame();
@@ -419,15 +419,9 @@ public: // Compiling and running
         FrameContext frameContext{*context_, *this, frame, context_->frameNumber(),
                                   swapchain_ ? swapchain_->getExtent() : VkExtent2D{0, 0}};
 
-        // Each distinct material once, before anything records
+        // Each distinct material is updated once, just before the first submission recording it,
+        // so CPU nodes ordered before its nodes have run
         std::set<Material*> updated;
-        for (uint32_t node : plan.order) {
-            for (auto& material : nodes_[node].materials) {
-                if (updated.insert(material.get()).second) {
-                    material->update(frame, frameContext.surfaceExtent);
-                }
-            }
-        }
 
         std::vector<uint64_t> submissionValues(plan.submissions.size(), 0);
         for (const auto& step : plan.steps) {
@@ -441,6 +435,13 @@ public: // Compiling and running
                 }
                 nodes_[step.index].node->run(frameContext);
                 continue;
+            }
+            for (uint32_t node : plan.submissions[step.index].nodes) {
+                for (auto& material : nodes_[node].materials) {
+                    if (updated.insert(material.get()).second) {
+                        material->update(frame, frameContext.surfaceExtent);
+                    }
+                }
             }
             submissionValues[step.index] = recordAndSubmit(plan, step.index, slot, frameContext, submissionValues,
                                                            foreignWork, acquired);
