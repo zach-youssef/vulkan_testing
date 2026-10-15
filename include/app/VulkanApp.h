@@ -43,6 +43,8 @@ struct AppConfig {
     bool logInstanceInfo = true;
     // Initial number of frames in flight; see VulkanContext::setFramesInFlight
     uint32_t framesInFlight = 2;
+    // Device features the application needs beyond the wrapper's; see VulkanContextConfig::features
+    DeviceFeatures features;
     // Directories the shader library loads SPIR-V from (see ShaderLibrary)
     std::vector<std::string> shaderSearchPaths;
     // Reload shaders whose SPIR-V files change on disk, checking between frames (errors are printed
@@ -257,6 +259,7 @@ private:
         config.enableSynchronizationValidation = config_.enableSynchronizationValidation;
         config.onValidationMessage = config_.onValidationMessage;
         config.framesInFlight = config_.framesInFlight;
+        config.features = config_.features;
         config.shaderSearchPaths = config_.shaderSearchPaths;
 
         if (hasWindow()) {

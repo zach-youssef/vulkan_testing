@@ -120,10 +120,57 @@ TEST_CASE("DeviceFeatures reports the required features a device lacks") {
 
 TEST_CASE("DeviceFeatures keeps its pNext chain intact when copied") {
     auto features = DeviceFeatures::required();
+    features.vulkan11.storageBuffer16BitAccess = VK_TRUE;
     DeviceFeatures copy = features;
     CHECK(copy.chain() == &copy.core);
-    CHECK(copy.core.pNext == &copy.vulkan12);
+    CHECK(copy.core.pNext == &copy.vulkan11);
+    CHECK(copy.vulkan11.pNext == &copy.vulkan12);
     CHECK(copy.vulkan12.pNext == &copy.vulkan13);
     CHECK(copy.vulkan13.pNext == nullptr);
+    CHECK(copy.vulkan11.sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES);
+    CHECK(copy.vulkan11.storageBuffer16BitAccess == VK_TRUE);
     CHECK(copy.vulkan13.dynamicRendering == VK_TRUE);
+}
+
+TEST_CASE("DeviceFeatures names every feature of every structure") {
+    // The first and last feature of each structure map to their names
+    DeviceFeatures none;
+    DeviceFeatures needed;
+    needed.core.features.robustBufferAccess = VK_TRUE;
+    needed.core.features.inheritedQueries = VK_TRUE;
+    needed.vulkan11.storageBuffer16BitAccess = VK_TRUE;
+    needed.vulkan11.shaderDrawParameters = VK_TRUE;
+    needed.vulkan12.samplerMirrorClampToEdge = VK_TRUE;
+    needed.vulkan12.subgroupBroadcastDynamicId = VK_TRUE;
+    needed.vulkan13.robustImageAccess = VK_TRUE;
+    needed.vulkan13.maintenance4 = VK_TRUE;
+    CHECK(none.missing(needed) == std::vector<std::string>{
+        "robustBufferAccess", "inheritedQueries",
+        "storageBuffer16BitAccess", "shaderDrawParameters",
+        "samplerMirrorClampToEdge", "subgroupBroadcastDynamicId",
+        "robustImageAccess", "maintenance4",
+    });
+    CHECK(needed.missing(needed).empty());
+    CHECK(needed.missing(none).empty());
+}
+
+TEST_CASE("DeviceFeatures combines the wrapper's required features with an application's") {
+    DeviceFeatures extra;
+    extra.core.features.shaderInt16 = VK_TRUE;
+    extra.vulkan11.storageBuffer16BitAccess = VK_TRUE;
+    extra.vulkan12.storageBuffer8BitAccess = VK_TRUE;
+    extra.vulkan12.shaderInt8 = VK_TRUE;
+
+    auto combined = DeviceFeatures::requiredWith(extra);
+    CHECK(combined.missingRequired().empty());
+    CHECK(combined.missing(extra).empty());
+    // Adding never disables a feature
+    combined.add(DeviceFeatures());
+    CHECK(combined.vulkan13.dynamicRendering == VK_TRUE);
+    CHECK(combined.vulkan12.shaderInt8 == VK_TRUE);
+
+    // A device with only the wrapper's features lacks the application's
+    CHECK(DeviceFeatures::required().missing(combined) == std::vector<std::string>{
+        "shaderInt16", "storageBuffer16BitAccess", "storageBuffer8BitAccess", "shaderInt8",
+    });
 }

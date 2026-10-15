@@ -97,6 +97,10 @@ app.run();
   responsible. `ResourceManager`, `DescriptorHeap`, `ShaderLibrary` and `PerFrame` creation and
   destruction are thread safe. `RenderGraph` and `VulkanApp` are used from one thread.
 - **One-off GPU work** (uploads, readbacks) uses `ctx.submitImmediate(fn)`, which blocks.
+- **Device features:** the wrapper enables what it needs (`DeviceFeatures::required()`). Request
+  anything else with `AppConfig::features` (`VulkanContextConfig::features`), e.g.
+  `config.features.vulkan12.storageBuffer8BitAccess = VK_TRUE` for 8-bit types in storage buffers.
+  Devices lacking a requested feature are rejected by name; `ctx.enabledFeatures()` lists what's on.
 
 ### Frames in flight
 
@@ -133,6 +137,8 @@ app.run();
   ```
   `sampler` is a GLSL keyword, so don't name a member that. Storage images are declared without a
   format (`bindlessStorageImages[]`). Vertex and fragment shaders of one material share the block.
+  Give every `BINDLESS_BUFFER` in a shader the same qualifiers: MoltenVK can't alias a `readonly`
+  block with a writable one (pipeline creation fails).
 - Subclass `ComputeMaterial` (implement `getDispatchDimensions`, `update`) or `BasicMaterial<N>`
   (vertex and fragment shaders, `AttachmentFormats` of the target, vertex layout). Graphics
   materials must be built for the formats of the target they draw into:

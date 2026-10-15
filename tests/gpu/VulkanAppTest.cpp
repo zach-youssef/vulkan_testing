@@ -51,8 +51,9 @@ struct HeadlessApp {
     std::vector<std::string> errors;
     std::unique_ptr<VulkanApp> app = std::make_unique<VulkanApp>();
 
-    HeadlessApp() {
+    explicit HeadlessApp(DeviceFeatures features = {}) {
         AppConfig config;
+        config.features = features;
         config.applicationName = "VulkanApp tests";
         config.window = std::nullopt;
         config.enableValidation = true;
@@ -74,6 +75,31 @@ struct HeadlessApp {
         }
     }
 };
+
+// Dispatches small_types.comp once
+class SmallTypesMaterial : public ComputeMaterial {
+public:
+    SmallTypesMaterial(VulkanContext& context, std::vector<MaterialBinding> bindings)
+    : ComputeMaterial(context, std::move(bindings), testShader(context, "small_types.comp")) {}
+
+    void update(uint32_t, VkExtent2D) override {}
+
+    glm::vec3 getDispatchDimensions() override {
+        return glm::vec3{1, 1, 1};
+    }
+};
+
+template<typename T>
+Handle<Buffer<T>> hostBuffer(VulkanContext& ctx, const std::vector<T>& data) {
+    Handle<Buffer<T>> buffer;
+    VK_SUCCESS_OR_THROW(Buffer<T>::create(buffer, ctx, data.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+                        "Failed to create buffer");
+    buffer->mapAndExecute(0, sizeof(T) * data.size(), [&data](void* mapped) {
+        memcpy(mapped, data.data(), sizeof(T) * data.size());
+    });
+    return buffer;
+}
 
 } // namespace
 
@@ -182,4 +208,69 @@ TEST_CASE("A VulkanApp switches between graphs and destroys inactive ones") {
 
     RenderGraph other(ctx);
     CHECK_THROWS_AS(app.setActiveGraph(other), std::invalid_argument);
+}
+
+TEST_CASE("Apps can enable device features beyond the wrapper's, e.g. 8- and 16-bit storage") {
+    DeviceFeatures features;
+    features.core.features.shaderInt16 = VK_TRUE;
+    features.vulkan11.storageBuffer16BitAccess = VK_TRUE;
+    features.vulkan12.storageBuffer8BitAccess = VK_TRUE;
+    features.vulkan12.shaderInt8 = VK_TRUE;
+    HeadlessApp headless(features);
+    auto& app = *headless.app;
+    auto& ctx = app.getContext();
+    CHECK(ctx.enabledFeatures().missing(features).empty());
+    CHECK(ctx.enabledFeatures().missingRequired().empty());
+
+    std::vector<uint8_t> bytes(64);
+    std::vector<uint16_t> halves(16);
+    for (uint32_t i = 0; i < 64; ++i) {
+        bytes[i] = static_cast<uint8_t>(200 + i);   // Up to 263: wraps past 255 as a byte
+    }
+    for (uint32_t i = 0; i < 16; ++i) {
+        halves[i] = static_cast<uint16_t>(60000 + i);
+    }
+    auto byteBuffer = hostBuffer(ctx, bytes);
+    auto halfBuffer = hostBuffer(ctx, halves);
+    auto sumBuffer = hostBuffer(ctx, std::vector<uint32_t>(16, 0));
+    {
+        auto& heap = ctx.descriptors();
+        auto material = ctx.resources().create<SmallTypesMaterial>(ctx, std::vector<MaterialBinding>{
+            MaterialBinding::storageBuffer(heap.storageBuffer(byteBuffer)),
+            MaterialBinding::storageBuffer(heap.storageBuffer(halfBuffer)),
+            MaterialBinding::storageBuffer(heap.storageBuffer(sumBuffer), Access::StorageBufferWrite),
+        });
+        RenderGraph& graph = app.createGraph();
+        graph.add<DispatchNode>("sum", std::move(material));
+        app.setActiveGraph(graph);
+        app.drawFrame();
+        ctx.waitIdleAll();
+    }
+
+    std::vector<uint32_t> sums(16);
+    sumBuffer->mapAndExecute(0, sizeof(uint32_t) * sums.size(), [&sums](void* mapped) {
+        memcpy(sums.data(), mapped, sizeof(uint32_t) * sums.size());
+    });
+    for (uint32_t i = 0; i < 16; ++i) {
+        uint32_t expected = halves[i];
+        for (uint32_t j = 0; j < 4; ++j) {
+            expected += bytes[i * 4 + j];
+        }
+        CAPTURE(i);
+        CHECK(sums[i] == expected);
+    }
+}
+
+TEST_CASE("A context requesting a feature the device lacks names it") {
+    // geometryShader is unsupported by MoltenVK; skip on devices that have it
+    VulkanContextConfig probeConfig;
+    VulkanContext probe(probeConfig);
+    if (DeviceFeatures::supported(probe.physicalDevice()).core.features.geometryShader) {
+        MESSAGE("Skipped: the device supports geometryShader");
+        return;
+    }
+
+    VulkanContextConfig config;
+    config.features.core.features.geometryShader = VK_TRUE;
+    CHECK_THROWS_WITH(VulkanContext{config}, doctest::Contains("geometryShader"));
 }

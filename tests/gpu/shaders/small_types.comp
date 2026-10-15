@@ -1,0 +1,40 @@
+#version 450
+
+// Reads 8- and 16-bit values from storage buffers, which needs features the wrapper doesn't enable
+// itself: storageBuffer8BitAccess, storageBuffer16BitAccess, shaderInt8 and shaderInt16
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+
+#include "bindless.glsl"
+
+layout(push_constant) uniform Indices {
+    uint bytes;
+    uint halves;
+    uint sums;
+} indices;
+
+struct Bytes {
+    uint8_t values[64];
+};
+struct Halves {
+    uint16_t values[16];
+};
+struct Sums {
+    uint values[16];
+};
+// Declared with the same (no) qualifiers: MoltenVK can't alias read-only and writable blocks
+BINDLESS_BUFFER(, ByteBuffers, Bytes, byteBuffers);
+BINDLESS_BUFFER(, HalfBuffers, Halves, halfBuffers);
+BINDLESS_BUFFER(, SumBuffers, Sums, sumBuffers);
+
+layout(local_size_x = 16) in;
+
+// sums[i] = bytes[4i] + ... + bytes[4i + 3] + halves[i]
+void main() {
+    uint i = gl_LocalInvocationID.x;
+    uint sum = uint(halfBuffers[indices.halves].data.values[i]);
+    for (uint j = 0; j < 4; ++j) {
+        sum += uint(byteBuffers[indices.bytes].data.values[i * 4 + j]);
+    }
+    sumBuffers[indices.sums].data.values[i] = sum;
+}

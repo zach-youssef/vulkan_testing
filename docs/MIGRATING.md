@@ -29,6 +29,9 @@ to see a full migration.
 - Devices must support Vulkan 1.3 plus the features listed in `include/core/DeviceFeatures.h`
   (descriptor indexing, synchronization2, dynamic rendering, timeline semaphores, storage images
   without a format, sampler anisotropy). Selection errors list what a device lacks.
+- The old wrapper enabled few features, so shaders may rely on ones a validation layer now reports
+  (e.g. 8- and 16-bit types in buffers). Request them with `AppConfig::features`, e.g.
+  `config.features.vulkan12.storageBuffer8BitAccess = VK_TRUE`.
 - One translation unit still defines `VK_WRAP_UTIL_IMPL` and `STB_IMAGE_IMPLEMENTATION`.
 - Only `include/app` uses GLFW. Code that doesn't use `VulkanApp` doesn't need to link it.
 

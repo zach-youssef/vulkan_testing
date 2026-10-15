@@ -155,6 +155,11 @@ struct VulkanContextConfig {
     // May be called from any thread that calls into Vulkan.
     std::function<void(VkDebugUtilsMessageSeverityFlagBitsEXT, const char*)> onValidationMessage;
 
+    // Device features the application needs beyond the wrapper's own (DeviceFeatures::required()),
+    // e.g. vulkan12.storageBuffer8BitAccess. Devices lacking any are rejected; the device is created
+    // with them enabled.
+    DeviceFeatures features;
+
     // Size of the universal descriptor set (see DescriptorHeap)
     DescriptorCapacities descriptorCapacities;
 
@@ -173,7 +178,8 @@ struct VulkanContextConfig {
 class VulkanContext {
 public:
     explicit VulkanContext(VulkanContextConfig config)
-    : config_(std::move(config)), frames_(config_.framesInFlight) {
+    : config_(std::move(config)), enabledFeatures_(DeviceFeatures::requiredWith(config_.features)),
+      frames_(config_.framesInFlight) {
         if (!config_.onValidationMessage) {
             config_.onValidationMessage = [](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
                 const char* label = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ? "error" : "warning";
@@ -220,6 +226,8 @@ public:
 public: // Accessors
     VkInstance instance() { return **instance_; }
     VkPhysicalDevice physicalDevice() { return physicalDevice_; }
+    // The features the device was created with: the wrapper's and VulkanContextConfig::features
+    const DeviceFeatures& enabledFeatures() const { return enabledFeatures_; }
     VkDevice device() { return **device_; }
     ResourceManager& resources() { return *resourceManager_; }
 
@@ -752,7 +760,7 @@ private:
     void pickPhysicalDevice() {
         std::string rejections;
         for (auto device : readVkVector<VkPhysicalDevice, VkInstance>(**instance_, vkEnumeratePhysicalDevices)) {
-            auto shortcomings = deviceShortcomings(device);
+            auto shortcomings = deviceShortcomings(device, enabledFeatures_);
             if (!shortcomings.empty()) {
                 VkPhysicalDeviceProperties properties{};
                 vkGetPhysicalDeviceProperties(device, &properties);
@@ -851,8 +859,8 @@ private:
             queueFamilies_.push_back(family);
         }
 
-        // Every required feature was checked when picking the physical device
-        const DeviceFeatures features = DeviceFeatures::required();
+        // Every feature was checked when picking the physical device
+        const DeviceFeatures& features = enabledFeatures_;
 
         std::vector<const char*> extensions;
         if (hasSurface()) {
@@ -904,6 +912,8 @@ private:
     }
 
     VulkanContextConfig config_;
+    // The wrapper's required features and config_.features
+    DeviceFeatures enabledFeatures_;
 
     // Declared first so it is destroyed last: PerFrame collections unregister when destroyed
     FrameRegistry frames_;
