@@ -52,8 +52,10 @@ public:
         submitInfo.pCommandBuffers = &commandBuffer;
         
         auto waitSemaphores = getWaitSemaphores(ctx.frameIndex);
+        std::vector<VkPipelineStageFlags> waitStages(waitSemaphores.size(), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
         submitInfo.pWaitSemaphores = waitSemaphores.data();
+        submitInfo.pWaitDstStageMask = waitStages.data();
         submitInfo.signalSemaphoreCount = getSignalSemaphoreCount(ctx.frameIndex);
         submitInfo.pSignalSemaphores = getSignalSemaphores(ctx.frameIndex);
         
