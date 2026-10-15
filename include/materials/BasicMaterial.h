@@ -12,13 +12,19 @@ public:
     BasicMaterial(VulkanContext& context,
                   std::vector<MaterialBinding> bindings,
                   AttachmentFormats formats,
-                  const std::vector<char>& vertSpirv,
-                  const std::vector<char>& fragSpirv,
+                  Handle<Shader> vertexShader,
+                  Handle<Shader> fragmentShader,
                   VkVertexInputBindingDescription bindingDescription,
-                  // TODO make that 2 customizable
                   std::array<VkVertexInputAttributeDescription, VertexAttributes> attributeDescriptions)
-    : Material(context, std::move(bindings)), formats_(std::move(formats)) {
-        createGraphicsPipeline(vertSpirv, fragSpirv, bindingDescription, attributeDescriptions);
+    : Material(context, std::move(bindings)),
+    formats_(std::move(formats)),
+    vertexShader_(std::move(vertexShader)),
+    fragmentShader_(std::move(fragmentShader)),
+    bindingDescription_(bindingDescription),
+    attributeDescriptions_(attributeDescriptions) {
+        requireStage(vertexShader_, VK_SHADER_STAGE_VERTEX_BIT);
+        requireStage(fragmentShader_, VK_SHADER_STAGE_FRAGMENT_BIT);
+        initPipeline({vertexShader_, fragmentShader_});
     }
     
     virtual void update(uint32_t frameIndex, VkExtent2D surfaceExtent) override {}
@@ -26,26 +32,23 @@ public:
     std::optional<AttachmentFormats> attachmentFormats() override {
         return formats_;
     }
-private:
-    void createGraphicsPipeline(const std::vector<char>& vertShaderCode,
-                                const std::vector<char>& fragShaderCode,
-                                VkVertexInputBindingDescription bindingDescription,
-                                std::array<VkVertexInputAttributeDescription, VertexAttributes> attributeDescriptions) {
-        auto vertShaderModule = createShaderModule(vertShaderCode);
-        auto fragShaderModule = createShaderModule(fragShaderCode);
+protected:
+    VkPipeline createPipeline() override {
+        auto& bindingDescription = bindingDescription_;
+        auto& attributeDescriptions = attributeDescriptions_;
         
         VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
         vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
         
-        vertShaderStageInfo.module = **vertShaderModule;
-        vertShaderStageInfo.pName = "main";
+        vertShaderStageInfo.module = vertexShader_->module();
+        vertShaderStageInfo.pName = vertexShader_->entryPoint();
         
         VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
         fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        fragShaderStageInfo.module = **fragShaderModule;
-        fragShaderStageInfo.pName = "main";
+        fragShaderStageInfo.module = fragmentShader_->module();
+        fragShaderStageInfo.pName = fragmentShader_->entryPoint();
 
         VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
         
@@ -159,9 +162,16 @@ private:
         pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
         pipelineInfo.basePipelineIndex = -1; // Optional
         
-        VK_SUCCESS_OR_THROW(VulkanGraphicsPipeline::create(pipeline_, device(), pipelineInfo),
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VK_SUCCESS_OR_THROW(vkCreateGraphicsPipelines(device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline),
                             "Failed to create graphics pipeline");
+        return pipeline;
     }
 
+private:
     AttachmentFormats formats_;
+    Handle<Shader> vertexShader_;
+    Handle<Shader> fragmentShader_;
+    VkVertexInputBindingDescription bindingDescription_;
+    std::array<VkVertexInputAttributeDescription, VertexAttributes> attributeDescriptions_;
 };

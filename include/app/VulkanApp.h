@@ -6,7 +6,10 @@
 #include "core/VkUtil.h"
 #include "core/VulkanContext.h"
 #include "graph/RenderGraph.h"
+#include "shaders/ShaderLibrary.h"
 #include "targets/Swapchain.h"
+
+#include <chrono>
 
 #include <algorithm>
 #include <functional>
@@ -40,6 +43,11 @@ struct AppConfig {
     bool logInstanceInfo = true;
     // Initial number of frames in flight; see VulkanContext::setFramesInFlight
     uint32_t framesInFlight = 2;
+    // Directories the shader library loads SPIR-V from (see ShaderLibrary)
+    std::vector<std::string> shaderSearchPaths;
+    // Reload shaders whose SPIR-V files change on disk, checking between frames (errors are printed
+    // to std::cerr). Otherwise call reloadShaders().
+    bool autoReloadShaders = false;
 };
 
 /*
@@ -122,6 +130,16 @@ public:
             frameBufferResized_ = false;
             recreateSwapChain();
         }
+        if (config_.autoReloadShaders) {
+            autoReloadShaders();
+        }
+    }
+
+    // Reloads shaders whose SPIR-V changed on disk, rebuilding the pipelines of materials using
+    // them. Shaders (and pipelines) that fail to load or build keep their previous versions, and
+    // the result lists the errors. Call between frames.
+    ShaderLibrary::ReloadResult reloadShaders() {
+        return context_->shaders().reload();
     }
 
 public: // Render graphs
@@ -239,6 +257,7 @@ private:
         config.enableSynchronizationValidation = config_.enableSynchronizationValidation;
         config.onValidationMessage = config_.onValidationMessage;
         config.framesInFlight = config_.framesInFlight;
+        config.shaderSearchPaths = config_.shaderSearchPaths;
 
         if (hasWindow()) {
             uint32_t glfwExtensionCount = 0;
@@ -287,6 +306,22 @@ private:
         }
     }
 
+    // Checks for modified shaders a few times a second
+    void autoReloadShaders() {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastShaderCheck_ < std::chrono::milliseconds(250)) {
+            return;
+        }
+        lastShaderCheck_ = now;
+        auto result = context_->shaders().reloadModified();
+        for (const auto& name : result.reloaded) {
+            std::cerr << "Reloaded shader " << name << std::endl;
+        }
+        for (const auto& error : result.errors) {
+            std::cerr << "Shader reload failed: " << error << std::endl;
+        }
+    }
+
     std::vector<std::unique_ptr<RenderGraph>>::iterator findGraph(RenderGraph& graph) {
         auto it = std::find_if(graphs_.begin(), graphs_.end(), [&graph](auto& owned) { return owned.get() == &graph; });
         if (it == graphs_.end()) {
@@ -329,4 +364,6 @@ private:
 
     std::vector<std::unique_ptr<RenderGraph>> graphs_;
     RenderGraph* activeGraph_ = nullptr;
+
+    std::chrono::steady_clock::time_point lastShaderCheck_{};
 };

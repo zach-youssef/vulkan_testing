@@ -14,7 +14,7 @@ namespace {
 class PatternMaterial : public ComputeMaterial {
 public:
     PatternMaterial(VulkanContext& context, std::vector<MaterialBinding> bindings, uint32_t width, uint32_t height)
-    : ComputeMaterial(context, std::move(bindings), loadTestShader("pattern.comp")), width_(width), height_(height) {}
+    : ComputeMaterial(context, std::move(bindings), testShader(context, "pattern.comp")), width_(width), height_(height) {}
 
     void update(uint32_t, VkExtent2D) override { ++updates; }
 
@@ -33,7 +33,7 @@ private:
 class CopyMaterial : public ComputeMaterial {
 public:
     CopyMaterial(VulkanContext& context, std::vector<MaterialBinding> bindings, uint32_t width, uint32_t height)
-    : ComputeMaterial(context, std::move(bindings), loadTestShader("test.comp")), width_(width), height_(height) {}
+    : ComputeMaterial(context, std::move(bindings), testShader(context, "test.comp")), width_(width), height_(height) {}
 
     void update(uint32_t, VkExtent2D) override {}
 

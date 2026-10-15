@@ -24,7 +24,7 @@ class TestMaterial : public BasicMaterial<3> {
 public:
     TestMaterial(VulkanContext& ctx, std::vector<MaterialBinding> bindings)
     : BasicMaterial<3>(ctx, std::move(bindings), AttachmentFormats{{VK_FORMAT_R8G8B8A8_UNORM}, VK_FORMAT_D32_SFLOAT},
-                       loadTestShader("shader.vert"), loadTestShader("shader.frag"),
+                       testShader(ctx, "shader.vert"), testShader(ctx, "shader.frag"),
                        {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX}, attributes()) {}
 
     void update(uint32_t, VkExtent2D) override {}

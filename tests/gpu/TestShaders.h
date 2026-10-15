@@ -1,15 +1,21 @@
 #pragma once
 
 #include <string>
-#include <vector>
 
-#include "core/FileUtil.h"
+#include "core/VulkanContext.h"
+#include "shaders/ShaderLibrary.h"
 
 #ifndef TEST_SHADER_DIR
 #error "TEST_SHADER_DIR must be defined to the directory containing the compiled test shaders"
 #endif
 
-// Loads SPIR-V compiled by the Makefile, e.g. loadTestShader("pattern.comp")
-inline std::vector<char> loadTestShader(const std::string& name) {
-    return readFile(std::string(TEST_SHADER_DIR) + "/" + name + ".spv");
+// The search path for the SPIR-V the Makefile compiles for the tests
+inline std::string testShaderDir() {
+    return TEST_SHADER_DIR;
+}
+
+// A test shader, e.g. testShader(ctx, "pattern.comp"). The context's shader library must search
+// testShaderDir() (the shared GPU test context's does).
+inline Handle<Shader> testShader(VulkanContext& ctx, const std::string& name) {
+    return ctx.shaders().get(name);
 }

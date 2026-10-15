@@ -8,7 +8,7 @@
 #include "graph/RenderGraph.h"
 #include "graph/nodes/DispatchNode.h"
 #include "graph/nodes/RenderablesNode.h"
-#include "core/FileUtil.h"
+#include "shaders/ShaderLibrary.h"
 #include "resources/Image.h"
 
 #include <glm/glm.hpp>
@@ -72,13 +72,13 @@ public:
                      AttachmentFormats formats,
                      FrameBinding<DescriptorEntry> texture,
                      FrameBinding<DescriptorEntry> sampler,
-                     const std::vector<char>& vertSpirv,
-                     const std::vector<char>& fragSpirv)
+                     Handle<Shader> vertexShader,
+                     Handle<Shader> fragmentShader)
     :  BasicMaterial<3>(context,
                         {},
                         std::move(formats),
-                        vertSpirv,
-                        fragSpirv,
+                        std::move(vertexShader),
+                        std::move(fragmentShader),
                         Vertex::getBindingDescription(),
                         Vertex::getAttributeDescriptions()){
         // A uniform buffer per frame (read by the vertex shader as a storage buffer), and its
@@ -141,10 +141,10 @@ private:
 class TestComputeMat : public ComputeMaterial {
 public:
     TestComputeMat(VulkanContext& context,
-                   const std::vector<char>& computeShaderCode,
+                   Handle<Shader> computeShader,
                    std::vector<MaterialBinding> bindings,
                    uint32_t imageWidth, uint32_t imageHeight)
-    : ComputeMaterial(context, std::move(bindings), computeShaderCode),
+    : ComputeMaterial(context, std::move(bindings), std::move(computeShader)),
     imageWidth_(imageWidth),
     imageHeight_(imageHeight){}
     
@@ -197,6 +197,9 @@ int main() {
     config.applicationName = "Simple example";
     config.window = WindowConfig{"Simple example", 800, 600};
     config.enableValidation = true;
+    // SPIR-V compiled by the Makefile; rebuilding it (make shaders) while the example runs reloads it
+    config.shaderSearchPaths = {shaderDir};
+    config.autoReloadShaders = true;
 
     VulkanApp app;
     app.init(config);
@@ -228,7 +231,7 @@ int main() {
     // A compute material copying the texture, and a material drawing the copy, shared by two
     // renderables. Their bindings tell the graph which resources they use, and how.
     auto computeMaterial = context.resources().create<TestComputeMat>(
-        context, readFile(shaderDir + "/test.comp.spv"),
+        context, context.shaders().get("test.comp"),
         std::vector<MaterialBinding>{
             MaterialBinding::sampled(textureEntry),
             MaterialBinding::sampler(samplerEntry),
@@ -237,8 +240,8 @@ int main() {
         texture->getWidth(), texture->getHeight());
     auto material = context.resources().create<TutorialMaterial>(context, graph.formats(screen),
                                                                  graph.sampledEntry(copied), samplerEntry,
-                                                                 readFile(shaderDir + "/shader.vert.spv"),
-                                                                 readFile(shaderDir + "/shader.frag.spv"));
+                                                                 context.shaders().get("shader.vert"),
+                                                                 context.shaders().get("shader.frag"));
 
     std::vector<Handle<Renderable>> renderables;
     for (glm::vec2 offset : {glm::vec2{-0.3f, 0.0f}, glm::vec2{0.3f, 0.0f}}) {

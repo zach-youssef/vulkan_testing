@@ -13,9 +13,9 @@ class TestComputeMaterial : public ComputeMaterial {
 public:
     TestComputeMaterial(VulkanContext& context,
                         std::vector<MaterialBinding> bindings,
-                        const std::vector<char>& shaderCode,
+                        Handle<Shader> shader,
                         glm::vec3 dispatchDimensions)
-    : ComputeMaterial(context, std::move(bindings), shaderCode),
+    : ComputeMaterial(context, std::move(bindings), std::move(shader)),
     dispatchDimensions_(dispatchDimensions) {}
 
     void update(uint32_t, VkExtent2D) override {}
@@ -86,7 +86,7 @@ TEST_CASE_FIXTURE(GpuTest, "ComputeMaterial dispatch writes every texel of a sto
             ctx, std::vector<MaterialBinding>{
                 MaterialBinding::storageImage(ctx.descriptors().storageImage(output), Access::StorageWrite),
             },
-            loadTestShader("pattern.comp"),
+            testShader(ctx, "pattern.comp"),
             glm::vec3{(width + 7) / 8, (height + 7) / 8, 1});
 
         dispatch(ctx, *material);
@@ -138,7 +138,7 @@ TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies a sampled sRG
                 MaterialBinding::sampler(heap.sampler(sampler)),
                 MaterialBinding::storageImage(heap.storageImage(output), Access::StorageWrite),
             },
-            loadTestShader("test.comp"),
+            testShader(ctx, "test.comp"),
             glm::vec3{width / 32, height / 32, 1});
 
         dispatch(ctx, *material);

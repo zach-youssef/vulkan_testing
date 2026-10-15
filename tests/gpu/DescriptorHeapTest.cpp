@@ -97,18 +97,12 @@ TEST_CASE_FIXTURE(GpuTest, "Shaders find resources in the universal set by pushe
     auto values = heap.storageBuffer(valuesBuffer(ctx, 77));
 
     // A compute pipeline with the universal layout
-    auto code = loadTestShader("bindless_pattern.comp");
-    VkShaderModuleCreateInfo moduleInfo{};
-    moduleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    moduleInfo.codeSize = code.size();
-    moduleInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
-    std::unique_ptr<VulkanShaderModule> module;
-    REQUIRE(VulkanShaderModule::create(module, ctx.device(), moduleInfo) == VK_SUCCESS);
+    auto shader = testShader(ctx, "bindless_pattern.comp");
     VkComputePipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    pipelineInfo.stage.module = **module;
+    pipelineInfo.stage.module = shader->module();
     pipelineInfo.stage.pName = "main";
     pipelineInfo.layout = heap.pipelineLayout();
     std::unique_ptr<VulkanComputePipeline> pipeline;

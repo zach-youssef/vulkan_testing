@@ -134,6 +134,7 @@ struct DescriptorCapacities {
 };
 
 class DescriptorHeap;
+class ShaderLibrary;
 
 struct VulkanContextConfig {
     std::string applicationName = "VulkanApp";
@@ -156,6 +157,9 @@ struct VulkanContextConfig {
 
     // Size of the universal descriptor set (see DescriptorHeap)
     DescriptorCapacities descriptorCapacities;
+
+    // Directories the shader library looks for SPIR-V in (see ShaderLibrary)
+    std::vector<std::string> shaderSearchPaths;
 
     // Number of frames the CPU may record while the GPU is still executing earlier ones. Can be
     // changed later with VulkanContext::setFramesInFlight.
@@ -192,23 +196,15 @@ public:
     ~VulkanContext() {
         waitIdleAll();
         // Retired work may release resources, so it runs before they are destroyed
-        while (true) {
-            std::list<std::pair<TimelinePoints, std::function<void()>>> retired;
-            {
-                std::lock_guard<std::mutex> lock(retireMutex_);
-                retired.swap(retired_);
-            }
-            if (retired.empty()) {
-                break;
-            }
-            for (auto& [points, fn] : retired) {
-                fn();
-            }
-        }
-        // Destroy in reverse dependency order. Descriptor entries (managed resources) free their
-        // slots in the heap, so the heap goes after them.
+        runAllRetired();
+        // Destroy in reverse dependency order. The shader library holds managed shaders. Descriptor
+        // entries (managed resources) free their slots in the heap, so the heap goes after them,
+        // and releasing resources may retire more work, which must run while the device exists.
+        shaders_.reset();
         resourceManager_.reset();
+        runAllRetired();
         descriptors_.reset();
+        runAllRetired();
         immediatePool_.reset();
         queues_.clear();
         device_.reset();
@@ -230,6 +226,10 @@ public: // Accessors
     // The universal descriptor set and pipeline layout, created on first use. Defined in
     // descriptors/DescriptorHeap.h, which must be included to use it.
     DescriptorHeap& descriptors();
+
+    // The shader library, created on first use. Defined in shaders/ShaderLibrary.h, which must be
+    // included to use it.
+    ShaderLibrary& shaders();
 
     bool hasSurface() { return surface_ != nullptr; }
     VkSurfaceKHR surface() {
@@ -572,6 +572,23 @@ private:
         std::unique_ptr<VulkanSemaphore> timeline;
         uint64_t submitted = 0;   // Guarded by lock
     };
+
+    // Runs every retired function regardless of completion (the device must be idle)
+    void runAllRetired() {
+        while (true) {
+            std::list<std::pair<TimelinePoints, std::function<void()>>> retired;
+            {
+                std::lock_guard<std::mutex> lock(retireMutex_);
+                retired.swap(retired_);
+            }
+            if (retired.empty()) {
+                break;
+            }
+            for (auto& [points, fn] : retired) {
+                fn();
+            }
+        }
+    }
 
     VkResult submitAndSignal(uint32_t queue, const SubmitBatch& batch, uint64_t& outValue) {
         auto& entry = queues_.at(queue);
@@ -920,6 +937,8 @@ private:
     // Type-erased deleter: DescriptorHeap is incomplete here
     std::once_flag descriptorsCreated_;
     std::unique_ptr<DescriptorHeap, void (*)(DescriptorHeap*)> descriptors_{nullptr, nullptr};
+    std::once_flag shadersCreated_;
+    std::unique_ptr<ShaderLibrary, void (*)(ShaderLibrary*)> shaders_{nullptr, nullptr};
 };
 
 // VulkanSampler's managed factories, defined here since VkTypes.h cannot depend on VulkanContext

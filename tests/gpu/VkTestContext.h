@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/VulkanContext.h"
+#include "shaders/ShaderLibrary.h"
 
 #include <doctest/doctest.h>
 
@@ -54,6 +55,7 @@ private:
 
         VulkanContextConfig config;
         config.applicationName = "vulkan_test GPU tests";
+        config.shaderSearchPaths = {TEST_SHADER_DIR};
         const char* disableSyncValidation = std::getenv("VK_TEST_DISABLE_SYNC_VALIDATION");
         config.enableValidation = !(disableValidation && strcmp(disableValidation, "1") == 0);
         config.enableSynchronizationValidation = !(disableSyncValidation && strcmp(disableSyncValidation, "1") == 0);
@@ -83,7 +85,7 @@ private:
 class GpuTest {
 public:
     GpuTest()
-    : resourcesBefore_(context().resources().size()),
+    : resourcesBefore_(managedResources()),
     collectionsBefore_(context().frames().size()),
     framesInFlightBefore_(context().framesInFlight()) {
         // Errors raised outside of a test (e.g. creating the context) are reported here
@@ -97,7 +99,7 @@ public:
         for (const auto& error : VkTestContext::get().takeValidationErrors()) {
             FAIL_CHECK("Vulkan validation error: " << error);
         }
-        const size_t resourcesAfter = context().resources().size();
+        const size_t resourcesAfter = managedResources();
         if (resourcesAfter != resourcesBefore_) {
             FAIL_CHECK("Test leaked handles to managed resources: " << resourcesBefore_
                        << " before, " << resourcesAfter << " after");
@@ -117,6 +119,13 @@ protected:
     static VulkanContext& context() {
         return VkTestContext::get().vulkan();
     }
+
+private:
+    // Managed resources, other than the shaders the library caches for later tests
+    static size_t managedResources() {
+        return context().resources().size() - context().shaders().size();
+    }
+public:
 
 private:
     size_t resourcesBefore_;

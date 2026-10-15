@@ -1,0 +1,18 @@
+#version 450
+#include "bindless.glsl"
+
+// Same interface as pattern.comp, but fills the image with one color (for reload tests)
+layout(push_constant) uniform Indices {
+    uint outputImage;
+} indices;
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(bindlessStorageImages[indices.outputImage]);
+    if (texel.x >= size.x || texel.y >= size.y) {
+        return;
+    }
+    imageStore(bindlessStorageImages[indices.outputImage], texel, vec4(51.0, 102.0, 153.0, 255.0) / 255.0);
+}

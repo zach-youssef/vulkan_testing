@@ -14,7 +14,7 @@ class PatternMaterial : public ComputeMaterial {
 public:
     PatternMaterial(VulkanContext& context, std::vector<MaterialBinding> bindings,
                     uint32_t width, uint32_t height)
-    : ComputeMaterial(context, std::move(bindings), loadTestShader("pattern.comp")),
+    : ComputeMaterial(context, std::move(bindings), testShader(context, "pattern.comp")),
     width_(width), height_(height) {}
 
     void update(uint32_t, VkExtent2D) override {}
@@ -57,6 +57,7 @@ struct HeadlessApp {
         config.window = std::nullopt;
         config.enableValidation = true;
         config.logInstanceInfo = false;
+        config.shaderSearchPaths = {testShaderDir()};
         config.onValidationMessage = [this](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
             if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
                 std::lock_guard<std::mutex> lock(mutex);

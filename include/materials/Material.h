@@ -7,6 +7,7 @@
 #include "descriptors/DescriptorHeap.h"
 #include "graph/GraphTypes.h"
 #include "materials/AttachmentFormats.h"
+#include "shaders/ShaderLibrary.h"
 
 #include <glm/glm.hpp>
 
@@ -25,7 +26,10 @@
  uniform buffer per frame in flight. Bindings also say how the shaders use their resources, so a
  render graph node that uses the material (NodeBuilder::uses) declares those uses automatically.
 
- Every material uses the universal pipeline layout.
+ Every material uses the universal pipeline layout. Pipelines are built from Shaders and rebuilt
+ when any of them is reloaded (ShaderLibrary::reload); if rebuilding fails the material keeps its
+ previous pipeline and the reload reports the error. Replaced pipelines are destroyed once
+ in-flight work has finished.
  */
 
 struct MaterialBinding {
@@ -58,7 +62,12 @@ struct MaterialBinding {
 
 class Material {
 public:
-    virtual ~Material() = default;
+    virtual ~Material() {
+        for (auto& [shader, listener] : shaderListeners_) {
+            shader->removeListener(listener);
+        }
+        retirePipeline();
+    }
 
     // Called by the render graph once per frame before any node records, e.g. to write uniform
     // buffers. surfaceExtent is {0, 0} without a surface.
@@ -113,32 +122,57 @@ public:
         return std::nullopt;
     }
 
-    virtual VkPipeline getPipeline() {
-        return **pipeline_;
+    VkPipeline getPipeline() {
+        return pipeline_;
+    }
+
+    // Incremented whenever the pipeline is rebuilt (e.g. after a shader reload)
+    uint64_t pipelineVersion() const {
+        return pipelineVersion_;
     }
 
     VkPipelineLayout getPipelineLayout() {
         return context_->descriptors().pipelineLayout();
     }
 
+    // Rebuilds the pipeline from the shaders' current modules. Throws (keeping the previous
+    // pipeline) if that fails.
+    void rebuildPipeline() {
+        VkPipeline pipeline = createPipeline();
+        retirePipeline();
+        pipeline_ = pipeline;
+        ++pipelineVersion_;
+    }
+
 protected:
     Material(VulkanContext& context, std::vector<MaterialBinding> bindings)
     : context_(&context), bindings_(std::move(bindings)) {}
 
+    // Creates a pipeline (with the universal layout) from the material's shaders
+    virtual VkPipeline createPipeline() = 0;
+
+    // Builds the first pipeline and rebuilds it whenever one of shaders is reloaded. Derived
+    // constructors call this once they're ready to create pipelines.
+    void initPipeline(const std::vector<Handle<Shader>>& shaders) {
+        pipeline_ = createPipeline();
+        for (const auto& shader : shaders) {
+            auto id = shader->addListener([this](Shader&) { rebuildPipeline(); });
+            shaderListeners_.emplace_back(shader, id);
+        }
+    }
+
+    static void requireStage(const Handle<Shader>& shader, VkShaderStageFlagBits stage) {
+        if (!shader) {
+            throw std::invalid_argument("Material shader is missing");
+        }
+        if (shader->stage() != stage) {
+            throw std::invalid_argument("Shader '" + shader->name() + "' is a " + string_VkShaderStageFlagBits(shader->stage())
+                                        + " shader, but a " + string_VkShaderStageFlagBits(stage) + " shader is needed");
+        }
+    }
+
     // Appends push constant data after the binding indices (data already holds them)
     virtual void writePushConstants(uint32_t frameIndex, std::vector<uint8_t>& data) {}
-
-    std::unique_ptr<VulkanShaderModule> createShaderModule(const std::vector<char>& code) {
-        VkShaderModuleCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        createInfo.codeSize = code.size();
-        createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
-
-        std::unique_ptr<VulkanShaderModule> shaderModule;
-        VK_SUCCESS_OR_THROW(VulkanShaderModule::create(shaderModule, device(), createInfo),
-                            "Failed to create shader module.");
-        return shaderModule;
-    }
 
     VkDevice device() {
         return context_->device();
@@ -147,16 +181,23 @@ protected:
     VulkanContext* context_;
     // Derived classes may add bindings in their constructors (before the material is used)
     std::vector<MaterialBinding> bindings_;
-    std::unique_ptr<VulkanGraphicsPipeline> pipeline_;
+
+private:
+    void retirePipeline() {
+        if (pipeline_ != VK_NULL_HANDLE) {
+            context_->retire([device = device(), pipeline = pipeline_] { vkDestroyPipeline(device, pipeline, nullptr); });
+            pipeline_ = VK_NULL_HANDLE;
+        }
+    }
+
+    VkPipeline pipeline_ = VK_NULL_HANDLE;
+    uint64_t pipelineVersion_ = 0;
+    std::vector<std::pair<Handle<Shader>, Shader::ListenerId>> shaderListeners_;
 };
 
 class ComputeMaterial : public Material {
 public:
     virtual glm::vec3 getDispatchDimensions() = 0;
-
-    VkPipeline getPipeline() override {
-        return **computePipeline_;
-    }
 
     VkPipelineBindPoint bindPoint() override {
         return VK_PIPELINE_BIND_POINT_COMPUTE;
@@ -169,30 +210,26 @@ public:
 protected:
     ComputeMaterial(VulkanContext& context,
                     std::vector<MaterialBinding> bindings,
-                    const std::vector<char>& computeShaderCode)
-    : Material(context, std::move(bindings)) {
-        createComputePipeline(computeShaderCode);
+                    Handle<Shader> shader)
+    : Material(context, std::move(bindings)), shader_(std::move(shader)) {
+        requireStage(shader_, VK_SHADER_STAGE_COMPUTE_BIT);
+        initPipeline({shader_});
     }
 
-private:
-    void createComputePipeline(const std::vector<char>& computeShaderCode) {
-        auto computeShaderModule = createShaderModule(computeShaderCode);
-
-        VkPipelineShaderStageCreateInfo computeShaderStageInfo{};
-        computeShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        computeShaderStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        computeShaderStageInfo.module = **computeShaderModule;
-        computeShaderStageInfo.pName = "main";
-
+    VkPipeline createPipeline() override {
         VkComputePipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         pipelineInfo.layout = getPipelineLayout();
-        pipelineInfo.stage = computeShaderStageInfo;
+        pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pipelineInfo.stage.module = shader_->module();
+        pipelineInfo.stage.pName = shader_->entryPoint();
 
-        VK_SUCCESS_OR_THROW(VulkanComputePipeline::create(computePipeline_, device(), pipelineInfo),
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VK_SUCCESS_OR_THROW(vkCreateComputePipelines(device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline),
                             "Failed to create compute pipeline");
+        return pipeline;
     }
 
-protected:
-    std::unique_ptr<VulkanComputePipeline> computePipeline_;
+    Handle<Shader> shader_;
 };
