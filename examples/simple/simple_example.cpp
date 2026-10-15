@@ -18,8 +18,6 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
-const uint32_t WINDOW_WIDTH = 800;
-const uint32_t WINDOW_HEIGHT = 600;
 
 // Defined by the Makefile
 #ifndef SIMPLE_EXAMPLE_SHADER_DIR
@@ -215,7 +213,7 @@ void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
                                                                                  VK_IMAGE_LAYOUT_GENERAL));
 
     outPtr = resourceManager.create<TutorialMaterial>(app.getContext(),
-                                                      app.getSwapchainExtent(),
+                                                      app.getSurfaceExtent(),
                                                       app.getRenderPass(),
                                                       descriptors,
                                                       vertShaderCode,
@@ -233,10 +231,14 @@ void createTutorialRenderable(Handle<MeshRenderable<Vertex>>& outPtr,
 }
 
 int main() {
-    VulkanApp app(WINDOW_HEIGHT, WINDOW_WIDTH);
-    
     // Initialize Window & Vulkan
-    app.init(false /* forceFullFloatColor */, true /* enableValidation */);
+    AppConfig config;
+    config.applicationName = "Simple example";
+    config.window = WindowConfig{"Simple example", 800, 600};
+    config.enableValidation = true;
+
+    VulkanApp app;
+    app.init(config);
     
     // Load texture file
     Handle<Image> texture;

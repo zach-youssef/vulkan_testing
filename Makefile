@@ -97,8 +97,9 @@ $(TEST_OUT)/cpu_tests: $(CPU_TEST_OBJS)
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
+# The GPU tests cover VulkanApp, which uses GLFW (though only headless)
 $(TEST_OUT)/gpu_tests: $(GPU_TEST_OBJS) | $(GPU_TEST_SHADERS)
-	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
+	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
 test-cpu: $(TEST_OUT)/cpu_tests
