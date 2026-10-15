@@ -42,10 +42,10 @@ TEST_CASE_FIXTURE(GpuTest, "Material tolerates descriptors whose buffers are bou
     auto& ctx = context();
     auto& resources = ctx.resources();
 
-    OffscreenRenderTarget target(resources, 16, 16, VK_FORMAT_R8G8B8A8_UNORM, ctx.device(), ctx.physicalDevice());
+    OffscreenRenderTarget target(ctx.vulkan(), 16, 16, VK_FORMAT_R8G8B8A8_UNORM);
 
     Handle<Image> texture;
-    Image::createEmptyRGBA(texture, resources, 4, 4, ctx.queue(), ctx.commandPool(), ctx.device(), ctx.physicalDevice());
+    Image::createEmptyRGBA(texture, ctx.vulkan(), 4, 4);
     Handle<VulkanSampler> sampler;
     REQUIRE(VulkanSampler::createWithAddressMode(sampler, resources, VK_SAMPLER_ADDRESS_MODE_REPEAT,
                                                  ctx.device(), ctx.physicalDevice()) == VK_SUCCESS);

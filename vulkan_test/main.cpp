@@ -236,32 +236,22 @@ int main() {
     // Load texture file
     Handle<Image> texture;
     Image::createFromFile(texture,
-                          app.getResourceManager(),
-                          "/Users/zyoussef/code/vulkan_test/vulkan_test/textures/texture.jpg",
-                          app.getGraphicsQueue(),
-                          app.getCommandPool(),
-                          app.getDevice(),
-                          app.getPhysicalDevice());
+                          app.getContext(),
+                          "/Users/zyoussef/code/vulkan_test/vulkan_test/textures/texture.jpg");
     // The texture is read by the compute shader as a storage image, which must be in the GENERAL layout
-    texture->transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                              app.getGraphicsQueue(), app.getCommandPool());
+    texture->transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> inputImages = {texture, texture};
 
     // Create output texture images
     std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> outImages;
     for (int frameIdx = 0; frameIdx < MAX_FRAMES_IN_FLIGHT; ++frameIdx) {
         Image::createEmptyRGBA(outImages[frameIdx],
-                               app.getResourceManager(),
+                               app.getContext(),
                                texture->getWidth(),
-                               texture->getHeight(),
-                               app.getGraphicsQueue(),
-                               app.getCommandPool(),
-                               app.getDevice(),
-                               app.getPhysicalDevice());
+                               texture->getHeight());
         // Written by the compute shader as a storage image and then sampled by the fragment
         // shader, so keep it in the GENERAL layout (valid for both uses)
-        outImages[frameIdx]->transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                                              app.getGraphicsQueue(), app.getCommandPool());
+        outImages[frameIdx]->transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     }
     
 

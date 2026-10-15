@@ -4,6 +4,7 @@
 #include "VkUtil.h"
 #include "Image.h"
 #include "ResourceManager.h"
+#include "VulkanContext.h"
 
 /*
  A render target that is not backed by a swapchain: a color image and a depth image
@@ -16,29 +17,27 @@ class OffscreenRenderTarget {
 public:
     static constexpr VkImageLayout kColorFinalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
-    OffscreenRenderTarget(ResourceManager& resourceManager,
+    OffscreenRenderTarget(VulkanContext& context,
                           uint32_t width,
                           uint32_t height,
-                          VkFormat colorFormat,
-                          VkDevice device,
-                          VkPhysicalDevice physicalDevice)
-    : device_(device), physicalDevice_(physicalDevice), extent_{width, height} {
-        VK_SUCCESS_OR_THROW(Image::create(color_, resourceManager,
+                          VkFormat colorFormat)
+    : extent_{width, height} {
+        VkDevice device = context.device();
+        
+        VK_SUCCESS_OR_THROW(Image::create(color_, context,
                                           width, height,
                                           colorFormat,
                                           VK_IMAGE_TILING_OPTIMAL,
                                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                          device, physicalDevice),
+                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
                             "Failed to create offscreen color image");
 
-        VK_SUCCESS_OR_THROW(Image::create(depth_,
+        VK_SUCCESS_OR_THROW(Image::create(depth_, context,
                                           width, height,
                                           VK_FORMAT_D32_SFLOAT,
                                           VK_IMAGE_TILING_OPTIMAL,
                                           VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                          device, physicalDevice,
                                           VK_IMAGE_ASPECT_DEPTH_BIT),
                             "Failed to create offscreen depth image");
 
@@ -90,17 +89,15 @@ public:
     }
 
     // Reads back the color image. Must only be called once rendering into it has completed.
-    std::vector<uint8_t> readback(VkQueue queue, VkCommandPool commandPool) {
-        return color_->readback(kColorFinalLayout, queue, commandPool, physicalDevice_);
+    std::vector<uint8_t> readback() {
+        return color_->readback(kColorFinalLayout);
     }
 
 private:
-    VkDevice device_;
-    VkPhysicalDevice physicalDevice_;
     VkExtent2D extent_;
 
     Handle<Image> color_;
-    std::unique_ptr<Image> depth_;
+    Handle<Image> depth_;
     std::unique_ptr<VulkanRenderPass> renderPass_;
     std::unique_ptr<VulkanFramebuffer> framebuffer_;
 };

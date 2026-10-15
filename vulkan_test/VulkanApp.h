@@ -247,16 +247,16 @@ private:
     }
 
     void createDepthTexture() {
-        Image::create(depthTexture_, 
-                      swapChainExtent_.width, 
-                      swapChainExtent_.height, 
-                      VK_FORMAT_D32_SFLOAT, 
-                      VK_IMAGE_TILING_OPTIMAL, 
-                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 
-                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
-                      getDevice(),
-                      getPhysicalDevice(),
-                      VK_IMAGE_ASPECT_DEPTH_BIT);
+        VK_SUCCESS_OR_THROW(Image::create(depthTexture_,
+                                          *context_,
+                                          swapChainExtent_.width,
+                                          swapChainExtent_.height,
+                                          VK_FORMAT_D32_SFLOAT,
+                                          VK_IMAGE_TILING_OPTIMAL,
+                                          VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                          VK_IMAGE_ASPECT_DEPTH_BIT),
+                            "Failed to create depth texture");
     }
     
 private: // Additional helper functions
@@ -385,7 +385,7 @@ private: // Member variables
     std::vector<std::unique_ptr<VulkanImageView>> swapChainImageViews_;
 
     // Depth Texture
-    std::unique_ptr<Image> depthTexture_;
+    Handle<Image> depthTexture_;
 
     // TODO: Move into RenderableNode
     std::unique_ptr<VulkanRenderPass> renderPass_;

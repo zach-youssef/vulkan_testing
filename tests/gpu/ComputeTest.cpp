@@ -30,7 +30,7 @@ private:
 
 // Records and synchronously executes a single dispatch of the material
 void dispatch(VkTestContext& ctx, ComputeMaterial<kFrames>& material) {
-    issueSingleTimeCommand([&material](VkCommandBuffer commandBuffer) {
+    ctx.vulkan().submitImmediate([&material](VkCommandBuffer commandBuffer) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, material.getPipeline());
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 material.getPipelineLayout(),
@@ -41,25 +41,23 @@ void dispatch(VkTestContext& ctx, ComputeMaterial<kFrames>& material) {
                       static_cast<uint32_t>(groups.x),
                       static_cast<uint32_t>(groups.y),
                       static_cast<uint32_t>(groups.z));
-    }, ctx.queue(), ctx.device(), ctx.commandPool());
+    });
 }
 
 // Storage images must be in the GENERAL layout when used by a shader
 void makeStorageImage(VkTestContext& ctx, Image& image) {
-    image.transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                           ctx.queue(), ctx.commandPool());
+    image.transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 }
 
 Handle<Image> createStorageImage(VkTestContext& ctx, VkFormat format, uint32_t width, uint32_t height) {
     Handle<Image> image;
-    Image::createEmpty(image, ctx.resources(), format, width, height,
-                       ctx.queue(), ctx.commandPool(), ctx.device(), ctx.physicalDevice());
+    Image::createEmpty(image, ctx.vulkan(), format, width, height);
     makeStorageImage(ctx, *image);
     return image;
 }
 
 std::vector<uint8_t> readback(VkTestContext& ctx, Image& image) {
-    return image.readback(VK_IMAGE_LAYOUT_GENERAL, ctx.queue(), ctx.commandPool(), ctx.physicalDevice());
+    return image.readback(VK_IMAGE_LAYOUT_GENERAL);
 }
 
 } // namespace
@@ -115,8 +113,7 @@ TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies its input ima
     }
 
     Handle<Image> input;
-    Image::createFromUcharBuffer(input, ctx.resources(), source.data(), width, height, source.size(),
-                                 ctx.queue(), ctx.commandPool(), ctx.device(), ctx.physicalDevice());
+    Image::createFromUcharBuffer(input, ctx.vulkan(), source.data(), width, height, source.size());
     makeStorageImage(ctx, *input);
     // Copy into an image of the same format as the input, so the bytes should match exactly
     auto output = createStorageImage(ctx, input->getFormat(), width, height);

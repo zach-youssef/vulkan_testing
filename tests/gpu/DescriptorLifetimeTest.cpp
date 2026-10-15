@@ -9,8 +9,7 @@ constexpr uint kFrames = 2;
 
 Handle<Image> makeImage(VkTestContext& ctx) {
     Handle<Image> image;
-    Image::createEmptyRGBA(image, ctx.resources(), 8, 8,
-                           ctx.queue(), ctx.commandPool(), ctx.device(), ctx.physicalDevice());
+    Image::createEmptyRGBA(image, ctx.vulkan(), 8, 8);
     return image;
 }
 

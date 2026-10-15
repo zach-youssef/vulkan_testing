@@ -85,12 +85,11 @@ class TexturedScene {
 public:
     explicit TexturedScene(VkTestContext& ctx)
     : ctx_(ctx),
-    target_(ctx.resources(), kWidth, kHeight, VK_FORMAT_R8G8B8A8_SRGB, ctx.device(), ctx.physicalDevice()) {
+    target_(ctx.vulkan(), kWidth, kHeight, VK_FORMAT_R8G8B8A8_SRGB) {
         auto& resources = ctx.resources();
 
         Handle<Image> texture;
-        Image::createFromFile(texture, resources, std::string(TEST_TEXTURE_DIR) + "/texture.jpg",
-                              ctx.queue(), ctx.commandPool(), ctx.device(), ctx.physicalDevice());
+        Image::createFromFile(texture, ctx.vulkan(), std::string(TEST_TEXTURE_DIR) + "/texture.jpg");
         Handle<VulkanSampler> sampler;
         VK_SUCCESS_OR_THROW(VulkanSampler::createWithAddressMode(sampler, resources, VK_SAMPLER_ADDRESS_MODE_REPEAT,
                                                                  ctx.device(), ctx.physicalDevice()),
@@ -142,7 +141,7 @@ public:
         };
         node.submit(renderContext);
         vkQueueWaitIdle(ctx_.queue());
-        return target_.readback(ctx_.queue(), ctx_.commandPool());
+        return target_.readback();
     }
 
     VkRenderPass renderPass() { return target_.getRenderPass(); }

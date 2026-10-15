@@ -26,36 +26,31 @@ TEST_CASE_FIXTURE(GpuTest, "Image::createFromUcharBuffer uploads pixels that rea
     auto pixels = makePattern(width, height);
 
     Handle<Image> image;
-    Image::createFromUcharBuffer(image, ctx.resources(), pixels.data(), width, height, pixels.size(),
-                                 ctx.queue(), ctx.commandPool(), ctx.device(), ctx.physicalDevice());
+    Image::createFromUcharBuffer(image, ctx.vulkan(), pixels.data(), width, height, pixels.size());
     REQUIRE(image);
     CHECK(image->getWidth() == width);
     CHECK(image->getHeight() == height);
     CHECK(image->getFormat() == VK_FORMAT_R8G8B8A8_SRGB);
     CHECK(image->getImageView() != VK_NULL_HANDLE);
 
-    auto readback = image->readback(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                    ctx.queue(), ctx.commandPool(), ctx.physicalDevice());
+    auto readback = image->readback(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     CHECK(readback == pixels);
 
     // readback restores the layout, so reading twice must give the same result
-    CHECK(image->readback(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                          ctx.queue(), ctx.commandPool(), ctx.physicalDevice()) == pixels);
+    CHECK(image->readback(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) == pixels);
 }
 
 TEST_CASE_FIXTURE(GpuTest, "Image::createEmpty creates an image of the requested format and size") {
     auto& ctx = context();
 
     Handle<Image> image;
-    Image::createEmpty(image, ctx.resources(), VK_FORMAT_R8G8B8A8_UNORM, 64, 32,
-                       ctx.queue(), ctx.commandPool(), ctx.device(), ctx.physicalDevice());
+    Image::createEmpty(image, ctx.vulkan(), VK_FORMAT_R8G8B8A8_UNORM, 64, 32);
     REQUIRE(image);
     CHECK(image->getFormat() == VK_FORMAT_R8G8B8A8_UNORM);
     CHECK(image->getWidth() == 64);
     CHECK(image->getHeight() == 32);
 
-    auto readback = image->readback(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                    ctx.queue(), ctx.commandPool(), ctx.physicalDevice());
+    auto readback = image->readback(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     CHECK(readback.size() == 64 * 32 * 4);
 }
 
