@@ -8,7 +8,8 @@
 #include "graph/GraphCompiler.h"
 #include "graph/GraphSync.h"
 #include "graph/Node.h"
-#include "materials/Renderable.h"
+#include "descriptors/DescriptorHeap.h"
+#include "materials/Material.h"
 #include "resources/Buffer.h"
 #include "resources/Image.h"
 #include "targets/RenderTarget.h"
@@ -185,7 +186,7 @@ public: // Resources
         record.name = std::move(name);
         record.kind = ImageKind::Imported;
         record.perFrame = image.isPerFrame();
-        record.imported = std::move(image);
+        record.resolveImported = [image = std::move(image)](uint32_t frame) { return image.get(frame); };
         record.resting = resting;
         return addImage(std::move(record));
     }
@@ -197,12 +198,15 @@ public: // Resources
         record.name = std::move(name);
         record.kind = BufferKind::Imported;
         record.perFrame = buffer.isPerFrame();
-        record.resolveImported = [buffer](uint32_t frame) -> std::pair<VkBuffer, VkBufferUsageFlags> {
+        record.resolveImported = [buffer](uint32_t frame) -> VkBuffer {
             auto handle = buffer.get(frame);
             if (!handle) {
                 throw GraphError("Imported buffer is unbound");
             }
-            return {handle->getBuffer(), 0};
+            return handle->getBuffer();
+        };
+        record.makeEntry = [buffer](uint32_t frame, DescriptorHeap& heap) {
+            return heap.storageBuffer(buffer.get(frame));
         };
         return addBuffer(std::move(record));
     }
@@ -243,7 +247,7 @@ public: // Resources
         auto& record = imageRecord(id);
         switch (record.kind) {
             case ImageKind::Imported: {
-                auto image = record.imported.get(frameIndex);
+                auto image = record.resolveImported(frameIndex);
                 if (!image) {
                     throw GraphError("Imported image '" + record.name + "' is unbound");
                 }
@@ -275,7 +279,7 @@ public: // Resources
     VkBuffer buffer(BufferId id, uint32_t frameIndex) {
         auto& record = bufferRecord(id);
         if (record.kind == BufferKind::Imported) {
-            return record.resolveImported(frameIndex).first;
+            return record.resolveImported(frameIndex);
         }
         return createdBuffer(id, frameIndex)->getBuffer();
     }
@@ -313,6 +317,25 @@ public: // Resources
             formats.depth = imageFormat(target.depth->image);
         }
         return formats;
+    }
+
+public: // Descriptor entries for graph resources
+    // Entries of the universal descriptor set for a resource, one per frame, kept up to date as the
+    // graph creates and recreates its images and buffers. Give them to materials (MaterialBinding):
+    // a node using the material then declares the matching use automatically.
+    FrameBinding<DescriptorEntry> sampledEntry(ImageId image) {
+        imageRecord(image);
+        return graphEntry(true, image.index, DescriptorType::SampledImage);
+    }
+
+    FrameBinding<DescriptorEntry> storageEntry(ImageId image) {
+        imageRecord(image);
+        return graphEntry(true, image.index, DescriptorType::StorageImage);
+    }
+
+    FrameBinding<DescriptorEntry> storageBufferEntry(BufferId buffer) {
+        bufferRecord(buffer);
+        return graphEntry(false, buffer.index, DescriptorType::StorageBuffer);
     }
 
 public: // Surface
@@ -360,6 +383,7 @@ public: // Compiling and running
 
         prepare();
         const CompiledGraph& plan = currentPlan();
+        refreshEntries(frame);
 
         // A frame executed by something else (another graph) may still be using imported resources
         const bool continuous = lastFrameNumber_ && *lastFrameNumber_ + 1 == context_->frameNumber();
@@ -501,7 +525,7 @@ private:
         ImageKind kind = ImageKind::Created;
         bool perFrame = false;
         // Imported
-        FrameBinding<Image> imported;
+        std::function<Handle<Image>(uint32_t)> resolveImported;
         ImageState resting;
         // Created
         VkFormat format = VK_FORMAT_UNDEFINED;
@@ -520,7 +544,9 @@ private:
         std::string name;
         BufferKind kind = BufferKind::Created;
         bool perFrame = false;
-        std::function<std::pair<VkBuffer, VkBufferUsageFlags>(uint32_t)> resolveImported;
+        std::function<VkBuffer(uint32_t)> resolveImported;
+        // Creates a storage buffer entry for a frame (imported buffers of a known type)
+        std::function<Handle<DescriptorEntry>(uint32_t, DescriptorHeap&)> makeEntry;
         VkDeviceSize size = 0;
         VkBufferUsageFlags extraUsage = 0;
         VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -529,6 +555,14 @@ private:
         std::unique_ptr<PerFrame<Handle<Buffer<uint8_t>>>> perFrameBuffers;
         ResourceSyncState sharedState = ResourceSyncState::forBuffer();
         std::unique_ptr<PerFrame<ResourceSyncState>> frameStates;
+    };
+
+    // Descriptor entries the graph keeps up to date for one of its resources
+    struct GraphEntries {
+        bool image;
+        uint32_t index;
+        DescriptorType type;
+        Handle<PerFrameHandles<DescriptorEntry>> collection;
     };
 
     // Command buffers of a frame slot, per queue
@@ -822,8 +856,21 @@ private:
         return desc;
     }
 
-    // Checks what the compiler can't see: usage flags and formats
+    // Checks what the compiler can't see: usage flags, formats, and images known twice
     void validate(const CompiledGraph& plan) {
+        std::map<Image*, std::string> seen;
+        for (uint32_t i = 0; i < images_.size(); ++i) {
+            auto& record = *images_[i];
+            if (record.kind == ImageKind::Surface || (record.kind == ImageKind::Created && !record.shared && !record.perFrameImages)) {
+                continue;
+            }
+            Image* resolved = image({i}, context_->currentFrame()).get();
+            auto [it, inserted] = seen.emplace(resolved, record.name);
+            if (!inserted) {
+                throw GraphError("Images '" + it->second + "' and '" + record.name + "' are the same image; import it once "
+                                 "(materials' entries are matched to imported images by handle)");
+            }
+        }
         for (uint32_t node : plan.order) {
             const auto& record = nodes_[node];
             if (record.node->kind() == NodeKind::Graphics && !record.target) {
@@ -857,6 +904,128 @@ private:
                                          + target.describe());
                     }
                 }
+            }
+        }
+    }
+
+    FrameBinding<DescriptorEntry> graphEntry(bool image, uint32_t index, DescriptorType type) {
+        for (auto& entries : graphEntries_) {
+            if (entries.image == image && entries.index == index && entries.type == type) {
+                return entries.collection;
+            }
+        }
+        auto collection = context_->resources().create<PerFrameHandles<DescriptorEntry>>(*context_, [](uint32_t) {
+            return Handle<DescriptorEntry>();
+        });
+        graphEntries_.push_back({image, index, type, collection});
+        return collection;
+    }
+
+    // Makes the frame's graph entries describe the frame's current resources. Replaced entries
+    // free their slots once in-flight work is done.
+    void refreshEntries(uint32_t frame) {
+        auto& heap = context_->descriptors();
+        for (auto& entries : graphEntries_) {
+            auto& entry = (*entries.collection)[frame];
+            if (entries.image) {
+                if (images_[entries.index]->kind == ImageKind::Surface) {
+                    throw GraphError("The surface image has no descriptor entries");
+                }
+                Handle<Image> current = image({entries.index}, frame);
+                if (!entry || entry->image() != current) {
+                    entry = entries.type == DescriptorType::SampledImage ? heap.sampledImage(current)
+                                                                         : heap.storageImage(current);
+                }
+            } else {
+                auto& record = *buffers_[entries.index];
+                const VkBuffer current = buffer({entries.index}, frame);
+                if (!entry || entry->buffer() != current) {
+                    entry = record.kind == BufferKind::Created ? heap.storageBuffer(createdBuffer({entries.index}, frame))
+                                                               : record.makeEntry(frame, heap);
+                }
+            }
+        }
+    }
+
+    // The graph resource a material binding refers to, importing it if the graph doesn't know it.
+    // Empty for samplers.
+    std::optional<std::pair<bool, uint32_t>> resolveBinding(const MaterialBinding& binding, const std::string& nodeName,
+                                                            size_t bindingIndex) {
+        const std::string name = nodeName + " binding " + std::to_string(bindingIndex);
+        if (auto collection = binding.entry.collection()) {
+            for (const auto& entries : graphEntries_) {
+                if (entries.collection == collection) {
+                    return std::make_pair(entries.image, entries.index);
+                }
+            }
+            auto it = entryImports_.find(collection.get());
+            if (it != entryImports_.end()) {
+                return it->second;
+            }
+            auto first = collection->empty() ? Handle<DescriptorEntry>() : (*collection)[0];
+            if (!first) {
+                throw GraphError("Material " + name + " has no descriptor entry");
+            }
+            if (first->type() == DescriptorType::Sampler) {
+                return std::nullopt;
+            }
+            std::pair<bool, uint32_t> resource;
+            if (first->type() == DescriptorType::StorageBuffer) {
+                BufferRecord record;
+                record.name = name;
+                record.kind = BufferKind::Imported;
+                record.perFrame = true;
+                record.resolveImported = [collection](uint32_t frame) { return (*collection)[frame]->buffer(); };
+                resource = {false, addBuffer(std::move(record)).index};
+            } else {
+                ImageRecord record;
+                record.name = name;
+                record.kind = ImageKind::Imported;
+                record.perFrame = true;
+                record.resolveImported = [collection](uint32_t frame) { return (*collection)[frame]->image(); };
+                record.resting = first->type() == DescriptorType::SampledImage ? ImageState::shaderReadOnly() : ImageState::general();
+                resource = {true, addImage(std::move(record)).index};
+            }
+            entryImports_[collection.get()] = resource;
+            return resource;
+        }
+
+        auto entry = binding.entry.shared();
+        if (!entry) {
+            throw GraphError("Material " + name + " has no descriptor entry");
+        }
+        switch (entry->type()) {
+            case DescriptorType::Sampler:
+                return std::nullopt;
+            case DescriptorType::StorageBuffer: {
+                for (uint32_t i = 0; i < buffers_.size(); ++i) {
+                    auto& record = *buffers_[i];
+                    if (!record.perFrame && record.kind == BufferKind::Imported && record.resolveImported(0) == entry->buffer()) {
+                        return std::make_pair(false, i);
+                    }
+                }
+                BufferRecord record;
+                record.name = name;
+                record.kind = BufferKind::Imported;
+                record.resolveImported = [entry](uint32_t) { return entry->buffer(); };
+                return std::make_pair(false, addBuffer(std::move(record)).index);
+            }
+            default: {
+                for (uint32_t i = 0; i < images_.size(); ++i) {
+                    auto& record = *images_[i];
+                    if (!record.perFrame && record.kind == ImageKind::Imported && record.resolveImported(0) == entry->image()) {
+                        return std::make_pair(true, i);
+                    }
+                    if (!record.perFrame && record.kind == ImageKind::Created && record.shared == entry->image()) {
+                        return std::make_pair(true, i);
+                    }
+                }
+                ImageRecord record;
+                record.name = name;
+                record.kind = ImageKind::Imported;
+                record.resolveImported = [image = entry->image()](uint32_t) { return image; };
+                record.resting = entry->type() == DescriptorType::SampledImage ? ImageState::shaderReadOnly() : ImageState::general();
+                return std::make_pair(true, addImage(std::move(record)).index);
             }
         }
     }
@@ -908,6 +1077,13 @@ private:
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         VK_SUCCESS_OR_THROW(vkBeginCommandBuffer(commandBuffer, &beginInfo), "Failed to begin command buffer");
+
+        // The universal descriptor set, for every material recorded here
+        auto& heap = context_->descriptors();
+        if (context_->queueDescription(queue).flags & VK_QUEUE_GRAPHICS_BIT) {
+            heap.bind(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS);
+        }
+        heap.bind(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE);
 
         // Timeline waits on other queues, merged per queue
         std::map<uint32_t, std::pair<uint64_t, VkPipelineStageFlags2>> waits;
@@ -1178,6 +1354,9 @@ private:
     std::vector<std::unique_ptr<ImageRecord>> images_;
     std::vector<std::unique_ptr<BufferRecord>> buffers_;
     std::vector<std::pair<uint32_t, uint32_t>> dependencies_;
+    std::vector<GraphEntries> graphEntries_;
+    // Resources imported automatically for materials' per-frame entries, by entry collection
+    std::map<const void*, std::pair<bool, uint32_t>> entryImports_;
 
     bool structureDirty_ = true;
     std::map<std::vector<bool>, CompiledGraph> plans_;
@@ -1256,10 +1435,21 @@ inline NodeBuilder& NodeBuilder::renderTo(const RenderTarget& target) {
 }
 
 inline NodeBuilder& NodeBuilder::uses(Handle<Material> material) {
-    auto& materials = graph_->nodes_[node_].materials;
-    if (std::find(materials.begin(), materials.end(), material) == materials.end()) {
-        materials.push_back(std::move(material));
+    auto& record = graph_->nodes_[node_];
+    if (std::find(record.materials.begin(), record.materials.end(), material) != record.materials.end()) {
+        return *this;
     }
+    // The material's resources, as its bindings declare them
+    const auto& bindings = material->bindings();
+    for (size_t i = 0; i < bindings.size(); ++i) {
+        auto resource = graph_->resolveBinding(bindings[i], record.name, i);
+        if (!resource) {
+            continue;
+        }
+        const VkPipelineStageFlags2 stages = bindings[i].stages ? bindings[i].stages : material->defaultStages();
+        graph_->nodes_[node_].uses.push_back({resource->first, resource->second, bindings[i].access, stages, false});
+    }
+    graph_->nodes_[node_].materials.push_back(std::move(material));
     graph_->structureChanged();
     return *this;
 }

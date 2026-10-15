@@ -1,8 +1,7 @@
 #pragma once
 
 #include "resources/Ubo.h"
-#include "materials/Renderable.h"
-#include "descriptors/Descriptor.h"
+#include "materials/Material.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -11,14 +10,14 @@ template<uint VertexAttributes>
 class BasicMaterial : public Material {
 public:
     BasicMaterial(VulkanContext& context,
-                  std::vector<Handle<Descriptor>> descriptors,
+                  std::vector<MaterialBinding> bindings,
                   AttachmentFormats formats,
                   const std::vector<char>& vertSpirv,
                   const std::vector<char>& fragSpirv,
                   VkVertexInputBindingDescription bindingDescription,
                   // TODO make that 2 customizable
                   std::array<VkVertexInputAttributeDescription, VertexAttributes> attributeDescriptions)
-    : Material(context, descriptors), formats_(std::move(formats)) {
+    : Material(context, std::move(bindings)), formats_(std::move(formats)) {
         createGraphicsPipeline(vertSpirv, fragSpirv, bindingDescription, attributeDescriptions);
     }
     
@@ -123,16 +122,6 @@ private:
         multisampling.alphaToCoverageEnable = VK_FALSE; // Optional
         multisampling.alphaToOneEnable = VK_FALSE; // Optional
         
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = descriptorSetLayout_->get();
-        pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
-        pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
-        
-        VK_SUCCESS_OR_THROW(VulkanPipelineLayout::create(pipelineLayout_, device(), pipelineLayoutInfo),
-                            "Failed to create pipeline layout");
-
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         const bool hasDepth = formats_.depth != VK_FORMAT_UNDEFINED;
@@ -164,7 +153,7 @@ private:
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.pDynamicState = &dynamicState;
         
-        pipelineInfo.layout = **pipelineLayout_;
+        pipelineInfo.layout = getPipelineLayout();
         pipelineInfo.renderPass = VK_NULL_HANDLE;
 
         pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional

@@ -58,9 +58,9 @@ public:
     FixedCameraMaterial(VulkanContext& context,
                         VkExtent2D extent,
                         AttachmentFormats formats,
-                        std::vector<Handle<Descriptor>> descriptors,
+                        std::vector<MaterialBinding> bindings,
                         Handle<Buffer<UniformBufferObject>> uniformBuffer)
-    : BasicMaterial<3>(context, descriptors, std::move(formats),
+    : BasicMaterial<3>(context, std::move(bindings), std::move(formats),
                                 loadTestShader("shader.vert"), loadTestShader("shader.frag"),
                                 Vertex::getBindingDescription(), Vertex::getAttributeDescriptions()) {
         auto view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
@@ -89,7 +89,7 @@ public:
 
         Handle<Buffer<UniformBufferObject>> uniformBuffer;
         VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(uniformBuffer, ctx, 1,
-                                                                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
                             "Failed to create uniform buffer");
 
@@ -97,14 +97,16 @@ public:
         ImageId depth = graph_.createImage("depth", FrameMode::Shared, VK_FORMAT_D32_SFLOAT, FixedExtent{{kWidth, kHeight}});
         target_.color.push_back({color_, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, {0.0f, 0.0f, 0.0f, 0.0f}});
         target_.depth = DepthAttachment{depth};
-        textureId_ = graph_.importImage("texture", texture_, ImageState::shaderReadOnly());
-
-        std::vector<Handle<Descriptor>> descriptors{
-            resources.create<UniformBufferDescriptor<UniformBufferObject>>(uniformBuffer, VK_SHADER_STAGE_VERTEX_BIT),
-            resources.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_FRAGMENT_BIT, texture_, sampler),
+        // Bindings in the order shader.vert and shader.frag expect: uniforms, texture, sampler
+        auto& heap = ctx.descriptors();
+        std::vector<MaterialBinding> bindings{
+            MaterialBinding::storageBuffer(heap.storageBuffer(uniformBuffer), Access::StorageBufferRead,
+                                           VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT),
+            MaterialBinding::sampled(heap.sampledImage(texture_), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT),
+            MaterialBinding::sampler(heap.sampler(sampler)),
         };
         material_ = resources.create<FixedCameraMaterial>(ctx, VkExtent2D{kWidth, kHeight}, graph_.formats(target_),
-                                                          descriptors, uniformBuffer);
+                                                          std::move(bindings), uniformBuffer);
     }
 
     Handle<Renderable> createQuad(float scale, glm::vec2 offset) {
@@ -114,8 +116,8 @@ public:
 
     // Draws renderables in a frame and reads back the result
     std::vector<uint8_t> render(std::vector<Handle<Renderable>> renderables) {
-        NodeId draw = graph_.add<RenderablesNode>("draw", std::move(renderables), target_);
-        graph_.node(draw).read(textureId_, Access::SampledRead, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+        // The material's bindings declare its uniform buffer and texture uses
+        graph_.add<RenderablesNode>("draw", std::move(renderables), target_);
         NodeId readback = graph_.add<ReadbackNode>("readback", color_);
         graph_.execute();
         return graph_.nodeAs<ReadbackNode>(readback).pixels();
@@ -127,7 +129,6 @@ private:
     VulkanContext& ctx_;
     RenderGraph graph_;
     Handle<Image> texture_;
-    ImageId textureId_;
     ImageId color_;
     RenderTarget target_;
     Handle<Material> material_;

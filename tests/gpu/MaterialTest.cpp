@@ -19,61 +19,77 @@ std::array<VkVertexInputAttributeDescription, 3> attributes() {
     }};
 }
 
+// The example's material (shader.vert / shader.frag), with an extra push constant
 class TestMaterial : public BasicMaterial<3> {
 public:
-    TestMaterial(VulkanContext& ctx, std::vector<Handle<Descriptor>> descriptors)
-    : BasicMaterial<3>(ctx, descriptors, AttachmentFormats{{VK_FORMAT_R8G8B8A8_UNORM}, VK_FORMAT_D32_SFLOAT},
-                                loadTestShader("shader.vert"), loadTestShader("shader.frag"),
-                                {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX}, attributes()) {}
+    TestMaterial(VulkanContext& ctx, std::vector<MaterialBinding> bindings)
+    : BasicMaterial<3>(ctx, std::move(bindings), AttachmentFormats{{VK_FORMAT_R8G8B8A8_UNORM}, VK_FORMAT_D32_SFLOAT},
+                       loadTestShader("shader.vert"), loadTestShader("shader.frag"),
+                       {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX}, attributes()) {}
 
     void update(uint32_t, VkExtent2D) override {}
 
-    // Exposed so tests can re-populate after binding
-    using Material::populateDescriptorSet;
+    uint32_t extra = 0;
+
+protected:
+    void writePushConstants(uint32_t, std::vector<uint8_t>& data) override {
+        if (extra) {
+            data.resize(data.size() + sizeof(extra));
+            memcpy(data.data() + data.size() - sizeof(extra), &extra, sizeof(extra));
+        }
+    }
 };
+
+Handle<Buffer<UniformBufferObject>> uniformBuffer(VulkanContext& ctx) {
+    Handle<Buffer<UniformBufferObject>> buffer;
+    VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(buffer, ctx, 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+                        "Failed to create uniform buffer");
+    return buffer;
+}
+
+std::vector<uint32_t> asIndices(const std::vector<uint8_t>& data) {
+    std::vector<uint32_t> indices(data.size() / sizeof(uint32_t));
+    memcpy(indices.data(), data.data(), indices.size() * sizeof(uint32_t));
+    return indices;
+}
 
 } // namespace
 
-TEST_CASE_FIXTURE(GpuTest, "Material tolerates descriptors whose buffers are bound after construction") {
+TEST_CASE_FIXTURE(GpuTest, "Materials push their bindings' descriptor indices in order") {
     auto& ctx = context();
-    auto& resources = ctx.resources();
-
+    auto& heap = ctx.descriptors();
 
     Handle<Image> texture;
     Image::createEmptyRGBA(texture, ctx, 4, 4);
     Handle<VulkanSampler> sampler;
     REQUIRE(VulkanSampler::createWithAddressMode(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT) == VK_SUCCESS);
 
-    // The uniform buffers are not known yet when the material is created
-    using UboDescriptor = UniformBufferDescriptor<UniformBufferObject>;
-    auto uboDescriptor = resources.create<UboDescriptor>(nullptr, VK_SHADER_STAGE_VERTEX_BIT);
-    std::vector<Handle<Descriptor>> descriptors{
-        uboDescriptor,
-        resources.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_FRAGMENT_BIT, texture, sampler),
-    };
-
-    // Creating the material, and using its sets, must not write the unbound (VK_NULL_HANDLE) buffers
-    auto material = resources.create<TestMaterial>(ctx, descriptors);
-    CHECK(material->getPipeline() != VK_NULL_HANDLE);
-    CHECK(*material->getDescriptorSet(0) != VK_NULL_HANDLE);
-
-    // Binding the buffers later and re-populating writes them
-    auto buffers = resources.create<PerFrameHandles<Buffer<UniformBufferObject>>>(ctx, [&ctx](uint32_t) {
-        Handle<Buffer<UniformBufferObject>> buffer;
-        VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(buffer, ctx, 1, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-                            "Failed to create uniform buffer");
-        return buffer;
+    auto ubo = heap.storageBuffer(uniformBuffer(ctx));
+    auto textureEntry = heap.sampledImage(texture);
+    auto samplerEntry = heap.sampler(sampler);
+    auto material = ctx.resources().create<TestMaterial>(ctx, std::vector<MaterialBinding>{
+        MaterialBinding::storageBuffer(ubo),
+        MaterialBinding::sampled(textureEntry),
+        MaterialBinding::sampler(samplerEntry),
     });
-    uboDescriptor->bind(buffers);
-    for (uint32_t frame = 0; frame < ctx.framesInFlight(); ++frame) {
-        material->populateDescriptorSet(frame);
-    }
+    CHECK(material->getPipeline() != VK_NULL_HANDLE);
+    CHECK(material->getPipelineLayout() == heap.pipelineLayout());
+
+    const std::vector<uint32_t> expected{ubo->index(), textureEntry->index(), samplerEntry->index()};
+    CHECK(asIndices(material->pushConstants(0)) == expected);
+    CHECK(asIndices(material->pushConstants(1)) == expected);
+
+    // Extra push constants follow the indices
+    material->extra = 1234;
+    auto withExtra = asIndices(material->pushConstants(0));
+    REQUIRE(withExtra.size() == 4);
+    CHECK(withExtra[3] == 1234);
 }
 
-TEST_CASE_FIXTURE(GpuTest, "Material creates and writes descriptor sets for frames added at runtime") {
+TEST_CASE_FIXTURE(GpuTest, "Material bindings may have an entry per frame that follows frames in flight") {
     auto& ctx = context();
-    auto& resources = ctx.resources();
+    auto& heap = ctx.descriptors();
     const uint32_t originalFrames = ctx.framesInFlight();
 
     Handle<Image> texture;
@@ -81,33 +97,31 @@ TEST_CASE_FIXTURE(GpuTest, "Material creates and writes descriptor sets for fram
     Handle<VulkanSampler> sampler;
     REQUIRE(VulkanSampler::createWithAddressMode(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT) == VK_SUCCESS);
 
-    auto buffers = resources.create<PerFrameHandles<Buffer<UniformBufferObject>>>(ctx, [&ctx](uint32_t) {
-        Handle<Buffer<UniformBufferObject>> buffer;
-        VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(buffer, ctx, 1, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-                            "Failed to create uniform buffer");
-        return buffer;
+    // A uniform buffer (and its entry) per frame; the texture and sampler are shared by every frame
+    auto entries = ctx.resources().create<PerFrameHandles<DescriptorEntry>>(ctx, [&ctx](uint32_t) {
+        return ctx.descriptors().storageBuffer(uniformBuffer(ctx));
     });
-    // A per-frame uniform buffer and a texture shared by every frame
-    std::vector<Handle<Descriptor>> descriptors{
-        resources.create<UniformBufferDescriptor<UniformBufferObject>>(buffers, VK_SHADER_STAGE_VERTEX_BIT),
-        resources.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_FRAGMENT_BIT, texture, sampler),
-    };
-    auto material = resources.create<TestMaterial>(ctx, descriptors);
-    buffers.reset();
+    auto material = ctx.resources().create<TestMaterial>(ctx, std::vector<MaterialBinding>{
+        MaterialBinding::storageBuffer(entries),
+        MaterialBinding::sampled(heap.sampledImage(texture)),
+        MaterialBinding::sampler(heap.sampler(sampler)),
+    });
+    CHECK(asIndices(material->pushConstants(0))[0] == (*entries)[0]->index());
+    CHECK(asIndices(material->pushConstants(1))[0] == (*entries)[1]->index());
+    CHECK(asIndices(material->pushConstants(0))[1] == asIndices(material->pushConstants(1))[1]);
 
-    const VkDescriptorSet frame0 = *material->getDescriptorSet(0);
-    CHECK_THROWS(material->getDescriptorSet(originalFrames));
-
-    ctx.setFramesInFlight(originalFrames + 2);
+    ctx.setFramesInFlight(originalFrames + 1);
     ctx.advanceFrame();
-    // Existing frames keep their sets; new frames get sets of their own
-    CHECK(*material->getDescriptorSet(0) == frame0);
-    const VkDescriptorSet added = *material->getDescriptorSet(originalFrames + 1);
-    CHECK(added != VK_NULL_HANDLE);
-    CHECK(added != frame0);
-
+    CHECK(asIndices(material->pushConstants(originalFrames))[0] == (*entries)[originalFrames]->index());
     ctx.setFramesInFlight(originalFrames);
     ctx.advanceFrame();
-    CHECK_THROWS(material->getDescriptorSet(originalFrames));
+    entries.reset();
+}
+
+TEST_CASE_FIXTURE(GpuTest, "Binding a material without an entry for the frame throws") {
+    auto& ctx = context();
+    auto material = ctx.resources().create<TestMaterial>(ctx, std::vector<MaterialBinding>{
+        MaterialBinding::storageBuffer(nullptr),
+    });
+    CHECK_THROWS_WITH_AS(material->pushConstants(0), doctest::Contains("has no descriptor entry"), std::logic_error);
 }

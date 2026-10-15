@@ -1,5 +1,6 @@
 #include "app/VulkanApp.h"
 #include "graph/nodes/DispatchNode.h"
+#include "descriptors/DescriptorHeap.h"
 #include "TestShaders.h"
 
 #include <doctest/doctest.h>
@@ -11,9 +12,9 @@ namespace {
 // Dispatches pattern.comp (8x8 workgroups) over an image
 class PatternMaterial : public ComputeMaterial {
 public:
-    PatternMaterial(VulkanContext& context, std::vector<Handle<Descriptor>> descriptors,
+    PatternMaterial(VulkanContext& context, std::vector<MaterialBinding> bindings,
                     uint32_t width, uint32_t height)
-    : ComputeMaterial(context, descriptors, loadTestShader("pattern.comp")),
+    : ComputeMaterial(context, std::move(bindings), loadTestShader("pattern.comp")),
     width_(width), height_(height) {}
 
     void update(uint32_t, VkExtent2D) override {}
@@ -110,15 +111,15 @@ TEST_CASE("A headless VulkanApp runs a compute-only render graph across frames i
         return image;
     });
     {
-        std::vector<Handle<Descriptor>> descriptors{
-            ctx.resources().create<StorageImageDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, images),
-        };
-        auto material = ctx.resources().create<PatternMaterial>(ctx, descriptors, width, height);
+        // An entry per frame for those images; the graph imports them through the material
+        auto entries = ctx.resources().create<PerFrameHandles<DescriptorEntry>>(ctx, [&ctx, images](uint32_t frame) {
+            return ctx.descriptors().storageImage((*images)[frame]);
+        });
+        auto material = ctx.resources().create<PatternMaterial>(
+            ctx, std::vector<MaterialBinding>{MaterialBinding::storageImage(entries, Access::StorageWrite)}, width, height);
 
         RenderGraph& graph = app.createGraph();
-        ImageId output = graph.importImage("output", images, ImageState::general());
-        NodeId node = graph.add<DispatchNode>("pattern", std::move(material));
-        graph.node(node).write(output, Access::StorageWrite);
+        graph.add<DispatchNode>("pattern", std::move(material));
         app.setActiveGraph(graph);
     }
 

@@ -1,6 +1,7 @@
 #include "VkTestContext.h"
 #include "TestShaders.h"
-#include "materials/Renderable.h"
+#include "materials/Material.h"
+#include "descriptors/DescriptorHeap.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -11,10 +12,10 @@ namespace {
 class TestComputeMaterial : public ComputeMaterial {
 public:
     TestComputeMaterial(VulkanContext& context,
-                        std::vector<Handle<Descriptor>> descriptors,
+                        std::vector<MaterialBinding> bindings,
                         const std::vector<char>& shaderCode,
                         glm::vec3 dispatchDimensions)
-    : ComputeMaterial(context, descriptors, shaderCode),
+    : ComputeMaterial(context, std::move(bindings), shaderCode),
     dispatchDimensions_(dispatchDimensions) {}
 
     void update(uint32_t, VkExtent2D) override {}
@@ -29,12 +30,9 @@ private:
 
 // Records and synchronously executes a single dispatch of the material
 void dispatch(VulkanContext& ctx, ComputeMaterial& material) {
-    ctx.submitImmediate([&material](VkCommandBuffer commandBuffer) {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, material.getPipeline());
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                material.getPipelineLayout(),
-                                0, 1, material.getDescriptorSet(0),
-                                0, nullptr);
+    ctx.submitImmediate([&ctx, &material](VkCommandBuffer commandBuffer) {
+        ctx.descriptors().bind(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE);
+        material.bind(commandBuffer, 0);
         auto groups = material.getDispatchDimensions();
         vkCmdDispatch(commandBuffer,
                       static_cast<uint32_t>(groups.x),
@@ -84,11 +82,11 @@ TEST_CASE_FIXTURE(GpuTest, "ComputeMaterial dispatch writes every texel of a sto
 
     auto output = createStorageImage(ctx, VK_FORMAT_R8G8B8A8_UNORM, width, height);
     {
-        std::vector<Handle<Descriptor>> descriptors{
-            ctx.resources().create<StorageImageDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, output),
-        };
         auto material = ctx.resources().create<TestComputeMaterial>(
-            ctx, descriptors, loadTestShader("pattern.comp"),
+            ctx, std::vector<MaterialBinding>{
+                MaterialBinding::storageImage(ctx.descriptors().storageImage(output), Access::StorageWrite),
+            },
+            loadTestShader("pattern.comp"),
             glm::vec3{(width + 7) / 8, (height + 7) / 8, 1});
 
         dispatch(ctx, *material);
@@ -133,12 +131,14 @@ TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies a sampled sRG
     REQUIRE(VulkanSampler::createWithModeAndFilter(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                                    VK_FILTER_NEAREST) == VK_SUCCESS);
     {
-        std::vector<Handle<Descriptor>> descriptors{
-            ctx.resources().create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, input, sampler),
-            ctx.resources().create<StorageImageDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, output),
-        };
+        auto& heap = ctx.descriptors();
         auto material = ctx.resources().create<TestComputeMaterial>(
-            ctx, descriptors, loadTestShader("test.comp"),
+            ctx, std::vector<MaterialBinding>{
+                MaterialBinding::sampled(heap.sampledImage(input)),
+                MaterialBinding::sampler(heap.sampler(sampler)),
+                MaterialBinding::storageImage(heap.storageImage(output), Access::StorageWrite),
+            },
+            loadTestShader("test.comp"),
             glm::vec3{width / 32, height / 32, 1});
 
         dispatch(ctx, *material);

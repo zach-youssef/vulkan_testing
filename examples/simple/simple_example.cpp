@@ -2,6 +2,7 @@
 
 #include "app/VulkanApp.h"
 #include "materials/Renderable.h"
+#include "descriptors/DescriptorHeap.h"
 #include "resources/Ubo.h"
 #include "materials/BasicMaterial.h"
 #include "graph/RenderGraph.h"
@@ -63,38 +64,41 @@ struct Vertex {
     }
 };
 
+// Draws a texture with a rotating camera. Its shaders (shader.vert, shader.frag) find a uniform
+// buffer, the texture and a sampler by the indices of its bindings, in that order.
 class TutorialMaterial : public BasicMaterial<3> {
 public:
     TutorialMaterial(VulkanContext& context,
                      AttachmentFormats formats,
-                     std::vector<Handle<Descriptor>> descriptors,
+                     FrameBinding<DescriptorEntry> texture,
+                     FrameBinding<DescriptorEntry> sampler,
                      const std::vector<char>& vertSpirv,
                      const std::vector<char>& fragSpirv)
     :  BasicMaterial<3>(context,
-                        descriptors,
+                        {},
                         std::move(formats),
                         vertSpirv,
                         fragSpirv,
                         Vertex::getBindingDescription(),
                         Vertex::getAttributeDescriptions()){
-        // JANK: Find the first uniform buffer object descriptor
-        using UboDesc = UniformBufferDescriptor<UniformBufferObject>;
-        Handle<UboDesc> uboDesc = nullptr;
-        for (auto& descriptor : descriptors_) {
-            if (descriptor->getType() == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
-                uboDesc = static_handle_cast<UboDesc>(descriptor);
-                break;
-            }
-        }
-        
-        // Create & bind a uniform buffer per frame. The mappings are created after the buffers,
-        // so they are also resized after them when the number of frames in flight changes.
+        // A uniform buffer per frame (read by the vertex shader as a storage buffer), and its
+        // descriptor entries and mappings. They are created in that order, so they are also resized
+        // in that order when the number of frames in flight changes.
         uniformBuffers_ = context.resources().create<PerFrameHandles<Buffer<UniformBufferObject>>>(
             context, [ctx = &context](uint32_t) { return createUniformBuffer(*ctx); });
+        uniformEntries_ = context.resources().create<PerFrameHandles<DescriptorEntry>>(
+            context, [ctx = &context, buffers = uniformBuffers_](uint32_t frameIdx) {
+                return ctx->descriptors().storageBuffer((*buffers)[frameIdx]);
+            });
         mappedUniformBuffers_ = PerFrame<Mapping>(context, [this](uint32_t frameIdx) {
             return (*uniformBuffers_)[frameIdx]->getPersistentMapping(0, sizeof(UniformBufferObject));
         });
-        uboDesc->bind(uniformBuffers_);
+
+        bindings_ = {
+            MaterialBinding::storageBuffer(uniformEntries_, Access::StorageBufferRead, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT),
+            MaterialBinding::sampled(std::move(texture), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT),
+            MaterialBinding::sampler(std::move(sampler)),
+        };
     }
     
     void update(uint32_t currentImage, VkExtent2D swapChainExtent) {
@@ -121,24 +125,26 @@ private:
         VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(buffer,
                                                                 context,
                                                                 1,
-                                                                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
+                                                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
                             "Failed to create uniform buffer.");
         return buffer;
     }
 private:
     using Mapping = std::unique_ptr<UniformBufferObject, std::function<void(UniformBufferObject*)>>;
     Handle<PerFrameHandles<Buffer<UniformBufferObject>>> uniformBuffers_;
+    Handle<PerFrameHandles<DescriptorEntry>> uniformEntries_;
     PerFrame<Mapping> mappedUniformBuffers_;
 };
 
+// Copies a texture into a storage image (test.comp)
 class TestComputeMat : public ComputeMaterial {
 public:
-    TestComputeMat(const std::vector<char>& computeShaderCode,
-                   std::vector<Handle<Descriptor>> descriptors,
-                   uint32_t imageWidth, uint32_t imageHeight,
-                   VulkanContext& context)
-    : ComputeMaterial(context, descriptors, computeShaderCode),
+    TestComputeMat(VulkanContext& context,
+                   const std::vector<char>& computeShaderCode,
+                   std::vector<MaterialBinding> bindings,
+                   uint32_t imageWidth, uint32_t imageHeight)
+    : ComputeMaterial(context, std::move(bindings), computeShaderCode),
     imageWidth_(imageWidth),
     imageHeight_(imageHeight){}
     
@@ -175,46 +181,6 @@ std::vector<Vertex> transformVertices(const std::vector<Vertex>& vertices, float
     return transformed;
 }
 
-void createTestComputeMaterial(Handle<TestComputeMat>& outPtr,
-                               FrameBinding<Image> inImages,
-                               Handle<VulkanSampler> sampler,
-                               FrameBinding<Image> outImages,
-                               uint32_t width, uint32_t height,
-                               VulkanApp& app){
-    auto computeShaderCode = readFile(shaderDir + "/test.comp.spv");
-    
-    std::vector<Handle<Descriptor>> descriptors;
-    auto& resourceManager = app.getContext().resources();
-    descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, inImages, sampler));
-    descriptors.push_back(resourceManager.create<StorageImageDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, outImages));
-
-    outPtr = resourceManager.create<TestComputeMat>(computeShaderCode,
-                                                    descriptors,
-                                                    width, height,
-                                                    app.getContext());
-}
-
-void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
-                            FrameBinding<Image> images,
-                            Handle<VulkanSampler> sampler,
-                            AttachmentFormats formats,
-                            VulkanApp& app) {
-    auto vertShaderCode = readFile(shaderDir + "/shader.vert.spv");
-    auto fragShaderCode = readFile(shaderDir + "/shader.frag.spv");
-    
-    std::vector<Handle<Descriptor>> descriptors;
-    auto& resourceManager = app.getContext().resources();
-    // The uniform buffers are created and bound by the material
-    descriptors.push_back(resourceManager.create<UniformBufferDescriptor<UniformBufferObject>>(nullptr, VK_SHADER_STAGE_VERTEX_BIT));
-    descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_FRAGMENT_BIT, images, sampler));
-
-    outPtr = resourceManager.create<TutorialMaterial>(app.getContext(),
-                                                      std::move(formats),
-                                                      descriptors,
-                                                      vertShaderCode,
-                                                      fragShaderCode);
-}
-
 void createTutorialRenderable(Handle<MeshRenderable<Vertex>>& outPtr,
                               const std::vector<Vertex>& vertices,
                               Handle<Material> material,
@@ -234,42 +200,45 @@ int main() {
 
     VulkanApp app;
     app.init(config);
+    auto& context = app.getContext();
+    auto& descriptors = context.descriptors();
     
-    // Load texture file
+    // Load texture file, and create a sampler
     Handle<Image> texture;
     Image::createFromFile(texture,
-                          app.getContext(),
+                          context,
                           textureDir + "/texture.jpg");
-    // Create an output image per frame in flight, so frame N+1's compute can overlap frame N's drawing
-    auto& context = app.getContext();
-    auto outImages = context.resources().create<PerFrameHandles<Image>>(context, [&context, texture](uint32_t) {
-        // Linear half floats: storage images cannot be sRGB, and 8 bits would band in linear space.
-        // Must match the rgba16f format declared by test.comp.
-        Handle<Image> image;
-        Image::createStorage(image,
-                             context,
-                             VK_FORMAT_R16G16B16A16_SFLOAT,
-                             texture->getWidth(),
-                             texture->getHeight());
-        return image;
-    });
-
-    // Create texture sampler
     Handle<VulkanSampler> sampler;
     VK_SUCCESS_OR_THROW(VulkanSampler::createWithAddressMode(sampler,
-                                                             app.getContext(),
+                                                             context,
                                                              VK_SAMPLER_ADDRESS_MODE_REPEAT),
                         "Failed to create sampler");
+    auto textureEntry = descriptors.sampledImage(texture);
+    auto samplerEntry = descriptors.sampler(sampler);
 
-    // The render graph: resources first
+    // The render graph's resources: the texture, a copy of it per frame in flight (so frame N+1's
+    // copy can overlap frame N's drawing) and the window's surface
     RenderGraph& graph = app.createGraph();
-    ImageId input = graph.importImage("texture", texture, ImageState::shaderReadOnly());
-    ImageId copied = graph.importImage("copied texture", outImages, ImageState::general());
+    graph.importImage("texture", texture, ImageState::shaderReadOnly());
+    // Linear half floats: storage images cannot be sRGB, and 8 bits would band in linear space
+    ImageId copied = graph.createImage("copied texture", FrameMode::PerFrame, VK_FORMAT_R16G16B16A16_SFLOAT,
+                                       FixedExtent{{texture->getWidth(), texture->getHeight()}});
     RenderTarget screen = graph.surfaceTarget();
 
-    // Create a single material shared by two renderables, built for the screen's formats
-    Handle<TutorialMaterial> material;
-    createTutorialMaterial(material, outImages, sampler, graph.formats(screen), app);
+    // A compute material copying the texture, and a material drawing the copy, shared by two
+    // renderables. Their bindings tell the graph which resources they use, and how.
+    auto computeMaterial = context.resources().create<TestComputeMat>(
+        context, readFile(shaderDir + "/test.comp.spv"),
+        std::vector<MaterialBinding>{
+            MaterialBinding::sampled(textureEntry),
+            MaterialBinding::sampler(samplerEntry),
+            MaterialBinding::storageImage(graph.storageEntry(copied), Access::StorageWrite),
+        },
+        texture->getWidth(), texture->getHeight());
+    auto material = context.resources().create<TutorialMaterial>(context, graph.formats(screen),
+                                                                 graph.sampledEntry(copied), samplerEntry,
+                                                                 readFile(shaderDir + "/shader.vert.spv"),
+                                                                 readFile(shaderDir + "/shader.frag.spv"));
 
     std::vector<Handle<Renderable>> renderables;
     for (glm::vec2 offset : {glm::vec2{-0.3f, 0.0f}, glm::vec2{0.3f, 0.0f}}) {
@@ -278,22 +247,10 @@ int main() {
         renderables.push_back(std::move(renderable));
     }
 
-    // Create compute material, copying the (static) texture into this frame's output image
-    Handle<TestComputeMat> computeMaterial;
-    createTestComputeMaterial(computeMaterial,
-                              texture,
-                              sampler,
-                              outImages,
-                              texture->getWidth(),
-                              texture->getHeight(),
-                              app);
-
-    // Nodes. The graph orders them, picks queues and synchronizes them from these declarations,
-    // and acquires and presents the surface around the draw.
-    NodeId copy = graph.add<DispatchNode>("copy texture", std::move(computeMaterial));
-    graph.node(copy).read(input, Access::SampledRead).write(copied, Access::StorageWrite);
-    NodeId draw = graph.add<RenderablesNode>("draw quads", std::move(renderables), screen);
-    graph.node(draw).read(copied, Access::SampledRead, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+    // Nodes. The graph orders them, picks queues and synchronizes them from the materials'
+    // bindings, and acquires and presents the surface around the draw.
+    graph.add<DispatchNode>("copy texture", computeMaterial);
+    graph.add<RenderablesNode>("draw quads", std::move(renderables), screen);
     app.setActiveGraph(graph);
 
     // Run

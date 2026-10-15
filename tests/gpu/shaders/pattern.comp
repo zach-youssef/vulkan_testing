@@ -1,13 +1,16 @@
 #version 450
+#include "bindless.glsl"
 
 // Writes a pattern derived from each texel's coordinates, so tests can verify every texel
-layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(push_constant) uniform Indices {
+    uint outputImage;
+} indices;
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 void main() {
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(outputImage);
+    ivec2 size = imageSize(bindlessStorageImages[indices.outputImage]);
     if (texel.x >= size.x || texel.y >= size.y) {
         return;
     }
@@ -17,5 +20,5 @@ void main() {
                       float(texel.y % 256),
                       float((texel.x + texel.y) % 256),
                       255.0) / 255.0;
-    imageStore(outputImage, texel, color);
+    imageStore(bindlessStorageImages[indices.outputImage], texel, color);
 }

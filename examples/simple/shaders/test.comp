@@ -1,10 +1,12 @@
 #version 450
+#include "bindless.glsl"
 
-// The input is sampled rather than bound as a storage image: storage images cannot use sRGB
-// formats (SPIR-V has no sRGB image formats), and sampling decodes the sRGB texture to linear.
-layout(binding = 0) uniform sampler2D inputImage;
-// Must match the output image's format exactly (VK_FORMAT_R16G16B16A16_SFLOAT)
-layout(binding = 1, rgba16f) uniform writeonly image2D outputImage;
+// The material's bindings, in order
+layout(push_constant) uniform Indices {
+    uint inputTexture;   // Sampled, which decodes an sRGB texture to linear
+    uint inputSampler;
+    uint outputImage;    // Storage image (storage images can't be sRGB)
+} indices;
 
 // 32 x 32 = 1024, which appears to be the limit on my device
 // (unclear if this is a standard or hardware specific)
@@ -12,6 +14,6 @@ layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
 void main() {
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
-    vec4 readPixel = texelFetch(inputImage, texel, 0);
-    imageStore(outputImage, texel, readPixel);
+    vec4 readPixel = texelFetch(sampler2D(bindlessTextures[indices.inputTexture], bindlessSamplers[indices.inputSampler]), texel, 0);
+    imageStore(bindlessStorageImages[indices.outputImage], texel, readPixel);
 }

@@ -164,7 +164,7 @@ private:
     T* ptr_ = nullptr;
 };
 
-// Equivalent of std::static_pointer_cast for Handles (e.g. Handle<Descriptor> -> Handle<UniformBufferDescriptor>)
+// Equivalent of std::static_pointer_cast for Handles (e.g. Handle<Material> -> Handle<ComputeMaterial>)
 template<typename U, typename V>
 Handle<U> static_handle_cast(const Handle<V>& handle) {
     return Handle<U>(handle.entry_, static_cast<U*>(handle.ptr_));

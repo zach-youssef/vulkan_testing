@@ -326,6 +326,18 @@ public:
         return std::holds_alternative<Handle<PerFrameHandles<T>>>(source_);
     }
 
+    // The per-frame collection (empty unless isPerFrame())
+    Handle<PerFrameHandles<T>> collection() const {
+        auto* perFrame = std::get_if<Handle<PerFrameHandles<T>>>(&source_);
+        return perFrame ? *perFrame : nullptr;
+    }
+
+    // The shared handle (empty if isPerFrame() or unbound)
+    Handle<T> shared() const {
+        auto* shared = std::get_if<Handle<T>>(&source_);
+        return shared ? *shared : nullptr;
+    }
+
     // The handle for a frame. Empty if unbound, or if a per-frame collection has no such frame.
     Handle<T> get(uint32_t frameIndex) const {
         if (auto* shared = std::get_if<Handle<T>>(&source_)) {

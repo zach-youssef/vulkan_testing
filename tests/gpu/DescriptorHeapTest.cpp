@@ -36,6 +36,9 @@ TEST_CASE_FIXTURE(GpuTest, "Descriptor entries keep their resources alive and fr
     auto& heap = ctx.descriptors();
     auto& resources = ctx.resources();
     const size_t baseline = resources.size();
+    // Slots freed by earlier tests may still be waiting to be collected
+    ctx.waitIdleAll();
+    ctx.collectRetired();
     const uint32_t usedBefore = heap.used(DescriptorType::StorageImage);
 
     Handle<Image> image;

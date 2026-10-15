@@ -3,6 +3,7 @@
 #include "graph/RenderGraph.h"
 #include "graph/nodes/DispatchNode.h"
 #include "graph/nodes/ReadbackNode.h"
+#include "descriptors/DescriptorHeap.h"
 
 #include <cmath>
 #include <set>
@@ -12,8 +13,8 @@ namespace {
 // Dispatches pattern.comp (8x8 workgroups) over a storage image, counting its updates
 class PatternMaterial : public ComputeMaterial {
 public:
-    PatternMaterial(VulkanContext& context, std::vector<Handle<Descriptor>> descriptors, uint32_t width, uint32_t height)
-    : ComputeMaterial(context, descriptors, loadTestShader("pattern.comp")), width_(width), height_(height) {}
+    PatternMaterial(VulkanContext& context, std::vector<MaterialBinding> bindings, uint32_t width, uint32_t height)
+    : ComputeMaterial(context, std::move(bindings), loadTestShader("pattern.comp")), width_(width), height_(height) {}
 
     void update(uint32_t, VkExtent2D) override { ++updates; }
 
@@ -31,8 +32,8 @@ private:
 // Copies a sampled image into an rgba16f storage image (the example's test.comp, 32x32 workgroups)
 class CopyMaterial : public ComputeMaterial {
 public:
-    CopyMaterial(VulkanContext& context, std::vector<Handle<Descriptor>> descriptors, uint32_t width, uint32_t height)
-    : ComputeMaterial(context, descriptors, loadTestShader("test.comp")), width_(width), height_(height) {}
+    CopyMaterial(VulkanContext& context, std::vector<MaterialBinding> bindings, uint32_t width, uint32_t height)
+    : ComputeMaterial(context, std::move(bindings), loadTestShader("test.comp")), width_(width), height_(height) {}
 
     void update(uint32_t, VkExtent2D) override {}
 
@@ -48,11 +49,11 @@ private:
 constexpr uint32_t kWidth = 64;
 constexpr uint32_t kHeight = 32;
 
-Handle<PatternMaterial> patternMaterial(VulkanContext& ctx, FrameBinding<Image> output) {
-    std::vector<Handle<Descriptor>> descriptors{
-        ctx.resources().create<StorageImageDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, std::move(output)),
-    };
-    return ctx.resources().create<PatternMaterial>(ctx, descriptors, kWidth, kHeight);
+// Writes pattern.comp's pattern to output
+Handle<PatternMaterial> patternMaterial(VulkanContext& ctx, FrameBinding<DescriptorEntry> output) {
+    return ctx.resources().create<PatternMaterial>(
+        ctx, std::vector<MaterialBinding>{MaterialBinding::storageImage(std::move(output), Access::StorageWrite)},
+        kWidth, kHeight);
 }
 
 Handle<Image> storageImage(VulkanContext& ctx) {
@@ -104,9 +105,9 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph runs a compute node and reads back its o
     auto& ctx = context();
     auto image = storageImage(ctx);
     RenderGraph graph(ctx);
+    // The material's entry refers to the imported image, so its write is declared on it
     ImageId output = graph.importImage("output", image, ImageState::general());
-    NodeId dispatch = graph.add<DispatchNode>("pattern", patternMaterial(ctx, image));
-    graph.node(dispatch).write(output, Access::StorageWrite);
+    graph.add<DispatchNode>("pattern", patternMaterial(ctx, ctx.descriptors().storageImage(image)));
     NodeId readback = graph.add<ReadbackNode>("readback", output);
 
     for (int frame = 0; frame < 4; ++frame) {
@@ -129,24 +130,17 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph renders into a graph image and samples i
     RenderTarget target;
     target.color.push_back({cleared, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, {0.2f, 0.4f, 0.6f, 1.0f}});
     graph.addGraphics("clear", [&](NodeBuilder& b) { b.renderTo(target); }, nullptr);
-    Handle<ComputeMaterial> material;
-    graph.addCompute("copy", [&](NodeBuilder& b) {
-        b.read(cleared, Access::SampledRead).write(copied, Access::StorageWrite);
-    }, [&](RecordContext& rc) {
-        material->bind(rc.commandBuffer, rc.frameIndex);
-        vkCmdDispatch(rc.commandBuffer, kWidth / 32, kHeight / 32, 1);
-    });
-    NodeId readback = graph.add<ReadbackNode>("readback", copied);
 
-    // The graph's images exist once it compiles; the material's descriptors reference them
-    graph.compile();
+    // The graph's entries for its images, which exist once it compiles
     Handle<VulkanSampler> sampler;
     REQUIRE(VulkanSampler::createWithModeAndFilter(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_FILTER_NEAREST) == VK_SUCCESS);
-    std::vector<Handle<Descriptor>> descriptors{
-        ctx.resources().create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, graph.image(cleared, 0), sampler),
-        ctx.resources().create<StorageImageDescriptor>(VK_SHADER_STAGE_COMPUTE_BIT, graph.image(copied, 0)),
-    };
-    material = ctx.resources().create<CopyMaterial>(ctx, descriptors, kWidth, kHeight);
+    auto material = ctx.resources().create<CopyMaterial>(ctx, std::vector<MaterialBinding>{
+        MaterialBinding::sampled(graph.sampledEntry(cleared)),
+        MaterialBinding::sampler(ctx.descriptors().sampler(sampler)),
+        MaterialBinding::storageImage(graph.storageEntry(copied), Access::StorageWrite),
+    }, kWidth, kHeight);
+    graph.add<DispatchNode>("copy", material);
+    NodeId readback = graph.add<ReadbackNode>("readback", copied);
 
     for (int frame = 0; frame < 3; ++frame) {
         graph.execute();
@@ -162,7 +156,6 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph renders into a graph image and samples i
         }
     }
     CHECK(mismatches == 0);
-    material.reset();
 }
 
 TEST_CASE_FIXTURE(GpuTest, "RenderGraph runs independent compute work on separate queues") {
@@ -173,9 +166,8 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph runs independent compute work on separat
     for (int i = 0; i < 3; ++i) {
         images.push_back(storageImage(ctx));
         ImageId output = graph.importImage("output " + std::to_string(i), images.back(), ImageState::general());
-        NodeId dispatch = graph.add<DispatchNode>("pattern " + std::to_string(i), patternMaterial(ctx, images.back()));
-        graph.node(dispatch).write(output, Access::StorageWrite);
-        dispatches.push_back(dispatch);
+        dispatches.push_back(graph.add<DispatchNode>("pattern " + std::to_string(i),
+                                                     patternMaterial(ctx, ctx.descriptors().storageImage(images.back()))));
         readbacks.push_back(graph.add<ReadbackNode>("readback " + std::to_string(i), output));
     }
 
@@ -200,17 +192,9 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph serializes a shared image used on two qu
     // A shared graph image written on one queue and copied on another, every frame. Synchronization
     // validation fails the test if frame N+1's write isn't ordered after frame N's copy.
     ImageId shared = graph.createImage("shared", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{{kWidth, kHeight}});
-    Handle<ComputeMaterial> material;
-    NodeId dispatch = graph.addCompute("pattern", [&](NodeBuilder& b) {
-        b.write(shared, Access::StorageWrite);
-    }, [&](RecordContext& rc) {
-        material->bind(rc.commandBuffer, rc.frameIndex);
-        vkCmdDispatch(rc.commandBuffer, (kWidth + 7) / 8, (kHeight + 7) / 8, 1);
-    });
+    NodeId dispatch = graph.add<DispatchNode>("pattern", patternMaterial(ctx, graph.storageEntry(shared)));
     NodeId readback = graph.add<ReadbackNode>("readback", shared);
     graph.node(readback).onPrimaryQueue();
-    graph.compile();
-    material = patternMaterial(ctx, graph.image(shared, 0));
 
     if (ctx.queueCount() > 1) {
         CHECK(graph.queueOf(dispatch) != graph.queueOf(readback));
@@ -219,7 +203,6 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph serializes a shared image used on two qu
         graph.execute();
     }
     CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels()));
-    material.reset();
 }
 
 TEST_CASE_FIXTURE(GpuTest, "RenderGraph caches plans per set of enabled nodes") {
@@ -263,12 +246,10 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph caches plans per set of enabled nodes") 
 TEST_CASE_FIXTURE(GpuTest, "RenderGraph updates a material shared by several nodes once per frame") {
     auto& ctx = context();
     auto image = storageImage(ctx);
-    auto material = patternMaterial(ctx, image);
+    auto material = patternMaterial(ctx, ctx.descriptors().storageImage(image));
     RenderGraph graph(ctx);
-    ImageId output = graph.importImage("output", image, ImageState::general());
     for (int i = 0; i < 3; ++i) {
-        NodeId node = graph.add<DispatchNode>("pattern " + std::to_string(i), material);
-        graph.node(node).write(output, Access::StorageWrite);
+        graph.add<DispatchNode>("pattern " + std::to_string(i), material);
     }
     graph.execute();
     graph.execute();
@@ -346,4 +327,55 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph keeps per-frame images per frame in flig
         ctx.setFramesInFlight(originalFrames);
         graph.execute();
     }
+}
+
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph derives uses from materials, importing resources it doesn't know") {
+    auto& ctx = context();
+    auto image = storageImage(ctx);
+    RenderGraph graph(ctx);
+    // Not imported: the material's entry imports it (as a storage image, resting in GENERAL)
+    graph.add<DispatchNode>("pattern", patternMaterial(ctx, ctx.descriptors().storageImage(image)));
+    for (int frame = 0; frame < 2; ++frame) {
+        graph.execute();
+    }
+    graph.waitIdle();
+    CHECK(hasPattern(image->readback(VK_IMAGE_LAYOUT_GENERAL)));
+}
+
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph rejects an image it knows twice") {
+    auto& ctx = context();
+    auto image = storageImage(ctx);
+    RenderGraph graph(ctx);
+    graph.importImage("first", image, ImageState::general());
+    graph.importImage("second", image, ImageState::general());
+    graph.addCpu("cpu", nullptr, nullptr);
+    CHECK_THROWS_WITH_AS(graph.compile(), doctest::Contains("are the same image"), GraphError);
+}
+
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph keeps its descriptor entries current as images are recreated") {
+    auto& ctx = context();
+    const uint32_t originalFrames = ctx.framesInFlight();
+    RenderGraph graph(ctx);
+    ImageId image = graph.createImage("image", FrameMode::PerFrame, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{{kWidth, kHeight}});
+    auto entries = graph.storageEntry(image);
+    graph.add<DispatchNode>("pattern", patternMaterial(ctx, entries));
+    NodeId readback = graph.add<ReadbackNode>("readback", image);
+
+    graph.execute();
+    graph.execute();
+    for (uint32_t frame = 0; frame < originalFrames; ++frame) {
+        REQUIRE(entries.get(frame));
+        CHECK(entries.get(frame)->image() == graph.image(image, frame));
+    }
+    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels()));
+
+    // A new frame slot gets its own image, and an entry for it when the slot first runs
+    ctx.setFramesInFlight(originalFrames + 1);
+    for (uint32_t frame = 0; frame <= originalFrames + 1; ++frame) {
+        graph.execute();
+    }
+    CHECK(entries.get(originalFrames)->image() == graph.image(image, originalFrames));
+    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels()));
+    ctx.setFramesInFlight(originalFrames);
+    graph.execute();
 }

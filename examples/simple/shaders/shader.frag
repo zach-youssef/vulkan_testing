@@ -1,6 +1,12 @@
 #version 450
+#include "bindless.glsl"
 
-layout(binding = 1) uniform sampler2D texSampler;
+// The material's bindings, in order (shared with shader.vert)
+layout(push_constant) uniform Indices {
+    uint ubo;
+    uint texture;
+    uint textureSampler;
+} indices;
 
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragTexCoord0;
@@ -8,6 +14,5 @@ layout(location = 1) in vec2 fragTexCoord0;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    outColor = texture(texSampler, fragTexCoord0);
-    //outColor = vec4(fragColor, 1.0) * fragTexCoord0.x;
+    outColor = texture(sampler2D(bindlessTextures[indices.texture], bindlessSamplers[indices.textureSampler]), fragTexCoord0);
 }
