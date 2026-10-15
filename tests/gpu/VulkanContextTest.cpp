@@ -4,6 +4,7 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <set>
 #include <thread>
 
 namespace {
@@ -16,10 +17,11 @@ struct ValidatedContext {
     std::vector<std::string> errors;
     std::unique_ptr<VulkanContext> context;
 
-    ValidatedContext() {
+    ValidatedContext(bool syncValidation = true) {
         VulkanContextConfig config;
         config.applicationName = "VulkanContext tests";
         config.enableValidation = true;
+        config.enableSynchronizationValidation = syncValidation;
         config.onValidationMessage = [this](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
             if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
                 std::lock_guard<std::mutex> lock(mutex);
@@ -279,4 +281,179 @@ TEST_CASE("Synchronization validation reports hazards when enabled") {
         hazard |= error.find("WRITE_AFTER_WRITE hazard") != std::string::npos;
     }
     CHECK(hazard);
+}
+
+namespace {
+
+// Records a one-off command buffer from pool
+VkCommandBuffer recordOnce(CommandPool& pool, const std::function<void(VkCommandBuffer)>& op) {
+    VkCommandBuffer commandBuffer = pool.allocateOne();
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    op(commandBuffer);
+    vkEndCommandBuffer(commandBuffer);
+    return commandBuffer;
+}
+
+VulkanContext::SubmitBatch batchOf(VkCommandBuffer commandBuffer) {
+    VulkanContext::SubmitBatch batch;
+    VkCommandBufferSubmitInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    info.commandBuffer = commandBuffer;
+    batch.commandBuffers.push_back(info);
+    return batch;
+}
+
+} // namespace
+
+TEST_CASE("VulkanContext creates the compute-capable queues the device offers") {
+    ValidatedContext validated;
+    auto& ctx = *validated.context;
+
+    REQUIRE(ctx.queueCount() >= 1);
+    CHECK(ctx.queueCount() <= VulkanContext::kMaxQueues);
+    const auto& primary = ctx.queueDescription(VulkanContext::kPrimaryQueue);
+    CHECK((primary.flags & VK_QUEUE_GRAPHICS_BIT) != 0);
+    CHECK((primary.flags & VK_QUEUE_COMPUTE_BIT) != 0);
+    CHECK(ctx.queueIndex(QueueType::Graphics) == VulkanContext::kPrimaryQueue);
+    CHECK(ctx.queueIndex(QueueType::Compute) == VulkanContext::kPrimaryQueue);
+
+    std::set<VkQueue> distinct;
+    std::set<uint32_t> families;
+    for (uint32_t queue = 0; queue < ctx.queueCount(); ++queue) {
+        CAPTURE(queue);
+        CHECK((ctx.queueDescription(queue).flags & VK_QUEUE_COMPUTE_BIT) != 0);
+        CHECK(ctx.timelineSemaphore(queue) != VK_NULL_HANDLE);
+        distinct.insert(ctx.queue(queue));
+        families.insert(ctx.queueDescription(queue).family);
+    }
+    CHECK(distinct.size() == ctx.queueCount());
+    CHECK(std::set<uint32_t>(ctx.queueFamilies().begin(), ctx.queueFamilies().end()) == families);
+    MESSAGE("Queues: " << ctx.queueCount() << " in " << families.size() << " families");
+}
+
+TEST_CASE("Submissions signal increasing timeline values") {
+    ValidatedContext validated;
+    auto& ctx = *validated.context;
+
+    for (uint32_t queue = 0; queue < ctx.queueCount(); ++queue) {
+        CAPTURE(queue);
+        const uint64_t first = ctx.submit(queue, {});
+        const uint64_t second = ctx.submit(queue, {});
+        CHECK(second == first + 1);
+        CHECK(ctx.submittedValue(queue) == second);
+        ctx.wait(queue, second);
+        CHECK(ctx.completedValue(queue) >= second);
+    }
+    auto points = ctx.submittedPoints();
+    CHECK(points.size() == ctx.queueCount());
+    ctx.wait(points);
+    CHECK(ctx.isComplete(points));
+}
+
+TEST_CASE("Work on different queues is ordered by timeline waits") {
+    ValidatedContext validated;
+    auto& ctx = *validated.context;
+    if (ctx.queueCount() < 2) {
+        MESSAGE("Only one queue; skipping");
+        return;
+    }
+
+    Handle<Buffer<uint32_t>> source;
+    REQUIRE(Buffer<uint32_t>::create(source, ctx, 1024, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_SUCCESS);
+    auto destination = createHostBuffer(ctx, 1024);
+
+    // Queue 1 fills the buffer; the primary queue copies it once queue 1's timeline is reached
+    auto fillPool = ctx.createCommandPool(1u);
+    auto copyPool = ctx.createCommandPool(VulkanContext::kPrimaryQueue);
+    VkCommandBuffer fill = recordOnce(*fillPool, [&](VkCommandBuffer commandBuffer) {
+        vkCmdFillBuffer(commandBuffer, source->getBuffer(), 0, VK_WHOLE_SIZE, 0xABCD1234);
+    });
+    VkCommandBuffer copy = recordOnce(*copyPool, [&](VkCommandBuffer commandBuffer) {
+        VkBufferCopy region{0, 0, 1024 * sizeof(uint32_t)};
+        vkCmdCopyBuffer(commandBuffer, source->getBuffer(), destination->getBuffer(), 1, &region);
+    });
+
+    const uint64_t filled = ctx.submit(1, batchOf(fill));
+    auto copyBatch = batchOf(copy);
+    VkSemaphoreSubmitInfo wait{};
+    wait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    wait.semaphore = ctx.timelineSemaphore(1);
+    wait.value = filled;
+    wait.stageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    copyBatch.waits.push_back(wait);
+    const uint64_t copied = ctx.submit(VulkanContext::kPrimaryQueue, copyBatch);
+
+    ctx.wait(VulkanContext::kPrimaryQueue, copied);
+    CHECK(readFirst(*destination) == 0xABCD1234);
+}
+
+TEST_CASE("Retired functions run once the work submitted before them completes") {
+    ValidatedContext validated;
+    auto& ctx = *validated.context;
+
+    int ran = 0;
+    ctx.submit(VulkanContext::kPrimaryQueue, {});
+    ctx.retire([&ran] { ++ran; });
+    ctx.waitIdleAll();
+    ctx.collectRetired();
+    CHECK(ran == 1);
+    ctx.collectRetired();
+    CHECK(ran == 1);
+
+    // Retiring with nothing outstanding runs at the next collection
+    ctx.retire([&ran] { ++ran; });
+    ctx.collectRetired();
+    CHECK(ran == 2);
+
+    // Anything still pending runs when the context is destroyed
+    ctx.retire([&ran] { ++ran; });
+    validated.context.reset();
+    CHECK(ran == 3);
+}
+
+TEST_CASE("Frame slots only wait for their own previous work") {
+    ValidatedContext validated;
+    auto& ctx = *validated.context;
+    REQUIRE(ctx.framesInFlight() == 2);
+
+    // Frame 0 submits work, frame 1 submits work; beginning frame 0 again waits for frame 0's
+    ctx.beginFrame();
+    const uint64_t frame0 = ctx.submit(VulkanContext::kPrimaryQueue, {});
+    ctx.advanceFrame();
+    ctx.beginFrame();
+    ctx.submit(VulkanContext::kPrimaryQueue, {});
+    ctx.advanceFrame();
+    CHECK(ctx.frameNumber() == 2);
+    ctx.beginFrame();
+    CHECK(ctx.completedValue(VulkanContext::kPrimaryQueue) >= frame0);
+}
+
+TEST_CASE("Shrinking frames in flight destroys removed slots only after their work completes") {
+    ValidatedContext validated;
+    auto& ctx = *validated.context;
+    ctx.setFramesInFlight(3);
+    ctx.advanceFrame();
+    REQUIRE(ctx.framesInFlight() == 3);
+
+    // Each slot's element records the timeline value of its frame's work
+    std::vector<uint64_t> frameWork(3, 0);
+    bool destroyedEarly = false;
+    PerFrame<uint32_t> slots(ctx, [](uint32_t frame) { return frame; }, [&](uint32_t& frame) {
+        destroyedEarly |= ctx.completedValue(VulkanContext::kPrimaryQueue) < frameWork[frame];
+    });
+
+    for (uint32_t frame = 0; frame < 3; ++frame) {
+        ctx.beginFrame();
+        frameWork[ctx.currentFrame()] = ctx.submit(VulkanContext::kPrimaryQueue, {});
+        if (frame == 2) {
+            ctx.setFramesInFlight(1);
+        }
+        ctx.advanceFrame();
+    }
+    CHECK(slots.size() == 1);
+    CHECK_FALSE(destroyedEarly);
 }

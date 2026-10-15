@@ -414,7 +414,11 @@ private:
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // first transition discards
 
         imageInfo.usage = usage;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // Only used by graphics queue
+        // Usable from any of the context's queues without ownership transfers
+        const auto& families = context.queueFamilies();
+        imageInfo.sharingMode = families.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.queueFamilyIndexCount = families.size() > 1 ? static_cast<uint32_t>(families.size()) : 0;
+        imageInfo.pQueueFamilyIndices = families.size() > 1 ? families.data() : nullptr;
 
         // Multisampling
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;

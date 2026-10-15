@@ -34,7 +34,7 @@ public:
                            VkMemoryPropertyFlags properties) {
         VkResult result;
         // Constructed directly since the constructor is private
-        std::unique_ptr<Buffer> buffer(new Buffer(numElements, usage, properties, context.device(), context.physicalDevice(), result));
+        std::unique_ptr<Buffer> buffer(new Buffer(numElements, usage, properties, context, result));
         outBuffer = context.resources().adopt(std::move(buffer));
         return result;
     }
@@ -45,7 +45,7 @@ public:
                                                 VkBufferUsageFlags usage,
                                                 VkMemoryPropertyFlags properties) {
         VkResult result;
-        std::unique_ptr<Buffer> buffer(new Buffer(numElements, usage, properties, context.device(), context.physicalDevice(), result));
+        std::unique_ptr<Buffer> buffer(new Buffer(numElements, usage, properties, context, result));
         VK_SUCCESS_OR_THROW(result, "Failed to create buffer");
         return buffer;
     }
@@ -116,14 +116,18 @@ private:
     Buffer(size_t numElements,
            VkBufferUsageFlags usage,
            VkMemoryPropertyFlags properties,
-           VkDevice device,
-           VkPhysicalDevice physicalDevice,
-           VkResult& outResult) : device_(device) {
+           VulkanContext& context,
+           VkResult& outResult) : device_(context.device()) {
+        VkPhysicalDevice physicalDevice = context.physicalDevice();
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = sizeof(Data) * numElements;
         bufferInfo.usage = usage;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // TODO: parameterize
+        // Usable from any of the context's queues without ownership transfers
+        const auto& families = context.queueFamilies();
+        bufferInfo.sharingMode = families.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
+        bufferInfo.queueFamilyIndexCount = families.size() > 1 ? static_cast<uint32_t>(families.size()) : 0;
+        bufferInfo.pQueueFamilyIndices = families.size() > 1 ? families.data() : nullptr;
         
         RETURN_IF_ERROR(VulkanBuffer::create(buffer_, device_, bufferInfo))
         

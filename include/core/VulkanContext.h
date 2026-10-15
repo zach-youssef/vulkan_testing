@@ -12,6 +12,7 @@
 #include <cstring>
 #include <functional>
 #include <iostream>
+#include <list>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -169,6 +170,7 @@ public:
 
         immediatePool_ = createCommandPool(QueueType::Graphics, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
         resourceManager_ = std::make_unique<ResourceManager>();
+        frameEnds_.resize(frames_.framesInFlight());
     }
 
     VulkanContext(const VulkanContext&) = delete;
@@ -176,9 +178,24 @@ public:
 
     ~VulkanContext() {
         waitIdleAll();
+        // Retired work may release resources, so it runs before they are destroyed
+        while (true) {
+            std::list<std::pair<TimelinePoints, std::function<void()>>> retired;
+            {
+                std::lock_guard<std::mutex> lock(retireMutex_);
+                retired.swap(retired_);
+            }
+            if (retired.empty()) {
+                break;
+            }
+            for (auto& [points, fn] : retired) {
+                fn();
+            }
+        }
         // Destroy in reverse dependency order
         resourceManager_.reset();
         immediatePool_.reset();
+        queues_.clear();
         device_.reset();
         surface_.reset();
         if (messenger_ != VK_NULL_HANDLE) {
@@ -209,14 +226,169 @@ public: // Accessors
         return properties.deviceName;
     }
 
-    uint32_t queueFamily(QueueType type) {
-        return queueFor(type).familyIndex;
+public: // Queues
+    // The primary queue supports graphics and compute (and presentation, when the device allows
+    // it on the same queue). QueueType::Graphics and QueueType::Compute refer to it.
+    static constexpr uint32_t kPrimaryQueue = 0;
+    // At most this many queues are created, the primary queue included
+    static constexpr uint32_t kMaxQueues = 4;
+
+    struct QueueDescription {
+        uint32_t family;
+        uint32_t indexInFamily;
+        VkQueueFlags flags;
+        bool present;   // Can present to the surface
+    };
+
+    // Number of queues the context created: the primary queue, then any other queues the device
+    // offers that support compute (from other families, or further queues of the same family),
+    // up to kMaxQueues, and a present queue if the primary queue can't present
+    uint32_t queueCount() { return static_cast<uint32_t>(queues_.size()); }
+
+    const QueueDescription& queueDescription(uint32_t queue) { return queues_.at(queue).description; }
+
+    // The queue a QueueType refers to. Throws std::logic_error for Present without a surface.
+    uint32_t queueIndex(QueueType type) {
+        if (type != QueueType::Present) {
+            return kPrimaryQueue;
+        }
+        if (!presentQueue_) {
+            throw std::logic_error("Queue type unavailable (a present queue requires a surface)");
+        }
+        return *presentQueue_;
     }
+
+    uint32_t queueFamily(QueueType type) {
+        return queues_.at(queueIndex(type)).description.family;
+    }
+
+    // The distinct queue families of the context's queues. Resources are shared between them
+    // concurrently (VK_SHARING_MODE_CONCURRENT) when there is more than one.
+    const std::vector<uint32_t>& queueFamilies() { return queueFamilies_; }
 
     // The raw queue. Host access to it must be externally synchronized: prefer submit(),
     // present() and waitIdle(), which hold the queue's lock.
     VkQueue queue(QueueType type) {
-        return queueFor(type).queue;
+        return queues_.at(queueIndex(type)).queue;
+    }
+
+    VkQueue queue(uint32_t queue) {
+        return queues_.at(queue).queue;
+    }
+
+public: // Timelines (thread safe)
+    // Each queue has a timeline semaphore that the context signals with an increasing value on
+    // every submission. A queue's values are complete in order, so a value identifies all work
+    // submitted to that queue up to and including the submission that signaled it.
+
+    // A timeline value per queue (0 for none), e.g. everything submitted up to some point
+    using TimelinePoints = std::vector<uint64_t>;
+
+    struct SubmitBatch {
+        std::vector<VkCommandBufferSubmitInfo> commandBuffers;
+        std::vector<VkSemaphoreSubmitInfo> waits;
+        std::vector<VkSemaphoreSubmitInfo> signals;   // In addition to the queue's timeline
+        VkFence fence = VK_NULL_HANDLE;
+    };
+
+    // Submits batch to a queue, also signaling the queue's timeline semaphore with its next
+    // value, which is returned. Throws on failure.
+    uint64_t submit(uint32_t queue, const SubmitBatch& batch) {
+        uint64_t value = 0;
+        VK_SUCCESS_OR_THROW(submitAndSignal(queue, batch, value), "Failed to submit to queue");
+        return value;
+    }
+
+    VkSemaphore timelineSemaphore(uint32_t queue) {
+        return **queues_.at(queue).timeline;
+    }
+
+    // The last value submitted to a queue's timeline
+    uint64_t submittedValue(uint32_t queue) {
+        auto& entry = queues_.at(queue);
+        std::lock_guard<std::mutex> lock(*entry.lock);
+        return entry.submitted;
+    }
+
+    // The value a queue's timeline has reached
+    uint64_t completedValue(uint32_t queue) {
+        uint64_t value = 0;
+        vkGetSemaphoreCounterValue(**device_, **queues_.at(queue).timeline, &value);
+        return value;
+    }
+
+    // Everything submitted to any queue so far
+    TimelinePoints submittedPoints() {
+        TimelinePoints points(queues_.size());
+        for (uint32_t queue = 0; queue < queues_.size(); ++queue) {
+            points[queue] = submittedValue(queue);
+        }
+        return points;
+    }
+
+    bool isComplete(const TimelinePoints& points) {
+        for (uint32_t queue = 0; queue < points.size(); ++queue) {
+            if (points[queue] != 0 && completedValue(queue) < points[queue]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Blocks until every point has been reached
+    void wait(const TimelinePoints& points) {
+        std::vector<VkSemaphore> semaphores;
+        std::vector<uint64_t> values;
+        for (uint32_t queue = 0; queue < points.size(); ++queue) {
+            if (points[queue] != 0) {
+                semaphores.push_back(**queues_.at(queue).timeline);
+                values.push_back(points[queue]);
+            }
+        }
+        if (semaphores.empty()) {
+            return;
+        }
+        VkSemaphoreWaitInfo waitInfo{};
+        waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+        waitInfo.semaphoreCount = static_cast<uint32_t>(semaphores.size());
+        waitInfo.pSemaphores = semaphores.data();
+        waitInfo.pValues = values.data();
+        VK_SUCCESS_OR_THROW(vkWaitSemaphores(**device_, &waitInfo, UINT64_MAX), "Failed to wait for timelines");
+    }
+
+    void wait(uint32_t queue, uint64_t value) {
+        TimelinePoints points(queues_.size());
+        points.at(queue) = value;
+        wait(points);
+    }
+
+public: // Deferred destruction (thread safe)
+    // Runs fn once all work submitted so far has completed, e.g. to destroy resources that work
+    // may use. Called from beginFrame() (or collectRetired()), or when the context is destroyed.
+    void retire(std::function<void()> fn) {
+        auto points = submittedPoints();
+        std::lock_guard<std::mutex> lock(retireMutex_);
+        retired_.push_back({std::move(points), std::move(fn)});
+    }
+
+    // Runs the retired functions whose work has completed
+    void collectRetired() {
+        std::vector<std::function<void()>> ready;
+        {
+            std::lock_guard<std::mutex> lock(retireMutex_);
+            for (auto it = retired_.begin(); it != retired_.end();) {
+                if (isComplete(it->first)) {
+                    ready.push_back(std::move(it->second));
+                    it = retired_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        // Outside the lock: functions may retire more work
+        for (auto& fn : ready) {
+            fn();
+        }
     }
 
 public: // Frames in flight
@@ -224,6 +396,9 @@ public: // Frames in flight
 
     // Index of the frame being recorded, in [0, framesInFlight())
     uint32_t currentFrame() { return frames_.currentFrame(); }
+
+    // Number of frames ended with advanceFrame() so far
+    uint64_t frameNumber() { return frameNumber_; }
 
     // Tracks the PerFrame collections created from this context
     FrameRegistry& frames() { return frames_; }
@@ -237,24 +412,71 @@ public: // Frames in flight
         pendingFramesInFlight_ = count;
     }
 
-    // Ends the current frame and moves on to the next. If a new number of frames in flight was
-    // requested, waits for the device to be idle, resizes every PerFrame collection and restarts
-    // at frame 0.
+    // Starts recording the current frame: waits until the work submitted the last time this frame
+    // slot was used has completed (so the slot's PerFrame elements are free to reuse), then runs
+    // deferred destruction that has become safe. Only waits for that one slot.
+    void beginFrame() {
+        wait(frameEnds_.at(currentFrame()));
+        collectRetired();
+    }
+
+    // Ends the current frame, recording the work submitted so far as the slot's, and moves on to
+    // the next. If a new number of frames in flight was requested it is applied now: shrinking
+    // waits only for the frame slots being removed, growing doesn't wait at all. Either way,
+    // every PerFrame collection is resized and frames restart at slot 0.
     void advanceFrame() {
+        frameEnds_.at(currentFrame()) = submittedPoints();
+        ++frameNumber_;
+
         uint32_t pending = pendingFramesInFlight_.exchange(0);
         if (pending != 0 && pending != frames_.framesInFlight()) {
-            waitIdleAll();
+            for (uint32_t slot = pending; slot < frameEnds_.size(); ++slot) {
+                wait(frameEnds_[slot]);
+            }
             frames_.resize(pending);
+            frameEnds_.resize(pending);
         } else {
             frames_.advance();
         }
     }
 
 public: // Queue access (thread safe)
+    // Submits with the original VkSubmitInfo structures. Each submission also signals the queue's
+    // timeline, so frames and deferred destruction account for it.
     VkResult submit(QueueType type, uint32_t submitCount, const VkSubmitInfo* submits, VkFence fence) {
-        auto& queue = queueFor(type);
-        std::lock_guard<std::mutex> lock(*queue.lock);
-        return vkQueueSubmit(queue.queue, submitCount, submits, fence);
+        for (uint32_t i = 0; i < submitCount; ++i) {
+            const VkSubmitInfo& info = submits[i];
+            assert(info.pNext == nullptr && "Extension structures are not supported; use submit(queue, SubmitBatch)");
+            SubmitBatch batch;
+            for (uint32_t c = 0; c < info.commandBufferCount; ++c) {
+                VkCommandBufferSubmitInfo commandBuffer{};
+                commandBuffer.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+                commandBuffer.commandBuffer = info.pCommandBuffers[c];
+                batch.commandBuffers.push_back(commandBuffer);
+            }
+            for (uint32_t w = 0; w < info.waitSemaphoreCount; ++w) {
+                VkSemaphoreSubmitInfo wait{};
+                wait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+                wait.semaphore = info.pWaitSemaphores[w];
+                // The original stage flags are valid synchronization2 stage flags
+                wait.stageMask = info.pWaitDstStageMask[w];
+                batch.waits.push_back(wait);
+            }
+            for (uint32_t s = 0; s < info.signalSemaphoreCount; ++s) {
+                VkSemaphoreSubmitInfo signal{};
+                signal.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+                signal.semaphore = info.pSignalSemaphores[s];
+                signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                batch.signals.push_back(signal);
+            }
+            batch.fence = i + 1 == submitCount ? fence : VK_NULL_HANDLE;
+            uint64_t value = 0;
+            VkResult result = submitAndSignal(queueIndex(type), batch, value);
+            if (result != VK_SUCCESS) {
+                return result;
+            }
+        }
+        return VK_SUCCESS;
     }
 
     VkResult submit(QueueType type, const VkSubmitInfo& submitInfo, VkFence fence) {
@@ -262,23 +484,23 @@ public: // Queue access (thread safe)
     }
 
     VkResult present(const VkPresentInfoKHR& presentInfo) {
-        auto& queue = queueFor(QueueType::Present);
-        std::lock_guard<std::mutex> lock(*queue.lock);
-        return vkQueuePresentKHR(queue.queue, &presentInfo);
+        auto& entry = queues_.at(queueIndex(QueueType::Present));
+        std::lock_guard<std::mutex> lock(*entry.lock);
+        return vkQueuePresentKHR(entry.queue, &presentInfo);
     }
 
     VkResult waitIdle(QueueType type) {
-        auto& queue = queueFor(type);
-        std::lock_guard<std::mutex> lock(*queue.lock);
-        return vkQueueWaitIdle(queue.queue);
+        auto& entry = queues_.at(queueIndex(type));
+        std::lock_guard<std::mutex> lock(*entry.lock);
+        return vkQueueWaitIdle(entry.queue);
     }
 
     // Waits for all queues. vkDeviceWaitIdle requires every queue to be externally synchronized,
     // so this takes all queue locks.
     VkResult waitIdleAll() {
         std::vector<std::unique_lock<std::mutex>> locks;
-        for (auto& lock : queueLocks_) {
-            locks.emplace_back(*lock); // Always locked in the same order, avoiding deadlocks
+        for (auto& entry : queues_) {
+            locks.emplace_back(*entry.lock); // Always locked in the same order, avoiding deadlocks
         }
         return vkDeviceWaitIdle(**device_);
     }
@@ -288,10 +510,15 @@ public: // Command recording
     // The returned pool is not; see CommandPool.
     std::unique_ptr<CommandPool> createCommandPool(QueueType type,
                                                    VkCommandPoolCreateFlags flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT) {
-        return std::make_unique<CommandPool>(**device_, queueFamily(type), flags);
+        return createCommandPool(queueIndex(type), flags);
     }
 
-    // Records commands with op, submits them to the graphics queue and blocks until they have
+    std::unique_ptr<CommandPool> createCommandPool(uint32_t queue,
+                                                   VkCommandPoolCreateFlags flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT) {
+        return std::make_unique<CommandPool>(**device_, queues_.at(queue).description.family, flags);
+    }
+
+    // Records commands with op, submits them to the primary queue and blocks until they have
     // executed. Intended for one-off work such as uploads, readbacks and layout transitions.
     // Thread safe: uses a command pool private to the context, guarded by a lock.
     void submitImmediate(const std::function<void(VkCommandBuffer)>& op) {
@@ -306,37 +533,53 @@ public: // Command recording
         op(commandBuffer);
         vkEndCommandBuffer(commandBuffer);
 
-        VkFenceCreateInfo fenceInfo{};
-        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        std::unique_ptr<VulkanFence> fence;
-        VK_SUCCESS_OR_THROW(VulkanFence::create(fence, **device_, fenceInfo),
-                            "Failed to create fence");
+        SubmitBatch batch;
+        VkCommandBufferSubmitInfo commandBufferInfo{};
+        commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        commandBufferInfo.commandBuffer = commandBuffer;
+        batch.commandBuffers.push_back(commandBufferInfo);
+        const uint64_t value = submit(kPrimaryQueue, batch);
 
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffer;
-        VK_SUCCESS_OR_THROW(submit(QueueType::Graphics, submitInfo, **fence),
-                            "Failed to submit immediate commands");
-
-        // Wait on the fence rather than the queue, so the queue's lock is not held while waiting
-        vkWaitForFences(**device_, 1, fence->get(), VK_TRUE, UINT64_MAX);
+        // Wait on the timeline rather than the queue, so the queue's lock is not held while waiting
+        wait(kPrimaryQueue, value);
         immediatePool_->free(commandBuffer);
     }
 
 private:
-    struct QueueInfo {
-        uint32_t familyIndex = 0;
+    struct QueueEntry {
+        QueueDescription description{};
         VkQueue queue = VK_NULL_HANDLE;
-        std::mutex* lock = nullptr;
+        std::unique_ptr<std::mutex> lock;
+        std::unique_ptr<VulkanSemaphore> timeline;
+        uint64_t submitted = 0;   // Guarded by lock
     };
 
-    QueueInfo& queueFor(QueueType type) {
-        auto& queue = queues_[static_cast<size_t>(type)];
-        if (queue.queue == VK_NULL_HANDLE) {
-            throw std::logic_error("Queue type unavailable (a present queue requires a surface)");
+    VkResult submitAndSignal(uint32_t queue, const SubmitBatch& batch, uint64_t& outValue) {
+        auto& entry = queues_.at(queue);
+        std::lock_guard<std::mutex> lock(*entry.lock);
+
+        std::vector<VkSemaphoreSubmitInfo> signals = batch.signals;
+        VkSemaphoreSubmitInfo timelineSignal{};
+        timelineSignal.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        timelineSignal.semaphore = **entry.timeline;
+        timelineSignal.value = entry.submitted + 1;
+        timelineSignal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        signals.push_back(timelineSignal);
+
+        VkSubmitInfo2 submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+        submitInfo.waitSemaphoreInfoCount = static_cast<uint32_t>(batch.waits.size());
+        submitInfo.pWaitSemaphoreInfos = batch.waits.data();
+        submitInfo.commandBufferInfoCount = static_cast<uint32_t>(batch.commandBuffers.size());
+        submitInfo.pCommandBufferInfos = batch.commandBuffers.data();
+        submitInfo.signalSemaphoreInfoCount = static_cast<uint32_t>(signals.size());
+        submitInfo.pSignalSemaphoreInfos = signals.data();
+
+        VkResult result = vkQueueSubmit2(entry.queue, 1, &submitInfo, batch.fence);
+        if (result == VK_SUCCESS) {
+            outValue = ++entry.submitted;
         }
-        return queue;
+        return result;
     }
 
     static bool hasInstanceLayer(const char* name) {
@@ -470,18 +713,6 @@ private:
         surface_ = std::make_unique<VulkanSurface>(**instance_, surface);
     }
 
-    // Finds a family supporting both graphics and compute, so the two never need to synchronize
-    // across queue families
-    static std::optional<uint32_t> findGraphicsComputeFamily(VkPhysicalDevice device) {
-        auto families = readVkVectorVoid<VkQueueFamilyProperties, VkPhysicalDevice>(device, vkGetPhysicalDeviceQueueFamilyProperties);
-        for (uint32_t i = 0; i < families.size(); ++i) {
-            if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (families[i].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
-                return i;
-            }
-        }
-        return {};
-    }
-
     void pickPhysicalDevice() {
         std::string rejections;
         for (auto device : readVkVector<VkPhysicalDevice, VkInstance>(**instance_, vkEnumeratePhysicalDevices)) {
@@ -495,40 +726,93 @@ private:
                 }
                 continue;
             }
-            if (hasSurface()) {
-                if (isDeviceSuitable(device, **surface_)) {
-                    auto indices = findQueueFamilies(device, **surface_);
-                    physicalDevice_ = device;
-                    graphicsFamily_ = indices.graphicsFamily.value();
-                    presentFamily_ = indices.presentFamily;
-                    return;
+            if (hasSurface() && !isDeviceSuitable(device, **surface_)) {
+                continue;
+            }
+            auto families = readVkVectorVoid<VkQueueFamilyProperties, VkPhysicalDevice>(device, vkGetPhysicalDeviceQueueFamilyProperties);
+            auto supportsPresent = [&](uint32_t family) {
+                VkBool32 support = VK_FALSE;
+                if (hasSurface()) {
+                    vkGetPhysicalDeviceSurfaceSupportKHR(device, family, **surface_, &support);
                 }
-            } else {
-                if (auto family = findGraphicsComputeFamily(device)) {
-                    physicalDevice_ = device;
-                    graphicsFamily_ = *family;
-                    return;
+                return support == VK_TRUE;
+            };
+            // The primary family supports graphics and compute, preferably presentation too
+            std::optional<uint32_t> graphicsFamily;
+            for (uint32_t i = 0; i < families.size(); ++i) {
+                const bool graphicsCompute = (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+                                             && (families[i].queueFlags & VK_QUEUE_COMPUTE_BIT);
+                if (graphicsCompute && (!graphicsFamily || (!supportsPresent(*graphicsFamily) && supportsPresent(i)))) {
+                    graphicsFamily = i;
                 }
             }
+            if (!graphicsFamily) {
+                continue;
+            }
+            physicalDevice_ = device;
+            graphicsFamily_ = *graphicsFamily;
+            presentFamily_.reset();
+            if (hasSurface()) {
+                for (uint32_t i = 0; i < families.size() && !presentFamily_; ++i) {
+                    if (supportsPresent(i)) {
+                        presentFamily_ = i;
+                    }
+                }
+                if (supportsPresent(graphicsFamily_)) {
+                    presentFamily_ = graphicsFamily_;
+                }
+            }
+            return;
         }
         throw std::runtime_error("Failed to find a suitable GPU." + rejections);
     }
 
     void createDevice() {
-        std::vector<uint32_t> families = {graphicsFamily_};
-        if (presentFamily_ && *presentFamily_ != graphicsFamily_) {
-            families.push_back(*presentFamily_);
+        auto families = readVkVectorVoid<VkQueueFamilyProperties, VkPhysicalDevice>(physicalDevice_, vkGetPhysicalDeviceQueueFamilyProperties);
+
+        // The queues to create: the primary queue, a separate present queue if the primary can't
+        // present, then other compute-capable queues, up to kMaxQueues working queues
+        std::vector<QueueDescription> planned;
+        std::vector<uint32_t> usedPerFamily(families.size(), 0);
+        auto plan = [&](uint32_t family, bool present) {
+            planned.push_back({family, usedPerFamily[family]++, families[family].queueFlags, present});
+        };
+        const bool primaryPresents = presentFamily_ && *presentFamily_ == graphicsFamily_;
+        plan(graphicsFamily_, primaryPresents);
+        uint32_t working = 1;
+        if (presentFamily_ && !primaryPresents) {
+            plan(*presentFamily_, true);
+            presentQueue_ = 1;
+            if (families[*presentFamily_].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+                ++working;
+            }
+        } else if (presentFamily_) {
+            presentQueue_ = kPrimaryQueue;
+        }
+        for (uint32_t family = 0; family < families.size() && working < kMaxQueues; ++family) {
+            if (!(families[family].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
+                continue;
+            }
+            while (usedPerFamily[family] < families[family].queueCount && working < kMaxQueues) {
+                plan(family, false);
+                ++working;
+            }
         }
 
-        float queuePriority = 1.0f; // Required even if only 1 queue
+        std::vector<std::vector<float>> priorities(families.size());
         std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-        for (uint32_t family : families) {
+        for (uint32_t family = 0; family < families.size(); ++family) {
+            if (usedPerFamily[family] == 0) {
+                continue;
+            }
+            priorities[family].assign(usedPerFamily[family], 1.0f);
             VkDeviceQueueCreateInfo queueInfo{};
             queueInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
             queueInfo.queueFamilyIndex = family;
-            queueInfo.queueCount = 1;
-            queueInfo.pQueuePriorities = &queuePriority;
+            queueInfo.queueCount = usedPerFamily[family];
+            queueInfo.pQueuePriorities = priorities[family].data();
             queueCreateInfos.push_back(queueInfo);
+            queueFamilies_.push_back(family);
         }
 
         // Every required feature was checked when picking the physical device
@@ -554,26 +838,23 @@ private:
         VK_SUCCESS_OR_THROW(VulkanDevice::create(device_, physicalDevice_, createInfo),
                             "Failed to create logical device");
 
-        // One lock per distinct VkQueue. Compute uses the graphics family's queue.
-        auto setQueue = [this](QueueType type, uint32_t family) {
-            VkQueue queue = VK_NULL_HANDLE;
-            vkGetDeviceQueue(**device_, family, 0, &queue);
-            std::mutex* lock = nullptr;
-            for (auto& existing : queues_) {
-                if (existing.queue == queue) {
-                    lock = existing.lock;
-                }
-            }
-            if (!lock) {
-                queueLocks_.push_back(std::make_unique<std::mutex>());
-                lock = queueLocks_.back().get();
-            }
-            queues_[static_cast<size_t>(type)] = QueueInfo{family, queue, lock};
-        };
-        setQueue(QueueType::Graphics, graphicsFamily_);
-        setQueue(QueueType::Compute, graphicsFamily_);
-        if (presentFamily_) {
-            setQueue(QueueType::Present, *presentFamily_);
+        // Each queue gets a lock (queues are externally synchronized) and a timeline semaphore
+        for (const auto& description : planned) {
+            QueueEntry entry;
+            entry.description = description;
+            vkGetDeviceQueue(**device_, description.family, description.indexInFamily, &entry.queue);
+            entry.lock = std::make_unique<std::mutex>();
+
+            VkSemaphoreTypeCreateInfo typeInfo{};
+            typeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+            typeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+            typeInfo.initialValue = 0;
+            VkSemaphoreCreateInfo semaphoreInfo{};
+            semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            semaphoreInfo.pNext = &typeInfo;
+            VK_SUCCESS_OR_THROW(VulkanSemaphore::create(entry.timeline, **device_, semaphoreInfo),
+                                "Failed to create timeline semaphore");
+            queues_.push_back(std::move(entry));
         }
     }
 
@@ -601,8 +882,16 @@ private:
     std::optional<uint32_t> presentFamily_;
     std::unique_ptr<VulkanDevice> device_;
 
-    std::array<QueueInfo, 3> queues_{};
-    std::vector<std::unique_ptr<std::mutex>> queueLocks_;
+    std::vector<QueueEntry> queues_;
+    std::optional<uint32_t> presentQueue_;
+    std::vector<uint32_t> queueFamilies_;
+
+    // Work submitted by each frame slot, waited for before the slot is reused
+    std::vector<TimelinePoints> frameEnds_;
+    uint64_t frameNumber_ = 0;
+
+    std::mutex retireMutex_;
+    std::list<std::pair<TimelinePoints, std::function<void()>>> retired_;
 
     std::mutex immediateMutex_;
     std::unique_ptr<CommandPool> immediatePool_;
