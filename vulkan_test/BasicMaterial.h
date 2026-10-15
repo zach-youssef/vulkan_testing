@@ -10,8 +10,7 @@
 template<uint MAX_FRAMES, uint VertexAttributes>
 class BasicMaterial : public Material<MAX_FRAMES> {
 public:
-    BasicMaterial<MAX_FRAMES>(VkDevice device,
-                  VkPhysicalDevice physicalDevice,
+    BasicMaterial<MAX_FRAMES>(VulkanContext& context,
                   std::vector<Handle<Descriptor>> descriptors,
                   VkExtent2D swapchainExtent,
                   VkRenderPass renderPass,
@@ -20,7 +19,7 @@ public:
                   VkVertexInputBindingDescription bindingDescription,
                   // TODO make that 2 customizable
                   std::array<VkVertexInputAttributeDescription, VertexAttributes> attributeDescriptions)
-    : Material<MAX_FRAMES>(device, physicalDevice, descriptors) {
+    : Material<MAX_FRAMES>(context, descriptors) {
         createGraphicsPipeline(vertSpirv, fragSpirv, swapchainExtent, renderPass, bindingDescription, attributeDescriptions);
     }
     
@@ -142,7 +141,7 @@ private:
         pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
         pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
         
-        VK_SUCCESS_OR_THROW(VulkanPipelineLayout::create(Material<MAX_FRAMES>::pipelineLayout_, Material<MAX_FRAMES>::device_, pipelineLayoutInfo),
+        VK_SUCCESS_OR_THROW(VulkanPipelineLayout::create(Material<MAX_FRAMES>::pipelineLayout_, Material<MAX_FRAMES>::device(), pipelineLayoutInfo),
                             "Failed to create pipeline layout");
 
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
@@ -174,7 +173,7 @@ private:
         pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
         pipelineInfo.basePipelineIndex = -1; // Optional
         
-        VK_SUCCESS_OR_THROW(VulkanGraphicsPipeline::create(Material<MAX_FRAMES>::pipeline_, Material<MAX_FRAMES>::device_, pipelineInfo),
+        VK_SUCCESS_OR_THROW(VulkanGraphicsPipeline::create(Material<MAX_FRAMES>::pipeline_, Material<MAX_FRAMES>::device(), pipelineInfo),
                             "Failed to create graphics pipeline");
     }
 };

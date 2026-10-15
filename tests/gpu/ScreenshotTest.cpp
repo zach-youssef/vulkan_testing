@@ -57,14 +57,12 @@ const std::vector<uint16_t> kQuadIndices = {0, 1, 2, 2, 3, 0};
 // renders are deterministic: the example's view at time = 0
 class FixedCameraMaterial : public BasicMaterial<kFrames, 3> {
 public:
-    FixedCameraMaterial(ResourceManager& resources,
-                        VkDevice device,
-                        VkPhysicalDevice physicalDevice,
+    FixedCameraMaterial(VulkanContext& context,
                         VkExtent2D extent,
                         VkRenderPass renderPass,
                         std::vector<Handle<Descriptor>> descriptors,
                         Handle<Buffer<UniformBufferObject>> uniformBuffer)
-    : BasicMaterial<kFrames, 3>(device, physicalDevice, descriptors, extent, renderPass,
+    : BasicMaterial<kFrames, 3>(context, descriptors, extent, renderPass,
                                 loadTestShader("shader.vert"), loadTestShader("shader.frag"),
                                 Vertex::getBindingDescription(), Vertex::getAttributeDescriptions()) {
         auto view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
@@ -107,7 +105,7 @@ public:
                 VK_SHADER_STAGE_FRAGMENT_BIT, std::array<Handle<Image>, kFrames>{texture}, sampler),
         };
 
-        material_ = resources.create<FixedCameraMaterial>(resources, ctx.device(), ctx.physicalDevice(),
+        material_ = resources.create<FixedCameraMaterial>(ctx.vulkan(),
                                                           target_.getExtent(), target_.getRenderPass(),
                                                           descriptors, uniformBuffer);
 

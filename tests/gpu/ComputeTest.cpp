@@ -10,12 +10,11 @@ constexpr uint kFrames = 1;
 
 class TestComputeMaterial : public ComputeMaterial<kFrames> {
 public:
-    TestComputeMaterial(VkDevice device,
-                        VkPhysicalDevice physicalDevice,
+    TestComputeMaterial(VulkanContext& context,
                         std::vector<Handle<Descriptor>> descriptors,
                         const std::vector<char>& shaderCode,
                         glm::vec3 dispatchDimensions)
-    : ComputeMaterial<kFrames>(device, physicalDevice, descriptors, shaderCode),
+    : ComputeMaterial<kFrames>(context, descriptors, shaderCode),
     dispatchDimensions_(dispatchDimensions) {}
 
     void update(uint32_t, VkExtent2D) override {}
@@ -75,7 +74,7 @@ TEST_CASE_FIXTURE(GpuTest, "ComputeMaterial dispatch writes every texel of a sto
                                                                     std::array<Handle<Image>, kFrames>{output}),
         };
         auto material = ctx.resources().create<TestComputeMaterial>(
-            ctx.device(), ctx.physicalDevice(), descriptors, loadTestShader("pattern.comp"),
+            ctx.vulkan(), descriptors, loadTestShader("pattern.comp"),
             glm::vec3{(width + 7) / 8, (height + 7) / 8, 1});
 
         dispatch(ctx, *material);
@@ -125,7 +124,7 @@ TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies its input ima
                                                                     std::array<Handle<Image>, kFrames>{output}),
         };
         auto material = ctx.resources().create<TestComputeMaterial>(
-            ctx.device(), ctx.physicalDevice(), descriptors, loadTestShader("test.comp"),
+            ctx.vulkan(), descriptors, loadTestShader("test.comp"),
             glm::vec3{width / 32, height / 32, 1});
 
         dispatch(ctx, *material);

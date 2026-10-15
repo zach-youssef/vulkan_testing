@@ -26,7 +26,7 @@ class TestMaterial : public BasicMaterial<kFrames, 3> {
 public:
     TestMaterial(VkTestContext& ctx, VkExtent2D extent, VkRenderPass renderPass,
                  std::vector<Handle<Descriptor>> descriptors)
-    : BasicMaterial<kFrames, 3>(ctx.device(), ctx.physicalDevice(), descriptors, extent, renderPass,
+    : BasicMaterial<kFrames, 3>(ctx.vulkan(), descriptors, extent, renderPass,
                                 loadTestShader("shader.vert"), loadTestShader("shader.frag"),
                                 {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX}, attributes()) {}
 

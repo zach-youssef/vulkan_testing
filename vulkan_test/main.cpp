@@ -61,15 +61,12 @@ struct Vertex {
 class TutorialMaterial : public BasicMaterial<MAX_FRAMES_IN_FLIGHT, 3> {
 public:
     TutorialMaterial(VulkanContext& context,
-                     VkDevice device,
-                     VkPhysicalDevice physicalDevice,
                      VkExtent2D swapchainExtent,
                      VkRenderPass renderPass,
                      std::vector<Handle<Descriptor>> descriptors,
                      const std::vector<char>& vertSpirv,
                      const std::vector<char>& fragSpirv)
-    :  BasicMaterial<MAX_FRAMES_IN_FLIGHT, 3>(device,
-                                              physicalDevice,
+    :  BasicMaterial<MAX_FRAMES_IN_FLIGHT, 3>(context,
                                               descriptors,
                                               swapchainExtent,
                                               renderPass,
@@ -133,9 +130,8 @@ public:
     TestComputeMat(const std::vector<char>& computeShaderCode,
                    std::vector<Handle<Descriptor>> descriptors,
                    uint32_t imageWidth, uint32_t imageHeight,
-                   VkDevice device,
-                   VkPhysicalDevice physicalDevice)
-    : ComputeMaterial<MAX_FRAMES_IN_FLIGHT>(device, physicalDevice, descriptors, computeShaderCode),
+                   VulkanContext& context)
+    : ComputeMaterial<MAX_FRAMES_IN_FLIGHT>(context, descriptors, computeShaderCode),
     imageWidth_(imageWidth),
     imageHeight_(imageHeight){}
     
@@ -188,8 +184,7 @@ void createTestComputeMaterial(Handle<TestComputeMat>& outPtr,
     outPtr = resourceManager.create<TestComputeMat>(computeShaderCode,
                                                     descriptors,
                                                     width, height,
-                                                    app.getDevice(),
-                                                    app.getPhysicalDevice());
+                                                    app.getContext());
 }
 
 void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
@@ -208,8 +203,6 @@ void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
                                                                                                        VK_IMAGE_LAYOUT_GENERAL));
 
     outPtr = resourceManager.create<TutorialMaterial>(app.getContext(),
-                                                      app.getDevice(),
-                                                      app.getPhysicalDevice(),
                                                       app.getSwapchainExtent(),
                                                       app.getRenderPass(),
                                                       descriptors,

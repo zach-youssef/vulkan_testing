@@ -3,6 +3,7 @@
 #include "VkTypes.h"
 #include "Descriptor.h"
 #include "Buffer.h"
+#include "VulkanContext.h"
 #include "VkUtil.h"
 
 #include <glm/glm.hpp>
@@ -42,10 +43,9 @@ public:
     }
 
 protected:
-    Material<MAX_FRAMES>(VkDevice device,
-             VkPhysicalDevice physicalDevice,
+    Material<MAX_FRAMES>(VulkanContext& context,
              std::vector<Handle<Descriptor>> descriptors)
-    : device_(device), physicalDevice_(physicalDevice), descriptors_(descriptors) {
+    : context_(&context), descriptors_(descriptors) {
         createDescriptorSetLayout();
         createDescriptorPool();
         createDescriptorSets();
@@ -63,7 +63,7 @@ protected:
         std::unique_ptr<VulkanShaderModule> shaderModule;
         
         
-        VK_SUCCESS_OR_THROW(VulkanShaderModule::create(shaderModule, device_, createInfo),
+        VK_SUCCESS_OR_THROW(VulkanShaderModule::create(shaderModule, device(), createInfo),
                             "Failed to create shader module.");
         
         return shaderModule;
@@ -96,7 +96,7 @@ protected:
             descriptorWrites.push_back(write);
         }
         
-        vkUpdateDescriptorSets(device_, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+        vkUpdateDescriptorSets(device(), static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
     }
     
 private:
@@ -116,7 +116,7 @@ private:
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layoutInfo.bindingCount = static_cast<uint32_t>(layoutBindings.size());
         layoutInfo.pBindings = layoutBindings.data();
-        VK_SUCCESS_OR_THROW(VulkanDescriptorSetLayout::create(descriptorSetLayout_, device_, layoutInfo),
+        VK_SUCCESS_OR_THROW(VulkanDescriptorSetLayout::create(descriptorSetLayout_, device(), layoutInfo),
                             "Failed to create descriptor set layout.");
     }
     
@@ -135,7 +135,7 @@ private:
         poolInfo.pPoolSizes = poolSizes.data();
         poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES);
         
-        VK_SUCCESS_OR_THROW(VulkanDescriptorPool::create(descriptorPool_, device_, poolInfo),
+        VK_SUCCESS_OR_THROW(VulkanDescriptorPool::create(descriptorPool_, device(), poolInfo),
                             "Failed to create descriptor pool");
     }
     
@@ -147,13 +147,16 @@ private:
         allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES);
         allocInfo.pSetLayouts = layouts.data();
         
-        VK_SUCCESS_OR_THROW(vkAllocateDescriptorSets(device_, &allocInfo, descriptorSets_.data()),
+        VK_SUCCESS_OR_THROW(vkAllocateDescriptorSets(device(), &allocInfo, descriptorSets_.data()),
                             "Failed to allocate descriptor sets.");
     }
 
 protected:
-    VkDevice device_;
-    VkPhysicalDevice physicalDevice_;
+    VkDevice device() {
+        return context_->device();
+    }
+    
+    VulkanContext* context_;
     std::vector<Handle<Descriptor>> descriptors_;
 
     std::unique_ptr<VulkanPipelineLayout> pipelineLayout_;
@@ -173,11 +176,10 @@ public:
         return **computePipeline_;
     }
 protected:
-    ComputeMaterial<MAX_FRAMES>(VkDevice device,
-                                VkPhysicalDevice physicalDevice,
+    ComputeMaterial<MAX_FRAMES>(VulkanContext& context,
                                 std::vector<Handle<Descriptor>> descriptors,
                                 const std::vector<char> & computeShaderCode)
-    : Material<MAX_FRAMES>(device, physicalDevice, descriptors) {
+    : Material<MAX_FRAMES>(context, descriptors) {
         createComputePipeline(computeShaderCode);
     }
     
@@ -188,7 +190,7 @@ private:
         pipelineLayoutInfo.setLayoutCount = 1;
         pipelineLayoutInfo.pSetLayouts = Material<MAX_FRAMES>::descriptorSetLayout_->get();
         VK_SUCCESS_OR_THROW(VulkanPipelineLayout::create(Material<MAX_FRAMES>::pipelineLayout_,
-                                                         Material<MAX_FRAMES>::device_,
+                                                         Material<MAX_FRAMES>::device(),
                                                          pipelineLayoutInfo),
                             "Failed to create compute pipeline layout");
         
@@ -206,7 +208,7 @@ private:
         pipelineInfo.stage = computeShaderStageInfo;
         
         // The VkResult is intentionally left unchecked here (unlike other create calls)
-        VulkanComputePipeline::create(computePipeline_, Material<MAX_FRAMES>::device_, pipelineInfo);
+        VulkanComputePipeline::create(computePipeline_, Material<MAX_FRAMES>::device(), pipelineInfo);
     }
 
 protected:
