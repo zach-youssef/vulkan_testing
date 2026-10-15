@@ -204,7 +204,10 @@ private: // Vulkan Initialization Functions
             queueCreateInfos.push_back(queueCreateInfo);
         }
         
-        VkPhysicalDeviceFeatures deviceFeatures{}; // empty for now;
+        // Samplers are always created with anisotropic filtering enabled. Support for it
+        // is required when picking the physical device (see isDeviceSuitable).
+        VkPhysicalDeviceFeatures deviceFeatures{};
+        deviceFeatures.samplerAnisotropy = VK_TRUE;
         
         VkDeviceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
