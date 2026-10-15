@@ -5,10 +5,8 @@
 #include "resources/Ubo.h"
 #include "materials/BasicMaterial.h"
 #include "graph/RenderGraph.h"
-#include "graph/nodes/ComputeNode.h"
+#include "graph/nodes/DispatchNode.h"
 #include "graph/nodes/RenderablesNode.h"
-#include "graph/nodes/PresentNode.h"
-#include "graph/nodes/AcquireImageNode.h"
 #include "core/FileUtil.h"
 #include "resources/Image.h"
 
@@ -68,19 +66,17 @@ struct Vertex {
 class TutorialMaterial : public BasicMaterial<3> {
 public:
     TutorialMaterial(VulkanContext& context,
-                     VkExtent2D swapchainExtent,
-                     VkRenderPass renderPass,
+                     AttachmentFormats formats,
                      std::vector<Handle<Descriptor>> descriptors,
                      const std::vector<char>& vertSpirv,
                      const std::vector<char>& fragSpirv)
     :  BasicMaterial<3>(context,
-                                              descriptors,
-                                              swapchainExtent,
-                                              renderPass,
-                                              vertSpirv,
-                                              fragSpirv,
-                                              Vertex::getBindingDescription(),
-                                              Vertex::getAttributeDescriptions()){
+                        descriptors,
+                        std::move(formats),
+                        vertSpirv,
+                        fragSpirv,
+                        Vertex::getBindingDescription(),
+                        Vertex::getAttributeDescriptions()){
         // JANK: Find the first uniform buffer object descriptor
         using UboDesc = UniformBufferDescriptor<UniformBufferObject>;
         Handle<UboDesc> uboDesc = nullptr;
@@ -201,6 +197,7 @@ void createTestComputeMaterial(Handle<TestComputeMat>& outPtr,
 void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
                             FrameBinding<Image> images,
                             Handle<VulkanSampler> sampler,
+                            AttachmentFormats formats,
                             VulkanApp& app) {
     auto vertShaderCode = readFile(shaderDir + "/shader.vert.spv");
     auto fragShaderCode = readFile(shaderDir + "/shader.frag.spv");
@@ -209,12 +206,10 @@ void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
     auto& resourceManager = app.getContext().resources();
     // The uniform buffers are created and bound by the material
     descriptors.push_back(resourceManager.create<UniformBufferDescriptor<UniformBufferObject>>(nullptr, VK_SHADER_STAGE_VERTEX_BIT));
-    descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_FRAGMENT_BIT, images, sampler,
-                                                                                 VK_IMAGE_LAYOUT_GENERAL));
+    descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_FRAGMENT_BIT, images, sampler));
 
     outPtr = resourceManager.create<TutorialMaterial>(app.getContext(),
-                                                      app.getSurfaceExtent(),
-                                                      app.getRenderPass(),
+                                                      std::move(formats),
                                                       descriptors,
                                                       vertShaderCode,
                                                       fragShaderCode);
@@ -245,13 +240,11 @@ int main() {
     Image::createFromFile(texture,
                           app.getContext(),
                           textureDir + "/texture.jpg");
-    // Create an output image per frame in flight
+    // Create an output image per frame in flight, so frame N+1's compute can overlap frame N's drawing
     auto& context = app.getContext();
     auto outImages = context.resources().create<PerFrameHandles<Image>>(context, [&context, texture](uint32_t) {
         // Linear half floats: storage images cannot be sRGB, and 8 bits would band in linear space.
         // Must match the rgba16f format declared by test.comp.
-        // Written by the compute shader as a storage image and then sampled by the fragment
-        // shader, so it stays in the GENERAL layout (valid for both uses)
         Handle<Image> image;
         Image::createStorage(image,
                              context,
@@ -260,30 +253,33 @@ int main() {
                              texture->getHeight());
         return image;
     });
-    
 
     // Create texture sampler
     Handle<VulkanSampler> sampler;
-    VulkanSampler::createWithAddressMode(sampler,
-                                         app.getContext(),
-                                         VK_SAMPLER_ADDRESS_MODE_REPEAT);
-    
+    VK_SUCCESS_OR_THROW(VulkanSampler::createWithAddressMode(sampler,
+                                                             app.getContext(),
+                                                             VK_SAMPLER_ADDRESS_MODE_REPEAT),
+                        "Failed to create sampler");
 
-    // Create a single material shared by two renderables
+    // The render graph: resources first
+    RenderGraph& graph = app.createGraph();
+    ImageId input = graph.importImage("texture", texture, ImageState::shaderReadOnly());
+    ImageId copied = graph.importImage("copied texture", outImages, ImageState::general());
+    RenderTarget screen = graph.surfaceTarget();
+
+    // Create a single material shared by two renderables, built for the screen's formats
     Handle<TutorialMaterial> material;
-    createTutorialMaterial(material, outImages, sampler, app);
-    
+    createTutorialMaterial(material, outImages, sampler, graph.formats(screen), app);
+
     std::vector<Handle<Renderable>> renderables;
     for (glm::vec2 offset : {glm::vec2{-0.3f, 0.0f}, glm::vec2{0.3f, 0.0f}}) {
         Handle<MeshRenderable<Vertex>> renderable;
         createTutorialRenderable(renderable, transformVertices(vertexData, 0.5f, offset), material, app);
         renderables.push_back(std::move(renderable));
     }
-    
-    
-    // Create compute material
+
+    // Create compute material, copying the (static) texture into this frame's output image
     Handle<TestComputeMat> computeMaterial;
-    // The input texture is static, so every frame shares it
     createTestComputeMaterial(computeMaterial,
                               texture,
                               sampler,
@@ -291,26 +287,14 @@ int main() {
                               texture->getWidth(),
                               texture->getHeight(),
                               app);
-    
-    // Instantiate our render graph
-    auto renderGraph = std::make_unique<RenderGraph>(context);
-    
-    // Add Nodes
-    auto acquireImageNode = renderGraph->addNode(std::make_unique<AcquireImageNode>(context));
-    auto computeNode = renderGraph->addNode(std::make_unique<ComputeNode>(std::move(computeMaterial), context));
-    auto graphicsNode = renderGraph->addNode(std::make_unique<RenderablesNode>(std::move(renderables),
-                                                                               context,
-                                                                               app.getRenderPass()));
-    auto presentNode = renderGraph->addNode(std::make_unique<PresentNode>(context));
-    
-    // Setup Edges
-    renderGraph->addEdge(acquireImageNode, graphicsNode);
-    renderGraph->addEdge(computeNode, graphicsNode);
-    renderGraph->addEdge(graphicsNode, presentNode);
-    renderGraph->flagNodeAsFrameBlocking(graphicsNode);
 
-    // Set on app
-    app.setRenderGraph(std::move(renderGraph));
+    // Nodes. The graph orders them, picks queues and synchronizes them from these declarations,
+    // and acquires and presents the surface around the draw.
+    NodeId copy = graph.add<DispatchNode>("copy texture", std::move(computeMaterial));
+    graph.node(copy).read(input, Access::SampledRead).write(copied, Access::StorageWrite);
+    NodeId draw = graph.add<RenderablesNode>("draw quads", std::move(renderables), screen);
+    graph.node(draw).read(copied, Access::SampledRead, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+    app.setActiveGraph(graph);
 
     // Run
     try {

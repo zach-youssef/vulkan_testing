@@ -12,23 +12,24 @@ class BasicMaterial : public Material {
 public:
     BasicMaterial(VulkanContext& context,
                   std::vector<Handle<Descriptor>> descriptors,
-                  VkExtent2D swapchainExtent,
-                  VkRenderPass renderPass,
+                  AttachmentFormats formats,
                   const std::vector<char>& vertSpirv,
                   const std::vector<char>& fragSpirv,
                   VkVertexInputBindingDescription bindingDescription,
                   // TODO make that 2 customizable
                   std::array<VkVertexInputAttributeDescription, VertexAttributes> attributeDescriptions)
-    : Material(context, descriptors) {
-        createGraphicsPipeline(vertSpirv, fragSpirv, swapchainExtent, renderPass, bindingDescription, attributeDescriptions);
+    : Material(context, descriptors), formats_(std::move(formats)) {
+        createGraphicsPipeline(vertSpirv, fragSpirv, bindingDescription, attributeDescriptions);
     }
     
-    virtual void update(uint32_t currentImage, VkExtent2D swapChainExtent) override {}
+    virtual void update(uint32_t frameIndex, VkExtent2D surfaceExtent) override {}
+
+    std::optional<AttachmentFormats> attachmentFormats() override {
+        return formats_;
+    }
 private:
     void createGraphicsPipeline(const std::vector<char>& vertShaderCode,
                                 const std::vector<char>& fragShaderCode,
-                                VkExtent2D swapChainExtent,
-                                VkRenderPass renderPass,
                                 VkVertexInputBindingDescription bindingDescription,
                                 std::array<VkVertexInputAttributeDescription, VertexAttributes> attributeDescriptions) {
         auto vertShaderModule = createShaderModule(vertShaderCode);
@@ -73,24 +74,11 @@ private:
         dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
         dynamicState.pDynamicStates = dynamicStates.data();
         
-        VkViewport viewport{};
-        viewport.x = 0.0f;
-        viewport.y = 0.0f;
-        viewport.width = static_cast<float>(swapChainExtent.width);
-        viewport.height = static_cast<float>(swapChainExtent.height);
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-        
-        VkRect2D scissor{};
-        scissor.offset = {0, 0};
-        scissor.extent = swapChainExtent;
-        
         VkPipelineViewportStateCreateInfo viewportState{};
         viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        // Viewport and scissor are dynamic state, set when recording
         viewportState.viewportCount = 1;
-        viewportState.pViewports = &viewport;
         viewportState.scissorCount = 1;
-        viewportState.pScissors = &scissor;
         
         VkPipelineRasterizationStateCreateInfo rasterizer{};
         rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -118,8 +106,9 @@ private:
         colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
         colorBlending.logicOpEnable = VK_FALSE;
         colorBlending.logicOp = VK_LOGIC_OP_COPY; // Optional
-        colorBlending.attachmentCount = 1;
-        colorBlending.pAttachments = &colorBlendAttachment;
+        std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments(formats_.color.size(), colorBlendAttachment);
+        colorBlending.attachmentCount = static_cast<uint32_t>(colorBlendAttachments.size());
+        colorBlending.pAttachments = colorBlendAttachments.data();
         colorBlending.blendConstants[0] = 0.0f; // Optional
         colorBlending.blendConstants[1] = 0.0f; // Optional
         colorBlending.blendConstants[2] = 0.0f; // Optional
@@ -146,14 +135,23 @@ private:
 
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depthStencil.depthTestEnable = VK_TRUE;
-        depthStencil.depthWriteEnable = VK_TRUE;
+        const bool hasDepth = formats_.depth != VK_FORMAT_UNDEFINED;
+        depthStencil.depthTestEnable = hasDepth;
+        depthStencil.depthWriteEnable = hasDepth;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
         depthStencil.depthBoundsTestEnable = VK_FALSE;
         depthStencil.stencilTestEnable = VK_FALSE;
         
+        // Dynamic rendering: the pipeline is built against attachment formats, not a render pass
+        VkPipelineRenderingCreateInfo renderingInfo{};
+        renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        renderingInfo.colorAttachmentCount = static_cast<uint32_t>(formats_.color.size());
+        renderingInfo.pColorAttachmentFormats = formats_.color.data();
+        renderingInfo.depthAttachmentFormat = formats_.depth;
+
         VkGraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.pNext = &renderingInfo;
         pipelineInfo.stageCount = 2;
         pipelineInfo.pStages = shaderStages;
 
@@ -167,8 +165,7 @@ private:
         pipelineInfo.pDynamicState = &dynamicState;
         
         pipelineInfo.layout = **pipelineLayout_;
-        pipelineInfo.renderPass = renderPass;
-        pipelineInfo.subpass = 0;
+        pipelineInfo.renderPass = VK_NULL_HANDLE;
 
         pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
         pipelineInfo.basePipelineIndex = -1; // Optional
@@ -176,4 +173,6 @@ private:
         VK_SUCCESS_OR_THROW(VulkanGraphicsPipeline::create(pipeline_, device(), pipelineInfo),
                             "Failed to create graphics pipeline");
     }
+
+    AttachmentFormats formats_;
 };

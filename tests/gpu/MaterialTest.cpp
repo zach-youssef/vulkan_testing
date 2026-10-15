@@ -1,7 +1,6 @@
 #include "resources/Ubo.h"
 #include "VkTestContext.h"
 #include "TestShaders.h"
-#include "targets/OffscreenRenderTarget.h"
 #include "materials/BasicMaterial.h"
 
 namespace {
@@ -22,9 +21,8 @@ std::array<VkVertexInputAttributeDescription, 3> attributes() {
 
 class TestMaterial : public BasicMaterial<3> {
 public:
-    TestMaterial(VulkanContext& ctx, VkExtent2D extent, VkRenderPass renderPass,
-                 std::vector<Handle<Descriptor>> descriptors)
-    : BasicMaterial<3>(ctx, descriptors, extent, renderPass,
+    TestMaterial(VulkanContext& ctx, std::vector<Handle<Descriptor>> descriptors)
+    : BasicMaterial<3>(ctx, descriptors, AttachmentFormats{{VK_FORMAT_R8G8B8A8_UNORM}, VK_FORMAT_D32_SFLOAT},
                                 loadTestShader("shader.vert"), loadTestShader("shader.frag"),
                                 {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX}, attributes()) {}
 
@@ -40,7 +38,6 @@ TEST_CASE_FIXTURE(GpuTest, "Material tolerates descriptors whose buffers are bou
     auto& ctx = context();
     auto& resources = ctx.resources();
 
-    OffscreenRenderTarget target(ctx, 16, 16, VK_FORMAT_R8G8B8A8_UNORM);
 
     Handle<Image> texture;
     Image::createEmptyRGBA(texture, ctx, 4, 4);
@@ -56,7 +53,7 @@ TEST_CASE_FIXTURE(GpuTest, "Material tolerates descriptors whose buffers are bou
     };
 
     // Creating the material, and using its sets, must not write the unbound (VK_NULL_HANDLE) buffers
-    auto material = resources.create<TestMaterial>(ctx, target.getExtent(), target.getRenderPass(), descriptors);
+    auto material = resources.create<TestMaterial>(ctx, descriptors);
     CHECK(material->getPipeline() != VK_NULL_HANDLE);
     CHECK(*material->getDescriptorSet(0) != VK_NULL_HANDLE);
 
@@ -79,7 +76,6 @@ TEST_CASE_FIXTURE(GpuTest, "Material creates and writes descriptor sets for fram
     auto& resources = ctx.resources();
     const uint32_t originalFrames = ctx.framesInFlight();
 
-    OffscreenRenderTarget target(ctx, 16, 16, VK_FORMAT_R8G8B8A8_UNORM);
     Handle<Image> texture;
     Image::createEmptyRGBA(texture, ctx, 4, 4);
     Handle<VulkanSampler> sampler;
@@ -97,7 +93,7 @@ TEST_CASE_FIXTURE(GpuTest, "Material creates and writes descriptor sets for fram
         resources.create<UniformBufferDescriptor<UniformBufferObject>>(buffers, VK_SHADER_STAGE_VERTEX_BIT),
         resources.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_FRAGMENT_BIT, texture, sampler),
     };
-    auto material = resources.create<TestMaterial>(ctx, target.getExtent(), target.getRenderPass(), descriptors);
+    auto material = resources.create<TestMaterial>(ctx, descriptors);
     buffers.reset();
 
     const VkDescriptorSet frame0 = *material->getDescriptorSet(0);

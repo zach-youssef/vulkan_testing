@@ -5,6 +5,9 @@
 #include "resources/Buffer.h"
 #include "core/VulkanContext.h"
 #include "core/VkUtil.h"
+#include "materials/AttachmentFormats.h"
+
+#include <optional>
 
 #include <glm/glm.hpp>
 
@@ -27,7 +30,25 @@ class Material {
 public:
     virtual ~Material() = default;
     
-    virtual void update(uint32_t currentImage, VkExtent2D swapChainExtent) = 0;
+    // Called by the render graph once per frame before any node records, e.g. to write uniform
+    // buffers. surfaceExtent is {0, 0} without a surface.
+    virtual void update(uint32_t frameIndex, VkExtent2D surfaceExtent) = 0;
+
+    // Binds the pipeline and the frame's descriptor set for drawing or dispatching
+    void bind(VkCommandBuffer commandBuffer, uint32_t frameIndex) {
+        vkCmdBindPipeline(commandBuffer, bindPoint(), getPipeline());
+        vkCmdBindDescriptorSets(commandBuffer, bindPoint(), getPipelineLayout(),
+                                0, 1, getDescriptorSet(frameIndex), 0, nullptr);
+    }
+
+    virtual VkPipelineBindPoint bindPoint() {
+        return VK_PIPELINE_BIND_POINT_GRAPHICS;
+    }
+
+    // The formats a graphics material's pipeline renders to; empty for compute materials
+    virtual std::optional<AttachmentFormats> attachmentFormats() {
+        return std::nullopt;
+    }
     
     // The frame's descriptor set. Each frame's set is written the first time it is requested,
     // including frames added when the number of frames in flight grows.
@@ -192,6 +213,10 @@ public:
     VkPipeline getPipeline() override {
         return **computePipeline_;
     }
+
+    VkPipelineBindPoint bindPoint() override {
+        return VK_PIPELINE_BIND_POINT_COMPUTE;
+    }
 protected:
     ComputeMaterial(VulkanContext& context,
                                 std::vector<Handle<Descriptor>> descriptors,
@@ -239,9 +264,9 @@ public:
     Material* getMaterial() {
         return material_.get();
     }
-    
-    void update(uint32_t frameIndex, VkExtent2D swapchainExtent) {
-        material_->update(frameIndex, swapchainExtent);
+
+    Handle<Material> getMaterialHandle() {
+        return material_;
     }
     
     virtual VkBuffer getVertexBuffer() = 0;

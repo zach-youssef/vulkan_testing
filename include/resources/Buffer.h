@@ -25,6 +25,11 @@ public:
     VkDeviceSize getStride() {
         return sizeof(Data);
     }
+
+    // Size in bytes
+    VkDeviceSize getSize() {
+        return size_;
+    }
     
     // Creates a buffer owned by the context's ResourceManager
     static VkResult create(Handle<Buffer>& outBuffer,
@@ -117,7 +122,7 @@ private:
            VkBufferUsageFlags usage,
            VkMemoryPropertyFlags properties,
            VulkanContext& context,
-           VkResult& outResult) : device_(context.device()) {
+           VkResult& outResult) : device_(context.device()), size_(sizeof(Data) * numElements) {
         VkPhysicalDevice physicalDevice = context.physicalDevice();
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -144,6 +149,7 @@ private:
     }
     
     VkDevice device_;
+    VkDeviceSize size_;
     std::unique_ptr<VulkanBuffer> buffer_;
     std::unique_ptr<VulkanMemory> memory_;
 };

@@ -16,6 +16,9 @@
  its present. They are per image rather than per frame in flight, since the presentation engine
  may still be using an image's semaphore until that image is acquired again.
 
+ Acquire semaphores are per frame in flight: a frame slot's semaphore is reused only once the
+ slot's previous frame, which waited on it, has finished (see VulkanContext::beginFrame).
+
  Not thread safe. recreate() requires that the device is idle.
  */
 class Swapchain {
@@ -27,6 +30,14 @@ public:
             throw std::logic_error("A swapchain requires a context created with a surface");
         }
         create(framebufferSize);
+        acquireSemaphores_ = PerFrame<std::unique_ptr<VulkanSemaphore>>(context, [device = context.device()](uint32_t) {
+            VkSemaphoreCreateInfo semaphoreInfo{};
+            semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            std::unique_ptr<VulkanSemaphore> semaphore;
+            VK_SUCCESS_OR_THROW(VulkanSemaphore::create(semaphore, device, semaphoreInfo),
+                                "Failed to create semaphore");
+            return semaphore;
+        });
     }
 
     Swapchain(const Swapchain&) = delete;
@@ -38,12 +49,36 @@ public:
         create(framebufferSize);
     }
 
+    struct Acquired {
+        VkResult result;            // VK_SUCCESS, VK_SUBOPTIMAL_KHR or VK_ERROR_OUT_OF_DATE_KHR
+        uint32_t imageIndex = 0;
+        VkSemaphore semaphore = VK_NULL_HANDLE;   // Signaled once the image can be written
+    };
+
+    // Acquires the next image for a frame slot. With VK_ERROR_OUT_OF_DATE_KHR no image was
+    // acquired and the swapchain must be recreated; other failures throw.
+    Acquired acquire(uint32_t frameIndex) {
+        Acquired acquired;
+        acquired.semaphore = **acquireSemaphores_[frameIndex];
+        acquired.result = vkAcquireNextImageKHR(context_->device(), **swapchain_, UINT64_MAX,
+                                                acquired.semaphore, VK_NULL_HANDLE, &acquired.imageIndex);
+        if (acquired.result != VK_SUCCESS && acquired.result != VK_SUBOPTIMAL_KHR
+            && acquired.result != VK_ERROR_OUT_OF_DATE_KHR) {
+            VK_SUCCESS_OR_THROW(acquired.result, "Failed to acquire swapchain image");
+        }
+        return acquired;
+    }
+
     VkSwapchainKHR get() {
         return **swapchain_;
     }
 
     VkFormat getFormat() {
         return format_;
+    }
+
+    VkImageUsageFlags getUsage() {
+        return usage_;
     }
 
     VkExtent2D getExtent() {
@@ -96,7 +131,10 @@ private:
         createInfo.imageColorSpace = surfaceFormat.colorSpace;
         createInfo.imageExtent = extent;
         createInfo.imageArrayLayers = 1; // Always 1 unless steroscopic 3D
-        createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        // Rendered to, and copied from when supported (e.g. for screenshots)
+        createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                                | (support.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+        usage_ = createInfo.imageUsage;
 
         // Set sharing mode based on if a single present/graphics queue will be accessing the swapchain or 2 separate queues
         uint32_t queueFamilyIndices[] = {context_->queueFamily(QueueType::Graphics), context_->queueFamily(QueueType::Present)};
@@ -152,7 +190,9 @@ private:
     std::unique_ptr<VulkanSwapchain> swapchain_;
     std::vector<VkImage> images_;
     VkFormat format_ = VK_FORMAT_UNDEFINED;
+    VkImageUsageFlags usage_ = 0;
     VkExtent2D extent_{};
     std::vector<std::unique_ptr<VulkanImageView>> imageViews_;
     std::vector<std::unique_ptr<VulkanSemaphore>> renderFinishedSemaphores_;
+    PerFrame<std::unique_ptr<VulkanSemaphore>> acquireSemaphores_;
 };

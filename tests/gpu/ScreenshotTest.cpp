@@ -2,9 +2,8 @@
 #include "VkTestContext.h"
 #include "TestShaders.h"
 #include "ScreenshotApproval.h"
-#include "targets/OffscreenRenderTarget.h"
 #include "materials/BasicMaterial.h"
-#include "graph/nodes/RenderableNode.h"
+#include "graph/nodes/ReadbackNode.h"
 #include "graph/nodes/RenderablesNode.h"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -58,10 +57,10 @@ class FixedCameraMaterial : public BasicMaterial<3> {
 public:
     FixedCameraMaterial(VulkanContext& context,
                         VkExtent2D extent,
-                        VkRenderPass renderPass,
+                        AttachmentFormats formats,
                         std::vector<Handle<Descriptor>> descriptors,
                         Handle<Buffer<UniformBufferObject>> uniformBuffer)
-    : BasicMaterial<3>(context, descriptors, extent, renderPass,
+    : BasicMaterial<3>(context, descriptors, std::move(formats),
                                 loadTestShader("shader.vert"), loadTestShader("shader.frag"),
                                 Vertex::getBindingDescription(), Vertex::getAttributeDescriptions()) {
         auto view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
@@ -77,16 +76,13 @@ public:
     void update(uint32_t, VkExtent2D) override {}
 };
 
-// Everything needed to draw the example's textured quads into an offscreen target
+// Everything needed to draw the example's textured quads into a graph-created image and read it back
 class TexturedScene {
 public:
-    explicit TexturedScene(VulkanContext& ctx)
-    : ctx_(ctx),
-    target_(ctx, kWidth, kHeight, VK_FORMAT_R8G8B8A8_SRGB) {
+    explicit TexturedScene(VulkanContext& ctx) : ctx_(ctx), graph_(ctx) {
         auto& resources = ctx.resources();
 
-        Handle<Image> texture;
-        Image::createFromFile(texture, ctx, std::string(TEST_TEXTURE_DIR) + "/texture.jpg");
+        Image::createFromFile(texture_, ctx, std::string(TEST_TEXTURE_DIR) + "/texture.jpg");
         Handle<VulkanSampler> sampler;
         VK_SUCCESS_OR_THROW(VulkanSampler::createWithAddressMode(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT),
                             "Failed to create sampler");
@@ -97,18 +93,18 @@ public:
                                                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
                             "Failed to create uniform buffer");
 
+        color_ = graph_.createImage("color", FrameMode::Shared, VK_FORMAT_R8G8B8A8_SRGB, FixedExtent{{kWidth, kHeight}});
+        ImageId depth = graph_.createImage("depth", FrameMode::Shared, VK_FORMAT_D32_SFLOAT, FixedExtent{{kWidth, kHeight}});
+        target_.color.push_back({color_, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, {0.0f, 0.0f, 0.0f, 0.0f}});
+        target_.depth = DepthAttachment{depth};
+        textureId_ = graph_.importImage("texture", texture_, ImageState::shaderReadOnly());
+
         std::vector<Handle<Descriptor>> descriptors{
             resources.create<UniformBufferDescriptor<UniformBufferObject>>(uniformBuffer, VK_SHADER_STAGE_VERTEX_BIT),
-            resources.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_FRAGMENT_BIT, texture, sampler),
+            resources.create<CombinedImageSamplerDescriptor>(VK_SHADER_STAGE_FRAGMENT_BIT, texture_, sampler),
         };
-
-        material_ = resources.create<FixedCameraMaterial>(ctx,
-                                                          target_.getExtent(), target_.getRenderPass(),
+        material_ = resources.create<FixedCameraMaterial>(ctx, VkExtent2D{kWidth, kHeight}, graph_.formats(target_),
                                                           descriptors, uniformBuffer);
-    }
-
-    ~TexturedScene() {
-        ctx_.waitIdle(QueueType::Graphics);
     }
 
     Handle<Renderable> createQuad(float scale, glm::vec2 offset) {
@@ -116,36 +112,35 @@ public:
             quad(scale, offset), kQuadIndices, material_, ctx_);
     }
 
-    // Submits a node's work for a frame into the offscreen target and reads back the result
-    std::vector<uint8_t> render(RenderNode& node, uint32_t frameIndex = 0) {
-        RenderEvalContext renderContext{
-            frameIndex, target_.getExtent(),
-            0, {target_.getFramebuffer()},
-            VK_NULL_HANDLE,
-            false,
-        };
-        node.submit(renderContext);
-        ctx_.waitIdle(QueueType::Graphics);
-        return target_.readback();
+    // Draws renderables in a frame and reads back the result
+    std::vector<uint8_t> render(std::vector<Handle<Renderable>> renderables) {
+        NodeId draw = graph_.add<RenderablesNode>("draw", std::move(renderables), target_);
+        graph_.node(draw).read(textureId_, Access::SampledRead, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+        NodeId readback = graph_.add<ReadbackNode>("readback", color_);
+        graph_.execute();
+        return graph_.nodeAs<ReadbackNode>(readback).pixels();
     }
 
-    VkRenderPass renderPass() { return target_.getRenderPass(); }
+    RenderGraph& graph() { return graph_; }
 
 private:
     VulkanContext& ctx_;
-    OffscreenRenderTarget target_;
+    RenderGraph graph_;
+    Handle<Image> texture_;
+    ImageId textureId_;
+    ImageId color_;
+    RenderTarget target_;
     Handle<Material> material_;
 };
 
 } // namespace
 
-TEST_CASE_FIXTURE(GpuTest, "Screenshot - RenderableNode draws a textured quad") {
+TEST_CASE_FIXTURE(GpuTest, "Screenshot - RenderablesNode draws a textured quad") {
     auto& ctx = context();
     std::vector<uint8_t> pixels;
     {
         TexturedScene scene(ctx);
-        RenderableNode node(scene.createQuad(1.0f, {0.0f, 0.0f}), ctx, scene.renderPass());
-        pixels = scene.render(node);
+        pixels = scene.render({scene.createQuad(1.0f, {0.0f, 0.0f})});
     }
     verifyScreenshot(pixels, kWidth, kHeight);
 }
@@ -160,9 +155,7 @@ TEST_CASE_FIXTURE(GpuTest, "Screenshot - RenderablesNode draws two quads sharing
             scene.createQuad(0.5f, {0.3f, 0.0f}),
         };
         CHECK(renderables[0]->getMaterial() == renderables[1]->getMaterial());
-
-        RenderablesNode node(std::move(renderables), ctx, scene.renderPass());
-        pixels = scene.render(node);
+        pixels = scene.render(std::move(renderables));
     }
     verifyScreenshot(pixels, kWidth, kHeight);
 }
@@ -172,17 +165,20 @@ TEST_CASE_FIXTURE(GpuTest, "Frames added at runtime render the same as existing 
     const uint32_t originalFrames = ctx.framesInFlight();
 
     TexturedScene scene(ctx);
-    RenderableNode node(scene.createQuad(1.0f, {0.0f, 0.0f}), ctx, scene.renderPass());
-    const auto expected = scene.render(node, 0);
+    const auto expected = scene.render({scene.createQuad(1.0f, {0.0f, 0.0f})});
 
-    // The node's command buffers and the material's descriptor sets grow with the frames in flight
+    // The graph's command buffers and the material's descriptor sets grow with the frames in flight
     ctx.setFramesInFlight(originalFrames + 1);
-    ctx.advanceFrame();
-    CHECK(scene.render(node, originalFrames) == expected);
+    for (uint32_t frame = 0; frame <= originalFrames + 1; ++frame) {
+        scene.graph().execute();
+    }
+    auto& readback = scene.graph().nodeAs<ReadbackNode>(NodeId{1});
+    CHECK(readback.pixels() == expected);
 
     ctx.setFramesInFlight(originalFrames);
-    ctx.advanceFrame();
-    CHECK(scene.render(node, originalFrames - 1) == expected);
+    scene.graph().execute();
+    scene.graph().execute();
+    CHECK(readback.pixels() == expected);
 }
 
 TEST_CASE("compareWithFlip passes identical images and flags visibly different ones") {

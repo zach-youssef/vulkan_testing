@@ -1,5 +1,5 @@
 #include "app/VulkanApp.h"
-#include "graph/nodes/ComputeNode.h"
+#include "graph/nodes/DispatchNode.h"
 #include "TestShaders.h"
 
 #include <doctest/doctest.h>
@@ -81,14 +81,18 @@ TEST_CASE("A headless VulkanApp has no window, surface or render pass") {
 
     CHECK_FALSE(app.hasWindow());
     CHECK_FALSE(app.getContext().hasSurface());
-    CHECK_THROWS_AS(app.getRenderPass(), std::logic_error);
     CHECK_THROWS_AS(app.getSwapchain(), std::logic_error);
     CHECK_THROWS_AS(app.getSurfaceExtent(), std::logic_error);
     CHECK_THROWS_AS(app.setWindowSize(100, 100), std::logic_error);
     // run() would never return without a window to close
     CHECK_THROWS_AS(app.run(), std::logic_error);
-    // There is nothing to draw without a render graph
+    // There is nothing to draw without an active render graph
     CHECK_THROWS_AS(app.drawFrame(), std::logic_error);
+    // Graphs of a headless app have no surface
+    RenderGraph& graph = app.createGraph();
+    CHECK_FALSE(graph.hasSurface());
+    CHECK_THROWS_AS(graph.surface(), std::logic_error);
+    CHECK_THROWS_AS(graph.surfaceTarget(), std::logic_error);
 }
 
 TEST_CASE("A headless VulkanApp runs a compute-only render graph across frames in flight") {
@@ -111,10 +115,11 @@ TEST_CASE("A headless VulkanApp runs a compute-only render graph across frames i
         };
         auto material = ctx.resources().create<PatternMaterial>(ctx, descriptors, width, height);
 
-        auto graph = std::make_unique<RenderGraph>(ctx);
-        auto node = graph->addNode(std::make_unique<ComputeNode>(std::move(material), ctx));
-        REQUIRE(graph->flagNodeAsFrameBlocking(node) == 0);
-        app.setRenderGraph(std::move(graph));
+        RenderGraph& graph = app.createGraph();
+        ImageId output = graph.importImage("output", images, ImageState::general());
+        NodeId node = graph.add<DispatchNode>("pattern", std::move(material));
+        graph.node(node).write(output, Access::StorageWrite);
+        app.setActiveGraph(graph);
     }
 
     for (int frame = 0; frame < 3; ++frame) {
@@ -145,4 +150,34 @@ TEST_CASE("A headless VulkanApp runs a compute-only render graph across frames i
     CHECK(ctx.currentFrame() == 0);
 
     images.reset();
+}
+
+TEST_CASE("A VulkanApp switches between graphs and destroys inactive ones") {
+    HeadlessApp headless;
+    auto& app = *headless.app;
+    auto& ctx = app.getContext();
+
+    // Two graphs counting their frames with CPU nodes
+    int framesA = 0, framesB = 0;
+    RenderGraph& a = app.createGraph();
+    a.addCpu("count a", nullptr, [&framesA](FrameContext&) { ++framesA; });
+    RenderGraph& b = app.createGraph();
+    b.addCpu("count b", nullptr, [&framesB](FrameContext&) { ++framesB; });
+
+    app.setActiveGraph(a);
+    app.drawFrame();
+    app.drawFrame();
+    app.setActiveGraph(b);
+    app.drawFrame();
+    CHECK(framesA == 2);
+    CHECK(framesB == 1);
+    CHECK(ctx.frameNumber() == 3);
+
+    CHECK_THROWS_AS(app.destroyGraph(b), std::logic_error);
+    app.destroyGraph(a);
+    app.drawFrame();
+    CHECK(framesB == 2);
+
+    RenderGraph other(ctx);
+    CHECK_THROWS_AS(app.setActiveGraph(other), std::invalid_argument);
 }
