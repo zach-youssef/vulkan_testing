@@ -170,6 +170,7 @@ std::vector<Vertex> transformVertices(const std::vector<Vertex>& vertices, float
 
 void createTestComputeMaterial(Handle<TestComputeMat>& outPtr,
                                std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> inImages,
+                               Handle<VulkanSampler> sampler,
                                std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> outImages,
                                uint32_t width, uint32_t height,
                                VulkanApp<MAX_FRAMES_IN_FLIGHT>& app){
@@ -178,7 +179,7 @@ void createTestComputeMaterial(Handle<TestComputeMat>& outPtr,
     
     std::vector<Handle<Descriptor>> descriptors;
     auto& resourceManager = app.getContext().resources();
-    descriptors.push_back(resourceManager.create<StorageImageDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, inImages));
+    descriptors.push_back(resourceManager.create<CombinedImageSamplerDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, inImages, sampler));
     descriptors.push_back(resourceManager.create<StorageImageDescriptor<MAX_FRAMES_IN_FLIGHT>>(VK_SHADER_STAGE_COMPUTE_BIT, outImages));
 
     outPtr = resourceManager.create<TestComputeMat>(computeShaderCode,
@@ -231,17 +232,18 @@ int main() {
     Image::createFromFile(texture,
                           app.getContext(),
                           "/Users/zyoussef/code/vulkan_test/vulkan_test/textures/texture.jpg");
-    // The texture is read by the compute shader as a storage image, which must be in the GENERAL layout
-    texture->transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> inputImages = {texture, texture};
 
     // Create output texture images
     std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> outImages;
     for (int frameIdx = 0; frameIdx < MAX_FRAMES_IN_FLIGHT; ++frameIdx) {
-        Image::createEmptyRGBA(outImages[frameIdx],
-                               app.getContext(),
-                               texture->getWidth(),
-                               texture->getHeight());
+        // Linear half floats: storage images cannot be sRGB, and 8 bits would band in linear space.
+        // Must match the rgba16f format declared by test.comp.
+        Image::createEmpty(outImages[frameIdx],
+                           app.getContext(),
+                           VK_FORMAT_R16G16B16A16_SFLOAT,
+                           texture->getWidth(),
+                           texture->getHeight());
         // Written by the compute shader as a storage image and then sampled by the fragment
         // shader, so keep it in the GENERAL layout (valid for both uses)
         outImages[frameIdx]->transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
@@ -271,6 +273,7 @@ int main() {
     Handle<TestComputeMat> computeMaterial;
     createTestComputeMaterial(computeMaterial,
                               inputImages,
+                              sampler,
                               outImages,
                               texture->getWidth(),
                               texture->getHeight(),

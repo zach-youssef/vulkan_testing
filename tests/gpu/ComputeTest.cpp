@@ -2,7 +2,9 @@
 #include "TestShaders.h"
 #include "Renderable.h"
 
+#include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -41,6 +43,26 @@ void dispatch(VulkanContext& ctx, ComputeMaterial<kFrames>& material) {
                       static_cast<uint32_t>(groups.y),
                       static_cast<uint32_t>(groups.z));
     });
+}
+
+float srgbToLinear(float value) {
+    return value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
+}
+
+// Decodes an IEEE 754 half precision float
+float halfToFloat(uint16_t half) {
+    const int sign = half >> 15;
+    const int exponent = (half >> 10) & 0x1f;
+    const int mantissa = half & 0x3ff;
+    float value;
+    if (exponent == 0) {
+        value = std::ldexp(static_cast<float>(mantissa), -24); // Subnormal
+    } else if (exponent == 31) {
+        value = mantissa ? NAN : INFINITY;
+    } else {
+        value = std::ldexp(static_cast<float>(mantissa | 0x400), exponent - 25);
+    }
+    return sign ? -value : value;
 }
 
 // Storage images must be in the GENERAL layout when used by a shader
@@ -100,7 +122,7 @@ TEST_CASE_FIXTURE(GpuTest, "ComputeMaterial dispatch writes every texel of a sto
     CHECK(mismatches == 0);
 }
 
-TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies its input image to its output") {
+TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies a sampled sRGB image into a float image") {
     auto& ctx = context();
     // test.comp uses 32x32 workgroups without a bounds check, so use multiples of 32
     constexpr uint32_t width = 64;
@@ -111,15 +133,18 @@ TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies its input ima
         source[i] = static_cast<uint8_t>((i * 7) % 251);
     }
 
+    // The input is sampled (and so stays in SHADER_READ_ONLY_OPTIMAL); the output is a storage image
     Handle<Image> input;
     Image::createFromUcharBuffer(input, ctx, source.data(), width, height, source.size());
-    makeStorageImage(ctx, *input);
-    // Copy into an image of the same format as the input, so the bytes should match exactly
-    auto output = createStorageImage(ctx, input->getFormat(), width, height);
+    auto output = createStorageImage(ctx, VK_FORMAT_R16G16B16A16_SFLOAT, width, height);
+    Handle<VulkanSampler> sampler;
+    REQUIRE(VulkanSampler::createWithModeAndFilter(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                                   VK_FILTER_NEAREST) == VK_SUCCESS);
     {
         std::vector<Handle<Descriptor>> descriptors{
-            ctx.resources().create<StorageImageDescriptor<kFrames>>(VK_SHADER_STAGE_COMPUTE_BIT,
-                                                                    std::array<Handle<Image>, kFrames>{input}),
+            ctx.resources().create<CombinedImageSamplerDescriptor<kFrames>>(VK_SHADER_STAGE_COMPUTE_BIT,
+                                                                            std::array<Handle<Image>, kFrames>{input},
+                                                                            sampler),
             ctx.resources().create<StorageImageDescriptor<kFrames>>(VK_SHADER_STAGE_COMPUTE_BIT,
                                                                     std::array<Handle<Image>, kFrames>{output}),
         };
@@ -130,5 +155,21 @@ TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies its input ima
         dispatch(ctx, *material);
     }
 
-    CHECK(readback(ctx, *output) == source);
+    auto bytes = readback(ctx, *output);
+    REQUIRE(bytes.size() == width * height * 4 * sizeof(uint16_t));
+    std::vector<uint16_t> halves(width * height * 4);
+    memcpy(halves.data(), bytes.data(), bytes.size());
+
+    int mismatches = 0;
+    for (size_t i = 0; i < source.size(); ++i) {
+        const bool isAlpha = i % 4 == 3;
+        const float encoded = source[i] / 255.0f;
+        // Sampling an sRGB image decodes its color channels to linear; alpha is always linear
+        const float expected = isAlpha ? encoded : srgbToLinear(encoded);
+        const float actual = halfToFloat(halves[i]);
+        if (std::abs(actual - expected) > 2e-3f && mismatches++ < 10) {
+            FAIL_CHECK("Component " << i << " = " << actual << ", expected " << expected);
+        }
+    }
+    CHECK(mismatches == 0);
 }
