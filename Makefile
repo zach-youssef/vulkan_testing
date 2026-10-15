@@ -20,6 +20,10 @@ CFLAGS += -I$(INCLUDE_DIR)
 
 HEADERS = $(shell find $(INCLUDE_DIR) -name '*.h')
 
+# Shaders include the library's GLSL (e.g. bindless.glsl)
+GLSL_INCLUDES = $(wildcard $(INCLUDE_DIR)/glsl/*.glsl)
+GLSLC_FLAGS = -I$(INCLUDE_DIR)/glsl --target-env=vulkan1.3
+
 # ---------------------------------------------------------------------------
 # Examples
 #   make            - build the simple example into build/examples/simple
@@ -36,9 +40,9 @@ SIMPLE_CFLAGS = $(CFLAGS) \
                 -DSIMPLE_EXAMPLE_TEXTURE_DIR='"$(abspath $(SIMPLE_DIR)/textures)"'
 
 # SPIR-V is written to <out>/shaders/<name>.<stage>.spv
-$(SIMPLE_OUT)/shaders/%.spv : $(SIMPLE_DIR)/shaders/%
+$(SIMPLE_OUT)/shaders/%.spv : $(SIMPLE_DIR)/shaders/% $(GLSL_INCLUDES)
 	@mkdir -p $(dir $@)
-	glslc $< -o $@
+	glslc $(GLSLC_FLAGS) $< -o $@
 
 $(SIMPLE_OUT)/simple_example.o : $(SIMPLE_DIR)/simple_example.cpp $(HEADERS)
 	@mkdir -p $(dir $@)
@@ -81,12 +85,12 @@ GPU_TEST_OBJS = $(patsubst $(TEST_DIR)/%.cpp,$(TEST_OUT)/%.o,$(GPU_TEST_SRCS))
 GPU_TEST_SHADER_SRCS = $(wildcard $(TEST_DIR)/gpu/shaders/*) $(SIMPLE_SHADER_SRCS)
 GPU_TEST_SHADERS = $(patsubst %,$(TEST_SHADER_OUT)/%.spv,$(notdir $(GPU_TEST_SHADER_SRCS)))
 
-$(TEST_SHADER_OUT)/%.spv : $(TEST_DIR)/gpu/shaders/%
+$(TEST_SHADER_OUT)/%.spv : $(TEST_DIR)/gpu/shaders/% $(GLSL_INCLUDES)
 	@mkdir -p $(dir $@)
-	glslc $< -o $@
-$(TEST_SHADER_OUT)/%.spv : $(SIMPLE_DIR)/shaders/%
+	glslc $(GLSLC_FLAGS) $< -o $@
+$(TEST_SHADER_OUT)/%.spv : $(SIMPLE_DIR)/shaders/% $(GLSL_INCLUDES)
 	@mkdir -p $(dir $@)
-	glslc $< -o $@
+	glslc $(GLSLC_FLAGS) $< -o $@
 
 # Compiled from absolute paths so __FILE__ is absolute: ApprovalTests uses it to find approved images
 $(TEST_OUT)/%.o : $(TEST_DIR)/%.cpp $(TEST_HEADERS)

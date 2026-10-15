@@ -5,6 +5,8 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+
 TEST_CASE("QueueFamilyIndices requires both a graphics and a present family") {
     QueueFamilyIndices indices;
     CHECK_FALSE(indices.complete());
@@ -104,7 +106,10 @@ TEST_CASE("SwapChainSupportDetails::chooseSwapExtent clamps the framebuffer size
 TEST_CASE("DeviceFeatures reports the required features a device lacks") {
     DeviceFeatures none;
     auto missing = none.missingRequired();
-    CHECK(missing == std::vector<std::string>{"samplerAnisotropy", "timelineSemaphore", "synchronization2", "dynamicRendering"});
+    CHECK(missing.size() == 13);
+    CHECK(missing.front() == "samplerAnisotropy");
+    CHECK(std::find(missing.begin(), missing.end(), "descriptorBindingUpdateUnusedWhilePending") != missing.end());
+    CHECK(missing.back() == "dynamicRendering");
 
     CHECK(DeviceFeatures::required().missingRequired().empty());
 

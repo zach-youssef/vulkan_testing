@@ -13,6 +13,11 @@
     - timelineSemaphore: per-queue timelines synchronize submissions and frames
     - synchronization2: barriers and submissions use the synchronization2 structures
     - dynamicRendering: render targets are begun with vkCmdBeginRendering, without render passes
+    - descriptor indexing (runtime arrays, partially bound, update after bind and update unused
+      while pending for sampled images, storage images and storage buffers): the universal
+      descriptor set (see DescriptorHeap)
+    - shaderStorageImageReadWithoutFormat / WriteWithoutFormat: the universal set's storage images
+      are declared without a format
  */
 class DeviceFeatures {
 public:
@@ -44,7 +49,16 @@ public:
     static DeviceFeatures required() {
         DeviceFeatures features;
         features.core.features.samplerAnisotropy = VK_TRUE;
+        features.core.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
+        features.core.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
         features.vulkan12.timelineSemaphore = VK_TRUE;
+        features.vulkan12.descriptorIndexing = VK_TRUE;
+        features.vulkan12.runtimeDescriptorArray = VK_TRUE;
+        features.vulkan12.descriptorBindingPartiallyBound = VK_TRUE;
+        features.vulkan12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+        features.vulkan12.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
+        features.vulkan12.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+        features.vulkan12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
         features.vulkan13.synchronization2 = VK_TRUE;
         features.vulkan13.dynamicRendering = VK_TRUE;
         return features;
@@ -60,7 +74,23 @@ public:
             }
         };
         check(needed.core.features.samplerAnisotropy, core.features.samplerAnisotropy, "samplerAnisotropy");
+        check(needed.core.features.shaderStorageImageReadWithoutFormat, core.features.shaderStorageImageReadWithoutFormat,
+              "shaderStorageImageReadWithoutFormat");
+        check(needed.core.features.shaderStorageImageWriteWithoutFormat, core.features.shaderStorageImageWriteWithoutFormat,
+              "shaderStorageImageWriteWithoutFormat");
         check(needed.vulkan12.timelineSemaphore, vulkan12.timelineSemaphore, "timelineSemaphore");
+        check(needed.vulkan12.descriptorIndexing, vulkan12.descriptorIndexing, "descriptorIndexing");
+        check(needed.vulkan12.runtimeDescriptorArray, vulkan12.runtimeDescriptorArray, "runtimeDescriptorArray");
+        check(needed.vulkan12.descriptorBindingPartiallyBound, vulkan12.descriptorBindingPartiallyBound,
+              "descriptorBindingPartiallyBound");
+        check(needed.vulkan12.descriptorBindingSampledImageUpdateAfterBind, vulkan12.descriptorBindingSampledImageUpdateAfterBind,
+              "descriptorBindingSampledImageUpdateAfterBind");
+        check(needed.vulkan12.descriptorBindingStorageImageUpdateAfterBind, vulkan12.descriptorBindingStorageImageUpdateAfterBind,
+              "descriptorBindingStorageImageUpdateAfterBind");
+        check(needed.vulkan12.descriptorBindingStorageBufferUpdateAfterBind, vulkan12.descriptorBindingStorageBufferUpdateAfterBind,
+              "descriptorBindingStorageBufferUpdateAfterBind");
+        check(needed.vulkan12.descriptorBindingUpdateUnusedWhilePending, vulkan12.descriptorBindingUpdateUnusedWhilePending,
+              "descriptorBindingUpdateUnusedWhilePending");
         check(needed.vulkan13.synchronization2, vulkan13.synchronization2, "synchronization2");
         check(needed.vulkan13.dynamicRendering, vulkan13.dynamicRendering, "dynamicRendering");
         return missing;

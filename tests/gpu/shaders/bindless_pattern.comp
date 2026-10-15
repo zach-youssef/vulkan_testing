@@ -1,0 +1,26 @@
+#version 450
+#include "bindless.glsl"
+
+// Writes pattern.comp's pattern into a storage image of the universal set, with the blue channel
+// taken from a storage buffer, so tests can check both are found by index
+layout(push_constant) uniform Indices {
+    uint outputImage;
+    uint values;
+} indices;
+
+BINDLESS_BUFFER(readonly, Values, uint, values);
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(bindlessStorageImages[indices.outputImage]);
+    if (texel.x >= size.x || texel.y >= size.y) {
+        return;
+    }
+    vec4 color = vec4(float(texel.x % 256),
+                      float(texel.y % 256),
+                      float(values[indices.values].data % 256u),
+                      255.0) / 255.0;
+    imageStore(bindlessStorageImages[indices.outputImage], texel, color);
+}

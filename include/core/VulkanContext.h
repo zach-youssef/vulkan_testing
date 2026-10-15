@@ -125,6 +125,16 @@ private:
     std::unique_ptr<VulkanCommandPool> pool_;
 };
 
+// How many descriptors of each type the universal set holds. Clamped to the device's limits.
+struct DescriptorCapacities {
+    uint32_t sampledImages = 4096;
+    uint32_t samplers = 256;
+    uint32_t storageImages = 1024;
+    uint32_t storageBuffers = 4096;
+};
+
+class DescriptorHeap;
+
 struct VulkanContextConfig {
     std::string applicationName = "VulkanApp";
 
@@ -143,6 +153,9 @@ struct VulkanContextConfig {
     // Receives validation messages (warnings and errors). Defaults to printing to std::cerr.
     // May be called from any thread that calls into Vulkan.
     std::function<void(VkDebugUtilsMessageSeverityFlagBitsEXT, const char*)> onValidationMessage;
+
+    // Size of the universal descriptor set (see DescriptorHeap)
+    DescriptorCapacities descriptorCapacities;
 
     // Number of frames the CPU may record while the GPU is still executing earlier ones. Can be
     // changed later with VulkanContext::setFramesInFlight.
@@ -192,8 +205,10 @@ public:
                 fn();
             }
         }
-        // Destroy in reverse dependency order
+        // Destroy in reverse dependency order. Descriptor entries (managed resources) free their
+        // slots in the heap, so the heap goes after them.
         resourceManager_.reset();
+        descriptors_.reset();
         immediatePool_.reset();
         queues_.clear();
         device_.reset();
@@ -211,6 +226,10 @@ public: // Accessors
     VkPhysicalDevice physicalDevice() { return physicalDevice_; }
     VkDevice device() { return **device_; }
     ResourceManager& resources() { return *resourceManager_; }
+
+    // The universal descriptor set and pipeline layout, created on first use. Defined in
+    // descriptors/DescriptorHeap.h, which must be included to use it.
+    DescriptorHeap& descriptors();
 
     bool hasSurface() { return surface_ != nullptr; }
     VkSurfaceKHR surface() {
@@ -897,6 +916,10 @@ private:
     std::unique_ptr<CommandPool> immediatePool_;
 
     std::unique_ptr<ResourceManager> resourceManager_;
+
+    // Type-erased deleter: DescriptorHeap is incomplete here
+    std::once_flag descriptorsCreated_;
+    std::unique_ptr<DescriptorHeap, void (*)(DescriptorHeap*)> descriptors_{nullptr, nullptr};
 };
 
 // VulkanSampler's managed factories, defined here since VkTypes.h cannot depend on VulkanContext
