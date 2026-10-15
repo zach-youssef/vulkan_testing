@@ -54,6 +54,59 @@ TEST_CASE_FIXTURE(GpuTest, "Image::createEmpty creates an image of the requested
     CHECK(readback.size() == 64 * 32 * 4);
 }
 
+TEST_CASE_FIXTURE(GpuTest, "Sampled images are not created with storage usage") {
+    auto& ctx = context();
+    std::vector<uint8_t> pixels(4 * 4 * 4, 255);
+
+    // sRGB formats are rarely supported as storage images, so requesting storage usage for them
+    // would fail on many devices
+    Handle<Image> uploaded;
+    Image::createFromUcharBuffer(uploaded, ctx, pixels.data(), 4, 4, pixels.size());
+    CHECK(uploaded->getFormat() == VK_FORMAT_R8G8B8A8_SRGB);
+    CHECK((uploaded->getUsage() & VK_IMAGE_USAGE_SAMPLED_BIT) != 0);
+    CHECK((uploaded->getUsage() & VK_IMAGE_USAGE_STORAGE_BIT) == 0);
+
+    Handle<Image> empty;
+    Image::createEmptyRGBA(empty, ctx, 4, 4);
+    CHECK(empty->getFormat() == VK_FORMAT_R8G8B8A8_SRGB);
+    CHECK((empty->getUsage() & VK_IMAGE_USAGE_SAMPLED_BIT) != 0);
+    CHECK((empty->getUsage() & VK_IMAGE_USAGE_STORAGE_BIT) == 0);
+}
+
+TEST_CASE_FIXTURE(GpuTest, "Image::createStorage creates a storage image in the GENERAL layout") {
+    auto& ctx = context();
+    REQUIRE(Image::supportsUsage(ctx, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
+                                 VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+
+    Handle<Image> image;
+    Image::createStorage(image, ctx, VK_FORMAT_R16G16B16A16_SFLOAT, 16, 8);
+    CHECK(image->getFormat() == VK_FORMAT_R16G16B16A16_SFLOAT);
+    CHECK((image->getUsage() & VK_IMAGE_USAGE_STORAGE_BIT) != 0);
+    // Read back from GENERAL, the layout createStorage leaves it in
+    CHECK(image->readback(VK_IMAGE_LAYOUT_GENERAL).size() == 16 * 8 * 8);
+}
+
+TEST_CASE_FIXTURE(GpuTest, "Image::create rejects usages the format does not support") {
+    auto& ctx = context();
+    // Depth formats can never be storage images
+    const VkFormat depth = VK_FORMAT_D32_SFLOAT;
+    CHECK_FALSE(Image::supportsUsage(ctx, depth, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_STORAGE_BIT));
+    CHECK(Image::supportsUsage(ctx, depth, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT));
+
+    Handle<Image> image;
+    CHECK_THROWS_AS(Image::createStorage(image, ctx, depth, 4, 4), std::invalid_argument);
+    CHECK_FALSE(image);
+}
+
+TEST_CASE("Image::requiredFormatFeatures maps each usage to its format feature") {
+    CHECK(Image::requiredFormatFeatures(0) == 0);
+    CHECK(Image::requiredFormatFeatures(VK_IMAGE_USAGE_STORAGE_BIT) == VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
+    CHECK(Image::requiredFormatFeatures(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+          == (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT));
+    CHECK(Image::requiredFormatFeatures(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
+          == VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+}
+
 TEST_CASE("Image::bytesPerPixel") {
     CHECK(Image::bytesPerPixel(VK_FORMAT_R8G8B8A8_UNORM) == 4);
     CHECK(Image::bytesPerPixel(VK_FORMAT_B8G8R8A8_SRGB) == 4);

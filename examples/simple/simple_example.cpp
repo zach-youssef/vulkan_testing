@@ -247,14 +247,13 @@ int main() {
     for (int frameIdx = 0; frameIdx < MAX_FRAMES_IN_FLIGHT; ++frameIdx) {
         // Linear half floats: storage images cannot be sRGB, and 8 bits would band in linear space.
         // Must match the rgba16f format declared by test.comp.
-        Image::createEmpty(outImages[frameIdx],
-                           app.getContext(),
-                           VK_FORMAT_R16G16B16A16_SFLOAT,
-                           texture->getWidth(),
-                           texture->getHeight());
         // Written by the compute shader as a storage image and then sampled by the fragment
-        // shader, so keep it in the GENERAL layout (valid for both uses)
-        outImages[frameIdx]->transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+        // shader, so it stays in the GENERAL layout (valid for both uses)
+        Image::createStorage(outImages[frameIdx],
+                             app.getContext(),
+                             VK_FORMAT_R16G16B16A16_SFLOAT,
+                             texture->getWidth(),
+                             texture->getHeight());
     }
     
 

@@ -15,7 +15,8 @@ if (outResult != VK_SUCCESS) {  \
 
 class Image {
 public:
-    // Creates an image owned by the context's ResourceManager
+    // Creates an image owned by the context's ResourceManager.
+    // Throws std::invalid_argument if the device does not support format for every requested usage.
     static VkResult create(Handle<Image>& outImage,
                            VulkanContext& context,
                            uint32_t width,
@@ -25,6 +26,12 @@ public:
                            VkImageUsageFlags usage,
                            VkMemoryPropertyFlags properties,
                            VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+        if (!supportsUsage(context, format, tiling, usage)) {
+            throw std::invalid_argument(std::string("Format ") + string_VkFormat(format)
+                                        + " does not support image usage " + string_VkImageUsageFlags(usage)
+                                        + " with " + string_VkImageTiling(tiling) + " on this device");
+        }
+
         VkResult result;
 
         // Constructed directly since the constructor is private
@@ -35,6 +42,31 @@ public:
         outImage = context.resources().adopt(std::move(image));
 
         return result;
+    }
+
+    // Whether the device supports format for every usage in usage. Storage support in particular
+    // varies between devices (sRGB formats, for instance, are rarely usable as storage images).
+    static bool supportsUsage(VulkanContext& context,
+                              VkFormat format,
+                              VkImageTiling tiling,
+                              VkImageUsageFlags usage) {
+        VkFormatProperties properties;
+        vkGetPhysicalDeviceFormatProperties(context.physicalDevice(), format, &properties);
+        const VkFormatFeatureFlags features = tiling == VK_IMAGE_TILING_LINEAR ? properties.linearTilingFeatures
+                                                                               : properties.optimalTilingFeatures;
+        return (features & requiredFormatFeatures(usage)) == requiredFormatFeatures(usage);
+    }
+
+    // Format features a format must support to be used for usage
+    static VkFormatFeatureFlags requiredFormatFeatures(VkImageUsageFlags usage) {
+        VkFormatFeatureFlags features = 0;
+        if (usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) features |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+        if (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) features |= VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        if (usage & VK_IMAGE_USAGE_SAMPLED_BIT) features |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+        if (usage & VK_IMAGE_USAGE_STORAGE_BIT) features |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+        if (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) features |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+        if (usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) features |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        return features;
     }
 
     VkImage getImage() {
@@ -57,6 +89,10 @@ public:
         return format_;
     }
 
+    VkImageUsageFlags getUsage() {
+        return usage_;
+    }
+
     // Size in bytes of a single texel for the formats this wrapper supports reading back
     static VkDeviceSize bytesPerPixel(VkFormat format) {
         switch (format) {
@@ -75,7 +111,7 @@ public:
         }
     }
 
-    // Loads an RGBA8 sRGB image from a file, leaving it in SHADER_READ_ONLY_OPTIMAL
+    // Loads an RGBA8 sRGB image for sampling from a file, leaving it in SHADER_READ_ONLY_OPTIMAL
     static void createFromFile(Handle<Image>& outImage,
                                VulkanContext& context,
                                const std::string& filePath) {
@@ -94,7 +130,8 @@ public:
         stbi_image_free(pixels);
     }
 
-    // Creates an RGBA8 sRGB image from tightly packed pixels, leaving it in SHADER_READ_ONLY_OPTIMAL
+    // Creates an RGBA8 sRGB image for sampling from tightly packed pixels, leaving it in
+    // SHADER_READ_ONLY_OPTIMAL
     static void createFromUcharBuffer(Handle<Image>& outImage,
                                       VulkanContext& context,
                                       unsigned char* pixels,
@@ -106,13 +143,14 @@ public:
                                           width, height,
                                           VK_FORMAT_R8G8B8A8_SRGB,
                                           VK_IMAGE_TILING_OPTIMAL,
-                                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+                                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
                             "Failed to create image.");
 
         outImage->uploadUcharBufferToImage(pixels, imageSize);
     }
 
+    // Creates an RGBA8 sRGB image for sampling, leaving it in SHADER_READ_ONLY_OPTIMAL
     static void createEmptyRGBA(Handle<Image>& outImage,
                                 VulkanContext& context,
                                 uint32_t width,
@@ -120,7 +158,7 @@ public:
         createEmpty(outImage, context, VK_FORMAT_R8G8B8A8_SRGB, width, height);
     }
 
-    // Creates an image for sampling / storage, leaving it in SHADER_READ_ONLY_OPTIMAL
+    // Creates an image for sampling, leaving it in SHADER_READ_ONLY_OPTIMAL. It can also be read back.
     static void createEmpty(Handle<Image>& outImage,
                             VulkanContext& context,
                             VkFormat format,
@@ -131,11 +169,31 @@ public:
                                           width, height,
                                           format,
                                           VK_IMAGE_TILING_OPTIMAL,
-                                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+                                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
                             "Failed to create image.");
 
         outImage->transitionLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+
+    // Creates an image that shaders can write as a storage image and also sample, leaving it in the
+    // GENERAL layout (which both uses require). It can also be read back. Throws std::invalid_argument
+    // if format cannot be used as a storage image on this device, as is typical for sRGB formats.
+    static void createStorage(Handle<Image>& outImage,
+                              VulkanContext& context,
+                              VkFormat format,
+                              uint32_t width,
+                              uint32_t height) {
+        VK_SUCCESS_OR_THROW(Image::create(outImage,
+                                          context,
+                                          width, height,
+                                          format,
+                                          VK_IMAGE_TILING_OPTIMAL,
+                                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+                            "Failed to create image.");
+
+        outImage->transitionLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
     }
 
     void uploadUcharBufferToImage(unsigned char* pixels,
@@ -340,7 +398,7 @@ private:
           VkImageUsageFlags usage,
           VkMemoryPropertyFlags properties,
           VkResult& outResult,
-          VkImageAspectFlagBits aspect) : context_(&context), format_(format), width_(width), height_(height) {
+          VkImageAspectFlagBits aspect) : context_(&context), format_(format), usage_(usage), width_(width), height_(height) {
         VkDevice device = context.device();
 
         VkImageCreateInfo imageInfo{};
@@ -384,6 +442,7 @@ private:
     std::unique_ptr<VulkanImageView> imageView_;
 
     VkFormat format_;
+    VkImageUsageFlags usage_;
     uint32_t width_;
     uint32_t height_;
 };

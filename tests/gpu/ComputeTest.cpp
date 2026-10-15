@@ -65,15 +65,10 @@ float halfToFloat(uint16_t half) {
     return sign ? -value : value;
 }
 
-// Storage images must be in the GENERAL layout when used by a shader
-void makeStorageImage(VulkanContext& ctx, Image& image) {
-    image.transitionLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
-}
-
+// Left in the GENERAL layout, which storage images must be in when used by a shader
 Handle<Image> createStorageImage(VulkanContext& ctx, VkFormat format, uint32_t width, uint32_t height) {
     Handle<Image> image;
-    Image::createEmpty(image, ctx, format, width, height);
-    makeStorageImage(ctx, *image);
+    Image::createStorage(image, ctx, format, width, height);
     return image;
 }
 
