@@ -112,6 +112,8 @@ TEST_CASE("A headless VulkanApp has no window, surface or render pass") {
     CHECK_THROWS_AS(app.getSwapchain(), std::logic_error);
     CHECK_THROWS_AS(app.getSurfaceExtent(), std::logic_error);
     CHECK_THROWS_AS(app.setWindowSize(100, 100), std::logic_error);
+    CHECK_THROWS_AS(app.window(), std::logic_error);
+    CHECK_THROWS_AS(app.setInputHandlers({}), std::logic_error);
     // run() would never return without a window to close
     CHECK_THROWS_AS(app.run(), std::logic_error);
     // There is nothing to draw without an active render graph
@@ -273,4 +275,60 @@ TEST_CASE("A context requesting a feature the device lacks names it") {
     VulkanContextConfig config;
     config.features.core.features.geometryShader = VK_TRUE;
     CHECK_THROWS_WITH(VulkanContext{config}, doctest::Contains("geometryShader"));
+}
+
+TEST_CASE("A windowed VulkanApp passes window input to its handlers") {
+    AppConfig config;
+    config.applicationName = "VulkanApp tests";
+    config.window = WindowConfig{"Input test", 64, 64, false};
+    config.enableValidation = true;
+    config.logInstanceInfo = false;
+    std::vector<std::string> errors;
+    config.onValidationMessage = [&errors](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
+        if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+            errors.emplace_back(message);
+        }
+    };
+    {
+        VulkanApp app;
+        try {
+            app.init(config);
+        } catch (const std::runtime_error& e) {
+            // E.g. no display to open a window on
+            MESSAGE("Skipped: " << e.what());
+            return;
+        }
+        GLFWwindow* window = app.window();
+        REQUIRE(window != nullptr);
+
+        std::vector<std::string> events;
+        app.setInputHandlers(InputHandlers{
+            .key = [&events](int key, int, int action, int) {
+                events.push_back("key " + std::to_string(key) + " " + std::to_string(action));
+            },
+            .scroll = [&events](double, double y) { events.push_back("scroll " + std::to_string(int(y))); },
+        });
+
+        // GLFW can't synthesize input, so call the callbacks the app installed. Setting a callback
+        // returns the previous one, which is restored afterwards.
+        auto keyCallback = glfwSetKeyCallback(window, nullptr);
+        glfwSetKeyCallback(window, keyCallback);
+        auto scrollCallback = glfwSetScrollCallback(window, nullptr);
+        glfwSetScrollCallback(window, scrollCallback);
+        auto mouseButtonCallback = glfwSetMouseButtonCallback(window, nullptr);
+        glfwSetMouseButtonCallback(window, mouseButtonCallback);
+        REQUIRE(keyCallback);
+        REQUIRE(scrollCallback);
+        REQUIRE(mouseButtonCallback);
+
+        keyCallback(window, GLFW_KEY_SPACE, 0, GLFW_PRESS, 0);
+        scrollCallback(window, 0.0, -2.0);
+        // Handlers left empty are ignored
+        mouseButtonCallback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, 0);
+        CHECK(events == std::vector<std::string>{"key " + std::to_string(GLFW_KEY_SPACE) + " " + std::to_string(GLFW_PRESS),
+                                                 "scroll -2"});
+    }
+    for (const auto& error : errors) {
+        FAIL_CHECK("Vulkan validation error: " << error);
+    }
 }

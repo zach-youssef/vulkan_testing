@@ -28,6 +28,15 @@ struct WindowConfig {
     bool resizable = true;
 };
 
+// Window input callbacks, called from VulkanApp::runFrame's event polling (on the app's thread)
+// with GLFW's arguments. Any may be empty.
+struct InputHandlers {
+    std::function<void(int key, int scancode, int action, int mods)> key;
+    std::function<void(int button, int action, int mods)> mouseButton;
+    std::function<void(double x, double y)> cursorPos;      // In screen coordinates
+    std::function<void(double xOffset, double yOffset)> scroll;
+};
+
 struct AppConfig {
     std::string applicationName = "VulkanApp";
     // The window to present to. Without one the app is headless: there is no surface or swapchain,
@@ -196,6 +205,19 @@ public: // Window & surface
         return swapchain_->getExtent();
     }
 
+    // The GLFW window, for polling input (e.g. glfwGetKey) or other GLFW calls. Its user pointer
+    // and callbacks belong to the app: receive input through setInputHandlers.
+    GLFWwindow* window() {
+        requireWindow();
+        return window_.get();
+    }
+
+    // Replaces the window's input callbacks
+    void setInputHandlers(InputHandlers handlers) {
+        requireWindow();
+        inputHandlers_ = std::move(handlers);
+    }
+
     // Calls listener with the new extent whenever the swapchain is recreated at a new size, once
     // the device is idle. Returns an id for removeSurfaceResizeListener.
     ListenerId addSurfaceResizeListener(SurfaceResizeListener listener) {
@@ -240,11 +262,26 @@ private:
         });
         glfwSetWindowUserPointer(window_.get(), this);
         glfwSetFramebufferSizeCallback(window_.get(), onFrameBufferResizeCallback);
+        glfwSetKeyCallback(window_.get(), [](GLFWwindow* window, int key, int scancode, int action, int mods) {
+            if (auto& handler = appOf(window).inputHandlers_.key) handler(key, scancode, action, mods);
+        });
+        glfwSetMouseButtonCallback(window_.get(), [](GLFWwindow* window, int button, int action, int mods) {
+            if (auto& handler = appOf(window).inputHandlers_.mouseButton) handler(button, action, mods);
+        });
+        glfwSetCursorPosCallback(window_.get(), [](GLFWwindow* window, double x, double y) {
+            if (auto& handler = appOf(window).inputHandlers_.cursorPos) handler(x, y);
+        });
+        glfwSetScrollCallback(window_.get(), [](GLFWwindow* window, double xOffset, double yOffset) {
+            if (auto& handler = appOf(window).inputHandlers_.scroll) handler(xOffset, yOffset);
+        });
+    }
+
+    static VulkanApp& appOf(GLFWwindow* window) {
+        return *reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
     }
 
     static void onFrameBufferResizeCallback(GLFWwindow* window, int /*width*/, int /*height*/) {
-        auto app = reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-        app->frameBufferResized_ = true;
+        appOf(window).frameBufferResized_ = true;
     }
 
     void createContext() {
@@ -354,6 +391,7 @@ private:
     // GLFW Variables
     std::unique_ptr<GLFWwindow, std::function<void(GLFWwindow*)>> window_;
     bool frameBufferResized_ = false;
+    InputHandlers inputHandlers_;
 
     // Instance, device, queues & managed resources. Declared after the window (which its
     // surface depends on) and before everything below, which must be destroyed first.

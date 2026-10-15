@@ -174,6 +174,9 @@ app.run();
   replace per-frame callbacks.
 - `VulkanApp` owns graphs: `createGraph()`, `setActiveGraph()`, `destroyGraph()`. Headless code can
   construct `RenderGraph(ctx)` directly and call `execute()`.
+- Input: `app.setInputHandlers({.key = ..., .mouseButton = ..., .cursorPos = ..., .scroll = ...})`
+  receives window events during `runFrame()`; `app.window()` gives the `GLFWwindow*` for polling
+  (`glfwGetKey`). Don't set GLFW callbacks or the user pointer yourself: the app owns them.
 
 ### Shaders
 
