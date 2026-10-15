@@ -1,8 +1,8 @@
 #pragma once
 
-#include "Ubo.h"
-#include "Renderable.h"
-#include "Descriptor.h"
+#include "resources/Ubo.h"
+#include "materials/Renderable.h"
+#include "descriptors/Descriptor.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>

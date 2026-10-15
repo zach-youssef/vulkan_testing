@@ -1,5 +1,5 @@
 #include "VkTestContext.h"
-#include "Image.h"
+#include "resources/Image.h"
 
 namespace {
 

@@ -3,13 +3,13 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-#include "VkUtil.h"
-#include "DeviceSelection.h"
-#include "Buffer.h"
-#include "RenderGraph.h"
-#include "Image.h"
-#include "ResourceManager.h"
-#include "VulkanContext.h"
+#include "core/VkUtil.h"
+#include "core/DeviceSelection.h"
+#include "resources/Buffer.h"
+#include "graph/RenderGraph.h"
+#include "resources/Image.h"
+#include "core/ResourceManager.h"
+#include "core/VulkanContext.h"
 
 #include <glm/glm.hpp>
 

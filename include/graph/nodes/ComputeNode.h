@@ -1,8 +1,8 @@
 #pragma once
 
-#include "RenderGraph.h"
-#include "Renderable.h"
-#include "VkUtil.h"
+#include "graph/RenderGraph.h"
+#include "materials/Renderable.h"
+#include "core/VkUtil.h"
 
 template<uint MAX_FRAMES>
 class ComputeNode : public RenderNode<MAX_FRAMES> {

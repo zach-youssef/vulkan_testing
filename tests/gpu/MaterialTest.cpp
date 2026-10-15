@@ -1,8 +1,8 @@
-#include "Ubo.h"
+#include "resources/Ubo.h"
 #include "VkTestContext.h"
 #include "TestShaders.h"
-#include "OffscreenRenderTarget.h"
-#include "BasicMaterial.h"
+#include "targets/OffscreenRenderTarget.h"
+#include "materials/BasicMaterial.h"
 
 namespace {
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "RenderGraph.h"
+#include "graph/RenderGraph.h"
 
 template<uint MAX_FRAMES>
 class PresentNode : public RenderNode<MAX_FRAMES> {

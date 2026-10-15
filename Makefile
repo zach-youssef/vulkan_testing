@@ -12,36 +12,45 @@ LDFLAGS = -L/opt/homebrew/lib -L/usr/local/lib
 LDLIBS = -lglfw -lvulkan
 
 OUT = build
-SRC = vulkan_test
-SHADER_DIR = $(SRC)/shaders
+INCLUDE_DIR = include
 
-HEADERS = $(wildcard $(SRC)/*.h)
+CFLAGS += -I$(INCLUDE_DIR)
 
-# Rule for building Cpp objects
-$(OUT)/%.o : $(SRC)/%.cpp $(HEADERS) | $(OUT)
-	$(CC) -c -o $@ $< $(CFLAGS)
+HEADERS = $(shell find $(INCLUDE_DIR) -name '*.h')
 
-$(OUT):
-	mkdir -p $@
+# ---------------------------------------------------------------------------
+# Examples
+#   make            - build the simple example into build/examples/simple
+# ---------------------------------------------------------------------------
+EXAMPLES_DIR = examples
+EXAMPLES_OUT = $(OUT)/examples
 
-# Rules for building shader spirv (file names match those loaded in main.cpp)
-$(SHADER_DIR)/vert.spv : $(SHADER_DIR)/shader.vert
-	glslc $^ -o $@
-$(SHADER_DIR)/frag.spv : $(SHADER_DIR)/shader.frag
-	glslc $^ -o $@
-$(SHADER_DIR)/compTest.spv : $(SHADER_DIR)/test.comp
-	glslc $^ -o $@
+SIMPLE_DIR = $(EXAMPLES_DIR)/simple
+SIMPLE_OUT = $(EXAMPLES_OUT)/simple
+SIMPLE_SHADER_SRCS = $(wildcard $(SIMPLE_DIR)/shaders/*)
+SIMPLE_SHADERS = $(patsubst $(SIMPLE_DIR)/shaders/%,$(SIMPLE_OUT)/shaders/%.spv,$(SIMPLE_SHADER_SRCS))
+SIMPLE_CFLAGS = $(CFLAGS) \
+                -DSIMPLE_EXAMPLE_SHADER_DIR='"$(abspath $(SIMPLE_OUT)/shaders)"' \
+                -DSIMPLE_EXAMPLE_TEXTURE_DIR='"$(abspath $(SIMPLE_DIR)/textures)"'
 
-SHADERS = $(SHADER_DIR)/vert.spv $(SHADER_DIR)/frag.spv $(SHADER_DIR)/compTest.spv
+# SPIR-V is written to <out>/shaders/<name>.<stage>.spv
+$(SIMPLE_OUT)/shaders/%.spv : $(SIMPLE_DIR)/shaders/%
+	@mkdir -p $(dir $@)
+	glslc $< -o $@
 
-_OBJS = main.o
-OBJS = $(patsubst %,$(OUT)/%,$(_OBJS))
+$(SIMPLE_OUT)/simple_example.o : $(SIMPLE_DIR)/simple_example.cpp $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) -c -o $@ $< $(SIMPLE_CFLAGS)
 
-$(OUT)/vulkan_test: $(OBJS) | $(SHADERS)
+$(SIMPLE_OUT)/simple_example: $(SIMPLE_OUT)/simple_example.o | $(SIMPLE_SHADERS)
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
-.DEFAULT_GOAL := $(OUT)/vulkan_test
+examples: $(SIMPLE_OUT)/simple_example
+
+shaders: $(SIMPLE_SHADERS)
+
+.DEFAULT_GOAL := examples
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -54,9 +63,9 @@ $(OUT)/vulkan_test: $(OBJS) | $(SHADERS)
 TEST_DIR = tests
 TEST_OUT = $(OUT)/tests
 TEST_SHADER_OUT = $(TEST_OUT)/shaders
-TEST_CFLAGS = $(CFLAGS) -I$(SRC) -Ithird_party -Ithird_party/approvaltests -Ithird_party/flip -I$(TEST_DIR) \
+TEST_CFLAGS = $(CFLAGS) -Ithird_party -Ithird_party/approvaltests -Ithird_party/flip -I$(TEST_DIR) \
               -DTEST_SHADER_DIR='"$(abspath $(TEST_SHADER_OUT))"' \
-              -DTEST_TEXTURE_DIR='"$(abspath $(SRC)/textures)"'
+              -DTEST_TEXTURE_DIR='"$(abspath $(SIMPLE_DIR)/textures)"'
 TEST_HEADERS = $(HEADERS) $(wildcard $(TEST_DIR)/*/*.h)
 
 CPU_TEST_SRCS = $(wildcard $(TEST_DIR)/cpu/*.cpp)
@@ -65,15 +74,15 @@ CPU_TEST_OBJS = $(patsubst $(TEST_DIR)/%.cpp,$(TEST_OUT)/%.o,$(CPU_TEST_SRCS))
 GPU_TEST_SRCS = $(wildcard $(TEST_DIR)/gpu/*.cpp)
 GPU_TEST_OBJS = $(patsubst $(TEST_DIR)/%.cpp,$(TEST_OUT)/%.o,$(GPU_TEST_SRCS))
 
-# SPIR-V used by the GPU tests: test-only shaders plus the example's shaders,
+# SPIR-V used by the GPU tests: test-only shaders plus the simple example's shaders,
 # compiled to $(TEST_SHADER_OUT)/<name>.<stage>.spv
-GPU_TEST_SHADER_SRCS = $(wildcard $(TEST_DIR)/gpu/shaders/*) $(wildcard $(SHADER_DIR)/*.vert $(SHADER_DIR)/*.frag $(SHADER_DIR)/*.comp)
+GPU_TEST_SHADER_SRCS = $(wildcard $(TEST_DIR)/gpu/shaders/*) $(SIMPLE_SHADER_SRCS)
 GPU_TEST_SHADERS = $(patsubst %,$(TEST_SHADER_OUT)/%.spv,$(notdir $(GPU_TEST_SHADER_SRCS)))
 
 $(TEST_SHADER_OUT)/%.spv : $(TEST_DIR)/gpu/shaders/%
 	@mkdir -p $(dir $@)
 	glslc $< -o $@
-$(TEST_SHADER_OUT)/%.spv : $(SHADER_DIR)/%
+$(TEST_SHADER_OUT)/%.spv : $(SIMPLE_DIR)/shaders/%
 	@mkdir -p $(dir $@)
 	glslc $< -o $@
 
@@ -107,9 +116,8 @@ approve-screenshots:
 	done
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
-.PHONY: clean shaders test test-cpu test-gpu approve-screenshots
+.PHONY: clean examples shaders test test-cpu test-gpu approve-screenshots
 
-shaders: $(SHADERS)
 
 clean:
 	rm -rf $(OUT)

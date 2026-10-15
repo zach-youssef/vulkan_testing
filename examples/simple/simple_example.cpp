@@ -1,16 +1,16 @@
 #define VK_WRAP_UTIL_IMPL
 
-#include "VulkanApp.h"
-#include "Renderable.h"
-#include "Ubo.h"
-#include "BasicMaterial.h"
-#include "RenderGraph.h"
-#include "ComputeNode.h"
-#include "RenderablesNode.h"
-#include "PresentNode.h"
-#include "AcquireImageNode.h"
-#include "FileUtil.h"
-#include "Image.h"
+#include "app/VulkanApp.h"
+#include "materials/Renderable.h"
+#include "resources/Ubo.h"
+#include "materials/BasicMaterial.h"
+#include "graph/RenderGraph.h"
+#include "graph/nodes/ComputeNode.h"
+#include "graph/nodes/RenderablesNode.h"
+#include "graph/nodes/PresentNode.h"
+#include "graph/nodes/AcquireImageNode.h"
+#include "core/FileUtil.h"
+#include "resources/Image.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -21,6 +21,16 @@
 const uint32_t WINDOW_WIDTH = 800;
 const uint32_t WINDOW_HEIGHT = 600;
 const int MAX_FRAMES_IN_FLIGHT = 2;
+
+// Defined by the Makefile
+#ifndef SIMPLE_EXAMPLE_SHADER_DIR
+#error "SIMPLE_EXAMPLE_SHADER_DIR must be defined to the directory containing the compiled shaders"
+#endif
+#ifndef SIMPLE_EXAMPLE_TEXTURE_DIR
+#error "SIMPLE_EXAMPLE_TEXTURE_DIR must be defined to the directory containing the example's textures"
+#endif
+const std::string shaderDir = SIMPLE_EXAMPLE_SHADER_DIR;
+const std::string textureDir = SIMPLE_EXAMPLE_TEXTURE_DIR;
 
 struct Vertex {
     glm::vec2 pos;
@@ -174,8 +184,7 @@ void createTestComputeMaterial(Handle<TestComputeMat>& outPtr,
                                std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> outImages,
                                uint32_t width, uint32_t height,
                                VulkanApp<MAX_FRAMES_IN_FLIGHT>& app){
-    const static std::string shaderPath = "/Users/zyoussef/code/vulkan_test/vulkan_test/shaders";
-    auto computeShaderCode = readFile(shaderPath + "/compTest.spv");
+    auto computeShaderCode = readFile(shaderDir + "/test.comp.spv");
     
     std::vector<Handle<Descriptor>> descriptors;
     auto& resourceManager = app.getContext().resources();
@@ -192,9 +201,8 @@ void createTutorialMaterial(Handle<TutorialMaterial>& outPtr,
                             std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> images,
                             Handle<VulkanSampler> sampler,
                             VulkanApp<MAX_FRAMES_IN_FLIGHT>& app) {
-    const static std::string shaderPath = "/Users/zyoussef/code/vulkan_test/vulkan_test/shaders";
-    auto vertShaderCode = readFile(shaderPath + "/vert.spv");
-    auto fragShaderCode = readFile(shaderPath + "/frag.spv");
+    auto vertShaderCode = readFile(shaderDir + "/shader.vert.spv");
+    auto fragShaderCode = readFile(shaderDir + "/shader.frag.spv");
     
     std::vector<Handle<Descriptor>> descriptors;
     auto& resourceManager = app.getContext().resources();
@@ -231,7 +239,7 @@ int main() {
     Handle<Image> texture;
     Image::createFromFile(texture,
                           app.getContext(),
-                          "/Users/zyoussef/code/vulkan_test/vulkan_test/textures/texture.jpg");
+                          textureDir + "/texture.jpg");
     std::array<Handle<Image>, MAX_FRAMES_IN_FLIGHT> inputImages = {texture, texture};
 
     // Create output texture images

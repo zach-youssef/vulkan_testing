@@ -1,8 +1,8 @@
 #pragma once
 
-#include "VkTypes.h"
-#include "ResourceManager.h"
-#include "VulkanContext.h"
+#include "core/VkTypes.h"
+#include "core/ResourceManager.h"
+#include "core/VulkanContext.h"
 #include <functional>
 
 #define RETURN_IF_ERROR(expr)   \

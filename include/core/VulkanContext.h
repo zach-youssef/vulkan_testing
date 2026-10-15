@@ -1,9 +1,9 @@
 #pragma once
 
-#include "VkTypes.h"
-#include "VkUtil.h"
-#include "ResourceManager.h"
-#include "DeviceSelection.h"
+#include "core/VkTypes.h"
+#include "core/VkUtil.h"
+#include "core/ResourceManager.h"
+#include "core/DeviceSelection.h"
 
 #include <array>
 #include <cstring>

@@ -1,5 +1,5 @@
-#include "VulkanContext.h"
-#include "Buffer.h"
+#include "core/VulkanContext.h"
+#include "resources/Buffer.h"
 
 #include <doctest/doctest.h>
 

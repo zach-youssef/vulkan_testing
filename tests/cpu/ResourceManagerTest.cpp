@@ -1,4 +1,4 @@
-#include "ResourceManager.h"
+#include "core/ResourceManager.h"
 
 #include <doctest/doctest.h>
 

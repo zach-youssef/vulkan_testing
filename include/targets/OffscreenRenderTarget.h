@@ -1,10 +1,10 @@
 #pragma once
 
-#include "VkTypes.h"
-#include "VkUtil.h"
-#include "Image.h"
-#include "ResourceManager.h"
-#include "VulkanContext.h"
+#include "core/VkTypes.h"
+#include "core/VkUtil.h"
+#include "resources/Image.h"
+#include "core/ResourceManager.h"
+#include "core/VulkanContext.h"
 
 /*
  A render target that is not backed by a swapchain: a color image and a depth image

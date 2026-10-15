@@ -1,11 +1,11 @@
-#include "Ubo.h"
+#include "resources/Ubo.h"
 #include "VkTestContext.h"
 #include "TestShaders.h"
 #include "ScreenshotApproval.h"
-#include "OffscreenRenderTarget.h"
-#include "BasicMaterial.h"
-#include "RenderableNode.h"
-#include "RenderablesNode.h"
+#include "targets/OffscreenRenderTarget.h"
+#include "materials/BasicMaterial.h"
+#include "graph/nodes/RenderableNode.h"
+#include "graph/nodes/RenderablesNode.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 

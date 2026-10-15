@@ -1,6 +1,6 @@
-#include "VkTypes.h"
-#include "QueueFamilyIndices.h"
-#include "SwapChainSupportDetails.h"
+#include "core/VkTypes.h"
+#include "core/QueueFamilyIndices.h"
+#include "core/SwapChainSupportDetails.h"
 
 #include <doctest/doctest.h>
 

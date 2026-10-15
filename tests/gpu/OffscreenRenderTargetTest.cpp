@@ -1,5 +1,5 @@
 #include "VkTestContext.h"
-#include "OffscreenRenderTarget.h"
+#include "targets/OffscreenRenderTarget.h"
 
 TEST_CASE_FIXTURE(GpuTest, "OffscreenRenderTarget clears and reads back its color image") {
     auto& ctx = context();

@@ -1,10 +1,10 @@
 #pragma once
 
-#include "VkTypes.h"
-#include "Descriptor.h"
-#include "Buffer.h"
-#include "VulkanContext.h"
-#include "VkUtil.h"
+#include "core/VkTypes.h"
+#include "descriptors/Descriptor.h"
+#include "resources/Buffer.h"
+#include "core/VulkanContext.h"
+#include "core/VkUtil.h"
 
 #include <glm/glm.hpp>
 

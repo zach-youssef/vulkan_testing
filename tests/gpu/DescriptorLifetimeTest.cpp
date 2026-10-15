@@ -1,5 +1,5 @@
 #include "VkTestContext.h"
-#include "Descriptor.h"
+#include "descriptors/Descriptor.h"
 
 #include <glm/glm.hpp>
 

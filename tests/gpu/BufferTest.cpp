@@ -1,5 +1,5 @@
 #include "VkTestContext.h"
-#include "Buffer.h"
+#include "resources/Buffer.h"
 
 #include <numeric>
 

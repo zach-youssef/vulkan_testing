@@ -1,9 +1,9 @@
 #pragma once
 
-#include "VkTypes.h"
-#include "VkUtil.h"
-#include "Buffer.h"
-#include "VulkanContext.h"
+#include "core/VkTypes.h"
+#include "core/VkUtil.h"
+#include "resources/Buffer.h"
+#include "core/VulkanContext.h"
 
 #include <stb_image.h>
 

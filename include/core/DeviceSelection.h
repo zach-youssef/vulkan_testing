@@ -1,8 +1,8 @@
 #pragma once
 
-#include "VkUtil.h"
-#include "QueueFamilyIndices.h"
-#include "SwapChainSupportDetails.h"
+#include "core/VkUtil.h"
+#include "core/QueueFamilyIndices.h"
+#include "core/SwapChainSupportDetails.h"
 
 bool checkDeviceExtensionSupport(VkPhysicalDevice device);
 VkPhysicalDeviceFeatures getSupportedFeatures(VkPhysicalDevice device);

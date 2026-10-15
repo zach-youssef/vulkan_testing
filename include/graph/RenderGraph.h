@@ -1,8 +1,8 @@
 #pragma once
 
-#include "VkTypes.h"
-#include "VkUtil.h"
-#include "VulkanContext.h"
+#include "core/VkTypes.h"
+#include "core/VkUtil.h"
+#include "core/VulkanContext.h"
 
 #include <unordered_set>
 

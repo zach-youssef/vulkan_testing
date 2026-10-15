@@ -1,6 +1,6 @@
 #include "VkTestContext.h"
 #include "TestShaders.h"
-#include "Renderable.h"
+#include "materials/Renderable.h"
 
 #include <cmath>
 #include <cstdlib>

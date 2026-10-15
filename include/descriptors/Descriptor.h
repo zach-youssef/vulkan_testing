@@ -1,9 +1,9 @@
 #pragma once
 
-#include "VkTypes.h"
-#include "Buffer.h"
-#include "Image.h"
-#include "ResourceManager.h"
+#include "core/VkTypes.h"
+#include "resources/Buffer.h"
+#include "resources/Image.h"
+#include "core/ResourceManager.h"
 
 // Abstract class representing any descriptor
 class Descriptor {

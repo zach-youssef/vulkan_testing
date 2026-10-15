@@ -11,7 +11,7 @@
 
 #include <vulkan/vk_enum_string_helper.h>
 
-#include "ResourceManager.h"
+#include "core/ResourceManager.h"
 
 class VulkanContext;
 
