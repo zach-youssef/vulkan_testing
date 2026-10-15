@@ -24,9 +24,18 @@
  */
 class VkTestContext {
 public:
+    // Created on first use. Destroyed by shutdown() at the end of main(), rather than during
+    // static destruction, where the validation layer's own globals may already be gone.
     static VkTestContext& get() {
-        static VkTestContext context;
-        return context;
+        auto& context = storage();
+        if (!context) {
+            context.reset(new VkTestContext());
+        }
+        return *context;
+    }
+
+    static void shutdown() {
+        storage().reset();
     }
 
     VkInstance instance() { return **instance_; }
@@ -65,6 +74,11 @@ public:
     }
 
 private:
+    static std::unique_ptr<VkTestContext>& storage() {
+        static std::unique_ptr<VkTestContext> context;
+        return context;
+    }
+
     VkTestContext() {
         createInstance();
         pickPhysicalDevice();
