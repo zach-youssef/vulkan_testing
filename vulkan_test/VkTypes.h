@@ -73,6 +73,11 @@ public:
         outResult = glfwCreateWindowSurface(instance, window, nullptr, &value_);
     }
     
+    // Takes ownership of an already created surface
+    VulkanSurface(VkInstance instance, VkSurfaceKHR surface): instance_(instance) {
+        value_ = surface;
+    }
+    
     ~VulkanSurface() {
         vkDestroySurfaceKHR(instance_, value_, nullptr);
     }
