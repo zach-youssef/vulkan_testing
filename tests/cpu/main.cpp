@@ -9,3 +9,8 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+
+#include "core/Contract.h"
+
+// Misuse throws ContractViolation, so tests can check it (CHECK_THROWS_AS)
+static const auto previousContractViolationHandler = setContractViolationHandler(throwingContractViolationHandler);
