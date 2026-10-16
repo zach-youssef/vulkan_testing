@@ -11,6 +11,9 @@ to see a full migration.
 
 ## Approach
 
+0. Errors are values now (see "Errors"): fallible calls return `Result<T>` and the wrapper never
+   throws. Port into functions returning `Result`, so `TRY`/`TRY_ASSIGN` can propagate errors, and
+   end `main` with `return exitStatus(runApp());`.
 1. Update includes and the build first (see "Build"), so the codebase fails to compile only where APIs
    changed.
 2. Port bottom up: app and context, then resources, then shaders, then materials (and their GLSL),
@@ -35,17 +38,47 @@ to see a full migration.
 - One translation unit still defines `VK_WRAP_UTIL_IMPL` and `STB_IMAGE_IMPLEMENTATION`.
 - Only `include/app` uses GLFW. Code that doesn't use `VulkanApp` doesn't need to link it.
 
+## Errors
+
+The old wrapper threw `std::runtime_error` (often through `VK_SUCCESS_OR_THROW`) and returned bare
+`VkResult`s. Now:
+
+- **Runtime errors are `Result<T>` values** (`core/Result.h`): Vulkan failures, device loss, running
+  out of memory, missing files and shaders, shader reload failures, unsuitable devices and graphs
+  that don't compile. An `Error` has a `code` (`ErrorCode`), a `message`, the failed `vkResult` and a
+  context chain; `error.describe()` (or `std::cout << error`) prints all of it.
+- **Propagate with macros**: `TRY(expr)` returns the error from the enclosing function,
+  `TRY_ASSIGN(auto x, expr)` also declares `x` with the value, and `VK_TRY(vkCall(...), "message")`
+  checks a `VkResult`. `VK_SUCCESS_OR_THROW` is gone. Add context with
+  `TRY(loadScene().withContext("loading the scene"))`.
+- **Programming errors are contract violations** (`core/Contract.h`): misuse such as drawing without
+  an active graph, asking a headless app for its window, unknown node ids, `read()` with a writing
+  access, running out of descriptor slots. The default handler prints and aborts; tests install
+  `throwingContractViolationHandler` and check misuse with `CHECK_THROWS_AS(..., ContractViolation)`.
+  `Result::value()` on an error is also a contract violation.
+- **Out parameters are gone**: factories return the handle, e.g.
+  `TRY_ASSIGN(auto image, Image::createFromFile(ctx, path))`.
+- **Materials can't fail to construct**: their pipelines are built when a graph compiles a plan using
+  them (or by `material->ensurePipeline()`), so pipeline errors come from `graph.compile()` /
+  `execute()` / `app.run()`. A material that creates fallible resources (per-frame uniform buffers)
+  gets a static `create()` factory that creates them first and passes them to its constructor (see
+  `TutorialMaterial::create` in the example).
+- **Nodes** that can fail per frame do so in `Node::prepareFrame(FrameContext&)`, which runs before
+  anything is acquired or submitted. `record()` and `run()` can't fail.
+
 ## Mapping
 
 ### App and context
 
 | Old | New |
 |---|---|
-| `VulkanApp<MAX_FRAMES> app(height, width); app.init(forceFullFloatColor)` | `VulkanApp app; app.init(AppConfig{...})` with `window = WindowConfig{title, width, height}` |
+| `VulkanApp<MAX_FRAMES> app(height, width); app.init(forceFullFloatColor)` | `VulkanApp app; TRY(app.init(AppConfig{...}))` with `window = WindowConfig{title, width, height}` |
+| `app.run()` inside `try`/`catch` | `return app.run();` from a function returning `Result<void>` (`app.run()` returns the error that stopped it); `main` returns `exitStatus(result)` |
+| Constructing a context | `TRY_ASSIGN(auto context, VulkanContext::create(config))` (a `std::unique_ptr<VulkanContext>`) |
 | `MAX_FRAMES` template argument everywhere | Runtime `ctx.framesInFlight()` (`AppConfig::framesInFlight`, `ctx.setFramesInFlight`). Remove the template arguments from every type. |
 | `app.getDevice()`, `getPhysicalDevice()` | `app.getContext().device()`, `.physicalDevice()`. Most APIs now take `VulkanContext&` instead. |
 | `app.getGraphicsQueue()`, `getComputeQueue()`, `getPresentQueue()` | Don't use raw queues: `ctx.submit(...)`, `ctx.present(...)`, `ctx.submitImmediate(fn)`. `ctx.queue(QueueType::...)` exists for interop, but host access to a raw queue must be synchronized with the context's own use of it, so prefer the context's functions. |
-| `app.getCommandPool()` / `issueSingleTimeCommand(fn, queue, device, pool)` | `ctx.submitImmediate(fn)` for one-off work; `ctx.createCommandPool(...)` for your own recording |
+| `app.getCommandPool()` / `issueSingleTimeCommand(fn, queue, device, pool)` | `TRY(ctx.submitImmediate(fn))` for one-off work; `ctx.createCommandPool(...)` (a `Result`) for your own recording |
 | `app.getGraphicsCommandBuffers()` / `getComputeCommandBuffers()` | Gone: graph nodes record into command buffers the graph provides |
 | `app.getSwapchainExtent()` | `app.getSurfaceExtent()` (or `FrameContext::surfaceExtent`) |
 | `app.getRenderPass()` | Gone: dynamic rendering. Use `graph.surfaceTarget()` and `graph.formats(target)`. |
@@ -58,14 +91,16 @@ to see a full migration.
 
 | Old | New |
 |---|---|
-| `std::unique_ptr<Image>` / `std::unique_ptr<Buffer<T>>` out parameters | `Handle<Image>` / `Handle<Buffer<T>>` out parameters (reference counted; see `core/ResourceManager.h`) |
-| `Image::createFromFile(out, path, queue, pool, device, physicalDevice)` | `Image::createFromFile(out, ctx, path)` (same for `createFromUcharBuffer`, `createEmpty`, `createEmptyRGBA`) |
-| `Image::createEmpty*` used as a storage image | `Image::createStorage(out, ctx, format, w, h)`. Storage images can't be sRGB; use e.g. `R16G16B16A16_SFLOAT` or `R8G8B8A8_UNORM`. Sampled-only images no longer get storage usage. |
-| `Image::transitionImageLayout(image, ..., queue, pool, device)` | `image->transitionLayout(old, new)`. Usually unnecessary: the render graph transitions images it uses. |
-| `Buffer<T>::create(out, n, usage, props, device, physicalDevice)` | `Buffer<T>::create(out, ctx, n, usage, props)`; `createScoped` for staging buffers |
-| `Buffer<T>::createAndInitialize(out, data, usage, device, physicalDevice, queue, pool)` | `Buffer<T>::createAndInitialize(out, ctx, data, usage)` |
-| `VulkanSampler::createWithAddressMode(out, mode, device, physicalDevice)` (`unique_ptr`) | `VulkanSampler::createWithAddressMode(handle, ctx, mode)` (`Handle<VulkanSampler>`) |
-| `std::array<VkImageView, MAX_FRAMES>` for per-frame images | `PerFrameHandles<Image>` collections (`ctx.resources().create<PerFrameHandles<Image>>(ctx, factory)`), or graph images with `FrameMode::PerFrame` |
+| `std::unique_ptr<Image>` / `std::unique_ptr<Buffer<T>>` out parameters | Factories returning `Result<Handle<Image>>` / `Result<Handle<Buffer<T>>>` (handles are reference counted; see `core/ResourceManager.h`) |
+| `Image::createFromFile(out, path, queue, pool, device, physicalDevice)` | `TRY_ASSIGN(auto image, Image::createFromFile(ctx, path))` (same for `createFromUcharBuffer`, `createEmpty`, `createEmptyRGBA`) |
+| `Image::createEmpty*` used as a storage image | `Image::createStorage(ctx, format, w, h)`. Storage images can't be sRGB; use e.g. `R16G16B16A16_SFLOAT` or `R8G8B8A8_UNORM` (unsupported formats fail with `ErrorCode::Unsupported`). Sampled-only images no longer get storage usage. |
+| `Image::transitionImageLayout(image, ..., queue, pool, device)` | `TRY(image->transitionLayout(old, new))`. Usually unnecessary: the render graph transitions images it uses. |
+| `image->readback(...)` returning pixels | `TRY_ASSIGN(auto pixels, image->readback(layout))` |
+| `Buffer<T>::create(out, n, usage, props, device, physicalDevice)` | `Buffer<T>::create(ctx, n, usage, props)`; `createScoped` for staging buffers |
+| `Buffer<T>::createAndInitialize(out, data, usage, device, physicalDevice, queue, pool)` | `Buffer<T>::createAndInitialize(ctx, data, usage)` |
+| `buffer->mapAndExecute(...)`, `getPersistentMapping(...)` | Same, returning `Result`s (`Buffer<T>::Mapping` for persistent mappings) |
+| `VulkanSampler::createWithAddressMode(out, mode, device, physicalDevice)` (`unique_ptr`) | `VulkanSampler::createWithAddressMode(ctx, mode)` (`Result<Handle<VulkanSampler>>`) |
+| `std::array<VkImageView, MAX_FRAMES>` for per-frame images | `PerFrameHandles<Image>` collections (`PerFrameHandles<Image>::createManaged(ctx, factory)` for factories returning `Result`s, `ctx.resources().create<PerFrameHandles<T>>(ctx, factory)` for ones that can't fail), or graph images with `FrameMode::PerFrame` |
 
 ### Descriptors and materials
 
@@ -80,19 +115,19 @@ direct equivalents.
 | `CombinedImageSamplerDescriptor(images, sampler)` | Two bindings, `sampled(entry)` and `sampler(entry)`, combined in GLSL as `sampler2D(bindlessTextures[i], bindlessSamplers[j])` |
 | `StorageImageDescriptor` | `MaterialBinding::storageImage(entry, Access::StorageWrite / StorageRead / StorageReadWrite)`; GLSL `bindlessStorageImages[i]` (no format qualifier) |
 | `layout(binding = N) ...` in GLSL | `#include "bindless.glsl"` and a push constant block of `uint` indices in binding order |
-| `uboDescriptor->bindBuffer(frame, buffer)` then `populateDescriptorSet(frame)` (the "JANK" pattern) | Create the per-frame buffers and entries in the material's constructor and set `bindings_` there (see `TutorialMaterial` in the example) |
+| `uboDescriptor->bindBuffer(frame, buffer)` then `populateDescriptorSet(frame)` (the "JANK" pattern) | Create the per-frame buffers, entries and mappings in a static `create()` factory, pass them to the material's constructor and set `bindings_` there (see `TutorialMaterial` in the example) |
 | `Material<MAX_FRAMES>(device, physicalDevice, descriptors)` | `Material(ctx, bindings)`. Subclasses implement `createPipeline()` only if they're new material kinds. |
-| `BasicMaterial<MAX_FRAMES, N>(device, physicalDevice, descriptors, swapchainExtent, renderPass, vertSpirv, fragSpirv, binding, attributes)` | `GraphicsMaterial(ctx, bindings, graph.formats(target), ctx.shaders().get("x.vert"), ctx.shaders().get("x.frag"), GraphicsPipelineOptions{.vertexLayout = VertexLayout{{binding}, {attributes...}}})`. The old pipeline state (triangle lists, back faces culled, opaque, depth tested) is the options' default. |
-| `ComputeMaterial<MAX_FRAMES>(device, physicalDevice, descriptors, spirv)` | `ComputeMaterial(ctx, bindings, ctx.shaders().get("x.comp"))` |
+| `BasicMaterial<MAX_FRAMES, N>(device, physicalDevice, descriptors, swapchainExtent, renderPass, vertSpirv, fragSpirv, binding, attributes)` | `GraphicsMaterial(ctx, bindings, graph.formats(target), vert, frag, GraphicsPipelineOptions{.vertexLayout = VertexLayout{{binding}, {attributes...}}})` with shaders from `TRY_ASSIGN(auto vert, ctx.shaders().get("x.vert"))`. The old pipeline state (triangle lists, back faces culled, opaque, depth tested) is the options' default. |
+| `ComputeMaterial<MAX_FRAMES>(device, physicalDevice, descriptors, spirv)` | `ComputeMaterial(ctx, bindings, shader)` with `TRY_ASSIGN(auto shader, ctx.shaders().get("x.comp"))` |
 | `material->getDescriptorSet(frame)`, binding sets yourself | `material->bind(commandBuffer, frameIndex)` (pipeline and push constants). The graph binds the universal set; outside a graph, call `ctx.descriptors().bind(commandBuffer, bindPoint)`. |
-| `MeshRenderable<V, MAX_FRAMES>(vertices, indices, std::move(material), device, physicalDevice, queue, pool)` with a `unique_ptr` material | `auto mesh = ctx.resources().create<Mesh>(ctx, vertices, indices)`, then `ctx.resources().create<MeshRenderable>(mesh, materialHandle)`. Meshes and materials (`Handle<Material>`) can be shared between renderables. |
+| `MeshRenderable<V, MAX_FRAMES>(vertices, indices, std::move(material), device, physicalDevice, queue, pool)` with a `unique_ptr` material | `TRY_ASSIGN(auto mesh, Mesh::create(ctx, vertices, indices))`, then `ctx.resources().create<MeshRenderable>(mesh, materialHandle)`. Meshes and materials (`Handle<Material>`) can be shared between renderables. |
 | `update(frame, swapchainExtent)` called by each node | `update(frameIndex, surfaceExtent)` called once per frame per distinct material by the graph |
 
 ### Shaders
 
 | Old | New |
 |---|---|
-| `readFile(absolutePath + "/x.spv")` (`FileUtil.h`) | `ctx.shaders().get("x.vert")`, with `AppConfig::shaderSearchPaths` (or `VulkanContextConfig::shaderSearchPaths`) pointing at the SPIR-V directory. Name SPIR-V files `<name>.<stage>.spv`. |
+| `readFile(absolutePath + "/x.spv")` (`FileUtil.h`) | `TRY_ASSIGN(auto shader, ctx.shaders().get("x.vert"))`, with `AppConfig::shaderSearchPaths` (or `VulkanContextConfig::shaderSearchPaths`) pointing at the SPIR-V directory. Name SPIR-V files `<name>.<stage>.spv`. |
 | Restart to pick up shader changes | `app.reloadShaders()` or `AppConfig::autoReloadShaders = true` |
 
 ### Render graph
@@ -107,7 +142,8 @@ direct equivalents.
 | `flagNodeAsFrameBlocking(node)` | Remove: frames wait for their slot's previous work automatically |
 | Custom `RenderNode` subclasses (`submit(RenderEvalContext&)`) | Subclass `GraphicsNode`/`ComputeNode`/`TransferNode`/`CpuNode`: declare uses in `setup(NodeBuilder&)`, record in `record(RecordContext&)` (no begin/end, submit or semaphores; graphics nodes are already inside rendering with the viewport set) |
 | Images shared between nodes by `VkImageView` arrays | Import them (`graph.importImage(name, handleOrPerFrameHandles, ImageState::...)`) or create them in the graph (`graph.createImage(name, FrameMode::..., ...)`); give materials `graph.sampledEntry(id)` / `storageEntry(id)` |
-| Offscreen render pass + framebuffer | A `RenderTarget` of graph images; `ReadbackNode` to read results back |
+| Offscreen render pass + framebuffer | A `RenderTarget` of graph images; `ReadbackNode` to read results back (`TRY_ASSIGN(auto pixels, readback.pixels())`) |
+| Graph errors thrown while building or running | `graph.compile()` and `graph.execute()` return `Result`s; compile errors have `ErrorCode::InvalidGraph` |
 
 ## Behavior changes to be aware of
 

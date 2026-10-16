@@ -62,7 +62,7 @@ public:
 
         uniformBuffer->mapAndExecute(0, sizeof(ubo), [&ubo](void* data) {
             memcpy(data, &ubo, sizeof(ubo));
-        });
+        }).value();
     }
 
     void update(uint32_t, VkExtent2D) override {}
@@ -74,16 +74,11 @@ public:
     explicit TexturedScene(VulkanContext& ctx) : ctx_(ctx), graph_(ctx) {
         auto& resources = ctx.resources();
 
-        Image::createFromFile(texture_, ctx, std::string(TEST_TEXTURE_DIR) + "/texture.jpg");
-        Handle<VulkanSampler> sampler;
-        VK_SUCCESS_OR_THROW(VulkanSampler::createWithAddressMode(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT),
-                            "Failed to create sampler");
+        texture_ = Image::createFromFile(ctx, std::string(TEST_TEXTURE_DIR) + "/texture.jpg").value();
+        auto sampler = VulkanSampler::createWithAddressMode(ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT).value();
 
-        Handle<Buffer<UniformBufferObject>> uniformBuffer;
-        VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(uniformBuffer, ctx, 1,
-                                                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-                            "Failed to create uniform buffer");
+        auto uniformBuffer = Buffer<UniformBufferObject>::create(ctx, 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT).value();
 
         color_ = graph_.createImage("color", FrameMode::Shared, VK_FORMAT_R8G8B8A8_SRGB, FixedExtent{{kWidth, kHeight}});
         ImageId depth = graph_.createImage("depth", FrameMode::Shared, VK_FORMAT_D32_SFLOAT, FixedExtent{{kWidth, kHeight}});
@@ -102,7 +97,7 @@ public:
     }
 
     Handle<Renderable> createQuad(float scale, glm::vec2 offset) {
-        auto mesh = ctx_.resources().create<Mesh>(ctx_, quad(scale, offset), kQuadIndices);
+        auto mesh = Mesh::create(ctx_, quad(scale, offset), kQuadIndices).value();
         return ctx_.resources().create<MeshRenderable>(std::move(mesh), material_);
     }
 
@@ -111,8 +106,8 @@ public:
         // The material's bindings declare its uniform buffer and texture uses
         graph_.add<RenderablesNode>("draw", std::move(renderables), target_);
         NodeId readback = graph_.add<ReadbackNode>("readback", color_);
-        graph_.execute();
-        return graph_.nodeAs<ReadbackNode>(readback).pixels();
+        graph_.execute().value();
+        return graph_.nodeAs<ReadbackNode>(readback).pixels().value();
     }
 
     RenderGraph& graph() { return graph_; }
@@ -163,15 +158,15 @@ TEST_CASE_FIXTURE(GpuTest, "Frames added at runtime render the same as existing 
     // The graph's command buffers and the material's descriptor sets grow with the frames in flight
     ctx.setFramesInFlight(originalFrames + 1);
     for (uint32_t frame = 0; frame <= originalFrames + 1; ++frame) {
-        scene.graph().execute();
+        scene.graph().execute().value();
     }
     auto& readback = scene.graph().nodeAs<ReadbackNode>(NodeId{1});
-    CHECK(readback.pixels() == expected);
+    CHECK(readback.pixels().value() == expected);
 
     ctx.setFramesInFlight(originalFrames);
-    scene.graph().execute();
-    scene.graph().execute();
-    CHECK(readback.pixels() == expected);
+    scene.graph().execute().value();
+    scene.graph().execute().value();
+    CHECK(readback.pixels().value() == expected);
 }
 
 TEST_CASE("compareWithFlip passes identical images and flags visibly different ones") {

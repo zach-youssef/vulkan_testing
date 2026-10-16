@@ -62,43 +62,53 @@ show common kinds of application:
 | `examples/scene` | A 3D renderer: shadow map, HDR target that follows window resizes, tonemapping, orbit camera, shader hot reload |
 
 ```cpp
-AppConfig config;
-config.window = WindowConfig{"My app", 1280, 720};   // std::nullopt for headless
-config.enableValidation = true;
-config.shaderSearchPaths = {MY_SHADER_DIR};            // where <name>.spv files are
-config.autoReloadShaders = true;                       // optional
-VulkanApp app;
-app.init(config);
-VulkanContext& ctx = app.getContext();
+// Fallible calls return Result<T>; TRY / TRY_ASSIGN return errors to the caller
+Result<void> runApp() {
+    AppConfig config;
+    config.window = WindowConfig{"My app", 1280, 720};   // std::nullopt for headless
+    config.enableValidation = true;
+    config.shaderSearchPaths = {MY_SHADER_DIR};            // where <name>.spv files are
+    config.autoReloadShaders = true;                       // optional
+    VulkanApp app;
+    TRY(app.init(config));
+    VulkanContext& ctx = app.getContext();
 
-// Resources are owned by the context's ResourceManager and shared through Handle<T>
-Handle<Image> texture;
-Image::createFromFile(texture, ctx, path);
-Handle<VulkanSampler> sampler;
-VulkanSampler::createWithAddressMode(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    // Resources are owned by the context's ResourceManager and shared through Handle<T>
+    TRY_ASSIGN(auto texture, Image::createFromFile(ctx, path));
+    TRY_ASSIGN(auto sampler, VulkanSampler::createWithAddressMode(ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT));
+    TRY_ASSIGN(auto copyShader, ctx.shaders().get("copy.comp"));
 
-// A graph per scene/mode; the app executes the active one each frame
-RenderGraph& graph = app.createGraph();
-graph.importImage("texture", texture, ImageState::shaderReadOnly());
-ImageId target = graph.createImage("result", FrameMode::PerFrame, VK_FORMAT_R16G16B16A16_SFLOAT, FixedExtent{{w, h}});
-RenderTarget screen = graph.surfaceTarget();   // the swapchain image plus a depth image
+    // A graph per scene/mode; the app executes the active one each frame
+    RenderGraph& graph = app.createGraph();
+    graph.importImage("texture", texture, ImageState::shaderReadOnly());
+    ImageId target = graph.createImage("result", FrameMode::PerFrame, VK_FORMAT_R16G16B16A16_SFLOAT, FixedExtent{{w, h}});
+    RenderTarget screen = graph.surfaceTarget();   // the swapchain image plus a depth image
 
-// Materials reference resources through descriptor entries
-auto& heap = ctx.descriptors();
-auto compute = ctx.resources().create<MyComputeMaterial>(ctx, std::vector<MaterialBinding>{
-    MaterialBinding::sampled(heap.sampledImage(texture)),
-    MaterialBinding::sampler(heap.sampler(sampler)),
-    MaterialBinding::storageImage(graph.storageEntry(target), Access::StorageWrite),
-}, ctx.shaders().get("copy.comp"));
+    // Materials reference resources through descriptor entries
+    auto& heap = ctx.descriptors();
+    auto compute = ctx.resources().create<MyComputeMaterial>(ctx, std::vector<MaterialBinding>{
+        MaterialBinding::sampled(heap.sampledImage(texture)),
+        MaterialBinding::sampler(heap.sampler(sampler)),
+        MaterialBinding::storageImage(graph.storageEntry(target), Access::StorageWrite),
+    }, copyShader);
 
-graph.add<DispatchNode>("copy", compute);              // uses are derived from the material
-graph.add<RenderablesNode>("draw", renderables, screen);
-app.setActiveGraph(graph);
-app.run();
+    graph.add<DispatchNode>("copy", compute);              // uses are derived from the material
+    graph.add<RenderablesNode>("draw", renderables, screen);
+    app.setActiveGraph(graph);
+    return app.run();                                      // the error that stopped it, if any
+}
+
+int main() { return exitStatus(runApp()); }            // prints the error
 ```
 
 ### Core rules
 
+- **Errors:** the wrapper doesn't throw. Runtime errors (Vulkan failures, device loss, out of
+  memory, missing files and shaders, unsuitable devices, graphs that don't compile) are returned as
+  `Result<T>` (`core/Result.h`, shaped like `std::expected<T, Error>`); propagate them with `TRY`,
+  `TRY_ASSIGN` and `VK_TRY`, and add context with `.withContext("...")`. Programming errors (misuse,
+  bad ids, running out of descriptor slots) are contract violations (`core/Contract.h`): the default
+  handler prints and aborts. `Result::value()` on an error is one too.
 - **Ownership:** create resources through their factories (or `ctx.resources().create<T>(...)`) and
   pass `Handle<T>`s around. Handles are reference counted and thread safe. Every handle must be
   released before the context is destroyed. Never `delete` or `std::make_unique` managed types.
@@ -110,6 +120,9 @@ app.run();
   responsible. `ResourceManager`, `DescriptorHeap`, `ShaderLibrary` and `PerFrame` creation and
   destruction are thread safe. `RenderGraph` and `VulkanApp` are used from one thread.
 - **One-off GPU work** (uploads, readbacks) uses `ctx.submitImmediate(fn)`, which blocks.
+- **Creation:** fallible types have static factories returning `Result<Handle<T>>` (`Image::create*`,
+  `Buffer<T>::create`, `Mesh::create`, `VulkanSampler::create`; `VulkanContext::create` returns a
+  `std::unique_ptr`). Materials and nodes construct infallibly; see "Descriptors and materials".
 - **Device features:** the wrapper enables what it needs (`DeviceFeatures::required()`). Request
   anything else with `AppConfig::features` (`VulkanContextConfig::features`), e.g.
   `config.features.vulkan12.storageBuffer8BitAccess = VK_TRUE` for 8-bit types in storage buffers.
@@ -120,9 +133,12 @@ app.run();
 - The count is a runtime property: `ctx.framesInFlight()`, `ctx.setFramesInFlight(n)` (applied at
   the next frame boundary), `ctx.currentFrame()`. There are no `MAX_FRAMES` template parameters.
 - Anything duplicated per frame is a `PerFrame<T>` (or `PerFrameHandles<T>` for handles): a factory
-  creates element `i` for frame `i`, and the collection grows and shrinks with the count.
-  Collections grow in creation order and shrink in reverse, so a factory may use collections created
-  before it (e.g. per-frame buffers, then their mappings, then their descriptor entries).
+  creates element `i` for frame `i`, and the collection grows and shrinks with the count. Factories
+  that can fail return `Result<T>` and go through `PerFrame<T>::create` (or `createManaged` for a
+  handle); if one fails while growing, `advanceFrame` returns the error and every collection keeps
+  the previous count. Collections grow in creation order and shrink in reverse, so a factory may use
+  collections created before it (e.g. per-frame buffers, then their mappings, then their descriptor
+  entries).
 - `FrameBinding<T>` is either one handle shared by every frame or a `PerFrameHandles<T>`. Use shared
   bindings for static data and per-frame ones for data the CPU rewrites every frame.
 - Frames are paced with timelines: `RenderGraph::execute` calls `ctx.beginFrame()` (waits only for
@@ -154,15 +170,20 @@ app.run();
   block with a writable one (pipeline creation fails).
 - **Declare every binding's access accurately.** The graph synchronizes only on declared accesses,
   and synchronization validation can't see accesses through the bindless arrays, so a write
-  declared as a read is a silent race. The graph throws when a material's shaders write storage
-  images or buffers and none of its bindings declares such a write (reflected from the SPIR-V), but
-  it can't tell which binding a write goes through.
+  declared as a read is a silent race. The graph fails to compile when a material's shaders write
+  storage images or buffers and none of its bindings declares such a write (reflected from the
+  SPIR-V), but it can't tell which binding a write goes through.
 - Subclass `ComputeMaterial` (implement `getDispatchDimensions`, `update`). Use or subclass
   `GraphicsMaterial` (vertex and fragment shaders, `AttachmentFormats` of the target and
   `GraphicsPipelineOptions`: vertex layout or none, topology, culling, blend modes, depth test and
   bias). Graphics materials must be built for the formats of the target they draw into:
   `graph.formats(renderTarget)`. A derived constructor may set `bindings_` before the material is
   used (see `TutorialMaterial`).
+- Material constructors can't fail: pipelines are built when a graph compiles a plan with a node
+  using the material (`NodeBuilder::uses`, which the built-in nodes call), or by
+  `material->ensurePipeline()` outside a graph, so pipeline errors come back from
+  `compile()`/`execute()`. Binding a material whose pipeline isn't built is a contract violation. A material owning fallible resources (per-frame uniform buffers) gets a
+  static `create()` that makes them and passes them to its constructor (`TutorialMaterial::create`).
 - `update(frameIndex, surfaceExtent)` is called by the graph once per frame per distinct material,
   just before the first submission recording it. Write per-frame data (e.g. a uniform buffer per
   frame) there. A CPU node ordered before the material's node (by declared uses or
@@ -178,7 +199,8 @@ app.run();
   from the declared uses. `graph.sampledEntry(id)`, `storageEntry(id)` and `storageBufferEntry(id)`
   give materials entries for graph resources that follow recreation.
 - **Nodes** declare what they use. `RenderablesNode`, `DispatchNode` and `ReadbackNode` cover common
-  cases. For one-offs, use `addGraphics`, `addCompute`, `addTransfer` or `addCpu(name, setup, record/run)`.
+  cases. Per-frame work that can fail (creating resources) goes in `Node::prepareFrame`, which runs
+  before anything is acquired or submitted; `record` and `run` can't fail. For one-offs, use `addGraphics`, `addCompute`, `addTransfer` or `addCpu(name, setup, record/run)`.
   Subclass `GraphicsNode` / `ComputeNode` / `TransferNode` / `CpuNode` for reusable nodes.
   `NodeBuilder::uses(material)` declares the material's resource uses automatically. Declare
   anything else with `read`/`write(id, Access, shaderStages)`, and `renderTo(target)` for attachments.
@@ -186,7 +208,9 @@ app.run();
 - The graph derives order (insertion order is program order for conflicting uses), queues,
   barriers and semaphores, so there are no edges to add. `addDependency(before, after)` exists for
   dependencies the graph can't see. Cycles, two surface writers, missing image usage and
-  material/target format mismatches throw `GraphError` when compiling.
+  material/target format mismatches fail `compile()`/`execute()` with `ErrorCode::InvalidGraph`.
+  Errors before submission leave the frame unstarted, so it can be retried; errors after (a lost
+  device, a failed present) are fatal.
 - **Queues:** graphics nodes run on the primary queue. Independent compute and transfer work is
   spread over the other queues automatically (`onPrimaryQueue()` pins a node).
 - **The surface:** `graph.surfaceTarget()` writes the swapchain image. Acquire and present are
@@ -216,11 +240,11 @@ app.run();
 ### Images and formats
 
 - `Image::createFromFile` / `createFromUcharBuffer` / `createEmptyRGBA` make sampled sRGB images.
-  `Image::createStorage` makes storage images, and throws for formats the device can't store to
-  (e.g. any sRGB format). `Image::supportsUsage` checks a format first.
-- Samplers: `VulkanSampler::create(handle, ctx, SamplerDesc{...})` (filter, address mode, a
+  `Image::createStorage` makes storage images, and fails (`ErrorCode::Unsupported`) for formats the
+  device can't store to (e.g. any sRGB format). `Image::supportsUsage` checks a format first.
+- Samplers: `VulkanSampler::create(ctx, SamplerDesc{...})` (filter, address mode, a
   `compareOp` for shadow maps, anisotropy); `createWithAddressMode` is shorthand.
-- Meshes: `ctx.resources().create<Mesh>(ctx, vertices, indices)` (16- or 32-bit indices) holds the
+- Meshes: `Mesh::create(ctx, vertices, indices)` (16- or 32-bit indices) holds the
   buffers; `create<MeshRenderable>(mesh, material)` draws one with a material, so passes can share
   geometry.
 - Colours: textures are sRGB and sampling decodes them to linear. The swapchain is preferably
@@ -229,8 +253,11 @@ app.run();
 ## Working on the wrapper
 
 - Keep it header only, C++20, and free of GLFW outside `include/app`.
-- Match the surrounding style: classes with `camelCase_` members, comments explaining why, and
-  `VK_SUCCESS_OR_THROW` for Vulkan results.
+- Match the surrounding style: classes with `camelCase_` members and comments explaining why.
+- Never throw. Return `Result`s for runtime errors (`VK_TRY` for Vulkan results, `TRY`/`TRY_ASSIGN`
+  to propagate) and call `contractViolation()` for misuse. Tests install a throwing contract
+  handler, so misuse is tested with `CHECK_THROWS_AS(..., ContractViolation)`, and errors with
+  `CHECK_ERROR(expr, code, text)` (`tests/common/ResultChecks.h`).
 - Every change needs tests. CPU tests cover pure logic (compiler, sync, allocators, frame
   registry); GPU tests cover anything touching the device. Keep synchronization validation clean;
   a hazard is a bug.

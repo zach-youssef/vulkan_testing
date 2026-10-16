@@ -1,11 +1,14 @@
 #pragma once
 
+#include "core/Contract.h"
+#include "core/Result.h"
 #include "core/VkTypes.h"
 #include "core/VkUtil.h"
 #include "core/ResourceManager.h"
 #include "core/DeviceSelection.h"
 #include "core/DeviceFeatures.h"
 #include "core/FrameResources.h"
+#include "descriptors/UniversalSet.h"
 
 #include <array>
 #include <atomic>
@@ -43,6 +46,10 @@
  Lifetime:
     Everything created from the context (CommandPools, managed resources, wrappers holding the
     device) must be destroyed before the context.
+
+ Errors:
+    Creating the context, submitting and waiting return Results (see Result.h). Misuse, such as
+    asking for a present queue without a surface, is a contract violation (see Contract.h).
  */
 
 enum class QueueType {
@@ -65,14 +72,15 @@ enum class QueueType {
  */
 class CommandPool {
 public:
-    CommandPool(VkDevice device, uint32_t queueFamilyIndex, VkCommandPoolCreateFlags flags)
-    : device_(device), queueFamilyIndex_(queueFamilyIndex) {
+    static Result<std::unique_ptr<CommandPool>> create(VkDevice device, uint32_t queueFamilyIndex,
+                                                       VkCommandPoolCreateFlags flags) {
+        std::unique_ptr<CommandPool> pool(new CommandPool(device, queueFamilyIndex));
         VkCommandPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         poolInfo.flags = flags;
         poolInfo.queueFamilyIndex = queueFamilyIndex;
-        VK_SUCCESS_OR_THROW(VulkanCommandPool::create(pool_, device, poolInfo),
-                            "Failed to create command pool");
+        VK_TRY(VulkanCommandPool::create(pool->pool_, device, poolInfo), "Failed to create command pool");
+        return pool;
     }
 
     CommandPool(const CommandPool&) = delete;
@@ -86,22 +94,22 @@ public:
         return queueFamilyIndex_;
     }
 
-    std::vector<VkCommandBuffer> allocate(uint32_t count, VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
+    Result<std::vector<VkCommandBuffer>> allocate(uint32_t count, VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
         std::vector<VkCommandBuffer> commandBuffers(count);
-        allocateInto(commandBuffers.data(), count, level);
+        TRY(allocateInto(commandBuffers.data(), count, level));
         return commandBuffers;
     }
 
     template<size_t N>
-    std::array<VkCommandBuffer, N> allocateArray(VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
+    Result<std::array<VkCommandBuffer, N>> allocateArray(VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
         std::array<VkCommandBuffer, N> commandBuffers{};
-        allocateInto(commandBuffers.data(), static_cast<uint32_t>(N), level);
+        TRY(allocateInto(commandBuffers.data(), static_cast<uint32_t>(N), level));
         return commandBuffers;
     }
 
-    VkCommandBuffer allocateOne(VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
+    Result<VkCommandBuffer> allocateOne(VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-        allocateInto(&commandBuffer, 1, level);
+        TRY(allocateInto(&commandBuffer, 1, level));
         return commandBuffer;
     }
 
@@ -110,27 +118,21 @@ public:
     }
 
 private:
-    void allocateInto(VkCommandBuffer* out, uint32_t count, VkCommandBufferLevel level) {
+    CommandPool(VkDevice device, uint32_t queueFamilyIndex) : device_(device), queueFamilyIndex_(queueFamilyIndex) {}
+
+    Result<void> allocateInto(VkCommandBuffer* out, uint32_t count, VkCommandBufferLevel level) {
         VkCommandBufferAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         allocInfo.commandPool = **pool_;
         allocInfo.level = level;
         allocInfo.commandBufferCount = count;
-        VK_SUCCESS_OR_THROW(vkAllocateCommandBuffers(device_, &allocInfo, out),
-                            "Failed to allocate command buffers");
+        VK_TRY(vkAllocateCommandBuffers(device_, &allocInfo, out), "Failed to allocate command buffers");
+        return {};
     }
 
     VkDevice device_;
     uint32_t queueFamilyIndex_;
     std::unique_ptr<VulkanCommandPool> pool_;
-};
-
-// How many descriptors of each type the universal set holds. Clamped to the device's limits.
-struct DescriptorCapacities {
-    uint32_t sampledImages = 4096;
-    uint32_t samplers = 256;
-    uint32_t storageImages = 1024;
-    uint32_t storageBuffers = 4096;
 };
 
 class DescriptorHeap;
@@ -177,30 +179,29 @@ struct VulkanContextConfig {
 
 class VulkanContext {
 public:
-    explicit VulkanContext(VulkanContextConfig config)
-    : config_(std::move(config)), enabledFeatures_(DeviceFeatures::requiredWith(config_.features)),
-      frames_(config_.framesInFlight) {
-        if (!config_.onValidationMessage) {
-            config_.onValidationMessage = [](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
-                const char* label = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ? "error" : "warning";
-                std::cerr << "[Vulkan validation " << label << "] " << message << std::endl;
-            };
-        }
-        createInstance();
-        createSurface();
-        pickPhysicalDevice();
-        createDevice();
-
-        immediatePool_ = createCommandPool(QueueType::Graphics, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
-        resourceManager_ = std::make_unique<ResourceManager>();
-        frameEnds_.resize(frames_.framesInFlight());
+    // Creates the instance, surface (if configured) and device, and the device's queues. Fails if
+    // no device has what's needed (Error::code NoSuitableDevice), naming what each device lacks.
+    static Result<std::unique_ptr<VulkanContext>> create(VulkanContextConfig config) {
+        std::unique_ptr<VulkanContext> context(new VulkanContext(std::move(config)));
+        TRY(context->createInstance().withContext("creating the Vulkan instance"));
+        TRY(context->createSurface());
+        TRY(context->pickPhysicalDevice());
+        TRY(context->createDevice().withContext("creating the device"));
+        TRY_ASSIGN(context->immediatePool_, context->createCommandPool(QueueType::Graphics, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT));
+        TRY_ASSIGN(context->universalSet_, UniversalSet::create(context->device(), context->physicalDevice(),
+                                                                context->config_.descriptorCapacities));
+        context->resourceManager_ = std::make_unique<ResourceManager>();
+        context->frameEnds_.resize(context->frames_.framesInFlight());
+        return context;
     }
 
     VulkanContext(const VulkanContext&) = delete;
     VulkanContext& operator=(const VulkanContext&) = delete;
 
     ~VulkanContext() {
-        waitIdleAll();
+        if (device_) {
+            waitIdleAll();
+        }
         // Retired work may release resources, so it runs before they are destroyed
         runAllRetired();
         // Destroy in reverse dependency order. The shader library holds managed shaders. Descriptor
@@ -211,6 +212,7 @@ public:
         runAllRetired();
         descriptors_.reset();
         runAllRetired();
+        universalSet_.reset();
         immediatePool_.reset();
         queues_.clear();
         device_.reset();
@@ -231,8 +233,8 @@ public: // Accessors
     VkDevice device() { return **device_; }
     ResourceManager& resources() { return *resourceManager_; }
 
-    // The universal descriptor set and pipeline layout, created on first use. Defined in
-    // descriptors/DescriptorHeap.h, which must be included to use it.
+    // The universal descriptor set and pipeline layout. Defined in descriptors/DescriptorHeap.h,
+    // which must be included to use it.
     DescriptorHeap& descriptors();
 
     // The shader library, created on first use. Defined in shaders/ShaderLibrary.h, which must be
@@ -274,13 +276,13 @@ public: // Queues
 
     const QueueDescription& queueDescription(uint32_t queue) { return queues_.at(queue).description; }
 
-    // The queue a QueueType refers to. Throws std::logic_error for Present without a surface.
+    // The queue a QueueType refers to. Present without a surface is a contract violation.
     uint32_t queueIndex(QueueType type) {
         if (type != QueueType::Present) {
             return kPrimaryQueue;
         }
         if (!presentQueue_) {
-            throw std::logic_error("Queue type unavailable (a present queue requires a surface)");
+            contractViolation("Queue type unavailable (a present queue requires a surface)");
         }
         return *presentQueue_;
     }
@@ -319,10 +321,10 @@ public: // Timelines (thread safe)
     };
 
     // Submits batch to a queue, also signaling the queue's timeline semaphore with its next
-    // value, which is returned. Throws on failure.
-    uint64_t submit(uint32_t queue, const SubmitBatch& batch) {
+    // value, which is returned
+    Result<uint64_t> submit(uint32_t queue, const SubmitBatch& batch) {
         uint64_t value = 0;
-        VK_SUCCESS_OR_THROW(submitAndSignal(queue, batch, value), "Failed to submit to queue");
+        VK_TRY(submitAndSignal(queue, batch, value), "Failed to submit to queue");
         return value;
     }
 
@@ -363,7 +365,7 @@ public: // Timelines (thread safe)
     }
 
     // Blocks until every point has been reached
-    void wait(const TimelinePoints& points) {
+    Result<void> wait(const TimelinePoints& points) {
         std::vector<VkSemaphore> semaphores;
         std::vector<uint64_t> values;
         for (uint32_t queue = 0; queue < points.size(); ++queue) {
@@ -373,20 +375,21 @@ public: // Timelines (thread safe)
             }
         }
         if (semaphores.empty()) {
-            return;
+            return {};
         }
         VkSemaphoreWaitInfo waitInfo{};
         waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
         waitInfo.semaphoreCount = static_cast<uint32_t>(semaphores.size());
         waitInfo.pSemaphores = semaphores.data();
         waitInfo.pValues = values.data();
-        VK_SUCCESS_OR_THROW(vkWaitSemaphores(**device_, &waitInfo, UINT64_MAX), "Failed to wait for timelines");
+        VK_TRY(vkWaitSemaphores(**device_, &waitInfo, UINT64_MAX), "Failed to wait for timelines");
+        return {};
     }
 
-    void wait(uint32_t queue, uint64_t value) {
+    Result<void> wait(uint32_t queue, uint64_t value) {
         TimelinePoints points(queues_.size());
         points.at(queue) = value;
-        wait(points);
+        return wait(points);
     }
 
 public: // Deferred destruction (thread safe)
@@ -434,7 +437,7 @@ public: // Frames in flight
     // may be called mid-frame (e.g. from a callback while a frame is recorded). Thread safe.
     void setFramesInFlight(uint32_t count) {
         if (count == 0) {
-            throw std::invalid_argument("At least one frame must be in flight");
+            contractViolation("At least one frame must be in flight");
         }
         pendingFramesInFlight_ = count;
     }
@@ -442,29 +445,38 @@ public: // Frames in flight
     // Starts recording the current frame: waits until the work submitted the last time this frame
     // slot was used has completed (so the slot's PerFrame elements are free to reuse), then runs
     // deferred destruction that has become safe. Only waits for that one slot.
-    void beginFrame() {
-        wait(frameEnds_.at(currentFrame()));
+    Result<void> beginFrame() {
+        TRY(wait(frameEnds_.at(currentFrame())));
         collectRetired();
+        return {};
     }
 
     // Ends the current frame, recording the work submitted so far as the slot's, and moves on to
     // the next. If a new number of frames in flight was requested it is applied now: shrinking
     // waits only for the frame slots being removed, growing doesn't wait at all. Either way,
     // every PerFrame collection is resized and frames restart at slot 0.
-    void advanceFrame() {
+    //
+    // If growing fails (a PerFrame factory failed), the number of frames in flight is left as it
+    // was, the frame advances as usual, and the error is returned.
+    Result<void> advanceFrame() {
         frameEnds_.at(currentFrame()) = submittedPoints();
         ++frameNumber_;
 
         uint32_t pending = pendingFramesInFlight_.exchange(0);
         if (pending != 0 && pending != frames_.framesInFlight()) {
             for (uint32_t slot = pending; slot < frameEnds_.size(); ++slot) {
-                wait(frameEnds_[slot]);
+                TRY(wait(frameEnds_[slot]));
             }
-            frames_.resize(pending);
+            if (auto resized = frames_.resize(pending); !resized) {
+                frames_.advance();
+                return std::move(resized).error().withContext("changing the number of frames in flight to "
+                                                              + std::to_string(pending));
+            }
             frameEnds_.resize(pending);
         } else {
             frames_.advance();
         }
+        return {};
     }
 
 public: // Queue access (thread safe)
@@ -535,41 +547,30 @@ public: // Queue access (thread safe)
 public: // Command recording
     // Creates a command pool for the given queue's family, owned by the caller. Thread safe.
     // The returned pool is not; see CommandPool.
-    std::unique_ptr<CommandPool> createCommandPool(QueueType type,
-                                                   VkCommandPoolCreateFlags flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT) {
+    Result<std::unique_ptr<CommandPool>> createCommandPool(QueueType type,
+                                                           VkCommandPoolCreateFlags flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT) {
         return createCommandPool(queueIndex(type), flags);
     }
 
-    std::unique_ptr<CommandPool> createCommandPool(uint32_t queue,
-                                                   VkCommandPoolCreateFlags flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT) {
-        return std::make_unique<CommandPool>(**device_, queues_.at(queue).description.family, flags);
+    Result<std::unique_ptr<CommandPool>> createCommandPool(uint32_t queue,
+                                                           VkCommandPoolCreateFlags flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT) {
+        return CommandPool::create(**device_, queues_.at(queue).description.family, flags);
     }
 
     // Records commands with op, submits them to the primary queue and blocks until they have
     // executed. Intended for one-off work such as uploads, readbacks and layout transitions.
     // Thread safe: uses a command pool private to the context, guarded by a lock.
-    void submitImmediate(const std::function<void(VkCommandBuffer)>& op) {
+    Result<void> submitImmediate(const std::function<void(VkCommandBuffer)>& op) {
         std::lock_guard<std::mutex> lock(immediateMutex_);
 
-        VkCommandBuffer commandBuffer = immediatePool_->allocateOne();
-
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(commandBuffer, &beginInfo);
-        op(commandBuffer);
-        vkEndCommandBuffer(commandBuffer);
-
-        SubmitBatch batch;
-        VkCommandBufferSubmitInfo commandBufferInfo{};
-        commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-        commandBufferInfo.commandBuffer = commandBuffer;
-        batch.commandBuffers.push_back(commandBufferInfo);
-        const uint64_t value = submit(kPrimaryQueue, batch);
-
-        // Wait on the timeline rather than the queue, so the queue's lock is not held while waiting
-        wait(kPrimaryQueue, value);
-        immediatePool_->free(commandBuffer);
+        TRY_ASSIGN(VkCommandBuffer commandBuffer, immediatePool_->allocateOne());
+        bool pending = false;
+        auto result = recordAndRunImmediate(commandBuffer, op, pending);
+        // A command buffer whose wait failed may still be pending; the pool frees it eventually
+        if (!pending) {
+            immediatePool_->free(commandBuffer);
+        }
+        return result;
     }
 
 private:
@@ -580,6 +581,30 @@ private:
         std::unique_ptr<VulkanSemaphore> timeline;
         uint64_t submitted = 0;   // Guarded by lock
     };
+
+    // pending is set while the submitted command buffer may still be executing
+    Result<void> recordAndRunImmediate(VkCommandBuffer commandBuffer, const std::function<void(VkCommandBuffer)>& op,
+                                       bool& pending) {
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VK_TRY(vkBeginCommandBuffer(commandBuffer, &beginInfo), "Failed to begin command buffer");
+        op(commandBuffer);
+        VK_TRY(vkEndCommandBuffer(commandBuffer), "Failed to record command buffer");
+
+        SubmitBatch batch;
+        VkCommandBufferSubmitInfo commandBufferInfo{};
+        commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        commandBufferInfo.commandBuffer = commandBuffer;
+        batch.commandBuffers.push_back(commandBufferInfo);
+        TRY_ASSIGN(const uint64_t value, submit(kPrimaryQueue, batch));
+
+        // Wait on the timeline rather than the queue, so the queue's lock is not held while waiting
+        pending = true;
+        TRY(wait(kPrimaryQueue, value));
+        pending = false;
+        return {};
+    }
 
     // Runs every retired function regardless of completion (the device must be idle)
     void runAllRetired() {
@@ -626,8 +651,15 @@ private:
         return result;
     }
 
+    // Whether a layer is installed. If the layers can't be enumerated, none are.
     static bool hasInstanceLayer(const char* name) {
-        for (const auto& layer : readVkVector<VkLayerProperties>(vkEnumerateInstanceLayerProperties)) {
+        uint32_t count = 0;
+        vkEnumerateInstanceLayerProperties(&count, nullptr);
+        std::vector<VkLayerProperties> layers(count);
+        if (vkEnumerateInstanceLayerProperties(&count, layers.data()) != VK_SUCCESS) {
+            return false;
+        }
+        for (const auto& layer : layers) {
             if (strcmp(layer.layerName, name) == 0) {
                 return true;
             }
@@ -635,12 +667,15 @@ private:
         return false;
     }
 
-    // Whether the instance (or, with layer, that layer) provides an extension
+    // Whether the instance (or, with layer, that layer) provides an extension. If the extensions
+    // can't be enumerated, it doesn't.
     static bool hasInstanceExtension(const char* name, const char* layer = nullptr) {
         uint32_t count = 0;
         vkEnumerateInstanceExtensionProperties(layer, &count, nullptr);
         std::vector<VkExtensionProperties> extensions(count);
-        vkEnumerateInstanceExtensionProperties(layer, &count, extensions.data());
+        if (vkEnumerateInstanceExtensionProperties(layer, &count, extensions.data()) != VK_SUCCESS) {
+            return false;
+        }
         for (const auto& extension : extensions) {
             if (strcmp(extension.extensionName, name) == 0) {
                 return true;
@@ -649,9 +684,10 @@ private:
         return false;
     }
 
-    static bool hasDeviceExtension(VkPhysicalDevice device, const char* name) {
-        for (const auto& extension :
-             readVkVector<VkExtensionProperties, VkPhysicalDevice, const char*>(device, vkEnumerateDeviceExtensionProperties)) {
+    static Result<bool> hasDeviceExtension(VkPhysicalDevice device, const char* name) {
+        TRY_ASSIGN(auto extensions, (readVkVector<VkExtensionProperties, VkPhysicalDevice, const char*>(
+                                         device, vkEnumerateDeviceExtensionProperties)));
+        for (const auto& extension : extensions) {
             if (strcmp(extension.extensionName, name) == 0) {
                 return true;
             }
@@ -659,7 +695,7 @@ private:
         return false;
     }
 
-    void createInstance() {
+    Result<void> createInstance() {
         const char* validationLayer = "VK_LAYER_KHRONOS_validation";
         bool useValidation = false;
         if (config_.enableValidation) {
@@ -726,8 +762,7 @@ private:
         createInfo.enabledLayerCount = static_cast<uint32_t>(layers.size());
         createInfo.ppEnabledLayerNames = layers.data();
 
-        VK_SUCCESS_OR_THROW(VulkanInstance::create(instance_, createInfo),
-                            "Failed to create instance");
+        VK_TRY(VulkanInstance::create(instance_, createInfo), "Failed to create instance");
 
         if (useValidation) {
             VkDebugUtilsMessengerCreateInfoEXT messengerInfo{};
@@ -742,24 +777,25 @@ private:
 
             auto createMessenger = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
                 vkGetInstanceProcAddr(**instance_, "vkCreateDebugUtilsMessengerEXT"));
-            VK_SUCCESS_OR_THROW(createMessenger(**instance_, &messengerInfo, nullptr, &messenger_),
-                                "Failed to create debug messenger");
+            VK_TRY(createMessenger(**instance_, &messengerInfo, nullptr, &messenger_), "Failed to create debug messenger");
         }
+        return {};
     }
 
-    void createSurface() {
+    Result<void> createSurface() {
         if (!config_.createSurface) {
-            return;
+            return {};
         }
         VkSurfaceKHR surface = VK_NULL_HANDLE;
-        VK_SUCCESS_OR_THROW(config_.createSurface(**instance_, &surface),
-                            "Failed to create surface");
+        VK_TRY(config_.createSurface(**instance_, &surface), "Failed to create surface");
         surface_ = std::make_unique<VulkanSurface>(**instance_, surface);
+        return {};
     }
 
-    void pickPhysicalDevice() {
+    Result<void> pickPhysicalDevice() {
         std::string rejections;
-        for (auto device : readVkVector<VkPhysicalDevice, VkInstance>(**instance_, vkEnumeratePhysicalDevices)) {
+        TRY_ASSIGN(auto devices, (readVkVector<VkPhysicalDevice, VkInstance>(**instance_, vkEnumeratePhysicalDevices)));
+        for (auto device : devices) {
             auto shortcomings = deviceShortcomings(device, enabledFeatures_);
             if (!shortcomings.empty()) {
                 VkPhysicalDeviceProperties properties{};
@@ -806,12 +842,12 @@ private:
                     presentFamily_ = graphicsFamily_;
                 }
             }
-            return;
+            return {};
         }
-        throw std::runtime_error("Failed to find a suitable GPU." + rejections);
+        return Error(ErrorCode::NoSuitableDevice, "Failed to find a suitable GPU." + rejections);
     }
 
-    void createDevice() {
+    Result<void> createDevice() {
         auto families = readVkVectorVoid<VkQueueFamilyProperties, VkPhysicalDevice>(physicalDevice_, vkGetPhysicalDeviceQueueFamilyProperties);
 
         // The queues to create: the primary queue, a separate present queue if the primary can't
@@ -867,7 +903,8 @@ private:
             extensions.insert(extensions.end(), deviceExtensions.begin(), deviceExtensions.end());
         }
         // Portability implementations (e.g. MoltenVK) require this extension to be enabled
-        if (hasDeviceExtension(physicalDevice_, "VK_KHR_portability_subset")) {
+        TRY_ASSIGN(const bool portability, hasDeviceExtension(physicalDevice_, "VK_KHR_portability_subset"));
+        if (portability) {
             extensions.push_back("VK_KHR_portability_subset");
         }
 
@@ -879,8 +916,7 @@ private:
         createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
         createInfo.ppEnabledExtensionNames = extensions.data();
 
-        VK_SUCCESS_OR_THROW(VulkanDevice::create(device_, physicalDevice_, createInfo),
-                            "Failed to create logical device");
+        VK_TRY(VulkanDevice::create(device_, physicalDevice_, createInfo), "Failed to create logical device");
 
         // Each queue gets a lock (queues are externally synchronized) and a timeline semaphore
         for (const auto& description : planned) {
@@ -896,9 +932,20 @@ private:
             VkSemaphoreCreateInfo semaphoreInfo{};
             semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
             semaphoreInfo.pNext = &typeInfo;
-            VK_SUCCESS_OR_THROW(VulkanSemaphore::create(entry.timeline, **device_, semaphoreInfo),
-                                "Failed to create timeline semaphore");
+            VK_TRY(VulkanSemaphore::create(entry.timeline, **device_, semaphoreInfo), "Failed to create timeline semaphore");
             queues_.push_back(std::move(entry));
+        }
+        return {};
+    }
+
+    explicit VulkanContext(VulkanContextConfig config)
+    : config_(std::move(config)), enabledFeatures_(DeviceFeatures::requiredWith(config_.features)),
+      frames_(config_.framesInFlight) {
+        if (!config_.onValidationMessage) {
+            config_.onValidationMessage = [](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
+                const char* label = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ? "error" : "warning";
+                std::cerr << "[Vulkan validation " << label << "] " << message << std::endl;
+            };
         }
     }
 
@@ -944,6 +991,7 @@ private:
 
     std::unique_ptr<ResourceManager> resourceManager_;
 
+    std::optional<UniversalSet> universalSet_;
     // Type-erased deleter: DescriptorHeap is incomplete here
     std::once_flag descriptorsCreated_;
     std::unique_ptr<DescriptorHeap, void (*)(DescriptorHeap*)> descriptors_{nullptr, nullptr};
@@ -952,26 +1000,34 @@ private:
 };
 
 // VulkanSampler's managed factories, defined here since VkTypes.h cannot depend on VulkanContext
-inline VkResult VulkanSampler::createWithAddressMode(Handle<VulkanSampler>& outSampler,
-                                                     VulkanContext& context,
-                                                     VkSamplerAddressMode addressMode) {
-    return createWithModeAndFilter(outSampler, context, addressMode, VK_FILTER_LINEAR);
+inline Result<Handle<VulkanSampler>> VulkanSampler::createWithAddressMode(VulkanContext& context,
+                                                                          VkSamplerAddressMode addressMode) {
+    return createWithModeAndFilter(context, addressMode, VK_FILTER_LINEAR);
 }
 
-inline VkResult VulkanSampler::createWithModeAndFilter(Handle<VulkanSampler>& outSampler,
-                                                       VulkanContext& context,
-                                                       VkSamplerAddressMode addressMode,
-                                                       VkFilter filter) {
-    return create(outSampler, context, SamplerDesc{.filter = filter, .addressMode = addressMode});
+inline Result<Handle<VulkanSampler>> VulkanSampler::createWithModeAndFilter(VulkanContext& context,
+                                                                            VkSamplerAddressMode addressMode,
+                                                                            VkFilter filter) {
+    return create(context, SamplerDesc{.filter = filter, .addressMode = addressMode});
 }
 
-inline VkResult VulkanSampler::create(Handle<VulkanSampler>& outSampler, VulkanContext& context, const SamplerDesc& desc) {
+inline Result<Handle<VulkanSampler>> VulkanSampler::create(VulkanContext& context, const SamplerDesc& desc) {
     std::unique_ptr<VulkanSampler> sampler;
-    VkResult result = create(sampler, desc, context.device(), context.physicalDevice());
-    outSampler = context.resources().adopt(std::move(sampler));
-    return result;
+    VK_TRY(create(sampler, desc, context.device(), context.physicalDevice()), "Failed to create sampler");
+    return context.resources().adopt(std::move(sampler));
 }
 
 template<typename T>
 PerFrame<T>::PerFrame(VulkanContext& context, Create create, Destroy destroy)
 : PerFrame(context.frames(), std::move(create), std::move(destroy)) {}
+
+template<typename T>
+Result<PerFrame<T>> PerFrame<T>::create(VulkanContext& context, TryCreate create, Destroy destroy) {
+    return PerFrame::create(context.frames(), std::move(create), std::move(destroy));
+}
+
+template<typename T>
+Result<Handle<PerFrame<T>>> PerFrame<T>::createManaged(VulkanContext& context, TryCreate create, Destroy destroy) {
+    TRY_ASSIGN(auto collection, PerFrame::create(context.frames(), std::move(create), std::move(destroy)));
+    return context.resources().adopt(std::make_unique<PerFrame>(std::move(collection)));
+}

@@ -41,18 +41,23 @@ protected:
  Vertices and 16- or 32-bit indices in device-local buffers, shared by any number of renderables
  (e.g. a shadow pass and a lit pass drawing the same geometry with different materials):
 
-    auto mesh = ctx.resources().create<Mesh>(ctx, vertices, indices);
+    TRY_ASSIGN(auto mesh, Mesh::create(ctx, vertices, indices));
     auto lit = ctx.resources().create<MeshRenderable>(mesh, litMaterial);
     auto shadow = ctx.resources().create<MeshRenderable>(mesh, shadowMaterial);
  */
 class Mesh {
 public:
+    // Uploads the vertices and indices, blocking until they're on the device
     template<typename Vertex, typename Index>
-    Mesh(VulkanContext& context, const std::vector<Vertex>& vertices, const std::vector<Index>& indices)
-    : indexType_(indexTypeOf<Index>()), indexCount_(static_cast<uint32_t>(indices.size())) {
+    static Result<Handle<Mesh>> create(VulkanContext& context, const std::vector<Vertex>& vertices,
+                                       const std::vector<Index>& indices) {
         static_assert(std::is_trivially_copyable_v<Vertex>);
-        Buffer<uint8_t>::createAndInitialize(vertexBuffer_, context, bytesOf(vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        Buffer<uint8_t>::createAndInitialize(indexBuffer_, context, bytesOf(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        std::unique_ptr<Mesh> mesh(new Mesh(indexTypeOf<Index>(), static_cast<uint32_t>(indices.size())));
+        TRY_ASSIGN(mesh->vertexBuffer_, Buffer<uint8_t>::createAndInitialize(context, bytesOf(vertices),
+                                                                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT));
+        TRY_ASSIGN(mesh->indexBuffer_, Buffer<uint8_t>::createAndInitialize(context, bytesOf(indices),
+                                                                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT));
+        return context.resources().adopt(std::move(mesh));
     }
 
     VkBuffer vertexBuffer() { return vertexBuffer_->getBuffer(); }
@@ -61,6 +66,8 @@ public:
     uint32_t indexCount() const { return indexCount_; }
 
 private:
+    Mesh(VkIndexType indexType, uint32_t indexCount) : indexType_(indexType), indexCount_(indexCount) {}
+
     template<typename Index>
     static constexpr VkIndexType indexTypeOf() {
         static_assert(std::is_same_v<Index, uint16_t> || std::is_same_v<Index, uint32_t>,

@@ -12,7 +12,7 @@ std::vector<T> readBuffer(Buffer<T>& buffer, size_t count) {
     std::vector<T> values(count);
     buffer.mapAndExecute(0, count * sizeof(T), [&values, count](void* data) {
         memcpy(values.data(), data, count * sizeof(T));
-    });
+    }).value();
     return values;
 }
 
@@ -23,14 +23,12 @@ TEST_CASE_FIXTURE(GpuTest, "Host visible Buffer round trips data through mapAndE
     std::vector<uint32_t> data(64);
     std::iota(data.begin(), data.end(), 100u);
 
-    Handle<Buffer<uint32_t>> buffer;
-    REQUIRE(Buffer<uint32_t>::create(buffer, ctx, data.size(),
-                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kHostVisible) == VK_SUCCESS);
+    auto buffer = Buffer<uint32_t>::create(ctx, data.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kHostVisible).value();
     CHECK(buffer->getStride() == sizeof(uint32_t));
 
-    buffer->mapAndExecute(0, data.size() * sizeof(uint32_t), [&data](void* mapped) {
+    CHECK_OK(buffer->mapAndExecute(0, data.size() * sizeof(uint32_t), [&data](void* mapped) {
         memcpy(mapped, data.data(), data.size() * sizeof(uint32_t));
-    });
+    }));
 
     CHECK(readBuffer(*buffer, data.size()) == data);
 }
@@ -42,17 +40,13 @@ TEST_CASE_FIXTURE(GpuTest, "Buffer::createAndInitialize uploads data to device l
         data[i] = static_cast<float>(i) * 0.5f;
     }
 
-    Handle<Buffer<float>> deviceBuffer;
-    Buffer<float>::createAndInitialize(deviceBuffer, ctx, data,
-                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    auto deviceBuffer = Buffer<float>::createAndInitialize(ctx, data, VK_BUFFER_USAGE_TRANSFER_SRC_BIT).value();
     REQUIRE(deviceBuffer);
 
     // Device local memory may not be mappable, so copy it back through a host visible buffer
-    Handle<Buffer<float>> readbackBuffer;
-    REQUIRE(Buffer<float>::create(readbackBuffer, ctx, data.size(),
-                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT, kHostVisible) == VK_SUCCESS);
-    Buffer<float>::copyBuffer(ctx, deviceBuffer->getBuffer(), readbackBuffer->getBuffer(),
-                              data.size() * sizeof(float));
+    auto readbackBuffer = Buffer<float>::create(ctx, data.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT, kHostVisible).value();
+    CHECK_OK(Buffer<float>::copyBuffer(ctx, deviceBuffer->getBuffer(), readbackBuffer->getBuffer(),
+                                       data.size() * sizeof(float)));
 
     CHECK(readBuffer(*readbackBuffer, data.size()) == data);
 }
@@ -61,11 +55,9 @@ TEST_CASE_FIXTURE(GpuTest, "Buffer persistent mappings stay valid until released
     auto& ctx = context();
     struct Pair { int a; int b; };
 
-    Handle<Buffer<Pair>> buffer;
-    REQUIRE(Buffer<Pair>::create(buffer, ctx, 1,
-                                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, kHostVisible) == VK_SUCCESS);
+    auto buffer = Buffer<Pair>::create(ctx, 1, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, kHostVisible).value();
     {
-        auto mapping = buffer->getPersistentMapping(0, sizeof(Pair));
+        auto mapping = buffer->getPersistentMapping(0, sizeof(Pair)).value();
         mapping->a = 7;
         mapping->b = -3;
     }

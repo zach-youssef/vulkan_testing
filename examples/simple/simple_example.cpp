@@ -48,31 +48,53 @@ struct Vertex {
 // buffer, the texture and a sampler by the indices of its bindings, in that order.
 class TutorialMaterial : public GraphicsMaterial {
 public:
+    using Mapping = Buffer<UniformBufferObject>::Mapping;
+
+    // Creates the material's per-frame resources, which can fail, then the material
+    static Result<Handle<TutorialMaterial>> create(VulkanContext& context,
+                                                   AttachmentFormats formats,
+                                                   FrameBinding<DescriptorEntry> texture,
+                                                   FrameBinding<DescriptorEntry> sampler,
+                                                   Handle<Shader> vertexShader,
+                                                   Handle<Shader> fragmentShader) {
+        // A uniform buffer per frame (read by the vertex shader as a storage buffer), and its
+        // descriptor entries and mappings. They are created in that order, so they are also resized
+        // in that order when the number of frames in flight changes.
+        TRY_ASSIGN(auto buffers, PerFrameHandles<Buffer<UniformBufferObject>>::createManaged(context, [&context](uint32_t) {
+            return Buffer<UniformBufferObject>::create(context, 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }));
+        auto entries = context.resources().create<PerFrameHandles<DescriptorEntry>>(
+            context, [ctx = &context, buffers](uint32_t frameIdx) {
+                return ctx->descriptors().storageBuffer((*buffers)[frameIdx]);
+            });
+        TRY_ASSIGN(auto mappings, PerFrame<Mapping>::create(context, [buffers](uint32_t frameIdx) {
+            return (*buffers)[frameIdx]->getPersistentMapping(0, sizeof(UniformBufferObject));
+        }));
+        return context.resources().create<TutorialMaterial>(context, std::move(formats), std::move(texture),
+                                                            std::move(sampler), std::move(vertexShader),
+                                                            std::move(fragmentShader), std::move(buffers),
+                                                            std::move(entries), std::move(mappings));
+    }
+
     TutorialMaterial(VulkanContext& context,
                      AttachmentFormats formats,
                      FrameBinding<DescriptorEntry> texture,
                      FrameBinding<DescriptorEntry> sampler,
                      Handle<Shader> vertexShader,
-                     Handle<Shader> fragmentShader)
+                     Handle<Shader> fragmentShader,
+                     Handle<PerFrameHandles<Buffer<UniformBufferObject>>> uniformBuffers,
+                     Handle<PerFrameHandles<DescriptorEntry>> uniformEntries,
+                     PerFrame<Mapping> mappedUniformBuffers)
     :  GraphicsMaterial(context,
                         {},
                         std::move(formats),
                         std::move(vertexShader),
                         std::move(fragmentShader),
-                        GraphicsPipelineOptions{.vertexLayout = Vertex::layout()}) {
-        // A uniform buffer per frame (read by the vertex shader as a storage buffer), and its
-        // descriptor entries and mappings. They are created in that order, so they are also resized
-        // in that order when the number of frames in flight changes.
-        uniformBuffers_ = context.resources().create<PerFrameHandles<Buffer<UniformBufferObject>>>(
-            context, [ctx = &context](uint32_t) { return createUniformBuffer(*ctx); });
-        uniformEntries_ = context.resources().create<PerFrameHandles<DescriptorEntry>>(
-            context, [ctx = &context, buffers = uniformBuffers_](uint32_t frameIdx) {
-                return ctx->descriptors().storageBuffer((*buffers)[frameIdx]);
-            });
-        mappedUniformBuffers_ = PerFrame<Mapping>(context, [this](uint32_t frameIdx) {
-            return (*uniformBuffers_)[frameIdx]->getPersistentMapping(0, sizeof(UniformBufferObject));
-        });
-
+                        GraphicsPipelineOptions{.vertexLayout = Vertex::layout()}),
+    uniformBuffers_(std::move(uniformBuffers)),
+    uniformEntries_(std::move(uniformEntries)),
+    mappedUniformBuffers_(std::move(mappedUniformBuffers)) {
         bindings_ = {
             MaterialBinding::storageBuffer(uniformEntries_, Access::StorageBufferRead, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT),
             MaterialBinding::sampled(std::move(texture), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT),
@@ -99,18 +121,6 @@ public:
         memcpy(mappedUniformBuffers_[currentImage].get(), &ubo, sizeof(ubo));
     }
 private:
-    static Handle<Buffer<UniformBufferObject>> createUniformBuffer(VulkanContext& context) {
-        Handle<Buffer<UniformBufferObject>> buffer;
-        VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(buffer,
-                                                                context,
-                                                                1,
-                                                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-                            "Failed to create uniform buffer.");
-        return buffer;
-    }
-private:
-    using Mapping = std::unique_ptr<UniformBufferObject, std::function<void(UniformBufferObject*)>>;
     Handle<PerFrameHandles<Buffer<UniformBufferObject>>> uniformBuffers_;
     Handle<PerFrameHandles<DescriptorEntry>> uniformEntries_;
     PerFrame<Mapping> mappedUniformBuffers_;
@@ -160,15 +170,17 @@ std::vector<Vertex> transformVertices(const std::vector<Vertex>& vertices, float
     return transformed;
 }
 
-Handle<Renderable> createTutorialRenderable(const std::vector<Vertex>& vertices,
-                                            Handle<Material> material,
-                                            VulkanApp& app) {
+Result<Handle<Renderable>> createTutorialRenderable(const std::vector<Vertex>& vertices,
+                                                    Handle<Material> material,
+                                                    VulkanApp& app) {
     auto& context = app.getContext();
-    auto mesh = context.resources().create<Mesh>(context, vertices, indexData);
+    TRY_ASSIGN(auto mesh, Mesh::create(context, vertices, indexData));
     return context.resources().create<MeshRenderable>(std::move(mesh), std::move(material));
 }
 
-int main() {
+// Sets up the app and runs it until the window is closed. Errors (a missing file, a failed Vulkan
+// call, a graph that doesn't compile) come back as the result.
+Result<void> runExample() {
     // Initialize Window & Vulkan
     AppConfig config;
     config.applicationName = "Simple example";
@@ -179,20 +191,13 @@ int main() {
     config.autoReloadShaders = true;
 
     VulkanApp app;
-    app.init(config);
+    TRY(app.init(config));
     auto& context = app.getContext();
     auto& descriptors = context.descriptors();
     
     // Load texture file, and create a sampler
-    Handle<Image> texture;
-    Image::createFromFile(texture,
-                          context,
-                          textureDir + "/texture.jpg");
-    Handle<VulkanSampler> sampler;
-    VK_SUCCESS_OR_THROW(VulkanSampler::createWithAddressMode(sampler,
-                                                             context,
-                                                             VK_SAMPLER_ADDRESS_MODE_REPEAT),
-                        "Failed to create sampler");
+    TRY_ASSIGN(auto texture, Image::createFromFile(context, textureDir + "/texture.jpg"));
+    TRY_ASSIGN(auto sampler, VulkanSampler::createWithAddressMode(context, VK_SAMPLER_ADDRESS_MODE_REPEAT));
     auto textureEntry = descriptors.sampledImage(texture);
     auto samplerEntry = descriptors.sampler(sampler);
 
@@ -207,22 +212,24 @@ int main() {
 
     // A compute material copying the texture, and a material drawing the copy, shared by two
     // renderables. Their bindings tell the graph which resources they use, and how.
+    TRY_ASSIGN(auto copyShader, context.shaders().get("test.comp"));
+    TRY_ASSIGN(auto vertexShader, context.shaders().get("shader.vert"));
+    TRY_ASSIGN(auto fragmentShader, context.shaders().get("shader.frag"));
     auto computeMaterial = context.resources().create<TestComputeMat>(
-        context, context.shaders().get("test.comp"),
+        context, copyShader,
         std::vector<MaterialBinding>{
             MaterialBinding::sampled(textureEntry),
             MaterialBinding::sampler(samplerEntry),
             MaterialBinding::storageImage(graph.storageEntry(copied), Access::StorageWrite),
         },
         texture->getWidth(), texture->getHeight());
-    auto material = context.resources().create<TutorialMaterial>(context, graph.formats(screen),
-                                                                 graph.sampledEntry(copied), samplerEntry,
-                                                                 context.shaders().get("shader.vert"),
-                                                                 context.shaders().get("shader.frag"));
+    TRY_ASSIGN(auto material, TutorialMaterial::create(context, graph.formats(screen), graph.sampledEntry(copied),
+                                                       samplerEntry, vertexShader, fragmentShader));
 
     std::vector<Handle<Renderable>> renderables;
     for (glm::vec2 offset : {glm::vec2{-0.3f, 0.0f}, glm::vec2{0.3f, 0.0f}}) {
-        renderables.push_back(createTutorialRenderable(transformVertices(vertexData, 0.5f, offset), material, app));
+        TRY_ASSIGN(auto renderable, createTutorialRenderable(transformVertices(vertexData, 0.5f, offset), material, app));
+        renderables.push_back(std::move(renderable));
     }
 
     // Nodes. The graph orders them, picks queues and synchronizes them from the materials'
@@ -232,12 +239,9 @@ int main() {
     app.setActiveGraph(graph);
 
     // Run
-    try {
-        app.run();
-    } catch (const std::exception& e) {
-        std::cerr << e.what() << std::endl;
-        return EXIT_FAILURE;
-    }
+    return app.run();
+}
 
-    return EXIT_SUCCESS;
+int main() {
+    return exitStatus(runExample());
 }

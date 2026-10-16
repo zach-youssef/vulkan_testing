@@ -1,5 +1,7 @@
 #include "shaders/SpirvReflection.h"
 
+#include "common/ResultChecks.h"
+
 #include <doctest/doctest.h>
 
 #include <filesystem>
@@ -30,29 +32,29 @@ constexpr uint32_t kStorageBuffers = 3;
 
 TEST_CASE("Reflection finds the descriptor bindings a shader writes through") {
     SUBCASE("An image store") {
-        CHECK(reflectDescriptorWrites(testSpirv("pattern.comp")).bindings == std::set<uint32_t>{kStorageImages});
+        CHECK(reflectDescriptorWrites(testSpirv("pattern.comp")).value().bindings == std::set<uint32_t>{kStorageImages});
     }
     SUBCASE("Buffer stores") {
-        CHECK(reflectDescriptorWrites(testSpirv("fill_buffer.comp")).bindings == std::set<uint32_t>{kStorageBuffers});
-        CHECK(reflectDescriptorWrites(testSpirv("small_types.comp")).bindings == std::set<uint32_t>{kStorageBuffers});
+        CHECK(reflectDescriptorWrites(testSpirv("fill_buffer.comp")).value().bindings == std::set<uint32_t>{kStorageBuffers});
+        CHECK(reflectDescriptorWrites(testSpirv("small_types.comp")).value().bindings == std::set<uint32_t>{kStorageBuffers});
     }
     SUBCASE("Reads, and writes to a private variable, aren't writes") {
-        CHECK(reflectDescriptorWrites(testSpirv("reflect_reads.comp")).bindings.empty());
+        CHECK(reflectDescriptorWrites(testSpirv("reflect_reads.comp")).value().bindings.empty());
     }
     SUBCASE("Through a function parameter, and with an atomic") {
-        CHECK(reflectDescriptorWrites(testSpirv("reflect_indirect_writes.comp")).bindings
+        CHECK(reflectDescriptorWrites(testSpirv("reflect_indirect_writes.comp")).value().bindings
               == std::set<uint32_t>{kStorageImages, kStorageBuffers});
     }
     SUBCASE("Graphics shaders that write nothing") {
-        CHECK(reflectDescriptorWrites(testSpirv("shader.frag")).bindings.empty());
-        CHECK(reflectDescriptorWrites(testSpirv("shader.vert")).bindings.empty());
+        CHECK(reflectDescriptorWrites(testSpirv("shader.frag")).value().bindings.empty());
+        CHECK(reflectDescriptorWrites(testSpirv("shader.vert")).value().bindings.empty());
     }
 }
 
 TEST_CASE("Reflection rejects data that isn't SPIR-V") {
-    CHECK_THROWS_AS(reflectDescriptorWrites(std::vector<char>(20, 0)), std::invalid_argument);
-    CHECK_THROWS_AS(reflectDescriptorWrites(std::vector<char>(3, 0)), std::invalid_argument);
+    CHECK_ERROR(reflectDescriptorWrites(std::vector<char>(20, 0)), ErrorCode::InvalidData, "");
+    CHECK_ERROR(reflectDescriptorWrites(std::vector<char>(3, 0)), ErrorCode::InvalidData, "");
     // A header followed by an instruction claiming more words than there are
     std::vector<uint32_t> truncated{0x07230203, 0x00010600, 0, 10, 0, (5u << 16) | 71u, 1};
-    CHECK_THROWS_AS(reflectDescriptorWrites(truncated), std::invalid_argument);
+    CHECK_ERROR(reflectDescriptorWrites(truncated), ErrorCode::InvalidData, "");
 }

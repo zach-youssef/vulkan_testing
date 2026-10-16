@@ -51,16 +51,17 @@ struct SwapChainSupportDetails {
     }
 };
 
-SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
+Result<SwapChainSupportDetails> querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
 
 #ifdef VK_WRAP_UTIL_IMPL
-SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
+Result<SwapChainSupportDetails> querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
     SwapChainSupportDetails details{};
     
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
+    VK_TRY(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities),
+           "Failed to query surface capabilities");
     
-    details.formats = readVkVector<VkSurfaceFormatKHR, VkPhysicalDevice, VkSurfaceKHR>(device, surface, vkGetPhysicalDeviceSurfaceFormatsKHR);
-    details.presentModes = readVkVector<VkPresentModeKHR, VkPhysicalDevice, VkSurfaceKHR>(device, surface, vkGetPhysicalDeviceSurfacePresentModesKHR);
+    TRY_ASSIGN(details.formats, (readVkVector<VkSurfaceFormatKHR, VkPhysicalDevice, VkSurfaceKHR>(device, surface, vkGetPhysicalDeviceSurfaceFormatsKHR)));
+    TRY_ASSIGN(details.presentModes, (readVkVector<VkPresentModeKHR, VkPhysicalDevice, VkSurfaceKHR>(device, surface, vkGetPhysicalDeviceSurfacePresentModesKHR)));
 
     return details;
 }

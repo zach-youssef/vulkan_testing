@@ -3,7 +3,6 @@
 #include "materials/Material.h"
 
 #include <optional>
-#include <stdexcept>
 #include <vector>
 
 // Where a graphics pipeline's vertices come from: vertex buffers bound when drawing
@@ -112,8 +111,8 @@ public:
         requireStage(vertexShader_, VK_SHADER_STAGE_VERTEX_BIT);
         requireStage(fragmentShader_, VK_SHADER_STAGE_FRAGMENT_BIT);
         if (options_.blend.size() != 1 && options_.blend.size() != formats_.color.size()) {
-            throw std::invalid_argument("GraphicsPipelineOptions::blend needs one mode, or one per colour attachment ("
-                                        + std::to_string(formats_.color.size()) + ")");
+            contractViolation("GraphicsPipelineOptions::blend needs one mode, or one per colour attachment ("
+                              + std::to_string(formats_.color.size()) + ")");
         }
         initPipeline({vertexShader_, fragmentShader_});
     }
@@ -129,7 +128,7 @@ public:
     }
 
 protected:
-    VkPipeline createPipeline() override {
+    Result<VkPipeline> createPipeline() override {
         VkPipelineShaderStageCreateInfo shaderStages[2]{};
         shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -224,8 +223,9 @@ protected:
         pipelineInfo.basePipelineIndex = -1;
 
         VkPipeline pipeline = VK_NULL_HANDLE;
-        VK_SUCCESS_OR_THROW(vkCreateGraphicsPipelines(device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline),
-                            "Failed to create graphics pipeline");
+        VK_TRY(vkCreateGraphicsPipelines(device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline),
+               "Failed to create the graphics pipeline of shaders '" + vertexShader_->name() + "' and '"
+               + fragmentShader_->name() + "'");
         return pipeline;
     }
 

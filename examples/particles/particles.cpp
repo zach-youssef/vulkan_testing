@@ -74,28 +74,36 @@ struct Controls {
 // in update(); the drawing material reads them too.
 class ParticleSimMaterial : public ComputeMaterial {
 public:
-    ParticleSimMaterial(VulkanContext& context, Controls& controls, FrameBinding<DescriptorEntry> particles)
-    : ComputeMaterial(context, {}, context.shaders().get("particles.comp")), controls_(&controls) {
+    using Mapping = Buffer<SimParams>::Mapping;
+
+    // Loads the shader and creates the per-frame parameter buffers, which can fail, then the material
+    static Result<Handle<ParticleSimMaterial>> create(VulkanContext& context, Controls& controls,
+                                                      FrameBinding<DescriptorEntry> particles) {
+        TRY_ASSIGN(auto shader, context.shaders().get("particles.comp"));
         // A parameter buffer per frame in flight, so the CPU can write the next frame's while the
         // GPU reads the previous one's; then their descriptor entries and persistent mappings. The
         // collections are resized in this order when the number of frames in flight changes.
-        paramBuffers_ = context.resources().create<PerFrameHandles<Buffer<SimParams>>>(
-            context, [ctx = &context](uint32_t) {
-                Handle<Buffer<SimParams>> buffer;
-                VK_SUCCESS_OR_THROW(Buffer<SimParams>::create(buffer, *ctx, 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-                                                              | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-                                    "Failed to create simulation parameters");
-                return buffer;
-            });
-        paramEntries_ = context.resources().create<PerFrameHandles<DescriptorEntry>>(
-            context, [ctx = &context, buffers = paramBuffers_](uint32_t frame) {
+        TRY_ASSIGN(auto buffers, PerFrameHandles<Buffer<SimParams>>::createManaged(context, [&context](uint32_t) {
+            return Buffer<SimParams>::create(context, 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }));
+        auto entries = context.resources().create<PerFrameHandles<DescriptorEntry>>(
+            context, [ctx = &context, buffers](uint32_t frame) {
                 return ctx->descriptors().storageBuffer((*buffers)[frame]);
             });
-        mappedParams_ = PerFrame<Mapping>(context, [this](uint32_t frame) {
-            return (*paramBuffers_)[frame]->getPersistentMapping(0, sizeof(SimParams));
-        });
+        TRY_ASSIGN(auto mappings, PerFrame<Mapping>::create(context, [buffers](uint32_t frame) {
+            return (*buffers)[frame]->getPersistentMapping(0, sizeof(SimParams));
+        }));
+        return context.resources().create<ParticleSimMaterial>(context, std::move(shader), controls, std::move(particles),
+                                                               std::move(buffers), std::move(entries), std::move(mappings));
+    }
 
+    ParticleSimMaterial(VulkanContext& context, Handle<Shader> shader, Controls& controls,
+                        FrameBinding<DescriptorEntry> particles,
+                        Handle<PerFrameHandles<Buffer<SimParams>>> paramBuffers,
+                        Handle<PerFrameHandles<DescriptorEntry>> paramEntries, PerFrame<Mapping> mappedParams)
+    : ComputeMaterial(context, {}, std::move(shader)), controls_(&controls), paramBuffers_(std::move(paramBuffers)),
+      paramEntries_(std::move(paramEntries)), mappedParams_(std::move(mappedParams)) {
         // Push constant order: params, particles. The particle binding tells the graph this node
         // reads and writes the particle buffer, which orders it before the draw.
         bindings_ = {
@@ -146,8 +154,6 @@ public:
     }
 
 private:
-    using Mapping = std::unique_ptr<SimParams, std::function<void(SimParams*)>>;
-
     Controls* controls_;
     Handle<PerFrameHandles<Buffer<SimParams>>> paramBuffers_;
     Handle<PerFrameHandles<DescriptorEntry>> paramEntries_;
@@ -166,12 +172,13 @@ private:
 // and a separate VertexRead declaration.)
 class ParticleDrawMaterial : public GraphicsMaterial {
 public:
-    ParticleDrawMaterial(VulkanContext& context, AttachmentFormats formats,
-                         FrameBinding<DescriptorEntry> params, FrameBinding<DescriptorEntry> particles)
+    ParticleDrawMaterial(VulkanContext& context, AttachmentFormats formats, Handle<Shader> vertexShader,
+                         Handle<Shader> fragmentShader, FrameBinding<DescriptorEntry> params,
+                         FrameBinding<DescriptorEntry> particles)
     : GraphicsMaterial(context, {
           MaterialBinding::storageBuffer(std::move(params), Access::StorageBufferRead, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT),
           MaterialBinding::storageBuffer(std::move(particles), Access::StorageBufferRead, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT),
-      }, std::move(formats), context.shaders().get("particles.vert"), context.shaders().get("particles.frag"),
+      }, std::move(formats), std::move(vertexShader), std::move(fragmentShader),
       GraphicsPipelineOptions{
           .vertexLayout = std::nullopt,
           .cullMode = VK_CULL_MODE_NONE,
@@ -249,7 +256,9 @@ Options parseOptions(int argc, char** argv) {
     return options;
 }
 
-int run(const Options& options, std::atomic<uint32_t>& validationMessages) {
+// Runs the particles in a window, or headless for a number of frames; returns the last headless
+// frame's pixels when capturing
+Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::atomic<uint32_t>& validationMessages) {
     const bool headless = options.headlessFrames.has_value();
 
     AppConfig config;
@@ -266,7 +275,7 @@ int run(const Options& options, std::atomic<uint32_t>& validationMessages) {
     };
 
     VulkanApp app;
-    app.init(config);
+    TRY(app.init(config));
     VulkanContext& context = app.getContext();
 
     Controls controls;
@@ -292,10 +301,11 @@ int run(const Options& options, std::atomic<uint32_t>& validationMessages) {
     // makes a frame's compute pass wait for the previous frame's draw.
     BufferId particles = graph.createBuffer("particles", FrameMode::Shared, kParticleCount * sizeof(Particle));
 
-    auto simulation = context.resources().create<ParticleSimMaterial>(context, controls,
-                                                                       graph.storageBufferEntry(particles));
-    auto drawing = context.resources().create<ParticleDrawMaterial>(context, graph.formats(target),
-                                                                     simulation->paramEntries(),
+    TRY_ASSIGN(auto simulation, ParticleSimMaterial::create(context, controls, graph.storageBufferEntry(particles)));
+    TRY_ASSIGN(auto vertexShader, context.shaders().get("particles.vert"));
+    TRY_ASSIGN(auto fragmentShader, context.shaders().get("particles.frag"));
+    auto drawing = context.resources().create<ParticleDrawMaterial>(context, graph.formats(target), vertexShader,
+                                                                     fragmentShader, simulation->paramEntries(),
                                                                      graph.storageBufferEntry(particles));
 
     // Nodes, in program order. The simulation writes the buffer and the draw reads it, so the graph
@@ -334,15 +344,11 @@ int run(const Options& options, std::atomic<uint32_t>& validationMessages) {
             } else if (i == 2 * frames / 3) {
                 context.setFramesInFlight(1);
             }
-            app.drawFrame();
+            TRY(app.drawFrame());
         }
         if (options.capturePath && frames > 0) {
-            auto pixels = graph.nodeAs<ReadbackNode>(readback).pixels();
-            if (!stbi_write_png(options.capturePath->c_str(), int(kHeadlessExtent.width), int(kHeadlessExtent.height),
-                                4, pixels.data(), int(kHeadlessExtent.width * 4))) {
-                throw std::runtime_error("Failed to write " + *options.capturePath);
-            }
-            std::cout << "Wrote " << *options.capturePath << std::endl;
+            TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(readback).pixels());
+            return std::optional(std::move(pixels));
         }
     } else {
         GLFWwindow* window = app.window();
@@ -356,24 +362,38 @@ int run(const Options& options, std::atomic<uint32_t>& validationMessages) {
                      "  space       pause / resume\n"
                      "  R           reset the particles\n"
                      "  1, 2, 3     frames in flight\n";
-        app.run();
+        TRY(app.run());
     }
-    return EXIT_SUCCESS;
+    return std::nullopt;
 }
 
 int main(int argc, char** argv) {
-    std::atomic<uint32_t> validationMessages = 0;
-    int result = EXIT_FAILURE;
+    Options options;
     try {
-        // Everything is destroyed when run() returns, so destruction is validated too
-        result = run(parseOptions(argc, argv), validationMessages);
+        options = parseOptions(argc, argv);
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    std::atomic<uint32_t> validationMessages = 0;
+    // Everything is destroyed when run() returns, so destruction is validated too
+    auto captured = run(options, validationMessages);
+    if (!captured) {
+        std::cerr << "Error: " << captured.error() << std::endl;
         return EXIT_FAILURE;
     }
     if (validationMessages > 0) {
         std::cerr << validationMessages << " validation message(s)" << std::endl;
         return EXIT_FAILURE;
     }
-    return result;
+    if (auto& pixels = *captured) {
+        if (!stbi_write_png(options.capturePath->c_str(), int(kHeadlessExtent.width), int(kHeadlessExtent.height),
+                            4, pixels->data(), int(kHeadlessExtent.width * 4))) {
+            std::cerr << "Failed to write " << *options.capturePath << std::endl;
+            return EXIT_FAILURE;
+        }
+        std::cout << "Wrote " << *options.capturePath << std::endl;
+    }
+    return EXIT_SUCCESS;
 }

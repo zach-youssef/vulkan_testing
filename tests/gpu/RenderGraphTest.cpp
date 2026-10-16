@@ -57,8 +57,7 @@ Handle<PatternMaterial> patternMaterial(VulkanContext& ctx, FrameBinding<Descrip
 }
 
 Handle<Image> storageImage(VulkanContext& ctx) {
-    Handle<Image> image;
-    Image::createStorage(image, ctx, VK_FORMAT_R8G8B8A8_UNORM, kWidth, kHeight);
+    auto image = Image::createStorage(ctx, VK_FORMAT_R8G8B8A8_UNORM, kWidth, kHeight).value();
     return image;
 }
 
@@ -112,12 +111,12 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph runs a compute node and reads back its o
 
     for (int frame = 0; frame < 4; ++frame) {
         CAPTURE(frame);
-        CHECK_FALSE(graph.execute().skipped);
-        CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels()));
+        CHECK_FALSE(graph.execute().value().skipped);
+        CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels().value()));
     }
     // The imported image is back in its resting state, so code outside the graph can read it
-    graph.waitIdle();
-    CHECK(hasPattern(image->readback(VK_IMAGE_LAYOUT_GENERAL)));
+    graph.waitIdle().value();
+    CHECK(hasPattern(image->readback(VK_IMAGE_LAYOUT_GENERAL).value()));
 }
 
 TEST_CASE_FIXTURE(GpuTest, "RenderGraph renders into a graph image and samples it in a second pass") {
@@ -132,8 +131,7 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph renders into a graph image and samples i
     graph.addGraphics("clear", [&](NodeBuilder& b) { b.renderTo(target); }, nullptr);
 
     // The graph's entries for its images, which exist once it compiles
-    Handle<VulkanSampler> sampler;
-    REQUIRE(VulkanSampler::createWithModeAndFilter(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_FILTER_NEAREST) == VK_SUCCESS);
+    auto sampler = VulkanSampler::createWithModeAndFilter(ctx, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_FILTER_NEAREST).value();
     auto material = ctx.resources().create<CopyMaterial>(ctx, std::vector<MaterialBinding>{
         MaterialBinding::sampled(graph.sampledEntry(cleared)),
         MaterialBinding::sampler(ctx.descriptors().sampler(sampler)),
@@ -143,9 +141,9 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph renders into a graph image and samples i
     NodeId readback = graph.add<ReadbackNode>("readback", copied);
 
     for (int frame = 0; frame < 3; ++frame) {
-        graph.execute();
+        graph.execute().value();
     }
-    auto values = halves(graph.nodeAs<ReadbackNode>(readback).pixels());
+    auto values = halves(graph.nodeAs<ReadbackNode>(readback).pixels().value());
     REQUIRE(values.size() == kWidth * kHeight * 4);
     // The clear color is linear; written to sRGB and sampled back it is (nearly) unchanged
     const float expected[4] = {0.2f, 0.4f, 0.6f, 1.0f};
@@ -173,16 +171,16 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph runs independent compute work on separat
 
     std::set<int32_t> queues;
     for (NodeId dispatch : dispatches) {
-        queues.insert(graph.queueOf(dispatch));
+        queues.insert(graph.queueOf(dispatch).value());
     }
     // With enough queues, each independent dispatch gets its own
     CHECK(queues.size() == std::min<uint32_t>(3, std::max<uint32_t>(1, ctx.queueCount() - 1)));
 
     for (int frame = 0; frame < 3; ++frame) {
-        graph.execute();
+        graph.execute().value();
     }
     for (NodeId readback : readbacks) {
-        CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels()));
+        CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels().value()));
     }
 }
 
@@ -197,12 +195,12 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph serializes a shared image used on two qu
     graph.node(readback).onPrimaryQueue();
 
     if (ctx.queueCount() > 1) {
-        CHECK(graph.queueOf(dispatch) != graph.queueOf(readback));
+        CHECK(graph.queueOf(dispatch).value() != graph.queueOf(readback).value());
     }
     for (int frame = 0; frame < 5; ++frame) {
-        graph.execute();
+        graph.execute().value();
     }
-    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels()));
+    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels().value()));
 }
 
 TEST_CASE_FIXTURE(GpuTest, "RenderGraph caches plans per set of enabled nodes") {
@@ -219,8 +217,8 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph caches plans per set of enabled nodes") 
     NodeId green = graph.addGraphics("green", [&](NodeBuilder& b) { b.renderTo(clearTo({0, 1, 0, 1})); }, nullptr);
     NodeId readback = graph.add<ReadbackNode>("readback", color);
     auto firstPixel = [&] {
-        graph.execute();
-        auto pixels = graph.nodeAs<ReadbackNode>(readback).pixels();
+        graph.execute().value();
+        auto pixels = graph.nodeAs<ReadbackNode>(readback).pixels().value();
         return std::vector<uint8_t>(pixels.begin(), pixels.begin() + 4);
     };
 
@@ -251,10 +249,10 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph updates a material shared by several nod
     for (int i = 0; i < 3; ++i) {
         graph.add<DispatchNode>("pattern " + std::to_string(i), material);
     }
-    graph.execute();
-    graph.execute();
+    graph.execute().value();
+    graph.execute().value();
     CHECK(material->updates == 2);
-    graph.waitIdle();
+    graph.waitIdle().value();
 }
 
 TEST_CASE_FIXTURE(GpuTest, "RenderGraph runs CPU nodes in graph order") {
@@ -264,7 +262,7 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph runs CPU nodes in graph order") {
     NodeId second = graph.addCpu("second", nullptr, [&](FrameContext&) { ran.push_back("second"); });
     NodeId first = graph.addCpu("first", nullptr, [&](FrameContext&) { ran.push_back("first"); });
     graph.addDependency(first, second);
-    graph.execute();
+    graph.execute().value();
     CHECK(ran == std::vector<std::string>{"first", "second"});
 }
 
@@ -276,32 +274,31 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph reports invalid graphs when compiling") 
         NodeId b = graph.addCpu("b", nullptr, nullptr);
         graph.addDependency(a, b);
         graph.addDependency(b, a);
-        CHECK_THROWS_AS(graph.compile(), GraphError);
+        CHECK_ERROR(graph.compile(), ErrorCode::InvalidGraph, "cycle");
     }
     SUBCASE("missing usage") {
-        Handle<Image> sampledOnly;
-        Image::createEmptyRGBA(sampledOnly, ctx, 4, 4);
+        auto sampledOnly = Image::createEmptyRGBA(ctx, 4, 4).value();
         RenderGraph graph(ctx);
         ImageId image = graph.importImage("sampled only", sampledOnly, ImageState::shaderReadOnly());
         graph.addCompute("write", [&](NodeBuilder& b) { b.write(image, Access::StorageWrite); }, nullptr);
-        CHECK_THROWS_WITH_AS(graph.compile(), doctest::Contains("wasn't created with"), GraphError);
+        CHECK_ERROR(graph.compile(), ErrorCode::InvalidGraph, "wasn't created with");
     }
     SUBCASE("graphics node without a target") {
         RenderGraph graph(ctx);
         graph.addGraphics("draw", nullptr, nullptr);
-        CHECK_THROWS_WITH_AS(graph.compile(), doctest::Contains("no render target"), GraphError);
+        CHECK_ERROR(graph.compile(), ErrorCode::InvalidGraph, "no render target");
     }
     SUBCASE("read with a writing access") {
         RenderGraph graph(ctx);
         ImageId image = graph.createImage("image", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{{4, 4}});
         CHECK_THROWS_AS(graph.addCompute("bad", [&](NodeBuilder& b) { b.read(image, Access::StorageWrite); }, nullptr),
-                        GraphError);
+                        ContractViolation);
     }
     SUBCASE("surface relative images need a surface, or a headless surface extent") {
         RenderGraph graph(ctx);
         CHECK_THROWS_WITH_AS(graph.createImage("image", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, SurfaceRelative{}),
-                             doctest::Contains("setSurfaceExtent"), GraphError);
-        CHECK_THROWS_AS(graph.setSurfaceExtent({0, 4}), std::invalid_argument);
+                             doctest::Contains("setSurfaceExtent"), ContractViolation);
+        CHECK_THROWS_AS(graph.setSurfaceExtent({0, 4}), ContractViolation);
     }
 }
 
@@ -315,18 +312,18 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph keeps per-frame images per frame in flig
         target.color.push_back({image, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, {0, 0, 1, 1}});
         graph.addGraphics("clear", [&](NodeBuilder& b) { b.renderTo(target); }, nullptr);
         NodeId readback = graph.add<ReadbackNode>("readback", image);
-        graph.execute();
+        graph.execute().value();
         CHECK(graph.image(image, 0) != graph.image(image, 1));
 
         ctx.setFramesInFlight(3);
         for (int frame = 0; frame < 4; ++frame) {
-            graph.execute();
+            graph.execute().value();
         }
         CHECK(graph.image(image, 2));
-        auto pixels = graph.nodeAs<ReadbackNode>(readback).pixels();
+        auto pixels = graph.nodeAs<ReadbackNode>(readback).pixels().value();
         CHECK(std::vector<uint8_t>(pixels.begin(), pixels.begin() + 4) == std::vector<uint8_t>{0, 0, 255, 255});
         ctx.setFramesInFlight(originalFrames);
-        graph.execute();
+        graph.execute().value();
     }
 }
 
@@ -337,10 +334,10 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph derives uses from materials, importing r
     // Not imported: the material's entry imports it (as a storage image, resting in GENERAL)
     graph.add<DispatchNode>("pattern", patternMaterial(ctx, ctx.descriptors().storageImage(image)));
     for (int frame = 0; frame < 2; ++frame) {
-        graph.execute();
+        graph.execute().value();
     }
-    graph.waitIdle();
-    CHECK(hasPattern(image->readback(VK_IMAGE_LAYOUT_GENERAL)));
+    graph.waitIdle().value();
+    CHECK(hasPattern(image->readback(VK_IMAGE_LAYOUT_GENERAL).value()));
 }
 
 TEST_CASE_FIXTURE(GpuTest, "RenderGraph rejects an image it knows twice") {
@@ -350,7 +347,7 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph rejects an image it knows twice") {
     graph.importImage("first", image, ImageState::general());
     graph.importImage("second", image, ImageState::general());
     graph.addCpu("cpu", nullptr, nullptr);
-    CHECK_THROWS_WITH_AS(graph.compile(), doctest::Contains("are the same image"), GraphError);
+    CHECK_ERROR(graph.compile(), ErrorCode::InvalidGraph, "are the same image");
 }
 
 TEST_CASE_FIXTURE(GpuTest, "RenderGraph keeps its descriptor entries current as images are recreated") {
@@ -362,23 +359,23 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph keeps its descriptor entries current as 
     graph.add<DispatchNode>("pattern", patternMaterial(ctx, entries));
     NodeId readback = graph.add<ReadbackNode>("readback", image);
 
-    graph.execute();
-    graph.execute();
+    graph.execute().value();
+    graph.execute().value();
     for (uint32_t frame = 0; frame < originalFrames; ++frame) {
         REQUIRE(entries.get(frame));
         CHECK(entries.get(frame)->image() == graph.image(image, frame));
     }
-    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels()));
+    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels().value()));
 
     // A new frame slot gets its own image, and an entry for it when the slot first runs
     ctx.setFramesInFlight(originalFrames + 1);
     for (uint32_t frame = 0; frame <= originalFrames + 1; ++frame) {
-        graph.execute();
+        graph.execute().value();
     }
     CHECK(entries.get(originalFrames)->image() == graph.image(image, originalFrames));
-    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels()));
+    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels().value()));
     ctx.setFramesInFlight(originalFrames);
-    graph.execute();
+    graph.execute().value();
 }
 
 TEST_CASE_FIXTURE(GpuTest, "Materials update after the CPU nodes ordered before their nodes") {
@@ -403,7 +400,7 @@ TEST_CASE_FIXTURE(GpuTest, "Materials update after the CPU nodes ordered before 
     graph.addDependency(cpu, lateNode);
 
     for (int frame = 1; frame <= 3; ++frame) {
-        graph.execute();
+        graph.execute().value();
         CAPTURE(frame);
         CHECK(cpuRuns == frame);
         CHECK(earlyUpdatesSeen == frame);
@@ -413,7 +410,7 @@ TEST_CASE_FIXTURE(GpuTest, "Materials update after the CPU nodes ordered before 
 
     // Disabled nodes' materials aren't updated
     graph.setEnabled(lateNode, false);
-    graph.execute();
+    graph.execute().value();
     CHECK(late->updates == 3);
     CHECK(early->updates == 4);
     ctx.waitIdleAll();
@@ -433,21 +430,76 @@ TEST_CASE_FIXTURE(GpuTest, "Headless graphs resize surface relative images to th
     graph.add<DispatchNode>("pattern", material);
     NodeId readback = graph.add<ReadbackNode>("readback", image);
 
-    graph.execute();
+    graph.execute().value();
     CHECK(seenExtent.width == 16);
     CHECK(seenExtent.height == 8);
-    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels(), 8, 4));
+    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels().value(), 8, 4));
 
     // Every frame's image is recreated at the new size, and the material's entries follow
     graph.setSurfaceExtent({kWidth * 2, kHeight * 2});
     for (uint32_t frame = 0; frame < ctx.framesInFlight(); ++frame) {
-        graph.execute();
+        graph.execute().value();
     }
     for (uint32_t frame = 0; frame < ctx.framesInFlight(); ++frame) {
         CHECK(graph.imageExtent(image, frame).width == kWidth);
         CHECK(graph.imageExtent(image, frame).height == kHeight);
     }
     CHECK(seenExtent.width == kWidth * 2);
-    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels(), kWidth, kHeight));
+    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels().value(), kWidth, kHeight));
     ctx.waitIdleAll();
+}
+
+namespace {
+
+// A node whose per-frame preparation fails while `failing` is set
+class FlakyNode : public TransferNode {
+public:
+    explicit FlakyNode(const bool& failing) : failing_(&failing) {}
+
+    Result<void> prepareFrame(FrameContext&) override {
+        if (*failing_) {
+            return Error(ErrorCode::OutOfMemory, "flaky failure");
+        }
+        return {};
+    }
+
+private:
+    const bool* failing_;
+};
+
+} // namespace
+
+TEST_CASE_FIXTURE(GpuTest, "A node failing to prepare fails the frame before anything is submitted, and the frame can be retried") {
+    auto& ctx = context();
+    auto image = storageImage(ctx);
+    RenderGraph graph(ctx);
+    graph.importImage("output", image, ImageState::general());
+    bool failing = true;
+    graph.add<FlakyNode>("flaky", failing);
+    graph.add<DispatchNode>("pattern", patternMaterial(ctx, ctx.descriptors().storageImage(image)));
+
+    const uint64_t frameNumber = ctx.frameNumber();
+    const auto submitted = ctx.submittedPoints();
+    CHECK_ERROR(graph.execute(), ErrorCode::OutOfMemory, "preparing node 'flaky': flaky failure");
+    CHECK(ctx.frameNumber() == frameNumber);
+    CHECK(ctx.submittedPoints() == submitted);
+
+    failing = false;
+    CHECK_OK(graph.execute());
+    CHECK(ctx.frameNumber() == frameNumber + 1);
+    graph.waitIdle().value();
+    CHECK(hasPattern(image->readback(VK_IMAGE_LAYOUT_GENERAL).value()));
+}
+
+TEST_CASE_FIXTURE(GpuTest, "Compiling builds the materials' pipelines") {
+    auto& ctx = context();
+    auto image = storageImage(ctx);
+    auto material = patternMaterial(ctx, ctx.descriptors().storageImage(image));
+    CHECK(material->getPipeline() == VK_NULL_HANDLE);
+    {
+        RenderGraph graph(ctx);
+        graph.add<DispatchNode>("pattern", material);
+        CHECK_OK(graph.compile());
+    }
+    CHECK(material->getPipeline() != VK_NULL_HANDLE);
 }

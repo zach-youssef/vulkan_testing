@@ -141,31 +141,40 @@ struct SceneUniforms {
  */
 class LitMaterial : public GraphicsMaterial {
 public:
-    LitMaterial(VulkanContext& context, AttachmentFormats formats, Handle<Shader> vertexShader,
-                Handle<Shader> fragmentShader, const SceneState& state,
-                FrameBinding<DescriptorEntry> shadowMap, Handle<DescriptorEntry> shadowSampler)
-    : GraphicsMaterial(context, {}, std::move(formats), std::move(vertexShader), std::move(fragmentShader),
-                       GraphicsPipelineOptions{.vertexLayout = SceneVertex::layout()}),
-      state_(&state) {
+    using Mapping = Buffer<SceneUniforms>::Mapping;
+
+    // Creates the per-frame uniform buffers, which can fail, then the material
+    static Result<Handle<LitMaterial>> create(VulkanContext& context, AttachmentFormats formats, Handle<Shader> vertexShader,
+                                              Handle<Shader> fragmentShader, const SceneState& state,
+                                              FrameBinding<DescriptorEntry> shadowMap, Handle<DescriptorEntry> shadowSampler) {
         // A buffer per frame in flight, so the CPU never writes one the GPU is reading. Created in
         // this order, so resized in this order when the number of frames in flight changes.
-        uniformBuffers_ = context.resources().create<PerFrameHandles<Buffer<SceneUniforms>>>(
-            context, [ctx = &context](uint32_t) {
-                Handle<Buffer<SceneUniforms>> buffer;
-                VK_SUCCESS_OR_THROW(Buffer<SceneUniforms>::create(buffer, *ctx, 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-                                                                  | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-                                    "Failed to create the scene uniform buffer");
-                return buffer;
-            });
-        uniformEntries_ = context.resources().create<PerFrameHandles<DescriptorEntry>>(
-            context, [ctx = &context, buffers = uniformBuffers_](uint32_t frame) {
+        TRY_ASSIGN(auto buffers, PerFrameHandles<Buffer<SceneUniforms>>::createManaged(context, [&context](uint32_t) {
+            return Buffer<SceneUniforms>::create(context, 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }));
+        auto entries = context.resources().create<PerFrameHandles<DescriptorEntry>>(
+            context, [ctx = &context, buffers](uint32_t frame) {
                 return ctx->descriptors().storageBuffer((*buffers)[frame]);
             });
-        mappings_ = PerFrame<Mapping>(context, [this](uint32_t frame) {
-            return (*uniformBuffers_)[frame]->getPersistentMapping(0, sizeof(SceneUniforms));
-        });
+        TRY_ASSIGN(auto mappings, PerFrame<Mapping>::create(context, [buffers](uint32_t frame) {
+            return (*buffers)[frame]->getPersistentMapping(0, sizeof(SceneUniforms));
+        }));
+        return context.resources().create<LitMaterial>(context, std::move(formats), std::move(vertexShader),
+                                                       std::move(fragmentShader), state, std::move(shadowMap),
+                                                       std::move(shadowSampler), std::move(buffers), std::move(entries),
+                                                       std::move(mappings));
+    }
 
+    LitMaterial(VulkanContext& context, AttachmentFormats formats, Handle<Shader> vertexShader,
+                Handle<Shader> fragmentShader, const SceneState& state,
+                FrameBinding<DescriptorEntry> shadowMap, Handle<DescriptorEntry> shadowSampler,
+                Handle<PerFrameHandles<Buffer<SceneUniforms>>> uniformBuffers,
+                Handle<PerFrameHandles<DescriptorEntry>> uniformEntries, PerFrame<Mapping> mappings)
+    : GraphicsMaterial(context, {}, std::move(formats), std::move(vertexShader), std::move(fragmentShader),
+                       GraphicsPipelineOptions{.vertexLayout = SceneVertex::layout()}),
+      state_(&state), uniformBuffers_(std::move(uniformBuffers)), uniformEntries_(std::move(uniformEntries)),
+      mappings_(std::move(mappings)) {
         bindings_ = {
             MaterialBinding::storageBuffer(uniformEntries_, Access::StorageBufferRead,
                                            VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT),
@@ -207,7 +216,6 @@ private:
         memcpy(data.data() + offset, &value, sizeof(T));
     }
 
-    using Mapping = std::unique_ptr<SceneUniforms, std::function<void(SceneUniforms*)>>;
     const SceneState* state_;
     Handle<PerFrameHandles<Buffer<SceneUniforms>>> uniformBuffers_;
     Handle<PerFrameHandles<DescriptorEntry>> uniformEntries_;
@@ -344,8 +352,8 @@ Options parseOptions(int argc, char** argv) {
 // ---------------------------------------------------------------------------------------------------
 
 // Runs the example, counting validation messages into validationMessages (which outlives the app:
-// destroying the context can report, e.g. leaks)
-int run(const Options& options, std::atomic<uint32_t>& validationMessages) {
+// destroying the context can report, e.g. leaks). Returns the last frame's pixels when capturing.
+Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::atomic<uint32_t>& validationMessages) {
     const bool headless = !options.window;
 
     AppConfig config;
@@ -365,7 +373,7 @@ int run(const Options& options, std::atomic<uint32_t>& validationMessages) {
     config.autoReloadShaders = !headless;
 
     VulkanApp app;
-    app.init(config);
+    TRY(app.init(config));
     VulkanContext& ctx = app.getContext();
     auto& heap = ctx.descriptors();
     auto& shaders = ctx.shaders();
@@ -375,20 +383,16 @@ int run(const Options& options, std::atomic<uint32_t>& validationMessages) {
     // Samplers: bilinear for the HDR image, and a comparison sampler for the shadow map, which
     // returns how much of the bilinear footprint is closer to the light than the reference depth.
     // Outside the map the white border reads as lit.
-    Handle<VulkanSampler> linearSampler;
-    VK_SUCCESS_OR_THROW(VulkanSampler::createWithModeAndFilter(linearSampler, ctx, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                                                               VK_FILTER_LINEAR),
-                        "Failed to create sampler");
-    Handle<VulkanSampler> shadowSampler;
-    VK_SUCCESS_OR_THROW(VulkanSampler::create(shadowSampler, ctx, SamplerDesc{
-                            .filter = VK_FILTER_LINEAR,
-                            .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
-                            .addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-                            .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
-                            .compareOp = VK_COMPARE_OP_LESS_OR_EQUAL,   // Lit where reference <= stored depth
-                            .anisotropy = false,
-                        }),
-                        "Failed to create shadow sampler");
+    TRY_ASSIGN(auto linearSampler, VulkanSampler::createWithModeAndFilter(ctx, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                                                          VK_FILTER_LINEAR));
+    TRY_ASSIGN(auto shadowSampler, VulkanSampler::create(ctx, SamplerDesc{
+                                       .filter = VK_FILTER_LINEAR,
+                                       .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                                       .addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+                                       .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+                                       .compareOp = VK_COMPARE_OP_LESS_OR_EQUAL,   // Lit where reference <= stored depth
+                                       .anisotropy = false,
+                                   }));
 
     // The graph's images. The HDR image and its depth follow the window's size (the graph
     // recreates them on resize); headless, they follow the extent given to the graph, which works
@@ -423,26 +427,34 @@ int run(const Options& options, std::atomic<uint32_t>& validationMessages) {
         displayTarget = graph.surfaceTarget({0.0f, 0.0f, 0.0f, 1.0f}, std::nullopt);   // No depth needed
     }
 
+    // Shaders, loaded from the search path (a missing one is an error)
+    TRY_ASSIGN(auto litVertex, shaders.get("lit.vert"));
+    TRY_ASSIGN(auto litFragment, shaders.get("lit.frag"));
+    TRY_ASSIGN(auto shadowVertex, shaders.get("shadow.vert"));
+    TRY_ASSIGN(auto shadowFragment, shaders.get("shadow.frag"));
+    TRY_ASSIGN(auto tonemapVertex, shaders.get("tonemap.vert"));
+    TRY_ASSIGN(auto tonemapFragment, shaders.get("tonemap.frag"));
+
     // Materials, built for the formats of the targets they draw into. Graph entries (sampledEntry)
-    // follow the images when the graph recreates them.
-    auto lit = ctx.resources().create<LitMaterial>(ctx, graph.formats(hdrTarget), shaders.get("lit.vert"),
-                                                   shaders.get("lit.frag"), state,
-                                                   graph.sampledEntry(shadowMap), heap.sampler(shadowSampler));
+    // follow the images when the graph recreates them. Their pipelines are built when the graph
+    // compiles.
+    TRY_ASSIGN(auto lit, LitMaterial::create(ctx, graph.formats(hdrTarget), litVertex, litFragment, state,
+                                             graph.sampledEntry(shadowMap), heap.sampler(shadowSampler)));
     // Positions only: the shadow pass reads the first attribute of the scene's vertices
     auto shadow = ctx.resources().create<GraphicsMaterial>(
         ctx, std::vector<MaterialBinding>{MaterialBinding::storageBuffer(lit->sceneEntries(), Access::StorageBufferRead,
                                                                          VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT)},
-        graph.formats(shadowTarget), shaders.get("shadow.vert"), shaders.get("shadow.frag"),
+        graph.formats(shadowTarget), shadowVertex, shadowFragment,
         GraphicsPipelineOptions{.vertexLayout = SceneVertex::positionLayout()});
-    auto tonemap = ctx.resources().create<TonemapMaterial>(ctx, graph.formats(displayTarget), shaders.get("tonemap.vert"),
-                                                           shaders.get("tonemap.frag"), state, graph.sampledEntry(hdr),
+    auto tonemap = ctx.resources().create<TonemapMaterial>(ctx, graph.formats(displayTarget), tonemapVertex,
+                                                           tonemapFragment, state, graph.sampledEntry(hdr),
                                                            heap.sampler(linearSampler));
 
     // Each mesh is drawn twice, sharing its buffers: into the shadow map and lit
     std::vector<Handle<Renderable>> litRenderables;
     std::vector<Handle<Renderable>> shadowRenderables;
     for (const MeshData& data : buildScene()) {
-        auto mesh = ctx.resources().create<Mesh>(ctx, data.vertices, data.indices);
+        TRY_ASSIGN(auto mesh, Mesh::create(ctx, data.vertices, data.indices));
         shadowRenderables.push_back(ctx.resources().create<MeshRenderable>(mesh, shadow));
         litRenderables.push_back(ctx.resources().create<MeshRenderable>(mesh, lit));
     }
@@ -534,39 +546,50 @@ int run(const Options& options, std::atomic<uint32_t>& validationMessages) {
             }
         }
 
-        if (!app.runFrame()) {
-            break;   // The window was closed
+        TRY_ASSIGN(const FrameOutcome outcome, app.runFrame());
+        if (outcome == FrameOutcome::WindowClosed) {
+            break;
         }
     }
     // Everything below the app is destroyed first, so the GPU must be done with it
-    ctx.waitIdleAll();
+    VK_TRY(ctx.waitIdleAll(), "Failed to wait for the device");
 
     if (readback) {
-        const std::vector<uint8_t> pixels = graph.nodeAs<ReadbackNode>(*readback).pixels();
-        const VkExtent2D extent = options.size;
-        if (!stbi_write_png(options.capture->c_str(), static_cast<int>(extent.width), static_cast<int>(extent.height), 4,
-                            pixels.data(), static_cast<int>(extent.width * 4))) {
-            std::cerr << "Failed to write " << *options.capture << std::endl;
-            return EXIT_FAILURE;
-        }
-        std::cout << "Wrote " << *options.capture << std::endl;
+        TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(*readback).pixels());
+        return std::optional(std::move(pixels));
     }
-    return EXIT_SUCCESS;
+    return std::nullopt;
 }
 
 int main(int argc, char** argv) {
-    // Atomic: validation may report from any thread that calls Vulkan
-    std::atomic<uint32_t> validationMessages = 0;
-    int result = EXIT_FAILURE;
+    Options options;
     try {
-        result = run(parseOptions(argc, argv), validationMessages);
+        options = parseOptions(argc, argv);
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    // Atomic: validation may report from any thread that calls Vulkan
+    std::atomic<uint32_t> validationMessages = 0;
+    auto captured = run(options, validationMessages);
+    if (!captured) {
+        std::cerr << "Error: " << captured.error() << std::endl;
+        return EXIT_FAILURE;
     }
     // Any validation message is a bug
     if (validationMessages > 0) {
         std::cerr << validationMessages << " validation message(s)" << std::endl;
         return EXIT_FAILURE;
     }
-    return result;
+    if (auto& pixels = *captured) {
+        const VkExtent2D extent = options.size;
+        if (!stbi_write_png(options.capture->c_str(), static_cast<int>(extent.width), static_cast<int>(extent.height), 4,
+                            pixels->data(), static_cast<int>(extent.width * 4))) {
+            std::cerr << "Failed to write " << *options.capture << std::endl;
+            return EXIT_FAILURE;
+        }
+        std::cout << "Wrote " << *options.capture << std::endl;
+    }
+    return EXIT_SUCCESS;
 }

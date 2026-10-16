@@ -1,5 +1,6 @@
 #include "VkTestContext.h"
 #include "resources/Image.h"
+#include "TestShaders.h"
 
 namespace {
 
@@ -25,32 +26,30 @@ TEST_CASE_FIXTURE(GpuTest, "Image::createFromUcharBuffer uploads pixels that rea
     constexpr uint32_t height = 19;
     auto pixels = makePattern(width, height);
 
-    Handle<Image> image;
-    Image::createFromUcharBuffer(image, ctx, pixels.data(), width, height, pixels.size());
+    auto image = Image::createFromUcharBuffer(ctx, pixels.data(), width, height, pixels.size()).value();
     REQUIRE(image);
     CHECK(image->getWidth() == width);
     CHECK(image->getHeight() == height);
     CHECK(image->getFormat() == VK_FORMAT_R8G8B8A8_SRGB);
     CHECK(image->getImageView() != VK_NULL_HANDLE);
 
-    auto readback = image->readback(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    auto readback = image->readback(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL).value();
     CHECK(readback == pixels);
 
     // readback restores the layout, so reading twice must give the same result
-    CHECK(image->readback(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) == pixels);
+    CHECK(image->readback(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL).value() == pixels);
 }
 
 TEST_CASE_FIXTURE(GpuTest, "Image::createEmpty creates an image of the requested format and size") {
     auto& ctx = context();
 
-    Handle<Image> image;
-    Image::createEmpty(image, ctx, VK_FORMAT_R8G8B8A8_UNORM, 64, 32);
+    auto image = Image::createEmpty(ctx, VK_FORMAT_R8G8B8A8_UNORM, 64, 32).value();
     REQUIRE(image);
     CHECK(image->getFormat() == VK_FORMAT_R8G8B8A8_UNORM);
     CHECK(image->getWidth() == 64);
     CHECK(image->getHeight() == 32);
 
-    auto readback = image->readback(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    auto readback = image->readback(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL).value();
     CHECK(readback.size() == 64 * 32 * 4);
 }
 
@@ -60,14 +59,12 @@ TEST_CASE_FIXTURE(GpuTest, "Sampled images are not created with storage usage") 
 
     // sRGB formats are rarely supported as storage images, so requesting storage usage for them
     // would fail on many devices
-    Handle<Image> uploaded;
-    Image::createFromUcharBuffer(uploaded, ctx, pixels.data(), 4, 4, pixels.size());
+    auto uploaded = Image::createFromUcharBuffer(ctx, pixels.data(), 4, 4, pixels.size()).value();
     CHECK(uploaded->getFormat() == VK_FORMAT_R8G8B8A8_SRGB);
     CHECK((uploaded->getUsage() & VK_IMAGE_USAGE_SAMPLED_BIT) != 0);
     CHECK((uploaded->getUsage() & VK_IMAGE_USAGE_STORAGE_BIT) == 0);
 
-    Handle<Image> empty;
-    Image::createEmptyRGBA(empty, ctx, 4, 4);
+    auto empty = Image::createEmptyRGBA(ctx, 4, 4).value();
     CHECK(empty->getFormat() == VK_FORMAT_R8G8B8A8_SRGB);
     CHECK((empty->getUsage() & VK_IMAGE_USAGE_SAMPLED_BIT) != 0);
     CHECK((empty->getUsage() & VK_IMAGE_USAGE_STORAGE_BIT) == 0);
@@ -78,12 +75,11 @@ TEST_CASE_FIXTURE(GpuTest, "Image::createStorage creates a storage image in the 
     REQUIRE(Image::supportsUsage(ctx, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
                                  VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
 
-    Handle<Image> image;
-    Image::createStorage(image, ctx, VK_FORMAT_R16G16B16A16_SFLOAT, 16, 8);
+    auto image = Image::createStorage(ctx, VK_FORMAT_R16G16B16A16_SFLOAT, 16, 8).value();
     CHECK(image->getFormat() == VK_FORMAT_R16G16B16A16_SFLOAT);
     CHECK((image->getUsage() & VK_IMAGE_USAGE_STORAGE_BIT) != 0);
     // Read back from GENERAL, the layout createStorage leaves it in
-    CHECK(image->readback(VK_IMAGE_LAYOUT_GENERAL).size() == 16 * 8 * 8);
+    CHECK(image->readback(VK_IMAGE_LAYOUT_GENERAL).value().size() == 16 * 8 * 8);
 }
 
 TEST_CASE_FIXTURE(GpuTest, "Image::create rejects usages the format does not support") {
@@ -93,9 +89,7 @@ TEST_CASE_FIXTURE(GpuTest, "Image::create rejects usages the format does not sup
     CHECK_FALSE(Image::supportsUsage(ctx, depth, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_STORAGE_BIT));
     CHECK(Image::supportsUsage(ctx, depth, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT));
 
-    Handle<Image> image;
-    CHECK_THROWS_AS(Image::createStorage(image, ctx, depth, 4, 4), std::invalid_argument);
-    CHECK_FALSE(image);
+    CHECK_ERROR(Image::createStorage(ctx, depth, 4, 4), ErrorCode::Unsupported, "does not support image usage");
 }
 
 TEST_CASE("Image::requiredFormatFeatures maps each usage to its format feature") {
@@ -111,13 +105,15 @@ TEST_CASE("Image::bytesPerPixel") {
     CHECK(Image::bytesPerPixel(VK_FORMAT_R8G8B8A8_UNORM) == 4);
     CHECK(Image::bytesPerPixel(VK_FORMAT_B8G8R8A8_SRGB) == 4);
     CHECK(Image::bytesPerPixel(VK_FORMAT_R32G32B32A32_SFLOAT) == 16);
-    CHECK_THROWS_AS(Image::bytesPerPixel(VK_FORMAT_R8_UNORM), std::invalid_argument);
+    CHECK_THROWS_AS(Image::bytesPerPixel(VK_FORMAT_R8_UNORM), ContractViolation);
 }
 
 TEST_CASE_FIXTURE(GpuTest, "Loading an image that can't be read names the file and the reason") {
     auto& ctx = context();
-    Handle<Image> image;
-    CHECK_THROWS_WITH_AS(Image::createFromFile(image, ctx, "missing/texture.png"),
-                         doctest::Contains("'missing/texture.png': can't fopen"), std::runtime_error);
-    CHECK_FALSE(image);
+    CHECK_ERROR(Image::createFromFile(ctx, "missing/texture.png"), ErrorCode::NotFound,
+                "Image 'missing/texture.png' not found");
+
+    // A file that isn't an image
+    CHECK_ERROR(Image::createFromFile(ctx, testShaderDir() + "/pattern.comp.spv"), ErrorCode::InvalidData,
+                "pattern.comp.spv': ");
 }

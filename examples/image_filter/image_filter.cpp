@@ -185,16 +185,19 @@ private:
     std::vector<uint8_t> params_;
 };
 
-// Builds the graph, runs it once and writes the result. Every handle created here is released
-// before returning, so before the context is destroyed.
-void filterImage(VulkanContext& context, const Options& options) {
-    Handle<Image> source;
-    Image::createFromFile(source, context, options.input);
+// RGBA8 pixels, tightly packed
+struct FilteredImage {
+    std::vector<uint8_t> pixels;
+    VkExtent2D extent;
+};
+
+// Builds the graph and runs it once. Every handle created here is released before returning, so
+// before the context is destroyed.
+Result<FilteredImage> filterImage(VulkanContext& context, const Options& options) {
+    TRY_ASSIGN(auto source, Image::createFromFile(context, options.input));
     const VkExtent2D extent{source->getWidth(), source->getHeight()};
-    Handle<VulkanSampler> sampler;
-    VK_SUCCESS_OR_THROW(VulkanSampler::createWithModeAndFilter(sampler, context, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                                                               VK_FILTER_NEAREST),
-                        "Failed to create sampler");
+    TRY_ASSIGN(auto sampler, VulkanSampler::createWithModeAndFilter(context, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                                                    VK_FILTER_NEAREST));
 
     // The graph's images. They're only used within one frame, so one copy is shared by every frame
     // in flight rather than one per frame.
@@ -214,34 +217,37 @@ void filterImage(VulkanContext& context, const Options& options) {
         return MaterialBinding::storageImage(graph.storageEntry(image), Access::StorageWrite);
     };
     // Adds a pass. DispatchNode declares the material's uses, so nothing else needs declaring.
+    // Fails if the shader can't be loaded.
     auto addPass = [&](std::string name, const std::string& shader, std::vector<MaterialBinding> bindings,
-                       std::vector<uint8_t> params = {}) {
-        auto material = context.resources().create<FilterMaterial>(context, context.shaders().get(shader),
-                                                                   std::move(bindings), extent, std::move(params));
+                       std::vector<uint8_t> params = {}) -> Result<NodeId> {
+        TRY_ASSIGN(auto loaded, context.shaders().get(shader));
+        auto material = context.resources().create<FilterMaterial>(context, std::move(loaded), std::move(bindings),
+                                                                   extent, std::move(params));
         return graph.add<DispatchNode>(std::move(name), std::move(material));
     };
 
     // Insertion order is program order wherever passes use the same image
     auto& heap = context.descriptors();
-    addPass("load", "load.comp", {MaterialBinding::sampled(heap.sampledImage(source)),
-                                  MaterialBinding::sampler(heap.sampler(sampler)), writes(working)});
+    TRY(addPass("load", "load.comp", {MaterialBinding::sampled(heap.sampledImage(source)),
+                                      MaterialBinding::sampler(heap.sampler(sampler)), writes(working)}));
 
     // Disabled passes still need valid parameters: the radius is only used if the blur runs
     const int radius = options.blurRadius.value_or(1);
     const float sigma = radius / 2.0f;   // The kernel spans two standard deviations either side
-    const NodeId blurRows = addPass("blur rows", "blur.comp", {reads(working), writes(scratch)},
-                                    pushData(BlurParams{1, 0, radius, sigma}));
-    const NodeId blurColumns = addPass("blur columns", "blur.comp", {reads(scratch), writes(working)},
-                                       pushData(BlurParams{0, 1, radius, sigma}));
+    TRY_ASSIGN(const NodeId blurRows, addPass("blur rows", "blur.comp", {reads(working), writes(scratch)},
+                                              pushData(BlurParams{1, 0, radius, sigma})));
+    TRY_ASSIGN(const NodeId blurColumns, addPass("blur columns", "blur.comp", {reads(scratch), writes(working)},
+                                                 pushData(BlurParams{0, 1, radius, sigma})));
 
-    const NodeId sobelRows = addPass("sobel rows", "sobel_rows.comp", {reads(working), writes(scratch)});
-    const NodeId sobelColumns = addPass("sobel columns", "sobel_columns.comp", {reads(scratch), writes(working)});
+    TRY_ASSIGN(const NodeId sobelRows, addPass("sobel rows", "sobel_rows.comp", {reads(working), writes(scratch)}));
+    TRY_ASSIGN(const NodeId sobelColumns, addPass("sobel columns", "sobel_columns.comp", {reads(scratch), writes(working)}));
 
-    const NodeId threshold = addPass("threshold", "threshold.comp",
-                                     {MaterialBinding::storageImage(graph.storageEntry(working), Access::StorageReadWrite)},
-                                     pushData(ThresholdParams{options.threshold.value_or(0.5f)}));
+    TRY_ASSIGN(const NodeId threshold,
+               addPass("threshold", "threshold.comp",
+                       {MaterialBinding::storageImage(graph.storageEntry(working), Access::StorageReadWrite)},
+                       pushData(ThresholdParams{options.threshold.value_or(0.5f)})));
 
-    addPass("store", "store.comp", {reads(working), writes(encoded)});
+    TRY(addPass("store", "store.comp", {reads(working), writes(encoded)}));
     const NodeId readback = graph.add<ReadbackNode>("readback", encoded);
 
     graph.setEnabled(blurRows, options.blurRadius.has_value());
@@ -251,19 +257,16 @@ void filterImage(VulkanContext& context, const Options& options) {
     graph.setEnabled(threshold, options.threshold.has_value());
 
     // execute() would compile on demand; compiling first reports graph errors before any GPU work
-    graph.compile();
+    TRY(graph.compile().withContext("compiling the filter graph"));
     if (options.printPlan) {
-        std::cout << graph.dumpPlan() << std::endl;
+        TRY_ASSIGN(const std::string plan, graph.dumpPlan());
+        std::cout << plan << std::endl;
     }
 
-    graph.execute();
+    TRY(graph.execute());
     // Waits for the frame to finish. The readback is RGBA8, tightly packed.
-    std::vector<uint8_t> pixels = graph.nodeAs<ReadbackNode>(readback).pixels();
-
-    if (!stbi_write_png(options.output.c_str(), static_cast<int>(extent.width), static_cast<int>(extent.height), 4,
-                        pixels.data(), static_cast<int>(extent.width * 4))) {
-        throw std::runtime_error("Failed to write " + options.output);
-    }
+    TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(readback).pixels());
+    return FilteredImage{std::move(pixels), extent};
 }
 
 } // namespace
@@ -282,7 +285,8 @@ int main(int argc, char** argv) {
 
     // Validation messages arrive on whichever thread calls Vulkan, until the context is destroyed
     std::atomic<int> validationMessages = 0;
-    try {
+    std::optional<FilteredImage> image;
+    {
         VulkanContextConfig config;
         config.applicationName = "image_filter";
         config.shaderSearchPaths = {IMAGE_FILTER_SHADER_DIR};
@@ -295,20 +299,33 @@ int main(int argc, char** argv) {
             std::cerr << "[Vulkan validation " << label << "] " << message << std::endl;
         };
         // No surface: the context is headless and needs no window system
-        VulkanContext context(std::move(config));
-        if (options.validation && !context.validationEnabled()) {
+        auto context = VulkanContext::create(std::move(config));
+        if (!context) {
+            std::cerr << "image_filter: " << context.error() << std::endl;
+            return 1;
+        }
+        if (options.validation && !(*context)->validationEnabled()) {
             std::cerr << "image_filter: --validation was requested, but the validation layer is unavailable" << std::endl;
             return 1;
         }
-        filterImage(context, options);
-    } catch (const std::exception& e) {
-        std::cerr << "image_filter: " << e.what() << std::endl;
-        return 1;
+        auto filtered = filterImage(**context, options);
+        if (!filtered) {
+            std::cerr << "image_filter: " << filtered.error() << std::endl;
+            return 1;
+        }
+        image = std::move(*filtered);
     }
 
     // Counted after the context is gone, so messages about leaks at destruction count too
     if (validationMessages > 0) {
         std::cerr << "image_filter: " << validationMessages << " validation message(s)" << std::endl;
+        return 1;
+    }
+
+    const VkExtent2D extent = image->extent;
+    if (!stbi_write_png(options.output.c_str(), static_cast<int>(extent.width), static_cast<int>(extent.height), 4,
+                        image->pixels.data(), static_cast<int>(extent.width * 4))) {
+        std::cerr << "image_filter: failed to write " << options.output << std::endl;
         return 1;
     }
     return 0;

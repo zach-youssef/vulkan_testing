@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Result.h"
 #include "graph/GraphTypes.h"
 
 #include <algorithm>
@@ -19,7 +20,7 @@
     1. Drops disabled nodes.
     2. Derives dependencies from resource uses in insertion order (read after write, write after
        read, write after write), adds explicit dependencies, and sorts topologically (ties keep
-       insertion order). Cycles, which only explicit dependencies can create, throw.
+       insertion order). Cycles, which only explicit dependencies can create, fail compiling.
     3. Checks the surface: at most one writer, and no reads before it.
     4. Assigns queues. Graphics nodes, nodes using the surface and pinned nodes use the primary
        queue (0). Compute and transfer nodes go to the queue whose latest node is an ancestor (no
@@ -123,9 +124,15 @@ inline bool usesWrite(const CompilerUse& use) {
     return accessInfo(use.access, 0).write;
 }
 
+inline Error graphError(std::string message) {
+    return Error(ErrorCode::InvalidGraph, std::move(message));
+}
+
 } // namespace detail
 
-inline CompiledGraph compileGraph(const GraphDesc& desc) {
+// The plan for desc, or an error (ErrorCode::InvalidGraph) describing why it can't be compiled
+inline Result<CompiledGraph> compileGraph(const GraphDesc& desc) {
+    using detail::graphError;
     const uint32_t nodeCount = static_cast<uint32_t>(desc.nodes.size());
     CompiledGraph compiled;
     compiled.nodeQueue.assign(nodeCount, -1);
@@ -134,27 +141,27 @@ inline CompiledGraph compileGraph(const GraphDesc& desc) {
     compiled.explicitPredecessors.resize(nodeCount);
 
     if (desc.queues.empty()) {
-        throw GraphError("A graph needs at least one queue");
+        return graphError("A graph needs at least one queue");
     }
     for (const auto& node : desc.nodes) {
         for (const auto& use : node.uses) {
             if (use.resource >= desc.resources.size()) {
-                throw GraphError("Node '" + node.name + "' uses an unknown resource");
+                return graphError("Node '" + node.name + "' uses an unknown resource");
             }
             const auto& resource = desc.resources[use.resource];
             if (resource.image && !isImageAccess(use.access)) {
-                throw GraphError("Node '" + node.name + "' uses image '" + resource.name + "' with buffer access "
+                return graphError("Node '" + node.name + "' uses image '" + resource.name + "' with buffer access "
                                  + accessName(use.access));
             }
             if (!resource.image && !isBufferAccess(use.access)) {
-                throw GraphError("Node '" + node.name + "' uses buffer '" + resource.name + "' with image access "
+                return graphError("Node '" + node.name + "' uses buffer '" + resource.name + "' with image access "
                                  + accessName(use.access));
             }
             if (node.kind == NodeKind::Cpu && use.access != Access::HostRead && use.access != Access::HostWrite) {
-                throw GraphError("CPU node '" + node.name + "' may only declare host accesses");
+                return graphError("CPU node '" + node.name + "' may only declare host accesses");
             }
             if (node.kind != NodeKind::Cpu && (use.access == Access::HostRead || use.access == Access::HostWrite)) {
-                throw GraphError("Node '" + node.name + "' declares a host access but is not a CPU node");
+                return graphError("Node '" + node.name + "' declares a host access but is not a CPU node");
             }
         }
     }
@@ -208,11 +215,11 @@ inline CompiledGraph compileGraph(const GraphDesc& desc) {
     }
     for (auto [before, after] : desc.dependencies) {
         if (before >= nodeCount || after >= nodeCount) {
-            throw GraphError("Dependency on an unknown node");
+            return graphError("Dependency on an unknown node");
         }
         if (desc.nodes[before].enabled && desc.nodes[after].enabled) {
             if (before == after) {
-                throw GraphError("Node '" + desc.nodes[before].name + "' depends on itself");
+                return graphError("Node '" + desc.nodes[before].name + "' depends on itself");
             }
             addEdge(before, after);
             compiled.explicitPredecessors[after].push_back(before);
@@ -254,7 +261,7 @@ inline CompiledGraph compileGraph(const GraphDesc& desc) {
                 names += (names.empty() ? "" : ", ") + desc.nodes[node].name;
             }
         }
-        throw GraphError("The graph's dependencies form a cycle through: " + names);
+        return graphError("The graph's dependencies form a cycle through: " + names);
     }
     std::vector<uint32_t> position(nodeCount, UINT32_MAX);
     for (uint32_t i = 0; i < compiled.order.size(); ++i) {
@@ -282,11 +289,11 @@ inline CompiledGraph compileGraph(const GraphDesc& desc) {
             }
         }
         if (writers.size() > 1) {
-            throw GraphError("More than one node writes the surface: " + desc.nodes[writers[0]].name + ", "
+            return graphError("More than one node writes the surface: " + desc.nodes[writers[0]].name + ", "
                              + desc.nodes[writers[1]].name);
         }
         if (firstReader) {
-            throw GraphError("Node '" + desc.nodes[*firstReader].name + "' reads the surface before it is written");
+            return graphError("Node '" + desc.nodes[*firstReader].name + "' reads the surface before it is written");
         }
         compiled.usesSurface = !writers.empty();
     }
@@ -346,7 +353,7 @@ inline CompiledGraph compileGraph(const GraphDesc& desc) {
                 }
             }
             if (!chosen) {
-                throw GraphError("No queue can run node '" + info.name + "'");
+                return graphError("No queue can run node '" + info.name + "'");
             }
         }
         compiled.nodeQueue[node] = static_cast<int32_t>(*chosen);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/Contract.h"
+#include "core/Result.h"
 #include "core/VkTypes.h"
 #include "core/VkUtil.h"
 #include "core/VulkanContext.h"
@@ -28,15 +30,17 @@
  uniform buffer per frame in flight. Bindings also say how the shaders use their resources, so a
  render graph node that uses the material (NodeBuilder::uses) declares those uses automatically.
 
- Every material uses the universal pipeline layout. Pipelines are built from Shaders and rebuilt
- when any of them is reloaded (ShaderLibrary::reload); if rebuilding fails the material keeps its
- previous pipeline and the reload reports the error. Replaced pipelines are destroyed once
- in-flight work has finished.
+ Every material uses the universal pipeline layout. Constructing a material can't fail: its
+ pipeline is built from its Shaders by ensurePipeline(), which the render graph calls when it
+ compiles a plan using the material, so pipeline errors come back from compile() and execute().
+ Pipelines are rebuilt when any of the shaders is reloaded (ShaderLibrary::reload); if rebuilding
+ fails the material keeps its previous pipeline and the reload reports the error. Replaced
+ pipelines are destroyed once in-flight work has finished.
 
  Declared accesses are all the render graph synchronizes on: synchronization validation can't see
  accesses through the bindless arrays. So materials check their shaders' code: a material whose
  shaders write storage images (or storage buffers) must have a binding declaring such a write, or
- the graph throws when compiling (and reloading such a shader fails). Which binding a write goes
+ the graph fails to compile (and reloading such a shader fails). Which binding a write goes
  through isn't checked, so declare each binding's access accurately.
  */
 
@@ -84,8 +88,13 @@ public:
     virtual void update(uint32_t frameIndex, VkExtent2D surfaceExtent) = 0;
 
     // Binds the pipeline and pushes the frame's binding indices (and any extra push constants).
-    // The universal descriptor set must be bound (the render graph does this).
+    // The universal descriptor set must be bound (the render graph does this), and the pipeline
+    // built (see ensurePipeline).
     void bind(VkCommandBuffer commandBuffer, uint32_t frameIndex) {
+        if (pipeline_ == VK_NULL_HANDLE) {
+            contractViolation("Material bound before its pipeline was built (render graphs build it when compiling; "
+                              "otherwise call ensurePipeline())");
+        }
         vkCmdBindPipeline(commandBuffer, bindPoint(), getPipeline());
         auto data = pushConstants(frameIndex);
         if (!data.empty()) {
@@ -100,16 +109,16 @@ public:
         for (size_t i = 0; i < bindings_.size(); ++i) {
             auto entry = bindings_[i].entry.get(frameIndex);
             if (!entry) {
-                throw std::logic_error("Material binding " + std::to_string(i) + " has no descriptor entry for frame "
-                                       + std::to_string(frameIndex));
+                contractViolation("Material binding " + std::to_string(i) + " has no descriptor entry for frame "
+                                  + std::to_string(frameIndex));
             }
             const uint32_t index = entry->index();
             memcpy(data.data() + i * sizeof(uint32_t), &index, sizeof(index));
         }
         writePushConstants(frameIndex, data);
         if (data.size() > DescriptorHeap::kPushConstantSize) {
-            throw std::logic_error("Material push constants exceed " + std::to_string(DescriptorHeap::kPushConstantSize)
-                                   + " bytes");
+            contractViolation("Material push constants exceed " + std::to_string(DescriptorHeap::kPushConstantSize)
+                              + " bytes");
         }
         return data;
     }
@@ -132,6 +141,7 @@ public:
         return std::nullopt;
     }
 
+    // The pipeline, or VK_NULL_HANDLE until it has been built (see ensurePipeline)
     VkPipeline getPipeline() {
         return pipeline_;
     }
@@ -176,16 +186,28 @@ public:
         return {};
     }
 
-    // Rebuilds the pipeline from the shaders' current modules. Throws (keeping the previous
-    // pipeline) if that fails, or if the shaders now write what the bindings don't declare.
-    void rebuildPipeline() {
-        if (auto error = undeclaredWrites(); !error.empty()) {
-            throw std::logic_error(error);
+    // Builds the pipeline unless it has been built. Render graphs call this when compiling a plan
+    // that uses the material.
+    Result<void> ensurePipeline() {
+        if (pipeline_ != VK_NULL_HANDLE) {
+            return {};
         }
-        VkPipeline pipeline = createPipeline();
+        TRY_ASSIGN(pipeline_, createPipeline());
+        ++pipelineVersion_;
+        return {};
+    }
+
+    // Rebuilds the pipeline from the shaders' current modules. Fails (keeping the previous
+    // pipeline) if that fails, or if the shaders now write what the bindings don't declare.
+    Result<void> rebuildPipeline() {
+        if (auto error = undeclaredWrites(); !error.empty()) {
+            return Error(ErrorCode::InvalidGraph, error);
+        }
+        TRY_ASSIGN(VkPipeline pipeline, createPipeline());
         retirePipeline();
         pipeline_ = pipeline;
         ++pipelineVersion_;
+        return {};
     }
 
 protected:
@@ -193,26 +215,28 @@ protected:
     : context_(&context), bindings_(std::move(bindings)) {}
 
     // Creates a pipeline (with the universal layout) from the material's shaders
-    virtual VkPipeline createPipeline() = 0;
+    virtual Result<VkPipeline> createPipeline() = 0;
 
-    // Builds the first pipeline and rebuilds it whenever one of shaders is reloaded. Derived
-    // constructors call this once they're ready to create pipelines.
+    // Records the shaders the pipeline is built from, and rebuilds it (once built) whenever one of
+    // them is reloaded. Derived constructors call this.
     void initPipeline(const std::vector<Handle<Shader>>& shaders) {
         shaders_ = shaders;
-        pipeline_ = createPipeline();
         for (const auto& shader : shaders) {
-            auto id = shader->addListener([this](Shader&) { rebuildPipeline(); });
+            auto id = shader->addListener([this](Shader&) -> Result<void> {
+                // Not built yet: it will be built from the new code
+                return pipeline_ == VK_NULL_HANDLE ? Result<void>() : rebuildPipeline();
+            });
             shaderListeners_.emplace_back(shader, id);
         }
     }
 
     static void requireStage(const Handle<Shader>& shader, VkShaderStageFlagBits stage) {
         if (!shader) {
-            throw std::invalid_argument("Material shader is missing");
+            contractViolation("Material shader is missing");
         }
         if (shader->stage() != stage) {
-            throw std::invalid_argument("Shader '" + shader->name() + "' is a " + string_VkShaderStageFlagBits(shader->stage())
-                                        + " shader, but a " + string_VkShaderStageFlagBits(stage) + " shader is needed");
+            contractViolation("Shader '" + shader->name() + "' is a " + string_VkShaderStageFlagBits(shader->stage())
+                              + " shader, but a " + string_VkShaderStageFlagBits(stage) + " shader is needed");
         }
     }
 
@@ -262,7 +286,7 @@ protected:
         initPipeline({shader_});
     }
 
-    VkPipeline createPipeline() override {
+    Result<VkPipeline> createPipeline() override {
         VkComputePipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         pipelineInfo.layout = getPipelineLayout();
@@ -272,8 +296,8 @@ protected:
         pipelineInfo.stage.pName = shader_->entryPoint();
 
         VkPipeline pipeline = VK_NULL_HANDLE;
-        VK_SUCCESS_OR_THROW(vkCreateComputePipelines(device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline),
-                            "Failed to create compute pipeline");
+        VK_TRY(vkCreateComputePipelines(device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline),
+               "Failed to create the compute pipeline of shader '" + shader_->name() + "'");
         return pipeline;
     }
 

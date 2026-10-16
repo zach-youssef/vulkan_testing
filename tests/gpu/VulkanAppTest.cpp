@@ -2,6 +2,7 @@
 #include "graph/nodes/DispatchNode.h"
 #include "descriptors/DescriptorHeap.h"
 #include "TestShaders.h"
+#include "common/ResultChecks.h"
 
 #include <doctest/doctest.h>
 
@@ -30,7 +31,7 @@ private:
 
 // Whether an image holds pattern.comp's output
 bool hasPattern(Image& image) {
-    auto pixels = image.readback(VK_IMAGE_LAYOUT_GENERAL);
+    auto pixels = image.readback(VK_IMAGE_LAYOUT_GENERAL).value();
     for (uint32_t y = 0; y < image.getHeight(); ++y) {
         for (uint32_t x = 0; x < image.getWidth(); ++x) {
             const uint8_t* pixel = &pixels[(y * image.getWidth() + x) * 4];
@@ -65,7 +66,7 @@ struct HeadlessApp {
                 errors.emplace_back(message);
             }
         };
-        app->init(config);
+        app->init(config).value();
     }
 
     ~HeadlessApp() {
@@ -91,13 +92,11 @@ public:
 
 template<typename T>
 Handle<Buffer<T>> hostBuffer(VulkanContext& ctx, const std::vector<T>& data) {
-    Handle<Buffer<T>> buffer;
-    VK_SUCCESS_OR_THROW(Buffer<T>::create(buffer, ctx, data.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-                        "Failed to create buffer");
+    auto buffer = Buffer<T>::create(ctx, data.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT).value();
     buffer->mapAndExecute(0, sizeof(T) * data.size(), [&data](void* mapped) {
         memcpy(mapped, data.data(), sizeof(T) * data.size());
-    });
+    }).value();
     return buffer;
 }
 
@@ -109,20 +108,20 @@ TEST_CASE("A headless VulkanApp has no window, surface or render pass") {
 
     CHECK_FALSE(app.hasWindow());
     CHECK_FALSE(app.getContext().hasSurface());
-    CHECK_THROWS_AS(app.getSwapchain(), std::logic_error);
-    CHECK_THROWS_AS(app.getSurfaceExtent(), std::logic_error);
-    CHECK_THROWS_AS(app.setWindowSize(100, 100), std::logic_error);
-    CHECK_THROWS_AS(app.window(), std::logic_error);
-    CHECK_THROWS_AS(app.setInputHandlers({}), std::logic_error);
+    CHECK_THROWS_AS(app.getSwapchain(), ContractViolation);
+    CHECK_THROWS_AS(app.getSurfaceExtent(), ContractViolation);
+    CHECK_THROWS_AS(app.setWindowSize(100, 100), ContractViolation);
+    CHECK_THROWS_AS(app.window(), ContractViolation);
+    CHECK_THROWS_AS(app.setInputHandlers({}), ContractViolation);
     // run() would never return without a window to close
-    CHECK_THROWS_AS(app.run(), std::logic_error);
+    CHECK_THROWS_AS(app.run().value(), ContractViolation);
     // There is nothing to draw without an active render graph
-    CHECK_THROWS_AS(app.drawFrame(), std::logic_error);
+    CHECK_THROWS_AS(app.drawFrame().value(), ContractViolation);
     // Graphs of a headless app have no surface
     RenderGraph& graph = app.createGraph();
     CHECK_FALSE(graph.hasSurface());
-    CHECK_THROWS_AS(graph.surface(), std::logic_error);
-    CHECK_THROWS_AS(graph.surfaceTarget(), std::logic_error);
+    CHECK_THROWS_AS(graph.surface(), ContractViolation);
+    CHECK_THROWS_AS(graph.surfaceTarget(), ContractViolation);
 }
 
 TEST_CASE("A headless VulkanApp runs a compute-only render graph across frames in flight") {
@@ -135,8 +134,7 @@ TEST_CASE("A headless VulkanApp runs a compute-only render graph across frames i
     constexpr uint32_t height = 30;
     // Each frame writes an image of its own
     auto images = ctx.resources().create<PerFrameHandles<Image>>(ctx, [&ctx](uint32_t) {
-        Handle<Image> image;
-        Image::createStorage(image, ctx, VK_FORMAT_R8G8B8A8_UNORM, width, height);
+        auto image = Image::createStorage(ctx, VK_FORMAT_R8G8B8A8_UNORM, width, height).value();
         return image;
     });
     {
@@ -153,18 +151,18 @@ TEST_CASE("A headless VulkanApp runs a compute-only render graph across frames i
     }
 
     for (int frame = 0; frame < 3; ++frame) {
-        CHECK(app.runFrame());
+        CHECK(app.runFrame().value() == FrameOutcome::Drawn);
     }
     CHECK(ctx.currentFrame() == 1);
 
     // Grow to 3 frames: the new frame gets an image (and descriptor set, command buffer and
     // fence) of its own
     ctx.setFramesInFlight(3);
-    app.drawFrame();
+    app.drawFrame().value();
     REQUIRE(ctx.framesInFlight() == 3);
     REQUIRE(images->size() == 3);
     for (int frame = 0; frame < 3; ++frame) {
-        app.drawFrame();
+        app.drawFrame().value();
     }
     ctx.waitIdleAll();
     for (uint32_t frame = 0; frame < 3; ++frame) {
@@ -174,8 +172,8 @@ TEST_CASE("A headless VulkanApp runs a compute-only render graph across frames i
 
     // And back down to 1
     ctx.setFramesInFlight(1);
-    app.drawFrame();
-    app.drawFrame();
+    app.drawFrame().value();
+    app.drawFrame().value();
     CHECK(images->size() == 1);
     CHECK(ctx.currentFrame() == 0);
 
@@ -195,21 +193,21 @@ TEST_CASE("A VulkanApp switches between graphs and destroys inactive ones") {
     b.addCpu("count b", nullptr, [&framesB](FrameContext&) { ++framesB; });
 
     app.setActiveGraph(a);
-    app.drawFrame();
-    app.drawFrame();
+    app.drawFrame().value();
+    app.drawFrame().value();
     app.setActiveGraph(b);
-    app.drawFrame();
+    app.drawFrame().value();
     CHECK(framesA == 2);
     CHECK(framesB == 1);
     CHECK(ctx.frameNumber() == 3);
 
-    CHECK_THROWS_AS(app.destroyGraph(b), std::logic_error);
+    CHECK_THROWS_AS(app.destroyGraph(b), ContractViolation);
     app.destroyGraph(a);
-    app.drawFrame();
+    app.drawFrame().value();
     CHECK(framesB == 2);
 
     RenderGraph other(ctx);
-    CHECK_THROWS_AS(app.setActiveGraph(other), std::invalid_argument);
+    CHECK_THROWS_AS(app.setActiveGraph(other), ContractViolation);
 }
 
 TEST_CASE("Apps can enable device features beyond the wrapper's, e.g. 8- and 16-bit storage") {
@@ -245,14 +243,14 @@ TEST_CASE("Apps can enable device features beyond the wrapper's, e.g. 8- and 16-
         RenderGraph& graph = app.createGraph();
         graph.add<DispatchNode>("sum", std::move(material));
         app.setActiveGraph(graph);
-        app.drawFrame();
+        app.drawFrame().value();
         ctx.waitIdleAll();
     }
 
     std::vector<uint32_t> sums(16);
     sumBuffer->mapAndExecute(0, sizeof(uint32_t) * sums.size(), [&sums](void* mapped) {
         memcpy(sums.data(), mapped, sizeof(uint32_t) * sums.size());
-    });
+    }).value();
     for (uint32_t i = 0; i < 16; ++i) {
         uint32_t expected = halves[i];
         for (uint32_t j = 0; j < 4; ++j) {
@@ -265,16 +263,15 @@ TEST_CASE("Apps can enable device features beyond the wrapper's, e.g. 8- and 16-
 
 TEST_CASE("A context requesting a feature the device lacks names it") {
     // geometryShader is unsupported by MoltenVK; skip on devices that have it
-    VulkanContextConfig probeConfig;
-    VulkanContext probe(probeConfig);
-    if (DeviceFeatures::supported(probe.physicalDevice()).core.features.geometryShader) {
+    auto probe = VulkanContext::create(VulkanContextConfig{}).value();
+    if (DeviceFeatures::supported(probe->physicalDevice()).core.features.geometryShader) {
         MESSAGE("Skipped: the device supports geometryShader");
         return;
     }
 
     VulkanContextConfig config;
     config.features.core.features.geometryShader = VK_TRUE;
-    CHECK_THROWS_WITH(VulkanContext{config}, doctest::Contains("geometryShader"));
+    CHECK_ERROR(VulkanContext::create(config), ErrorCode::NoSuitableDevice, "geometryShader");
 }
 
 TEST_CASE("A windowed VulkanApp passes window input to its handlers") {
@@ -291,11 +288,9 @@ TEST_CASE("A windowed VulkanApp passes window input to its handlers") {
     };
     {
         VulkanApp app;
-        try {
-            app.init(config);
-        } catch (const std::runtime_error& e) {
+        if (auto initialized = app.init(config); !initialized) {
             // E.g. no display to open a window on
-            MESSAGE("Skipped: " << e.what());
+            MESSAGE("Skipped: " << initialized.error());
             return;
         }
         GLFWwindow* window = app.window();

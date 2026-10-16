@@ -4,44 +4,35 @@
 #include "core/VkUtil.h"
 #include "resources/Buffer.h"
 #include "core/VulkanContext.h"
+#include "core/Contract.h"
+#include "core/Result.h"
 
 #include <stb_image.h>
 
-#define RETURN_IF_ERROR(expr)   \
-outResult = expr;               \
-if (outResult != VK_SUCCESS) {  \
-    return;                     \
-}
+#include <filesystem>
 
 class Image {
 public:
-    // Creates an image owned by the context's ResourceManager.
-    // Throws std::invalid_argument if the device does not support format for every requested usage.
-    static VkResult create(Handle<Image>& outImage,
-                           VulkanContext& context,
-                           uint32_t width,
-                           uint32_t height,
-                           VkFormat format,
-                           VkImageTiling tiling,
-                           VkImageUsageFlags usage,
-                           VkMemoryPropertyFlags properties,
-                           VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+    // Creates an image owned by the context's ResourceManager. Fails with ErrorCode::Unsupported if
+    // the device does not support format for every requested usage.
+    static Result<Handle<Image>> create(VulkanContext& context,
+                                        uint32_t width,
+                                        uint32_t height,
+                                        VkFormat format,
+                                        VkImageTiling tiling,
+                                        VkImageUsageFlags usage,
+                                        VkMemoryPropertyFlags properties,
+                                        VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
         if (!supportsUsage(context, format, tiling, usage)) {
-            throw std::invalid_argument(std::string("Format ") + string_VkFormat(format)
-                                        + " does not support image usage " + string_VkImageUsageFlags(usage)
-                                        + " with " + string_VkImageTiling(tiling) + " on this device");
+            return Error(ErrorCode::Unsupported, std::string("Format ") + string_VkFormat(format)
+                                                 + " does not support image usage " + string_VkImageUsageFlags(usage)
+                                                 + " with " + string_VkImageTiling(tiling) + " on this device");
         }
 
-        VkResult result;
-
         // Constructed directly since the constructor is private
-        std::unique_ptr<Image> image(new Image(context, width, height,
-                                               format, tiling,
-                                               usage, properties,
-                                               result, aspect));
-        outImage = context.resources().adopt(std::move(image));
-
-        return result;
+        std::unique_ptr<Image> image(new Image(context, width, height, format, usage));
+        TRY(image->init(tiling, properties, aspect));
+        return context.resources().adopt(std::move(image));
     }
 
     // Whether the device supports format for every usage in usage. Storage support in particular
@@ -93,7 +84,8 @@ public:
         return usage_;
     }
 
-    // Size in bytes of a single texel for the formats this wrapper supports reading back
+    // Size in bytes of a single texel for the formats this wrapper supports reading back. Other
+    // formats are a contract violation.
     static VkDeviceSize bytesPerPixel(VkFormat format) {
         switch (format) {
             case VK_FORMAT_R8G8B8A8_UNORM:
@@ -107,113 +99,112 @@ public:
             case VK_FORMAT_R32G32B32A32_SFLOAT:
                 return 16;
             default:
-                throw std::invalid_argument("Unsupported format for bytesPerPixel");
+                contractViolation(std::string("bytesPerPixel doesn't support ") + string_VkFormat(format));
         }
     }
 
-    // Loads an RGBA8 sRGB image for sampling from a file, leaving it in SHADER_READ_ONLY_OPTIMAL
-    static void createFromFile(Handle<Image>& outImage,
-                               VulkanContext& context,
-                               const std::string& filePath) {
+    // Loads an RGBA8 sRGB image for sampling from a file, leaving it in SHADER_READ_ONLY_OPTIMAL.
+    // Fails with ErrorCode::NotFound if the file doesn't exist, InvalidData if it can't be decoded.
+    static Result<Handle<Image>> createFromFile(VulkanContext& context,
+                                                const std::string& filePath) {
+        if (!std::filesystem::exists(filePath)) {
+            return Error(ErrorCode::NotFound, "Image '" + filePath + "' not found");
+        }
+
         int width, height, channels;
 
         stbi_uc* pixels = stbi_load((filePath).c_str(), &width, &height, &channels, STBI_rgb_alpha);
 
         if (!pixels) {
-            throw std::runtime_error("Failed to load image '" + filePath + "': " + stbi_failure_reason());
+            return Error(ErrorCode::InvalidData, "Failed to load image '" + filePath + "': " + stbi_failure_reason());
         }
 
         VkDeviceSize imageSize = width * height * 4;
 
-        createFromUcharBuffer(outImage, context, pixels, width, height, imageSize);
+        auto image = createFromUcharBuffer(context, pixels, width, height, imageSize);
 
         stbi_image_free(pixels);
+        return std::move(image).withContext("loading image '" + filePath + "'");
     }
 
     // Creates an RGBA8 sRGB image for sampling from tightly packed pixels, leaving it in
     // SHADER_READ_ONLY_OPTIMAL
-    static void createFromUcharBuffer(Handle<Image>& outImage,
-                                      VulkanContext& context,
-                                      unsigned char* pixels,
-                                      uint32_t width,
-                                      uint32_t height,
-                                      VkDeviceSize imageSize) {
-        VK_SUCCESS_OR_THROW(Image::create(outImage,
-                                          context,
-                                          width, height,
-                                          VK_FORMAT_R8G8B8A8_SRGB,
-                                          VK_IMAGE_TILING_OPTIMAL,
-                                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-                            "Failed to create image.");
+    static Result<Handle<Image>> createFromUcharBuffer(VulkanContext& context,
+                                                       unsigned char* pixels,
+                                                       uint32_t width,
+                                                       uint32_t height,
+                                                       VkDeviceSize imageSize) {
+        TRY_ASSIGN(auto image, Image::create(context,
+                                             width, height,
+                                             VK_FORMAT_R8G8B8A8_SRGB,
+                                             VK_IMAGE_TILING_OPTIMAL,
+                                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
 
-        outImage->uploadUcharBufferToImage(pixels, imageSize);
+        TRY(image->uploadUcharBufferToImage(pixels, imageSize));
+        return image;
     }
 
     // Creates an RGBA8 sRGB image for sampling, leaving it in SHADER_READ_ONLY_OPTIMAL
-    static void createEmptyRGBA(Handle<Image>& outImage,
-                                VulkanContext& context,
-                                uint32_t width,
-                                uint32_t height) {
-        createEmpty(outImage, context, VK_FORMAT_R8G8B8A8_SRGB, width, height);
+    static Result<Handle<Image>> createEmptyRGBA(VulkanContext& context,
+                                                 uint32_t width,
+                                                 uint32_t height) {
+        return createEmpty(context, VK_FORMAT_R8G8B8A8_SRGB, width, height);
     }
 
     // Creates an image for sampling, leaving it in SHADER_READ_ONLY_OPTIMAL. It can also be read back.
-    static void createEmpty(Handle<Image>& outImage,
-                            VulkanContext& context,
-                            VkFormat format,
-                            uint32_t width,
-                            uint32_t height) {
-        VK_SUCCESS_OR_THROW(Image::create(outImage,
-                                          context,
-                                          width, height,
-                                          format,
-                                          VK_IMAGE_TILING_OPTIMAL,
-                                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-                            "Failed to create image.");
+    static Result<Handle<Image>> createEmpty(VulkanContext& context,
+                                             VkFormat format,
+                                             uint32_t width,
+                                             uint32_t height) {
+        TRY_ASSIGN(auto image, Image::create(context,
+                                             width, height,
+                                             format,
+                                             VK_IMAGE_TILING_OPTIMAL,
+                                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
 
-        outImage->transitionLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        TRY(image->transitionLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+        return image;
     }
 
     // Creates an image that shaders can write as a storage image and also sample, leaving it in the
-    // GENERAL layout (which both uses require). It can also be read back. Throws std::invalid_argument
-    // if format cannot be used as a storage image on this device, as is typical for sRGB formats.
-    static void createStorage(Handle<Image>& outImage,
-                              VulkanContext& context,
-                              VkFormat format,
-                              uint32_t width,
-                              uint32_t height) {
-        VK_SUCCESS_OR_THROW(Image::create(outImage,
-                                          context,
-                                          width, height,
-                                          format,
-                                          VK_IMAGE_TILING_OPTIMAL,
-                                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-                            "Failed to create image.");
+    // GENERAL layout (which both uses require). It can also be read back. Fails with
+    // ErrorCode::Unsupported if format cannot be used as a storage image on this device, as is
+    // typical for sRGB formats.
+    static Result<Handle<Image>> createStorage(VulkanContext& context,
+                                               VkFormat format,
+                                               uint32_t width,
+                                               uint32_t height) {
+        TRY_ASSIGN(auto image, Image::create(context,
+                                             width, height,
+                                             format,
+                                             VK_IMAGE_TILING_OPTIMAL,
+                                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
 
-        outImage->transitionLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+        TRY(image->transitionLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL));
+        return image;
     }
 
-    void uploadUcharBufferToImage(unsigned char* pixels,
-                                  VkDeviceSize imageSize) {
-        auto stagingBuffer = Buffer<uint8_t>::createScoped(*context_, imageSize,
-                                                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    Result<void> uploadUcharBufferToImage(unsigned char* pixels,
+                                          VkDeviceSize imageSize) {
+        TRY_ASSIGN(auto stagingBuffer, Buffer<uint8_t>::createScoped(*context_, imageSize,
+                                                                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
 
-        stagingBuffer->mapAndExecute(0, imageSize, [pixels, imageSize] (void* data) {
+        TRY(stagingBuffer->mapAndExecute(0, imageSize, [pixels, imageSize] (void* data) {
             memcpy(data, pixels, static_cast<size_t>(imageSize));
-        });
+        }));
 
-        transitionLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        TRY(transitionLayout(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL));
 
-        copyBufferToImage(*context_,
-                          stagingBuffer->getBuffer(),
-                          getImage(),
-                          width_, height_);
+        TRY(copyBufferToImage(*context_,
+                              stagingBuffer->getBuffer(),
+                              getImage(),
+                              width_, height_));
 
-        transitionLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        return transitionLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
     // Access mask & pipeline stages to synchronize on for an image in a given layout
@@ -238,26 +229,26 @@ public:
                 // Used for storage images, which shaders may read and write
                 return {VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, shaderStages};
             default:
-                // TODO better handling
-                throw std::invalid_argument("unsupported layout transition!");
+                contractViolation(std::string("Image layout transitions don't support ") + string_VkImageLayout(layout));
         }
     }
 
-    // Transitions image between layouts, blocking until the transition completes
-    static void transitionImageLayout(VulkanContext& context,
-                                      VkImage image,
-                                      VkImageLayout oldLayout,
-                                      VkImageLayout newLayout,
-                                      VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
-        // Resolve synchronization before recording, so unsupported layouts throw
-        // without leaving a command buffer mid-recording
+    // Transitions image between layouts, blocking until the transition completes. Layouts
+    // layoutSync doesn't support are a contract violation.
+    static Result<void> transitionImageLayout(VulkanContext& context,
+                                              VkImage image,
+                                              VkImageLayout oldLayout,
+                                              VkImageLayout newLayout,
+                                              VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+        // Resolve synchronization before recording, so unsupported layouts are caught without
+        // leaving a command buffer mid-recording
         const LayoutSync source = layoutSync(oldLayout);
         const LayoutSync destination = layoutSync(newLayout);
         if (newLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
-            throw std::invalid_argument("Cannot transition an image to VK_IMAGE_LAYOUT_UNDEFINED");
+            contractViolation("Cannot transition an image to VK_IMAGE_LAYOUT_UNDEFINED");
         }
 
-        context.submitImmediate([=](VkCommandBuffer commandBuffer){
+        return context.submitImmediate([=](VkCommandBuffer commandBuffer){
             VkImageMemoryBarrier barrier{};
             barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             barrier.oldLayout = oldLayout;
@@ -290,47 +281,47 @@ public:
     }
 
     // Convenience wrapper around transitionImageLayout for this image
-    void transitionLayout(VkImageLayout oldLayout,
-                          VkImageLayout newLayout,
-                          VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
-        transitionImageLayout(*context_, getImage(), oldLayout, newLayout, aspect);
+    Result<void> transitionLayout(VkImageLayout oldLayout,
+                                  VkImageLayout newLayout,
+                                  VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+        return transitionImageLayout(*context_, getImage(), oldLayout, newLayout, aspect);
     }
 
     // Copies the image's contents into host memory. The image must be in currentLayout
     // (any layout supported by transitionImageLayout) and is returned to it afterwards.
-    std::vector<uint8_t> readback(VkImageLayout currentLayout,
-                                  VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+    Result<std::vector<uint8_t>> readback(VkImageLayout currentLayout,
+                                          VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
         const VkDeviceSize size = bytesPerPixel(format_) * width_ * height_;
 
-        auto stagingBuffer = Buffer<uint8_t>::createScoped(*context_, size,
-                                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        TRY_ASSIGN(auto stagingBuffer, Buffer<uint8_t>::createScoped(*context_, size,
+                                                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
 
         if (currentLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-            transitionLayout(currentLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, aspect);
+            TRY(transitionLayout(currentLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, aspect));
         }
 
-        copyImageToBuffer(*context_, getImage(), stagingBuffer->getBuffer(), width_, height_, aspect);
+        TRY(copyImageToBuffer(*context_, getImage(), stagingBuffer->getBuffer(), width_, height_, aspect));
 
         if (currentLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-            transitionLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, currentLayout, aspect);
+            TRY(transitionLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, currentLayout, aspect));
         }
 
         std::vector<uint8_t> pixels(size);
-        stagingBuffer->mapAndExecute(0, size, [&pixels, size](void* data) {
+        TRY(stagingBuffer->mapAndExecute(0, size, [&pixels, size](void* data) {
             memcpy(pixels.data(), data, static_cast<size_t>(size));
-        });
+        }));
         return pixels;
     }
 
     // Copies an image in TRANSFER_SRC_OPTIMAL into a buffer, blocking until the copy completes
-    static void copyImageToBuffer(VulkanContext& context,
-                                  VkImage image,
-                                  VkBuffer buffer,
-                                  uint32_t width,
-                                  uint32_t height,
-                                  VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
-        context.submitImmediate([=](VkCommandBuffer commandBuffer){
+    static Result<void> copyImageToBuffer(VulkanContext& context,
+                                          VkImage image,
+                                          VkBuffer buffer,
+                                          uint32_t width,
+                                          uint32_t height,
+                                          VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+        return context.submitImmediate([=](VkCommandBuffer commandBuffer){
             VkBufferImageCopy region{};
             region.bufferOffset = 0;
             region.bufferRowLength = 0; // Tightly packed
@@ -354,13 +345,13 @@ public:
     }
 
     // Copies a buffer into an image in TRANSFER_DST_OPTIMAL, blocking until the copy completes
-    static void copyBufferToImage(VulkanContext& context,
-                                  VkBuffer buffer,
-                                  VkImage image,
-                                  uint32_t width,
-                                  uint32_t height,
-                                  VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
-        context.submitImmediate([=](VkCommandBuffer commandBuffer){
+    static Result<void> copyBufferToImage(VulkanContext& context,
+                                          VkBuffer buffer,
+                                          VkImage image,
+                                          uint32_t width,
+                                          uint32_t height,
+                                          VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+        return context.submitImmediate([=](VkCommandBuffer commandBuffer){
             VkBufferImageCopy region{};
             region.bufferOffset = 0;
             region.bufferRowLength = 0;
@@ -394,28 +385,26 @@ private:
           uint32_t width,
           uint32_t height,
           VkFormat format,
-          VkImageTiling tiling,
-          VkImageUsageFlags usage,
-          VkMemoryPropertyFlags properties,
-          VkResult& outResult,
-          VkImageAspectFlagBits aspect) : context_(&context), format_(format), usage_(usage), width_(width), height_(height) {
-        VkDevice device = context.device();
+          VkImageUsageFlags usage) : context_(&context), format_(format), usage_(usage), width_(width), height_(height) {}
+
+    Result<void> init(VkImageTiling tiling, VkMemoryPropertyFlags properties, VkImageAspectFlagBits aspect) {
+        VkDevice device = context_->device();
 
         VkImageCreateInfo imageInfo{};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.extent = VkExtent3D{width, height, 1};
+        imageInfo.extent = VkExtent3D{width_, height_, 1};
         imageInfo.mipLevels = 1;
         imageInfo.arrayLayers = 1;
 
-        imageInfo.format = format;
+        imageInfo.format = format_;
 
         imageInfo.tiling = tiling;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // first transition discards
 
-        imageInfo.usage = usage;
+        imageInfo.usage = usage_;
         // Usable from any of the context's queues without ownership transfers
-        const auto& families = context.queueFamilies();
+        const auto& families = context_->queueFamilies();
         imageInfo.sharingMode = families.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
         imageInfo.queueFamilyIndexCount = families.size() > 1 ? static_cast<uint32_t>(families.size()) : 0;
         imageInfo.pQueueFamilyIndices = families.size() > 1 ? families.data() : nullptr;
@@ -423,20 +412,23 @@ private:
         // Multisampling
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
-        RETURN_IF_ERROR(VulkanImage::create(image_, device, imageInfo))
+        VK_TRY(VulkanImage::create(image_, device, imageInfo), "Failed to create image");
 
         VkMemoryRequirements memoryRequirements;
         vkGetImageMemoryRequirements(device, **image_, &memoryRequirements);
 
-        RETURN_IF_ERROR(VulkanMemory::createFromRequirements(memory_,
-                                                             device,
-                                                             context.physicalDevice(),
-                                                             properties,
-                                                             memoryRequirements))
+        VK_TRY(VulkanMemory::createFromRequirements(memory_,
+                                                    device,
+                                                    context_->physicalDevice(),
+                                                    properties,
+                                                    memoryRequirements),
+               "Failed to allocate image memory");
 
-        vkBindImageMemory(device, **image_, **memory_, 0);
+        VK_TRY(vkBindImageMemory(device, **image_, **memory_, 0), "Failed to bind image memory");
 
-        RETURN_IF_ERROR(VulkanImageView::createForImageWithFormat(imageView_, device, **image_, format, aspect));
+        VK_TRY(VulkanImageView::createForImageWithFormat(imageView_, device, **image_, format_, aspect),
+               "Failed to create image view");
+        return {};
     }
 
     VulkanContext* context_;

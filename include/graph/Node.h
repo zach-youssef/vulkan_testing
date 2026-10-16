@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Result.h"
 #include "graph/GraphTypes.h"
 #include "targets/RenderTarget.h"
 #include "core/ResourceManager.h"
@@ -15,11 +16,15 @@ class Material;
 /*
  Nodes are the units of work in a RenderGraph.
 
-    setup(NodeBuilder&)      once, when the node is added: declares the resources it uses (and how),
-                             its render target, the materials it draws with and explicit dependencies
-    record(RecordContext&)   every frame, for GPU nodes: records commands. Graphics nodes record
-                             inside dynamic rendering, with the viewport and scissor already set.
-    run(FrameContext&)       every frame, for CPU nodes: host work, in graph order
+    setup(NodeBuilder&)          once, when the node is added: declares the resources it uses (and
+                                 how), its render target, the materials it draws with and explicit
+                                 dependencies
+    prepareFrame(FrameContext&)  every frame, for enabled GPU nodes, before anything is acquired,
+                                 recorded or submitted: work that can fail, such as (re)creating
+                                 resources the node records with. An error fails the frame cleanly.
+    record(RecordContext&)       every frame, for GPU nodes: records commands. Graphics nodes record
+                                 inside dynamic rendering, with the viewport and scissor already set.
+    run(FrameContext&)           every frame, for CPU nodes: host work, in graph order
 
  The graph derives ordering, queues, barriers and semaphores from the declarations, so a node must
  declare every resource it touches (until step 6, including those its materials' descriptors
@@ -54,8 +59,9 @@ public:
     // Graphics nodes: the attachments to render to. Declares their uses.
     NodeBuilder& renderTo(const RenderTarget& target);
 
-    // A material the node draws or dispatches with. The graph calls its update() once per frame,
-    // however many nodes use it, and checks graphics materials match the render target's formats.
+    // A material the node draws or dispatches with. The graph builds its pipeline when compiling,
+    // calls its update() once per frame, however many nodes use it, and checks graphics materials
+    // match the render target's formats.
     NodeBuilder& uses(Handle<Material> material);
 
     // Runs a compute or transfer node on the primary queue instead of letting the graph choose
@@ -77,6 +83,7 @@ public:
     virtual ~Node() = default;
     virtual NodeKind kind() const = 0;
     virtual void setup(NodeBuilder&) {}
+    virtual Result<void> prepareFrame(FrameContext&) { return {}; }
     virtual void record(RecordContext&) {}
     virtual void run(FrameContext&) {}
 };

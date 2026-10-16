@@ -1,20 +1,19 @@
 #pragma once
 
+#include "core/Contract.h"
+
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
-#include <stdexcept>
 #include <string>
 
 /*
  Types shared by the render graph's compiler, synchronization and runtime.
- */
 
-// Thrown when a graph can't be compiled: cycles, more than one surface writer, invalid uses
-class GraphError : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
+ Graphs that can't be compiled (cycles, more than one surface writer, invalid uses, ...) fail with
+ ErrorCode::InvalidGraph (see Result.h). Misusing the graph's API while building it is a contract
+ violation (see Contract.h).
+ */
 
 struct NodeId {
     uint32_t index = UINT32_MAX;
@@ -192,7 +191,7 @@ inline AccessInfo accessInfo(Access access, VkPipelineStageFlags2 shaderStages) 
         case Access::HostRead:
             return {VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT, VK_IMAGE_LAYOUT_UNDEFINED, true, false};
     }
-    throw std::invalid_argument("Unknown access");
+    contractViolation("Unknown access");
 }
 
 // Image usage an access requires

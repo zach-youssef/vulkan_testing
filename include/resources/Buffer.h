@@ -3,17 +3,15 @@
 #include "core/VkTypes.h"
 #include "core/ResourceManager.h"
 #include "core/VulkanContext.h"
+#include "core/Result.h"
 #include <functional>
-
-#define RETURN_IF_ERROR(expr)   \
-outResult = expr;               \
-if (outResult != VK_SUCCESS) {  \
-    return;                     \
-}
 
 template <typename Data>
 class Buffer {
 public:
+    // A mapping of the buffer's memory, unmapped when destroyed
+    using Mapping = std::unique_ptr<Data, std::function<void(Data*)>>;
+
     VkBuffer getBuffer() {
         return **buffer_;
     }
@@ -32,35 +30,31 @@ public:
     }
     
     // Creates a buffer owned by the context's ResourceManager
-    static VkResult create(Handle<Buffer>& outBuffer,
-                           VulkanContext& context,
-                           size_t numElements,
-                           VkBufferUsageFlags usage,
-                           VkMemoryPropertyFlags properties) {
-        VkResult result;
-        // Constructed directly since the constructor is private
-        std::unique_ptr<Buffer> buffer(new Buffer(numElements, usage, properties, context, result));
-        outBuffer = context.resources().adopt(std::move(buffer));
-        return result;
+    static Result<Handle<Buffer>> create(VulkanContext& context,
+                                         size_t numElements,
+                                         VkBufferUsageFlags usage,
+                                         VkMemoryPropertyFlags properties) {
+        TRY_ASSIGN(auto buffer, createScoped(context, numElements, usage, properties));
+        return context.resources().adopt(std::move(buffer));
     }
     
-    // Creates an unmanaged buffer for strictly scoped use, such as a staging buffer. Throws on failure.
-    static std::unique_ptr<Buffer> createScoped(VulkanContext& context,
-                                                size_t numElements,
-                                                VkBufferUsageFlags usage,
-                                                VkMemoryPropertyFlags properties) {
-        VkResult result;
-        std::unique_ptr<Buffer> buffer(new Buffer(numElements, usage, properties, context, result));
-        VK_SUCCESS_OR_THROW(result, "Failed to create buffer");
+    // Creates an unmanaged buffer for strictly scoped use, such as a staging buffer
+    static Result<std::unique_ptr<Buffer>> createScoped(VulkanContext& context,
+                                                        size_t numElements,
+                                                        VkBufferUsageFlags usage,
+                                                        VkMemoryPropertyFlags properties) {
+        // Constructed directly since the constructor is private
+        std::unique_ptr<Buffer> buffer(new Buffer(context.device(), sizeof(Data) * numElements));
+        TRY(buffer->init(context, usage, properties));
         return buffer;
     }
 
     // Copies size bytes from src to dst, blocking until the copy completes
-    static void copyBuffer(VulkanContext& context,
-                           VkBuffer src,
-                           VkBuffer dst,
-                           VkDeviceSize size) {
-        context.submitImmediate([src, dst, size](VkCommandBuffer commandBuffer){
+    static Result<void> copyBuffer(VulkanContext& context,
+                                   VkBuffer src,
+                                   VkBuffer dst,
+                                   VkDeviceSize size) {
+        return context.submitImmediate([src, dst, size](VkCommandBuffer commandBuffer){
             VkBufferCopy copyRegion{};
             copyRegion.srcOffset = 0;
             copyRegion.dstOffset = 0;
@@ -70,63 +64,62 @@ public:
     }
     
     // Creates a managed buffer holding data, uploaded through a staging buffer
-    static void createAndInitialize(Handle<Buffer<Data>>& outBuffer,
-                                    VulkanContext& context,
-                                    const std::vector<Data>& data,
-                                    VkBufferUsageFlags usage,
-                                    VkMemoryPropertyFlags memFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+    static Result<Handle<Buffer<Data>>> createAndInitialize(VulkanContext& context,
+                                                            const std::vector<Data>& data,
+                                                            VkBufferUsageFlags usage,
+                                                            VkMemoryPropertyFlags memFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
         size_t bufferSize = sizeof(Data) * data.size();
         
-        auto stagingBuffer = createScoped(context,
-                                          data.size(),
-                                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        TRY_ASSIGN(auto stagingBuffer, createScoped(context,
+                                                    data.size(),
+                                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
         
-        stagingBuffer->mapAndExecute(0, bufferSize, [bufferSize, &data] (void* mappedData){
+        TRY(stagingBuffer->mapAndExecute(0, bufferSize, [bufferSize, &data] (void* mappedData){
             memcpy(mappedData, data.data(), bufferSize);
-        });
+        }));
         
-        VK_SUCCESS_OR_THROW(Buffer<Data>::create(outBuffer,
-                                                 context,
-                                                 data.size(),
-                                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
-                                                 memFlags),
-                            "Failed to create gpu buffer");
+        TRY_ASSIGN(auto buffer, Buffer<Data>::create(context,
+                                                     data.size(),
+                                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
+                                                     memFlags));
         
-        copyBuffer(context, stagingBuffer->getBuffer(), outBuffer->getBuffer(), bufferSize);
+        TRY(copyBuffer(context, stagingBuffer->getBuffer(), buffer->getBuffer(), bufferSize));
+        return buffer;
     }
 
-    void mapAndExecute(VkDeviceSize offset,
-                       VkDeviceSize size,
-                       std::function<void(void*)> op) {
+    // Maps size bytes from offset, calls op with the mapping, and unmaps them
+    Result<void> mapAndExecute(VkDeviceSize offset,
+                               VkDeviceSize size,
+                               std::function<void(void*)> op) {
         void* mappedData;
-        vkMapMemory(device_, **memory_, offset, size, 0, &mappedData);
+        VK_TRY(vkMapMemory(device_, **memory_, offset, size, 0, &mappedData), "Failed to map buffer memory");
         
         op(mappedData);
         
         vkUnmapMemory(device_, **memory_);
+        return {};
     }
     
-    std::unique_ptr<Data, std::function<void(Data*)>> getPersistentMapping(VkDeviceSize offset, VkDeviceSize size) {
+    // Maps size bytes from offset until the returned mapping is destroyed
+    Result<Mapping> getPersistentMapping(VkDeviceSize offset, VkDeviceSize size) {
         void* data;
         
-        vkMapMemory(device_, **memory_, offset, size, 0, &data);
+        VK_TRY(vkMapMemory(device_, **memory_, offset, size, 0, &data), "Failed to map buffer memory");
         
-        return std::unique_ptr<Data, std::function<void(Data*)>>((Data*) data, [device = device_, memory = **memory_](Data*){
+        return Mapping((Data*) data, [device = device_, memory = **memory_](Data*){
             vkUnmapMemory(device, memory);
         });
     }
     
 private:
-    Buffer(size_t numElements,
-           VkBufferUsageFlags usage,
-           VkMemoryPropertyFlags properties,
-           VulkanContext& context,
-           VkResult& outResult) : device_(context.device()), size_(sizeof(Data) * numElements) {
+    Buffer(VkDevice device, VkDeviceSize size) : device_(device), size_(size) {}
+
+    Result<void> init(VulkanContext& context, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties) {
         VkPhysicalDevice physicalDevice = context.physicalDevice();
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = sizeof(Data) * numElements;
+        bufferInfo.size = size_;
         bufferInfo.usage = usage;
         // Usable from any of the context's queues without ownership transfers
         const auto& families = context.queueFamilies();
@@ -134,18 +127,20 @@ private:
         bufferInfo.queueFamilyIndexCount = families.size() > 1 ? static_cast<uint32_t>(families.size()) : 0;
         bufferInfo.pQueueFamilyIndices = families.size() > 1 ? families.data() : nullptr;
         
-        RETURN_IF_ERROR(VulkanBuffer::create(buffer_, device_, bufferInfo))
+        VK_TRY(VulkanBuffer::create(buffer_, device_, bufferInfo), "Failed to create buffer");
         
         VkMemoryRequirements memoryRequirements;
         vkGetBufferMemoryRequirements(device_, **buffer_, &memoryRequirements);
 
-        RETURN_IF_ERROR(VulkanMemory::createFromRequirements(memory_,
-                                                             device_,
-                                                             physicalDevice,
-                                                             properties,
-                                                             memoryRequirements))
+        VK_TRY(VulkanMemory::createFromRequirements(memory_,
+                                                    device_,
+                                                    physicalDevice,
+                                                    properties,
+                                                    memoryRequirements),
+               "Failed to allocate buffer memory");
         
-        vkBindBufferMemory(device_, **buffer_, **memory_, 0);
+        VK_TRY(vkBindBufferMemory(device_, **buffer_, **memory_, 0), "Failed to bind buffer memory");
+        return {};
     }
     
     VkDevice device_;

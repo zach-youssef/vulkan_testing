@@ -41,6 +41,7 @@ private:
 
 // Records and synchronously executes a single dispatch of the material
 void dispatch(VulkanContext& ctx, ComputeMaterial& material) {
+    material.ensurePipeline().value();
     ctx.submitImmediate([&ctx, &material](VkCommandBuffer commandBuffer) {
         ctx.descriptors().bind(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE);
         material.bind(commandBuffer, 0);
@@ -49,7 +50,7 @@ void dispatch(VulkanContext& ctx, ComputeMaterial& material) {
                       static_cast<uint32_t>(groups.x),
                       static_cast<uint32_t>(groups.y),
                       static_cast<uint32_t>(groups.z));
-    });
+    }).value();
 }
 
 float srgbToLinear(float value) {
@@ -74,13 +75,12 @@ float halfToFloat(uint16_t half) {
 
 // Left in the GENERAL layout, which storage images must be in when used by a shader
 Handle<Image> createStorageImage(VulkanContext& ctx, VkFormat format, uint32_t width, uint32_t height) {
-    Handle<Image> image;
-    Image::createStorage(image, ctx, format, width, height);
+    auto image = Image::createStorage(ctx, format, width, height).value();
     return image;
 }
 
 std::vector<uint8_t> readback(VulkanContext& ctx, Image& image) {
-    return image.readback(VK_IMAGE_LAYOUT_GENERAL);
+    return image.readback(VK_IMAGE_LAYOUT_GENERAL).value();
 }
 
 } // namespace
@@ -135,12 +135,10 @@ TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies a sampled sRG
     }
 
     // The input is sampled (and so stays in SHADER_READ_ONLY_OPTIMAL); the output is a storage image
-    Handle<Image> input;
-    Image::createFromUcharBuffer(input, ctx, source.data(), width, height, source.size());
+    auto input = Image::createFromUcharBuffer(ctx, source.data(), width, height, source.size()).value();
     auto output = createStorageImage(ctx, VK_FORMAT_R16G16B16A16_SFLOAT, width, height);
-    Handle<VulkanSampler> sampler;
-    REQUIRE(VulkanSampler::createWithModeAndFilter(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                                                   VK_FILTER_NEAREST) == VK_SUCCESS);
+    auto sampler = VulkanSampler::createWithModeAndFilter(ctx, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                                   VK_FILTER_NEAREST).value();
     {
         auto& heap = ctx.descriptors();
         auto material = ctx.resources().create<TestComputeMaterial>(
@@ -178,18 +176,15 @@ TEST_CASE_FIXTURE(GpuTest, "BINDLESS_BUFFER_ARRAY declares buffers of runtime-si
     auto& ctx = context();
     constexpr uint32_t kCount = 100;
     auto hostBuffer = [&ctx](uint32_t count) {
-        Handle<Buffer<uint32_t>> buffer;
-        VK_SUCCESS_OR_THROW(Buffer<uint32_t>::create(buffer, ctx, count, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-                            "Failed to create buffer");
-        return buffer;
+        return Buffer<uint32_t>::create(ctx, count, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT).value();
     };
     auto source = hostBuffer(kCount);
     auto target = hostBuffer(kCount);
     source->mapAndExecute(0, sizeof(uint32_t) * kCount, [](void* data) {
         auto* values = static_cast<uint32_t*>(data);
         for (uint32_t i = 0; i < kCount; ++i) values[i] = i;
-    });
+    }).value();
     auto& heap = ctx.descriptors();
     {
         TestComputeMaterial material(ctx, {
@@ -204,5 +199,5 @@ TEST_CASE_FIXTURE(GpuTest, "BINDLESS_BUFFER_ARRAY declares buffers of runtime-si
             CAPTURE(i);
             CHECK(values[i] == 2 * i);
         }
-    });
+    }).value();
 }

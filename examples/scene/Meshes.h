@@ -10,7 +10,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <stdexcept>
+#include <cassert>
 #include <vector>
 
 /*
@@ -60,9 +60,8 @@ namespace meshes {
 // keep them perpendicular to the surface.
 inline uint16_t addVertex(MeshData& mesh, const glm::mat4& transform, glm::vec3 position, glm::vec3 normal,
                           const SurfaceMaterial& material) {
-    if (mesh.vertices.size() >= 0xFFFF) {
-        throw std::length_error("Mesh exceeds 16-bit indices");
-    }
+    // The scene's meshes are small enough for 16-bit indices
+    assert(mesh.vertices.size() < 0xFFFF && "Mesh exceeds 16-bit indices");
     const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(transform)));
     mesh.vertices.push_back({glm::vec3(transform * glm::vec4(position, 1.0f)),
                              glm::normalize(normalMatrix * normal),

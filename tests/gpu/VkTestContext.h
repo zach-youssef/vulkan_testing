@@ -2,6 +2,7 @@
 
 #include "core/VulkanContext.h"
 #include "shaders/ShaderLibrary.h"
+#include "common/ResultChecks.h"
 
 #include <doctest/doctest.h>
 
@@ -66,7 +67,7 @@ private:
             }
         };
 
-        context_ = std::make_unique<VulkanContext>(std::move(config));
+        context_ = VulkanContext::create(std::move(config)).value();
     }
 
     std::mutex mutex_;

@@ -1,4 +1,5 @@
 #include "graph/GraphCompiler.h"
+#include "common/ResultChecks.h"
 
 #include <doctest/doctest.h>
 
@@ -27,7 +28,8 @@ struct Builder {
         return static_cast<uint32_t>(desc.nodes.size() - 1);
     }
 
-    CompiledGraph compile() { return compileGraph(desc); }
+    CompiledGraph compile() { return compileGraph(desc).value(); }
+    Result<CompiledGraph> tryCompile() { return compileGraph(desc); }
 };
 
 std::vector<std::string> names(const GraphDesc& desc, const std::vector<uint32_t>& nodes) {
@@ -72,10 +74,10 @@ TEST_CASE("Graph compiler reports cycles from explicit dependencies") {
     b.node("producer", NodeKind::Compute, {{image, Access::StorageWrite}});
     b.node("consumer", NodeKind::Compute, {{image, Access::SampledRead}});
     b.desc.dependencies.push_back({1, 0});
-    CHECK_THROWS_WITH_AS(b.compile(), doctest::Contains("cycle through: producer, consumer"), GraphError);
+    CHECK_ERROR(b.tryCompile(), ErrorCode::InvalidGraph, "cycle through: producer, consumer");
 
     b.desc.dependencies = {{0, 0}};
-    CHECK_THROWS_AS(b.compile(), GraphError);
+    CHECK_ERROR(b.tryCompile(), ErrorCode::InvalidGraph, "");
 }
 
 TEST_CASE("Graph compiler drops disabled nodes and their dependencies") {
@@ -95,25 +97,25 @@ TEST_CASE("Graph compiler validates accesses against resource kinds and node kin
         Builder b;
         uint32_t buffer = b.buffer("buffer");
         b.node("bad", NodeKind::Compute, {{buffer, Access::SampledRead}});
-        CHECK_THROWS_WITH_AS(b.compile(), doctest::Contains("image access SampledRead"), GraphError);
+        CHECK_ERROR(b.tryCompile(), ErrorCode::InvalidGraph, "image access SampledRead");
     }
     {
         Builder b;
         uint32_t image = b.image("image");
         b.node("bad", NodeKind::Compute, {{image, Access::UniformRead}});
-        CHECK_THROWS_WITH_AS(b.compile(), doctest::Contains("buffer access UniformRead"), GraphError);
+        CHECK_ERROR(b.tryCompile(), ErrorCode::InvalidGraph, "buffer access UniformRead");
     }
     {
         Builder b;
         uint32_t buffer = b.buffer("buffer");
         b.node("cpu", NodeKind::Cpu, {{buffer, Access::StorageBufferRead}});
-        CHECK_THROWS_AS(b.compile(), GraphError);
+        CHECK_ERROR(b.tryCompile(), ErrorCode::InvalidGraph, "");
     }
     {
         Builder b;
         uint32_t buffer = b.buffer("buffer");
         b.node("gpu", NodeKind::Compute, {{buffer, Access::HostWrite}});
-        CHECK_THROWS_AS(b.compile(), GraphError);
+        CHECK_ERROR(b.tryCompile(), ErrorCode::InvalidGraph, "");
     }
 }
 
@@ -132,7 +134,7 @@ TEST_CASE("Graph compiler allows one surface writer and reads after it") {
     CHECK(compiled.submissions[0].presentsSurface);
 
     b.node("second writer", NodeKind::Graphics, {{surface, Access::ColorAttachment}});
-    CHECK_THROWS_WITH_AS(b.compile(), doctest::Contains("More than one node writes the surface"), GraphError);
+    CHECK_ERROR(b.tryCompile(), ErrorCode::InvalidGraph, "More than one node writes the surface");
 }
 
 TEST_CASE("Graph compiler rejects reading the surface before it is written") {
@@ -140,7 +142,7 @@ TEST_CASE("Graph compiler rejects reading the surface before it is written") {
     uint32_t surface = b.image("surface", true);
     b.node("early read", NodeKind::Transfer, {{surface, Access::TransferSrc}});
     b.node("draw", NodeKind::Graphics, {{surface, Access::ColorAttachment}});
-    CHECK_THROWS_WITH_AS(b.compile(), doctest::Contains("reads the surface before it is written"), GraphError);
+    CHECK_ERROR(b.tryCompile(), ErrorCode::InvalidGraph, "reads the surface before it is written");
 }
 
 TEST_CASE("A disabled surface writer means no acquire or present") {

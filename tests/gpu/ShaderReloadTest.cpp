@@ -58,12 +58,13 @@ struct ShaderDirectory {
 
 // Runs the material once and returns the first texel
 std::vector<uint8_t> firstTexel(VulkanContext& ctx, Material& material, Image& image) {
+    material.ensurePipeline().value();
     ctx.submitImmediate([&](VkCommandBuffer commandBuffer) {
         ctx.descriptors().bind(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE);
         material.bind(commandBuffer, 0);
         vkCmdDispatch(commandBuffer, kSize / 8, kSize / 8, 1);
-    });
-    auto pixels = image.readback(VK_IMAGE_LAYOUT_GENERAL);
+    }).value();
+    auto pixels = image.readback(VK_IMAGE_LAYOUT_GENERAL).value();
     return std::vector<uint8_t>(pixels.begin() + 4 * (kSize + 1), pixels.begin() + 4 * (kSize + 2));   // Texel (1, 1)
 }
 
@@ -75,12 +76,11 @@ TEST_CASE_FIXTURE(GpuTest, "Shaders reload from disk and materials rebuild their
     directory.install("pattern.comp", "reload_a.comp");
     ctx.shaders().addSearchPath(directory.path);
 
-    Handle<Image> image;
-    Image::createStorage(image, ctx, VK_FORMAT_R8G8B8A8_UNORM, kSize, kSize);
-    auto shader = ctx.shaders().get("reload_a.comp");
+    auto image = Image::createStorage(ctx, VK_FORMAT_R8G8B8A8_UNORM, kSize, kSize).value();
+    auto shader = ctx.shaders().get("reload_a.comp").value();
     CHECK(shader->stage() == VK_SHADER_STAGE_COMPUTE_BIT);
     CHECK(shader->version() == 0);
-    CHECK(ctx.shaders().get("reload_a.comp") == shader);
+    CHECK(ctx.shaders().get("reload_a.comp").value() == shader);
     auto material = ctx.resources().create<FillMaterial>(ctx, ctx.descriptors().storageImage(image), shader);
     CHECK(firstTexel(ctx, *material, *image) == std::vector<uint8_t>{1, 1, 2, 255});
 
@@ -93,7 +93,7 @@ TEST_CASE_FIXTURE(GpuTest, "Shaders reload from disk and materials rebuild their
     CHECK(result.errors.empty());
     CHECK(result.reloaded == std::vector<std::string>{"reload_a.comp"});
     CHECK(shader->version() == 1);
-    CHECK(material->pipelineVersion() == 1);
+    CHECK(material->pipelineVersion() == 2);
     CHECK(material->getPipeline() != before);
     CHECK(firstTexel(ctx, *material, *image) == std::vector<uint8_t>{51, 102, 153, 255});
 }
@@ -104,15 +104,15 @@ TEST_CASE_FIXTURE(GpuTest, "A shader that fails to reload keeps its previous cod
     directory.install("pattern.comp", "reload_b.comp");
     ctx.shaders().addSearchPath(directory.path);
 
-    Handle<Image> image;
-    Image::createStorage(image, ctx, VK_FORMAT_R8G8B8A8_UNORM, kSize, kSize);
-    auto shader = ctx.shaders().get("reload_b.comp");
+    auto image = Image::createStorage(ctx, VK_FORMAT_R8G8B8A8_UNORM, kSize, kSize).value();
+    auto shader = ctx.shaders().get("reload_b.comp").value();
     auto material = ctx.resources().create<FillMaterial>(ctx, ctx.descriptors().storageImage(image), shader);
 
     directory.write("reload_b.comp", "this is not SPIR-V");
     auto result = ctx.shaders().reload();
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].find("reload_b.comp") != std::string::npos);
+    CHECK(result.errors[0].code == ErrorCode::InvalidData);
+    CHECK(result.errors[0].describe().find("reload_b.comp") != std::string::npos);
     CHECK(result.reloaded.empty());
     CHECK(shader->version() == 0);
     CHECK(material->pipelineVersion() == 0);
@@ -120,7 +120,9 @@ TEST_CASE_FIXTURE(GpuTest, "A shader that fails to reload keeps its previous cod
 
     // A missing file is an error too
     fs::remove(directory.path / "reload_b.comp.spv");
-    CHECK(ctx.shaders().reload().errors.size() == 1);
+    auto missing = ctx.shaders().reload();
+    REQUIRE(missing.errors.size() == 1);
+    CHECK(missing.errors[0].code == ErrorCode::NotFound);
 }
 
 TEST_CASE_FIXTURE(GpuTest, "reloadModified only reloads shaders whose files changed") {
@@ -128,7 +130,7 @@ TEST_CASE_FIXTURE(GpuTest, "reloadModified only reloads shaders whose files chan
     ShaderDirectory directory(ctx);
     directory.install("pattern.comp", "reload_c.comp");
     ctx.shaders().addSearchPath(directory.path);
-    auto shader = ctx.shaders().get("reload_c.comp");
+    auto shader = ctx.shaders().get("reload_c.comp").value();
 
     CHECK(ctx.shaders().reloadModified().reloaded.empty());
     directory.install("solid.comp", "reload_c.comp");
@@ -147,10 +149,10 @@ TEST_CASE_FIXTURE(GpuTest, "reloadModified only reloads shaders whose files chan
 
 TEST_CASE_FIXTURE(GpuTest, "The shader library reports missing shaders and wrong stages") {
     auto& ctx = context();
-    CHECK_THROWS_WITH_AS(ctx.shaders().get("missing.comp"), doctest::Contains("not found; searched"), std::runtime_error);
+    CHECK_ERROR(ctx.shaders().get("missing.comp"), ErrorCode::NotFound, "not found; searched");
+    CHECK_THROWS_WITH_AS(ctx.shaders().get("shader.glsl"), doctest::Contains("Can't tell the stage"), ContractViolation);
 
-    Handle<Image> image;
-    Image::createStorage(image, ctx, VK_FORMAT_R8G8B8A8_UNORM, kSize, kSize);
+    auto image = Image::createStorage(ctx, VK_FORMAT_R8G8B8A8_UNORM, kSize, kSize).value();
     CHECK_THROWS_WITH_AS(FillMaterial(ctx, ctx.descriptors().storageImage(image), testShader(ctx, "shader.vert")),
-                         doctest::Contains("VK_SHADER_STAGE_COMPUTE_BIT shader is needed"), std::invalid_argument);
+                         doctest::Contains("VK_SHADER_STAGE_COMPUTE_BIT shader is needed"), ContractViolation);
 }

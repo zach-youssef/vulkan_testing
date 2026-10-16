@@ -1,10 +1,11 @@
 #pragma once
 
+#include "core/Result.h"
+
 #include <cstdint>
 #include <cstring>
 #include <map>
 #include <set>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -79,11 +80,11 @@ constexpr uint32_t kDecorationDescriptorSet = 34;
 
 } // namespace spirv_reflection_detail
 
-// Throws std::invalid_argument for something that isn't a SPIR-V module
-inline SpirvDescriptorWrites reflectDescriptorWrites(const std::vector<uint32_t>& words) {
+// Fails with ErrorCode::InvalidData for something that isn't a SPIR-V module
+inline Result<SpirvDescriptorWrites> reflectDescriptorWrites(const std::vector<uint32_t>& words) {
     using namespace spirv_reflection_detail;
     if (words.size() < 5 || words[0] != kMagic) {
-        throw std::invalid_argument("Not a SPIR-V module");
+        return Error(ErrorCode::InvalidData, "Not a SPIR-V module");
     }
 
     std::map<uint32_t, uint32_t> bindingOf;
@@ -102,7 +103,7 @@ inline SpirvDescriptorWrites reflectDescriptorWrites(const std::vector<uint32_t>
         const uint32_t count = words[at] >> 16;
         const uint32_t opcode = words[at] & 0xffff;
         if (count == 0 || at + count > words.size()) {
-            throw std::invalid_argument("Malformed SPIR-V instruction");
+            return Error(ErrorCode::InvalidData, "Malformed SPIR-V instruction");
         }
         const uint32_t* operand = &words[at + 1];
         const uint32_t operands = count - 1;
@@ -189,9 +190,9 @@ inline SpirvDescriptorWrites reflectDescriptorWrites(const std::vector<uint32_t>
     return result;
 }
 
-inline SpirvDescriptorWrites reflectDescriptorWrites(const std::vector<char>& code) {
+inline Result<SpirvDescriptorWrites> reflectDescriptorWrites(const std::vector<char>& code) {
     if (code.size() % 4 != 0) {
-        throw std::invalid_argument("Not a SPIR-V module");
+        return Error(ErrorCode::InvalidData, "Not a SPIR-V module");
     }
     std::vector<uint32_t> words(code.size() / 4);
     memcpy(words.data(), code.data(), code.size());

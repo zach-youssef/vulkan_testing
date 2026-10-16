@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/Contract.h"
+#include "core/Result.h"
 #include "core/VkTypes.h"
 #include "core/VkUtil.h"
 #include "core/SwapChainSupportDetails.h"
@@ -24,29 +26,32 @@
 class Swapchain {
 public:
     // framebufferSize is the surface's size in pixels, used when the surface leaves the extent up to
-    // the application
-    Swapchain(VulkanContext& context, VkExtent2D framebufferSize) : context_(&context) {
+    // the application. The context must have a surface.
+    static Result<std::unique_ptr<Swapchain>> create(VulkanContext& context, VkExtent2D framebufferSize) {
         if (!context.hasSurface()) {
-            throw std::logic_error("A swapchain requires a context created with a surface");
+            contractViolation("A swapchain requires a context created with a surface");
         }
-        create(framebufferSize);
-        acquireSemaphores_ = PerFrame<std::unique_ptr<VulkanSemaphore>>(context, [device = context.device()](uint32_t) {
-            VkSemaphoreCreateInfo semaphoreInfo{};
-            semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            std::unique_ptr<VulkanSemaphore> semaphore;
-            VK_SUCCESS_OR_THROW(VulkanSemaphore::create(semaphore, device, semaphoreInfo),
-                                "Failed to create semaphore");
-            return semaphore;
-        });
+        std::unique_ptr<Swapchain> swapchain(new Swapchain(context));
+        TRY(swapchain->build(framebufferSize).withContext("creating the swapchain"));
+        TRY_ASSIGN(swapchain->acquireSemaphores_, PerFrame<std::unique_ptr<VulkanSemaphore>>::create(
+            context, [device = context.device()](uint32_t) -> Result<std::unique_ptr<VulkanSemaphore>> {
+                VkSemaphoreCreateInfo semaphoreInfo{};
+                semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+                std::unique_ptr<VulkanSemaphore> semaphore;
+                VK_TRY(VulkanSemaphore::create(semaphore, device, semaphoreInfo), "Failed to create semaphore");
+                return semaphore;
+            }));
+        return swapchain;
     }
 
     Swapchain(const Swapchain&) = delete;
     Swapchain& operator=(const Swapchain&) = delete;
 
     // Replaces the swapchain (and its images, views and semaphores) to match the surface's
-    // current size. The device must be idle.
-    void recreate(VkExtent2D framebufferSize) {
-        create(framebufferSize);
+    // current size. The device must be idle. On failure the swapchain is left as it was, though
+    // it may no longer be presentable.
+    Result<void> recreate(VkExtent2D framebufferSize) {
+        return build(framebufferSize).withContext("recreating the swapchain");
     }
 
     struct Acquired {
@@ -56,15 +61,15 @@ public:
     };
 
     // Acquires the next image for a frame slot. With VK_ERROR_OUT_OF_DATE_KHR no image was
-    // acquired and the swapchain must be recreated; other failures throw.
-    Acquired acquire(uint32_t frameIndex) {
+    // acquired and the swapchain must be recreated; other failures are errors.
+    Result<Acquired> acquire(uint32_t frameIndex) {
         Acquired acquired;
         acquired.semaphore = **acquireSemaphores_[frameIndex];
         acquired.result = vkAcquireNextImageKHR(context_->device(), **swapchain_, UINT64_MAX,
                                                 acquired.semaphore, VK_NULL_HANDLE, &acquired.imageIndex);
         if (acquired.result != VK_SUCCESS && acquired.result != VK_SUBOPTIMAL_KHR
             && acquired.result != VK_ERROR_OUT_OF_DATE_KHR) {
-            VK_SUCCESS_OR_THROW(acquired.result, "Failed to acquire swapchain image");
+            return Error::vulkan(acquired.result, "Failed to acquire swapchain image");
         }
         return acquired;
     }
@@ -110,8 +115,12 @@ public:
     }
 
 private:
-    void create(VkExtent2D framebufferSize) {
-        SwapChainSupportDetails support = querySwapChainSupport(context_->physicalDevice(), context_->surface());
+    explicit Swapchain(VulkanContext& context) : context_(&context) {}
+
+    // Creates the swapchain and its images' views and semaphores, replacing the current ones only
+    // once all of them have been created
+    Result<void> build(VkExtent2D framebufferSize) {
+        TRY_ASSIGN(SwapChainSupportDetails support, querySwapChainSupport(context_->physicalDevice(), context_->surface()));
 
         auto surfaceFormat = support.chooseSwapSurfaceFormat();
         auto presentMode = support.chooseSwapPresentMode();
@@ -158,32 +167,33 @@ private:
         // destroyed once the new one exists
         createInfo.oldSwapchain = swapchain_ ? **swapchain_ : VK_NULL_HANDLE;
 
-        VK_SUCCESS_OR_THROW(VulkanSwapchain::create(swapchain_, context_->device(), createInfo),
-                            "Failed to create swap chain.");
+        std::unique_ptr<VulkanSwapchain> swapchain;
+        VK_TRY(VulkanSwapchain::create(swapchain, context_->device(), createInfo), "Failed to create swap chain");
 
-        images_ = readVkVector<VkImage, VkDevice, VkSwapchainKHR>(context_->device(), **swapchain_,
-                                                                  vkGetSwapchainImagesKHR);
-        format_ = surfaceFormat.format;
-        extent_ = extent;
+        TRY_ASSIGN(auto images, (readVkVector<VkImage, VkDevice, VkSwapchainKHR>(context_->device(), **swapchain,
+                                                                                 vkGetSwapchainImagesKHR)));
 
-        imageViews_.clear();
-        imageViews_.resize(images_.size());
-        for (size_t i = 0; i < images_.size(); ++i) {
-            VK_SUCCESS_OR_THROW(VulkanImageView::createForImageWithFormat(imageViews_[i],
-                                                                          context_->device(),
-                                                                          images_[i],
-                                                                          format_),
-                                "Failed to create image view for swapchain");
+        std::vector<std::unique_ptr<VulkanImageView>> imageViews(images.size());
+        for (size_t i = 0; i < images.size(); ++i) {
+            VK_TRY(VulkanImageView::createForImageWithFormat(imageViews[i], context_->device(), images[i], surfaceFormat.format),
+                   "Failed to create image view for swapchain");
         }
 
-        renderFinishedSemaphores_.clear();
-        renderFinishedSemaphores_.resize(images_.size());
-        for (auto& semaphore : renderFinishedSemaphores_) {
+        std::vector<std::unique_ptr<VulkanSemaphore>> renderFinishedSemaphores(images.size());
+        for (auto& semaphore : renderFinishedSemaphores) {
             VkSemaphoreCreateInfo semaphoreInfo{};
             semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            VK_SUCCESS_OR_THROW(VulkanSemaphore::create(semaphore, context_->device(), semaphoreInfo),
-                                "Failed to create semaphore");
+            VK_TRY(VulkanSemaphore::create(semaphore, context_->device(), semaphoreInfo), "Failed to create semaphore");
         }
+
+        // The views of the old images are destroyed before the old swapchain (which owns the images)
+        imageViews_ = std::move(imageViews);
+        renderFinishedSemaphores_ = std::move(renderFinishedSemaphores);
+        swapchain_ = std::move(swapchain);
+        images_ = std::move(images);
+        format_ = surfaceFormat.format;
+        extent_ = extent;
+        return {};
     }
 
     VulkanContext* context_;

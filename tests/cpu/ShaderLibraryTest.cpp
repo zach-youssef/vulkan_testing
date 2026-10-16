@@ -7,8 +7,8 @@ TEST_CASE("Shader stages come from the shader's name") {
     CHECK(shaderStageFromName("dir/shader.frag") == VK_SHADER_STAGE_FRAGMENT_BIT);
     CHECK(shaderStageFromName("copy.comp") == VK_SHADER_STAGE_COMPUTE_BIT);
     CHECK(shaderStageFromName("a.geom") == VK_SHADER_STAGE_GEOMETRY_BIT);
-    CHECK_THROWS_AS(shaderStageFromName("shader.glsl"), std::invalid_argument);
-    CHECK_THROWS_AS(shaderStageFromName("shader"), std::invalid_argument);
+    CHECK_FALSE(shaderStageFromName("shader.glsl"));
+    CHECK_FALSE(shaderStageFromName("shader"));
 }
 
 TEST_CASE("checkSpirv rejects data that isn't a SPIR-V module") {

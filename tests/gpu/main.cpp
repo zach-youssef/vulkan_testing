@@ -16,7 +16,12 @@
 
 #include "VkTestContext.h"
 
+#include "core/Contract.h"
+
 int main(int argc, char** argv) {
+    // Misuse throws ContractViolation, so tests can check it (CHECK_THROWS_AS)
+    setContractViolationHandler(throwingContractViolationHandler);
+
     doctest::Context context(argc, argv);
     int result = context.run();
 

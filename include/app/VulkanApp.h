@@ -3,6 +3,8 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#include "core/Contract.h"
+#include "core/Result.h"
 #include "core/VkUtil.h"
 #include "core/VulkanContext.h"
 #include "graph/RenderGraph.h"
@@ -61,9 +63,19 @@ struct AppConfig {
     bool autoReloadShaders = false;
 };
 
+// What VulkanApp::runFrame did
+enum class FrameOutcome {
+    Drawn,          // Drew a frame
+    WindowClosed,   // The window should close; nothing was drawn
+};
+
 /*
  Owns a VulkanContext, unless headless a window and its swapchain, and any number of render graphs.
  Each frame executes the active graph (setActiveGraph).
+
+ init(), drawing frames and run() return Results (see Result.h): run() returns the first error that
+ stops it, so a program can end with `return exitStatus(app.run());`. Misuse (drawing without an
+ active graph, asking a headless app for its window, ...) is a contract violation.
 
  The swapchain is recreated whenever the window's framebuffer changes size, whether the user
  resized it or setWindowSize() was called. Graphs recreate their surface-relative images on their
@@ -89,61 +101,70 @@ public:
         graphs_.clear();
     }
 
-    void init(AppConfig config = {}) {
+    // Creates the window (unless headless), the context and the swapchain
+    Result<void> init(AppConfig config = {}) {
         config_ = std::move(config);
         if (config_.window) {
-            initWindow(*config_.window);
+            TRY(initWindow(*config_.window));
         }
-        createContext();
+        TRY(createContext());
         if (hasWindow()) {
-            swapchain_ = std::make_unique<Swapchain>(*context_, getFramebufferSize());
+            TRY_ASSIGN(swapchain_, Swapchain::create(*context_, getFramebufferSize()));
         }
+        return {};
     }
 
-    // Draws frames until the window is closed. Requires a window.
-    void run() {
+    // Draws frames until the window is closed, or a frame fails (returning its error). Requires a
+    // window.
+    Result<void> run() {
         if (!hasWindow()) {
-            throw std::logic_error("run() requires a window; headless apps call drawFrame()");
+            contractViolation("run() requires a window; headless apps call drawFrame()");
         }
-        while (runFrame()) {}
-        context_->waitIdleAll();
+        while (true) {
+            TRY_ASSIGN(const FrameOutcome outcome, runFrame());
+            if (outcome == FrameOutcome::WindowClosed) {
+                break;
+            }
+        }
+        return vkCheck(context_->waitIdleAll(), "Failed to wait for the device");
     }
 
     // Processes window events and, unless the window has been asked to close, draws a frame.
-    // Returns false (without drawing) once the window should close. Headless apps always draw.
-    bool runFrame() {
+    // Headless apps always draw.
+    Result<FrameOutcome> runFrame() {
         if (hasWindow()) {
             glfwPollEvents();
             if (glfwWindowShouldClose(window_.get())) {
-                return false;
+                return FrameOutcome::WindowClosed;
             }
         }
-        drawFrame();
-        return true;
+        TRY(drawFrame());
+        return FrameOutcome::Drawn;
     }
 
     // Waits, without drawing, until the window is closed
-    void holdWindow() {
+    Result<void> holdWindow() {
         while (hasWindow() && !glfwWindowShouldClose(window_.get())) {
             glfwWaitEvents();
         }
-        context_->waitIdleAll();
+        return vkCheck(context_->waitIdleAll(), "Failed to wait for the device");
     }
 
     // Executes the active graph for one frame, recreating the swapchain afterwards if it no longer
-    // matches the window
-    void drawFrame() {
+    // matches the window. Requires an active graph.
+    Result<void> drawFrame() {
         if (!activeGraph_) {
-            throw std::logic_error("drawFrame() requires an active render graph; see createGraph() and setActiveGraph()");
+            contractViolation("drawFrame() requires an active render graph; see createGraph() and setActiveGraph()");
         }
-        FrameResult result = activeGraph_->execute();
+        TRY_ASSIGN(const FrameResult result, activeGraph_->execute());
         if (hasWindow() && (result.surfaceOutOfDate || frameBufferResized_)) {
             frameBufferResized_ = false;
-            recreateSwapChain();
+            TRY(recreateSwapChain());
         }
         if (config_.autoReloadShaders) {
             autoReloadShaders();
         }
+        return {};
     }
 
     // Reloads shaders whose SPIR-V changed on disk, rebuilding the pipelines of materials using
@@ -174,7 +195,7 @@ public: // Render graphs
     // Destroys a graph once its submitted work has finished. It must not be active.
     void destroyGraph(RenderGraph& graph) {
         if (activeGraph_ == &graph) {
-            throw std::logic_error("The active graph can't be destroyed");
+            contractViolation("The active graph can't be destroyed");
         }
         graphs_.erase(findGraph(graph));
     }
@@ -241,9 +262,9 @@ public: // Getters
     }
 
 private:
-    void initWindow(const WindowConfig& windowConfig) {
+    Result<void> initWindow(const WindowConfig& windowConfig) {
         if (!glfwInit()) {
-            throw std::runtime_error("Failed to initialize GLFW");
+            return Error(ErrorCode::Window, "Failed to initialize GLFW");
         }
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -254,7 +275,7 @@ private:
                                               windowConfig.title.c_str(), nullptr, nullptr);
         if (!window) {
             glfwTerminate();
-            throw std::runtime_error("Failed to create window");
+            return Error(ErrorCode::Window, "Failed to create window");
         }
         window_ = std::unique_ptr<GLFWwindow, std::function<void(GLFWwindow*)>>(window, [](GLFWwindow* w){
             glfwDestroyWindow(w);
@@ -274,6 +295,7 @@ private:
         glfwSetScrollCallback(window_.get(), [](GLFWwindow* window, double xOffset, double yOffset) {
             if (auto& handler = appOf(window).inputHandlers_.scroll) handler(xOffset, yOffset);
         });
+        return {};
     }
 
     static VulkanApp& appOf(GLFWwindow* window) {
@@ -284,10 +306,10 @@ private:
         appOf(window).frameBufferResized_ = true;
     }
 
-    void createContext() {
+    Result<void> createContext() {
         if (config_.logInstanceInfo) {
-            logSupportedExtensions();
-            logAvailableLayers();
+            TRY(logSupportedExtensions());
+            TRY(logAvailableLayers());
         }
 
         VulkanContextConfig config;
@@ -309,12 +331,13 @@ private:
             };
         }
 
-        context_ = std::make_unique<VulkanContext>(std::move(config));
+        TRY_ASSIGN(context_, VulkanContext::create(std::move(config)));
+        return {};
     }
 
     void requireWindow() {
         if (!hasWindow()) {
-            throw std::logic_error("Headless apps have no window or surface");
+            contractViolation("Headless apps have no window or surface");
         }
     }
 
@@ -325,7 +348,7 @@ private:
         return {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
     }
 
-    void recreateSwapChain() {
+    Result<void> recreateSwapChain() {
         // A minimized window has no area to present to; wait until it is restored
         VkExtent2D size = getFramebufferSize();
         while (size.width == 0 || size.height == 0) {
@@ -333,10 +356,10 @@ private:
             size = getFramebufferSize();
         }
         // The old swapchain's images must no longer be in use
-        context_->waitIdleAll();
+        VK_TRY(context_->waitIdleAll(), "Failed to wait for the device");
 
         const VkExtent2D previousExtent = swapchain_->getExtent();
-        swapchain_->recreate(size);
+        TRY(swapchain_->recreate(size));
 
         const VkExtent2D extent = swapchain_->getExtent();
         if (extent.width != previousExtent.width || extent.height != previousExtent.height) {
@@ -344,6 +367,7 @@ private:
                 listener(extent);
             }
         }
+        return {};
     }
 
     // Checks for modified shaders a few times a second
@@ -365,25 +389,27 @@ private:
     std::vector<std::unique_ptr<RenderGraph>>::iterator findGraph(RenderGraph& graph) {
         auto it = std::find_if(graphs_.begin(), graphs_.end(), [&graph](auto& owned) { return owned.get() == &graph; });
         if (it == graphs_.end()) {
-            throw std::invalid_argument("The graph wasn't created by this app");
+            contractViolation("The graph wasn't created by this app");
         }
         return it;
     }
 
-    void logSupportedExtensions() {
+    Result<void> logSupportedExtensions() {
+        TRY_ASSIGN(auto extensions, (readVkVector<VkExtensionProperties, const char*>(vkEnumerateInstanceExtensionProperties)));
         std::cout << "Available Extensions: " << std::endl;
-        for (const auto& extension :
-             readVkVector<VkExtensionProperties, const char*>(vkEnumerateInstanceExtensionProperties)) {
+        for (const auto& extension : extensions) {
             std::cout << "\t" << extension.extensionName << std::endl;
         }
+        return {};
     }
 
-    void logAvailableLayers() {
+    Result<void> logAvailableLayers() {
+        TRY_ASSIGN(auto layers, readVkVector<VkLayerProperties>(vkEnumerateInstanceLayerProperties));
         std::cout << "Available Layers: " << std::endl;
-        for (const auto& layerProperties :
-             readVkVector<VkLayerProperties>(vkEnumerateInstanceLayerProperties)) {
+        for (const auto& layerProperties : layers) {
             std::cout << "\t" << layerProperties.layerName << std::endl;
         }
+        return {};
     }
 
     AppConfig config_;

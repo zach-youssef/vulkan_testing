@@ -41,11 +41,8 @@ protected:
 };
 
 Handle<Buffer<UniformBufferObject>> uniformBuffer(VulkanContext& ctx) {
-    Handle<Buffer<UniformBufferObject>> buffer;
-    VK_SUCCESS_OR_THROW(Buffer<UniformBufferObject>::create(buffer, ctx, 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-                        "Failed to create uniform buffer");
-    return buffer;
+    return Buffer<UniformBufferObject>::create(ctx, 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT).value();
 }
 
 std::vector<uint32_t> asIndices(const std::vector<uint8_t>& data) {
@@ -60,10 +57,8 @@ TEST_CASE_FIXTURE(GpuTest, "Materials push their bindings' descriptor indices in
     auto& ctx = context();
     auto& heap = ctx.descriptors();
 
-    Handle<Image> texture;
-    Image::createEmptyRGBA(texture, ctx, 4, 4);
-    Handle<VulkanSampler> sampler;
-    REQUIRE(VulkanSampler::createWithAddressMode(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT) == VK_SUCCESS);
+    auto texture = Image::createEmptyRGBA(ctx, 4, 4).value();
+    auto sampler = VulkanSampler::createWithAddressMode(ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT).value();
 
     auto ubo = heap.storageBuffer(uniformBuffer(ctx));
     auto textureEntry = heap.sampledImage(texture);
@@ -73,7 +68,14 @@ TEST_CASE_FIXTURE(GpuTest, "Materials push their bindings' descriptor indices in
         MaterialBinding::sampled(textureEntry),
         MaterialBinding::sampler(samplerEntry),
     });
+    // The pipeline is built on demand (render graphs build it when compiling)
+    CHECK(material->getPipeline() == VK_NULL_HANDLE);
+    CHECK_OK(material->ensurePipeline());
     CHECK(material->getPipeline() != VK_NULL_HANDLE);
+    CHECK(material->pipelineVersion() == 1);
+    const VkPipeline pipeline = material->getPipeline();
+    CHECK_OK(material->ensurePipeline());
+    CHECK(material->getPipeline() == pipeline);
     CHECK(material->getPipelineLayout() == heap.pipelineLayout());
 
     const std::vector<uint32_t> expected{ubo->index(), textureEntry->index(), samplerEntry->index()};
@@ -92,10 +94,8 @@ TEST_CASE_FIXTURE(GpuTest, "Material bindings may have an entry per frame that f
     auto& heap = ctx.descriptors();
     const uint32_t originalFrames = ctx.framesInFlight();
 
-    Handle<Image> texture;
-    Image::createEmptyRGBA(texture, ctx, 4, 4);
-    Handle<VulkanSampler> sampler;
-    REQUIRE(VulkanSampler::createWithAddressMode(sampler, ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT) == VK_SUCCESS);
+    auto texture = Image::createEmptyRGBA(ctx, 4, 4).value();
+    auto sampler = VulkanSampler::createWithAddressMode(ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT).value();
 
     // A uniform buffer (and its entry) per frame; the texture and sampler are shared by every frame
     auto entries = ctx.resources().create<PerFrameHandles<DescriptorEntry>>(ctx, [&ctx](uint32_t) {
@@ -111,17 +111,25 @@ TEST_CASE_FIXTURE(GpuTest, "Material bindings may have an entry per frame that f
     CHECK(asIndices(material->pushConstants(0))[1] == asIndices(material->pushConstants(1))[1]);
 
     ctx.setFramesInFlight(originalFrames + 1);
-    ctx.advanceFrame();
+    ctx.advanceFrame().value();
     CHECK(asIndices(material->pushConstants(originalFrames))[0] == (*entries)[originalFrames]->index());
     ctx.setFramesInFlight(originalFrames);
-    ctx.advanceFrame();
+    ctx.advanceFrame().value();
     entries.reset();
 }
 
-TEST_CASE_FIXTURE(GpuTest, "Binding a material without an entry for the frame throws") {
+TEST_CASE_FIXTURE(GpuTest, "Binding a material without an entry for the frame is a contract violation") {
     auto& ctx = context();
     auto material = ctx.resources().create<TestMaterial>(ctx, std::vector<MaterialBinding>{
         MaterialBinding::storageBuffer(nullptr),
     });
-    CHECK_THROWS_WITH_AS(material->pushConstants(0), doctest::Contains("has no descriptor entry"), std::logic_error);
+    CHECK_THROWS_WITH_AS(material->pushConstants(0), doctest::Contains("has no descriptor entry"), ContractViolation);
+}
+
+TEST_CASE_FIXTURE(GpuTest, "Binding a material before its pipeline is built is a contract violation") {
+    auto& ctx = context();
+    auto material = ctx.resources().create<TestMaterial>(ctx, std::vector<MaterialBinding>{});
+    // Checked before any command is recorded
+    CHECK_THROWS_WITH_AS(material->bind(VK_NULL_HANDLE, 0), doctest::Contains("before its pipeline was built"),
+                         ContractViolation);
 }

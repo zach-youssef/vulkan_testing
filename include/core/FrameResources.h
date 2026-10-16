@@ -1,6 +1,8 @@
 #pragma once
 
+#include "core/Contract.h"
 #include "core/ResourceManager.h"
+#include "core/Result.h"
 
 #include <algorithm>
 #include <cassert>
@@ -8,7 +10,6 @@
 #include <functional>
 #include <map>
 #include <mutex>
-#include <stdexcept>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -25,6 +26,8 @@
  PerFrame<T>:
     - One T per frame in flight, created on demand by a factory and destroyed when no longer
       needed (when the number of frames shrinks, or the collection is destroyed)
+    - Factories may fail (returning a Result<T>): creating the collection then fails, and so does
+      growing the number of frames in flight, which leaves every collection at its previous size
 
  FrameBinding<T>:
     - A Handle<T> that is either shared by every frame (for static data) or looked up in a
@@ -49,7 +52,8 @@ public:
 
 protected:
     friend class ::FrameRegistry;
-    virtual void resizeFrames(uint32_t count) = 0;
+    // Grows or shrinks to count elements. Shrinking can't fail; growing stops at the first failure.
+    virtual Result<void> resizeFrames(uint32_t count) = 0;
 };
 
 } // namespace detail
@@ -88,31 +92,26 @@ public:
     // elements are destroyed before the elements of earlier collections they may depend on (just
     // as destroying the collections themselves would). The current frame restarts at 0.
     //
-    // Elements of collections are created and destroyed, so nothing may be using them; in
-    // particular the device must be idle.
-    void resize(uint32_t framesInFlight) {
+    // If a factory fails while growing, every collection is shrunk back, the number of frames and
+    // the current frame are left as they were, and the factory's error is returned.
+    //
+    // Elements of the slots being created or destroyed must not be in use.
+    Result<void> resize(uint32_t framesInFlight) {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
+        const uint32_t previous = framesInFlight_;
+        const uint32_t previousFrame = currentFrame_;
         const bool shrinking = checked(framesInFlight) < framesInFlight_;
         framesInFlight_ = framesInFlight;
         currentFrame_ = 0;
 
-        // The lock is recursive since factories may create (and so register) collections of their
-        // own, and destroyed elements may destroy collections. Collections registered meanwhile
-        // are already the new size; collections destroyed meanwhile are skipped.
-        std::vector<uint64_t> ids;
-        ids.reserve(collections_.size());
-        for (auto& [id, collection] : collections_) {
-            ids.push_back(id);
+        auto result = resizeAll(shrinking);
+        if (!result) {
+            framesInFlight_ = previous;
+            currentFrame_ = previousFrame;
+            // Shrinking back can't fail
+            resizeAll(true).value();
         }
-        if (shrinking) {
-            std::reverse(ids.begin(), ids.end());
-        }
-        for (uint64_t id : ids) {
-            auto it = collections_.find(id);
-            if (it != collections_.end()) {
-                it->second->resizeFrames(framesInFlight_);
-            }
-        }
+        return result;
     }
 
     // Number of registered collections
@@ -127,22 +126,45 @@ private:
 
     static uint32_t checked(uint32_t framesInFlight) {
         if (framesInFlight == 0) {
-            throw std::invalid_argument("At least one frame must be in flight");
+            contractViolation("At least one frame must be in flight");
         }
         return framesInFlight;
     }
 
+    // Resizes every collection to framesInFlight_, last created first when shrinking. Stops at the
+    // first failure.
+    Result<void> resizeAll(bool shrinking) {
+        // The lock is recursive since factories may create (and so register) collections of their
+        // own, and destroyed elements may destroy collections. Collections registered meanwhile
+        // are already the new size; collections destroyed meanwhile are skipped.
+        std::vector<uint64_t> ids;
+        ids.reserve(collections_.size());
+        for (auto& [id, collection] : collections_) {
+            ids.push_back(id);
+        }
+        if (shrinking) {
+            std::reverse(ids.begin(), ids.end());
+        }
+        for (uint64_t id : ids) {
+            auto it = collections_.find(id);
+            if (it != collections_.end()) {
+                TRY(it->second->resizeFrames(framesInFlight_));
+            }
+        }
+        return {};
+    }
+
     // Registers a collection and creates its initial elements, returning its id. Both happen
-    // under the lock, so a concurrent resize never sees a partially created collection.
-    uint64_t add(detail::PerFrameBase* collection) {
+    // under the lock, so a concurrent resize never sees a partially created collection. If
+    // creating the elements fails the collection is unregistered (the caller destroys any
+    // elements created).
+    Result<uint64_t> add(detail::PerFrameBase* collection) {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         uint64_t id = nextId_++;
         collections_.emplace(id, collection);
-        try {
-            collection->resizeFrames(framesInFlight_);
-        } catch (...) {
+        if (auto result = collection->resizeFrames(framesInFlight_); !result) {
             collections_.erase(id);
-            throw;
+            return std::move(result).error();
         }
         return id;
     }
@@ -171,10 +193,17 @@ private:
 
 class VulkanContext;
 
+template<typename T>
+class PerFrame;
+
 // One T per frame in flight. Elements are created by a factory, called with the frame index,
 // when the collection is created and whenever the number of frames in flight grows. They are
 // destroyed (last first) when it shrinks and when the collection is destroyed, after calling the
 // optional destroy function on each.
+//
+// Factories that can't fail return T and are passed to the constructors. Factories that can fail
+// return Result<T> and are passed to create(), which fails if the factory does; when the number
+// of frames in flight grows, their failures fail the resize (see FrameRegistry::resize).
 //
 // The factory may refer to collections created before this one, since those are resized first.
 // It (and destroy) may capture pointers to the collection's owner, so owners that do so must not
@@ -183,24 +212,41 @@ template<typename T>
 class PerFrame final : public detail::PerFrameBase {
 public:
     using Create = std::function<T(uint32_t frameIndex)>;
+    using TryCreate = std::function<Result<T>(uint32_t frameIndex)>;
     using Destroy = std::function<void(T&)>;
 
     // An empty collection, not registered with any FrameRegistry
     PerFrame() = default;
 
+    // With a factory that can't fail
     PerFrame(FrameRegistry& registry, Create create, Destroy destroy = {})
-    : create_(std::move(create)), destroy_(std::move(destroy)) {
-        try {
-            id_ = registry.add(this);
-        } catch (...) {
-            clear();
-            throw;
-        }
-        registry_ = &registry;
-    }
+    : PerFrame(PerFrame::create(registry, wrap(std::move(create)), std::move(destroy)).value()) {}
 
     // Registers with the context's FrameRegistry (defined in VulkanContext.h)
     PerFrame(VulkanContext& context, Create create, Destroy destroy = {});
+
+    // With a factory that can fail: fails (destroying any elements created) if it does
+    static Result<PerFrame> create(FrameRegistry& registry, TryCreate create, Destroy destroy = {}) {
+        PerFrame collection;
+        collection.create_ = std::move(create);
+        collection.destroy_ = std::move(destroy);
+        auto id = registry.add(&collection);
+        if (!id) {
+            collection.clear();
+            return std::move(id).error();
+        }
+        // Registered at its address here; moving it out updates the registration
+        collection.registry_ = &registry;
+        collection.id_ = *id;
+        return collection;
+    }
+
+    // Registers with the context's FrameRegistry (defined in VulkanContext.h)
+    static Result<PerFrame> create(VulkanContext& context, TryCreate create, Destroy destroy = {});
+
+    // A collection owned by the context's ResourceManager, e.g. for a FrameBinding (defined in
+    // VulkanContext.h)
+    static Result<Handle<PerFrame>> createManaged(VulkanContext& context, TryCreate create, Destroy destroy = {});
 
     PerFrame(const PerFrame&) = delete;
     PerFrame& operator=(const PerFrame&) = delete;
@@ -243,16 +289,22 @@ public:
     auto end() { return elements_.end(); }
 
 protected:
-    void resizeFrames(uint32_t count) override {
+    Result<void> resizeFrames(uint32_t count) override {
         while (elements_.size() > count) {
             destroyLast();
         }
         while (elements_.size() < count) {
-            elements_.push_back(create_(static_cast<uint32_t>(elements_.size())));
+            TRY_ASSIGN(T element, create_(static_cast<uint32_t>(elements_.size())));
+            elements_.push_back(std::move(element));
         }
+        return {};
     }
 
 private:
+    static TryCreate wrap(Create create) {
+        return [create = std::move(create)](uint32_t frameIndex) -> Result<T> { return create(frameIndex); };
+    }
+
     void destroyLast() {
         if (destroy_) {
             destroy_(elements_.back());
@@ -293,7 +345,7 @@ private:
 
     FrameRegistry* registry_ = nullptr;
     uint64_t id_ = 0;
-    Create create_;
+    TryCreate create_;
     Destroy destroy_;
     std::vector<T> elements_;
 };

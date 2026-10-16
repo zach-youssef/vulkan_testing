@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Result.h"
 #include "core/VkTypes.h"
 #include "core/VkUtil.h"
 #include "core/VulkanContext.h"
@@ -22,20 +23,22 @@
  rules use glslc) and the library loads <name>.spv from its search paths. A shader's stage comes
  from its name's extension (.vert, .frag, .comp, .geom, .tesc, .tese).
 
-    auto vert = context.shaders().get("shader.vert");    // loads shader.vert.spv
+    TRY_ASSIGN(auto vert, context.shaders().get("shader.vert"));   // loads shader.vert.spv
     ...
     auto result = context.shaders().reload();             // after rebuilding the SPIR-V
     for (auto& error : result.errors) std::cerr << error << "\n";
 
- Reloading reads every loaded shader's file and, for those that changed, creates a new module and
- notifies listeners (materials rebuild their pipelines). If a file can't be read or isn't valid
- SPIR-V, the shader keeps its current module and the error is reported. Old modules are destroyed
- once in-flight work has finished.
+ get() fails if the shader can't be found (ErrorCode::NotFound) or loaded (InvalidData, or a
+ Vulkan error). Reloading reads every loaded shader's file and, for those that changed, creates a
+ new module and notifies listeners (materials rebuild their pipelines). If a file can't be read or
+ isn't valid SPIR-V, the shader keeps its current module and the error is reported. Old modules are
+ destroyed once in-flight work has finished.
 
  Thread safe, but reload() runs listeners on the calling thread: call it between frames.
  */
 
-inline VkShaderStageFlagBits shaderStageFromName(const std::string& name) {
+// The stage a shader's name's extension says; std::nullopt for unknown extensions
+inline std::optional<VkShaderStageFlagBits> shaderStageFromName(const std::string& name) {
     const auto extension = std::filesystem::path(name).extension().string();
     if (extension == ".vert") return VK_SHADER_STAGE_VERTEX_BIT;
     if (extension == ".frag") return VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -43,8 +46,7 @@ inline VkShaderStageFlagBits shaderStageFromName(const std::string& name) {
     if (extension == ".geom") return VK_SHADER_STAGE_GEOMETRY_BIT;
     if (extension == ".tesc") return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
     if (extension == ".tese") return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-    throw std::invalid_argument("Can't tell the stage of shader '" + name
-                                + "' (expected .vert, .frag, .comp, .geom, .tesc or .tese)");
+    return std::nullopt;
 }
 
 // Checks bytes could be a SPIR-V module; returns an error message, or empty if they could
@@ -63,7 +65,8 @@ inline std::string checkSpirv(const std::vector<char>& code) {
 
 class Shader {
 public:
-    using Listener = std::function<void(Shader&)>;
+    // Called after a reload with new code; an error is reported by the reload
+    using Listener = std::function<Result<void>(Shader&)>;
     using ListenerId = uint64_t;
 
     const std::string& name() const { return name_; }
@@ -105,12 +108,11 @@ public:
 private:
     friend class ShaderLibrary;
 
-    Shader(VulkanContext& context, std::string name, std::filesystem::path path)
-    : context_(&context), name_(std::move(name)), path_(std::move(path)), stage_(shaderStageFromName(name_)) {}
+    Shader(VulkanContext& context, std::string name, std::filesystem::path path, VkShaderStageFlagBits stage)
+    : context_(&context), name_(std::move(name)), path_(std::move(path)), stage_(stage) {}
 
-    // Loads the file; returns an error message, or empty on success. Unchanged code is a success
-    // that changes nothing.
-    std::string load(bool& changed) {
+    // Loads the file. Unchanged code is a success that changes nothing.
+    Result<void> load(bool& changed) {
         changed = false;
         // Remember this version of the file even if it fails to load, so polling reports a broken
         // file once rather than on every check
@@ -123,21 +125,17 @@ private:
         {
             std::ifstream file(path_, std::ios::ate | std::ios::binary);
             if (!file.is_open()) {
-                return "Shader '" + name_ + "': can't open " + path_.string();
+                return Error(ErrorCode::NotFound, "Shader '" + name_ + "': can't open " + path_.string());
             }
             code.resize(static_cast<size_t>(file.tellg()));
             file.seekg(0);
             file.read(code.data(), static_cast<std::streamsize>(code.size()));
         }
         if (auto error = checkSpirv(code); !error.empty()) {
-            return "Shader '" + name_ + "' (" + path_.string() + ") is " + error;
+            return Error(ErrorCode::InvalidData, "Shader '" + name_ + "' (" + path_.string() + ") is " + error);
         }
-        SpirvDescriptorWrites writes;
-        try {
-            writes = reflectDescriptorWrites(code);
-        } catch (const std::exception& e) {
-            return "Shader '" + name_ + "' (" + path_.string() + "): " + e.what();
-        }
+        TRY_ASSIGN(SpirvDescriptorWrites writes,
+                   reflectDescriptorWrites(code).withContext("Shader '" + name_ + "' (" + path_.string() + ")"));
 
         std::lock_guard<std::mutex> lock(mutex_);
         if (module_ && code == code_) {
@@ -148,10 +146,8 @@ private:
         createInfo.codeSize = code.size();
         createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
         std::unique_ptr<VulkanShaderModule> module;
-        VkResult result = VulkanShaderModule::create(module, context_->device(), createInfo);
-        if (result != VK_SUCCESS) {
-            return "Shader '" + name_ + "': failed to create module (" + string_VkResult(result) + ")";
-        }
+        VK_TRY(VulkanShaderModule::create(module, context_->device(), createInfo),
+               "Shader '" + name_ + "': failed to create module");
         if (module_) {
             // Destroyed once in-flight work has finished, like the pipelines built from it
             std::shared_ptr<VulkanShaderModule> old(module_.release());
@@ -181,7 +177,7 @@ private:
     }
 
     // Runs listeners, collecting their errors
-    void notify(std::vector<std::string>& errors) {
+    void notify(std::vector<Error>& errors) {
         std::vector<Listener> listeners;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -190,10 +186,8 @@ private:
             }
         }
         for (auto& listener : listeners) {
-            try {
-                listener(*this);
-            } catch (const std::exception& e) {
-                errors.push_back("Shader '" + name_ + "': " + e.what());
+            if (auto result = listener(*this); !result) {
+                errors.push_back(std::move(result).error().withContext("reloading shader '" + name_ + "'"));
             }
         }
     }
@@ -217,7 +211,7 @@ class ShaderLibrary {
 public:
     struct ReloadResult {
         std::vector<std::string> reloaded;   // Names of shaders whose code changed
-        std::vector<std::string> errors;     // Shaders kept their previous code, or dependents failed
+        std::vector<Error> errors;           // Shaders kept their previous code, or dependents failed
     };
 
     ShaderLibrary(VulkanContext& context, std::vector<std::filesystem::path> searchPaths)
@@ -232,8 +226,13 @@ public:
     }
 
     // The shader `name` (e.g. "shader.vert"), loaded from <search path>/<name>.spv on first use and
-    // shared afterwards. Throws if it can't be found or loaded.
-    Handle<Shader> get(const std::string& name) {
+    // shared afterwards. A name without a shader stage extension is a contract violation.
+    Result<Handle<Shader>> get(const std::string& name) {
+        const auto stage = shaderStageFromName(name);
+        if (!stage) {
+            contractViolation("Can't tell the stage of shader '" + name
+                              + "' (expected .vert, .frag, .comp, .geom, .tesc or .tese)");
+        }
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = shaders_.find(name);
         if (it != shaders_.end()) {
@@ -243,18 +242,15 @@ public:
         for (const auto& directory : searchPaths_) {
             auto path = directory / (name + ".spv");
             if (std::filesystem::exists(path)) {
-                auto shader = context_->resources().adopt(std::unique_ptr<Shader>(new Shader(*context_, name, path)));
+                auto shader = context_->resources().adopt(std::unique_ptr<Shader>(new Shader(*context_, name, path, *stage)));
                 bool changed = false;
-                auto error = shader->load(changed);
-                if (!error.empty()) {
-                    throw std::runtime_error(error);
-                }
+                TRY(shader->load(changed));
                 shaders_.emplace(name, shader);
                 return shader;
             }
             searched += "\n  " + path.string();
         }
-        throw std::runtime_error("Shader '" + name + "' not found; searched:" + searched);
+        return Error(ErrorCode::NotFound, "Shader '" + name + "' not found; searched:" + searched);
     }
 
     // Reloads every loaded shader whose file changed, and notifies their listeners
@@ -301,9 +297,8 @@ private:
                 continue;
             }
             bool changed = false;
-            auto error = shader->load(changed);
-            if (!error.empty()) {
-                result.errors.push_back(error);
+            if (auto loaded = shader->load(changed); !loaded) {
+                result.errors.push_back(std::move(loaded).error());
             } else if (changed) {
                 result.reloaded.push_back(shader->name());
                 shader->notify(result.errors);

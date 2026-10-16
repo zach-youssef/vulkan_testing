@@ -51,8 +51,8 @@ std::vector<uint8_t> draw(VulkanContext& ctx, GraphicsPipelineOptions options, s
         }
     });
     NodeId readback = graph.add<ReadbackNode>("readback", image);
-    graph.execute();
-    auto pixels = graph.nodeAs<ReadbackNode>(readback).pixels();
+    graph.execute().value();
+    auto pixels = graph.nodeAs<ReadbackNode>(readback).pixels().value();
     return std::vector<uint8_t>(pixels.begin(), pixels.begin() + 4);
 }
 
@@ -127,7 +127,7 @@ TEST_CASE_FIXTURE(GpuTest, "Graphics materials need one blend mode, or one per c
     GraphicsPipelineOptions options;
     options.blend = {BlendMode::Opaque, BlendMode::Additive};
     CHECK_THROWS_AS(ColorMaterial(ctx, AttachmentFormats{{VK_FORMAT_R8G8B8A8_UNORM}}, options, glm::vec4(1.0f)),
-                    std::invalid_argument);
+                    ContractViolation);
 }
 
 TEST_CASE_FIXTURE(GpuTest, "Renderables share meshes, which may have 32-bit indices") {
@@ -140,7 +140,7 @@ TEST_CASE_FIXTURE(GpuTest, "Renderables share meshes, which may have 32-bit indi
     // A quad covering the target, drawn by a red and then a green material
     const std::vector<glm::vec2> corners{{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
     const std::vector<uint32_t> indices{0, 1, 2, 2, 3, 0};
-    auto mesh = ctx.resources().create<Mesh>(ctx, corners, indices);
+    auto mesh = Mesh::create(ctx, corners, indices).value();
     CHECK(mesh->indexType() == VK_INDEX_TYPE_UINT32);
     CHECK(mesh->indexCount() == 6);
     GraphicsPipelineOptions options;
@@ -153,8 +153,8 @@ TEST_CASE_FIXTURE(GpuTest, "Renderables share meshes, which may have 32-bit indi
     }
     graph.add<RenderablesNode>("draw", renderables, target);
     NodeId readback = graph.add<ReadbackNode>("readback", image);
-    graph.execute();
-    auto pixels = graph.nodeAs<ReadbackNode>(readback).pixels();
+    graph.execute().value();
+    auto pixels = graph.nodeAs<ReadbackNode>(readback).pixels().value();
     for (size_t i = 0; i < pixels.size(); i += 4) {
         CAPTURE(i);
         CHECK(std::vector<uint8_t>(pixels.begin() + i, pixels.begin() + i + 4) == std::vector<uint8_t>{0, 255, 0, 255});
@@ -170,11 +170,10 @@ TEST_CASE_FIXTURE(GpuTest, "Comparison samplers compare references with depth im
     depthTarget.depth = DepthAttachment{depth, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, 0.5f};
     graph.addGraphics("clear depth", [&](NodeBuilder& b) { b.renderTo(depthTarget); }, nullptr);
 
-    Handle<VulkanSampler> sampler;
-    REQUIRE(VulkanSampler::create(sampler, ctx, SamplerDesc{.filter = VK_FILTER_NEAREST,
+    auto sampler = VulkanSampler::create(ctx, SamplerDesc{.filter = VK_FILTER_NEAREST,
                                                             .addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                                             .compareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
-                                                            .anisotropy = false}) == VK_SUCCESS);
+                                                            .anisotropy = false}).value();
     ImageId color = graph.createImage("color", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{{4, 4}});
     RenderTarget colorTarget;
     colorTarget.color.push_back({color});
@@ -192,7 +191,7 @@ TEST_CASE_FIXTURE(GpuTest, "Comparison samplers compare references with depth im
         vkCmdDraw(context.commandBuffer, 3, 1, 0, 0);
     });
     NodeId readback = graph.add<ReadbackNode>("readback", color);
-    graph.execute();
-    auto pixels = graph.nodeAs<ReadbackNode>(readback).pixels();
+    graph.execute().value();
+    auto pixels = graph.nodeAs<ReadbackNode>(readback).pixels().value();
     CHECK(std::vector<uint8_t>(pixels.begin(), pixels.begin() + 4) == std::vector<uint8_t>{255, 0, 0, 255});
 }

@@ -11,6 +11,7 @@
 #include <vulkan/vk_enum_string_helper.h>
 
 #include "core/ResourceManager.h"
+#include "core/Result.h"
 
 class VulkanContext;
 
@@ -25,18 +26,20 @@ public:
         return &value_;
     }
     
+    // Creates the object, leaving outPtr empty on failure
     static VkResult create(std::unique_ptr<WrapperType>& outPtr, Args... args) {
         VkResult result;
         outPtr = std::make_unique<WrapperType>(result, args...);
         if (result != VK_SUCCESS) {
-            std::cerr << string_VkResult(result) << std::endl;
-            //outPtr = nullptr;
+            // Nothing was created, so there is nothing to destroy (destroying VK_NULL_HANDLE is a no-op)
+            outPtr->value_ = VK_NULL_HANDLE;
+            outPtr.reset();
         }
         return result;
     }
     
 protected:
-    VkType value_;
+    VkType value_ = VK_NULL_HANDLE;
 };
 
 class VulkanInstance final : public VkWrapper<VulkanInstance, VkInstance, const VkInstanceCreateInfo&> {
@@ -256,7 +259,7 @@ public:
     }
 
     // Managed samplers, owned by the context's ResourceManager. Defined in VulkanContext.h.
-    static VkResult create(Handle<VulkanSampler>& outSampler, VulkanContext& context, const SamplerDesc& desc);
+    static Result<Handle<VulkanSampler>> create(VulkanContext& context, const SamplerDesc& desc);
 
     static VkResult createWithAddressMode(std::unique_ptr<VulkanSampler>& outSampler,
                                           VkSamplerAddressMode addressMode,
@@ -266,14 +269,12 @@ public:
     }
     
     // Shorthands for SamplerDesc with an address mode (and filter)
-    static VkResult createWithAddressMode(Handle<VulkanSampler>& outSampler,
-                                          VulkanContext& context,
-                                          VkSamplerAddressMode addressMode);
+    static Result<Handle<VulkanSampler>> createWithAddressMode(VulkanContext& context,
+                                                               VkSamplerAddressMode addressMode);
     
-    static VkResult createWithModeAndFilter(Handle<VulkanSampler>& outSampler,
-                                            VulkanContext& context,
-                                            VkSamplerAddressMode addressMode,
-                                            VkFilter filter);
+    static Result<Handle<VulkanSampler>> createWithModeAndFilter(VulkanContext& context,
+                                                                 VkSamplerAddressMode addressMode,
+                                                                 VkFilter filter);
 
     static VkResult createWithModeAndFilter(std::unique_ptr<VulkanSampler>& outSampler,
                                             VkSamplerAddressMode addressMode,

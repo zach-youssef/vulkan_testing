@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/Contract.h"
+#include "core/Result.h"
 #include "graph/RenderGraph.h"
 #include "resources/Buffer.h"
 #include "resources/Image.h"
@@ -22,18 +24,21 @@ public:
         });
     }
 
-    void record(RecordContext& context) override {
-        const VkExtent2D extent = graph_->imageExtent(image_, context.frameIndex);
-        const VkFormat format = graph_->imageFormat(image_);
-        const VkDeviceSize size = Image::bytesPerPixel(format) * extent.width * extent.height;
-
+    // (Re)creates the frame's buffer when the image's size changed
+    Result<void> prepareFrame(FrameContext& context) override {
+        const VkDeviceSize size = frameSize(context.frameIndex);
         auto& buffer = buffers_[context.frameIndex];
         if (!buffer || buffer->getSize() != size) {
             // The frame slot's previous copy has finished (the slot was waited for)
-            VK_SUCCESS_OR_THROW(Buffer<uint8_t>::create(buffer, context.context, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-                                "Failed to create readback buffer");
+            TRY_ASSIGN(buffer, Buffer<uint8_t>::create(context.context, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
         }
+        return {};
+    }
+
+    void record(RecordContext& context) override {
+        const VkExtent2D extent = graph_->imageExtent(image_, context.frameIndex);
+        auto& buffer = buffers_[context.frameIndex];
 
         VkBufferImageCopy region{};
         region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -42,23 +47,29 @@ public:
         vkCmdCopyImageToBuffer(context.commandBuffer, graph_->image(image_, context.frameIndex)->getImage(),
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer->getBuffer(), 1, &region);
         lastFrame_ = context.frameIndex;
-        lastSize_ = size;
+        lastSize_ = frameSize(context.frameIndex);
     }
 
-    // The pixels copied by the most recent frame. Waits for the graph's submitted work.
-    std::vector<uint8_t> pixels() {
+    // The pixels copied by the most recent frame. Waits for the graph's submitted work. Calling it
+    // before the node has run is a contract violation.
+    Result<std::vector<uint8_t>> pixels() {
         if (!lastFrame_) {
-            throw std::logic_error("ReadbackNode hasn't run yet");
+            contractViolation("ReadbackNode hasn't run yet");
         }
-        graph_->waitIdle();
+        TRY(graph_->waitIdle());
         std::vector<uint8_t> pixels(lastSize_);
-        buffers_[*lastFrame_]->mapAndExecute(0, lastSize_, [&pixels](void* data) {
+        TRY(buffers_[*lastFrame_]->mapAndExecute(0, lastSize_, [&pixels](void* data) {
             memcpy(pixels.data(), data, pixels.size());
-        });
+        }));
         return pixels;
     }
 
 private:
+    VkDeviceSize frameSize(uint32_t frameIndex) {
+        const VkExtent2D extent = graph_->imageExtent(image_, frameIndex);
+        return Image::bytesPerPixel(graph_->imageFormat(image_)) * extent.width * extent.height;
+    }
+
     ImageId image_;
     RenderGraph* graph_ = nullptr;
     PerFrame<Handle<Buffer<uint8_t>>> buffers_;

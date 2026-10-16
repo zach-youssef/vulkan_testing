@@ -15,7 +15,7 @@ inline std::string testShaderDir() {
 }
 
 // A test shader, e.g. testShader(ctx, "pattern.comp"). The context's shader library must search
-// testShaderDir() (the shared GPU test context's does).
+// testShaderDir() (the shared GPU test context's does). A shader that fails to load fails the test.
 inline Handle<Shader> testShader(VulkanContext& ctx, const std::string& name) {
-    return ctx.shaders().get(name);
+    return ctx.shaders().get(name).value();
 }

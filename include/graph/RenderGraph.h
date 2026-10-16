@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/Contract.h"
+#include "core/Result.h"
 #include "core/VkTypes.h"
 #include "core/VkUtil.h"
 #include "core/VulkanContext.h"
@@ -34,10 +36,20 @@
                                        FixedExtent{{512, 512}});
     NodeId copy = graph.add<DispatchNode>("copy", material);
     graph.node(copy).read(texture, Access::SampledRead).write(output, Access::StorageWrite);
-    graph.execute();                              // one frame
+    TRY(graph.execute());                         // one frame
 
  Each execute() begins and ends a frame on the context (VulkanContext::beginFrame/advanceFrame),
  waiting only for the frame slot it reuses.
+
+ Errors:
+    - Misusing the API while building the graph (unknown ids, read() with a writing access, a
+      surface-relative image without a surface, ...) is a contract violation.
+    - compile() and execute() return Results. A graph that can't be compiled (cycles, missing
+      image usage, format mismatches, undeclared writes, ...) fails with ErrorCode::InvalidGraph,
+      and so do failures to create its resources or its materials' pipelines (with their own
+      codes). These happen before anything is submitted, so the frame can be retried, e.g. after
+      fixing a shader. Failures after the frame's work started being submitted (a lost device, a
+      failed submission or present) leave the frame unfinished: treat them as fatal.
 
  Resources:
     - Imported images rest in a declared state between frames: the graph expects them in it at the
@@ -108,8 +120,9 @@ public:
     RenderGraph& operator=(const RenderGraph&) = delete;
 
     ~RenderGraph() {
-        // The graph's resources and command buffers may still be in use
-        waitIdle();
+        // The graph's resources and command buffers may still be in use. If waiting fails the device
+        // is lost, and nothing is in use anymore.
+        (void)waitIdle();
     }
 
     VulkanContext& context() { return *context_; }
@@ -158,7 +171,7 @@ public: // Nodes
     NodeT& nodeAs(NodeId id) {
         auto* node = dynamic_cast<NodeT*>(nodeRecord(id).node.get());
         if (!node) {
-            throw std::invalid_argument("Node '" + nodeRecord(id).name + "' is not of the requested type");
+            contractViolation("Node '" + nodeRecord(id).name + "' is not of the requested type");
         }
         return *node;
     }
@@ -199,10 +212,10 @@ public: // Resources
         record.name = std::move(name);
         record.kind = BufferKind::Imported;
         record.perFrame = buffer.isPerFrame();
-        record.resolveImported = [buffer](uint32_t frame) -> VkBuffer {
+        record.resolveImported = [buffer, name = record.name](uint32_t frame) -> VkBuffer {
             auto handle = buffer.get(frame);
             if (!handle) {
-                throw GraphError("Imported buffer is unbound");
+                contractViolation("Imported buffer '" + name + "' is unbound");
             }
             return handle->getBuffer();
         };
@@ -217,8 +230,8 @@ public: // Resources
     ImageId createImage(std::string name, FrameMode mode, VkFormat format, ImageExtent extent,
                         VkImageUsageFlags extraUsage = 0) {
         if (std::holds_alternative<SurfaceRelative>(extent) && !swapchain_ && !headlessSurfaceExtent_) {
-            throw GraphError("Image '" + name + "' is surface relative, but the graph has no surface (headless graphs "
-                             "can set one's extent with setSurfaceExtent)");
+            contractViolation("Image '" + name + "' is surface relative, but the graph has no surface (headless graphs "
+                              "can set one's extent with setSurfaceExtent)");
         }
         ImageRecord record;
         record.name = std::move(name);
@@ -244,36 +257,36 @@ public: // Resources
     }
 
     // The image used in a frame. Created images exist once the graph has compiled (compile(), or
-    // the first execute()). Not available for the surface; see surfaceImageView().
+    // the first execute()); asking for one earlier, or for the surface, is a contract violation.
     Handle<Image> image(ImageId id, uint32_t frameIndex) {
         auto& record = imageRecord(id);
         switch (record.kind) {
             case ImageKind::Imported: {
                 auto image = record.resolveImported(frameIndex);
                 if (!image) {
-                    throw GraphError("Imported image '" + record.name + "' is unbound");
+                    contractViolation("Imported image '" + record.name + "' is unbound");
                 }
                 return image;
             }
             case ImageKind::Created:
                 if (record.perFrame ? !record.perFrameImages : !record.shared) {
-                    throw GraphError("Image '" + record.name + "' is created when the graph compiles");
+                    contractViolation("Image '" + record.name + "' is created when the graph compiles");
                 }
                 return record.perFrame ? (*record.perFrameImages)[frameIndex] : record.shared;
             case ImageKind::Surface:
                 break;
         }
-        throw GraphError("The surface image is only available while recording");
+        contractViolation("The surface image is only available while recording");
     }
 
     // A graph-created buffer used in a frame (exists once the graph has compiled)
     Handle<Buffer<uint8_t>> createdBuffer(BufferId id, uint32_t frameIndex) {
         auto& record = bufferRecord(id);
         if (record.kind != BufferKind::Created) {
-            throw GraphError("Buffer '" + record.name + "' was imported");
+            contractViolation("Buffer '" + record.name + "' was imported");
         }
         if (record.perFrame ? !record.perFrameBuffers : !record.shared) {
-            throw GraphError("Buffer '" + record.name + "' is created when the graph compiles");
+            contractViolation("Buffer '" + record.name + "' is created when the graph compiles");
         }
         return record.perFrame ? (*record.perFrameBuffers)[frameIndex] : record.shared;
     }
@@ -348,10 +361,10 @@ public: // Surface
     // frame, as a window resize does. Graphs with a surface follow its swapchain instead.
     void setSurfaceExtent(VkExtent2D extent) {
         if (swapchain_) {
-            throw std::logic_error("The graph's surface extent is its swapchain's");
+            contractViolation("The graph's surface extent is its swapchain's");
         }
         if (extent.width == 0 || extent.height == 0) {
-            throw std::invalid_argument("A surface extent can't be empty");
+            contractViolation("A surface extent can't be empty");
         }
         headlessSurfaceExtent_ = extent;
     }
@@ -390,24 +403,38 @@ public: // Surface
     }
 
 public: // Compiling and running
-    // Compiles the plan for the enabled nodes (or reuses a cached one) and creates the graph's
-    // resources. execute() does this when needed; calling it explicitly reports errors early.
-    void compile() {
-        prepare();
-        currentPlan();
+    // Compiles the plan for the enabled nodes (or reuses a cached one), creates the graph's
+    // resources and builds its materials' pipelines. execute() does this when needed; calling it
+    // explicitly reports errors early.
+    Result<void> compile() {
+        TRY(prepare());
+        TRY(currentPlan());
+        return {};
     }
 
-    // Runs one frame: waits for the frame slot's previous use, acquires the surface image if the
-    // plan uses it, runs CPU nodes and records and submits GPU nodes in order (updating materials
-    // before the first submission using them), presents, and advances the context's frame.
-    FrameResult execute() {
-        context_->beginFrame();
+    // Runs one frame: waits for the frame slot's previous use, prepares the enabled GPU nodes
+    // (Node::prepareFrame), acquires the surface image if the plan uses it, runs CPU nodes and
+    // records and submits GPU nodes in order (updating materials before the first submission using
+    // them), presents, and advances the context's frame.
+    Result<FrameResult> execute() {
+        TRY(context_->beginFrame());
         const uint32_t frame = context_->currentFrame();
         FrameResult result;
 
-        prepare();
-        const CompiledGraph& plan = currentPlan();
+        TRY(prepare());
+        TRY_ASSIGN(const CompiledGraph* plan, currentPlan());
         refreshEntries(frame);
+
+        FrameContext frameContext{*context_, *this, frame, context_->frameNumber(),
+                                  surfaceExtent()};
+
+        // Work that can fail, before anything is acquired or submitted
+        for (uint32_t node : plan->order) {
+            auto& record = nodes_[node];
+            if (record.node->kind() != NodeKind::Cpu) {
+                TRY(record.node->prepareFrame(frameContext).withContext("preparing node '" + record.name + "'"));
+            }
+        }
 
         // A frame executed by something else (another graph) may still be using imported resources
         const bool continuous = lastFrameNumber_ && *lastFrameNumber_ + 1 == context_->frameNumber();
@@ -418,12 +445,12 @@ public: // Compiling and running
         }
 
         Swapchain::Acquired acquired{};
-        if (plan.usesSurface) {
-            acquired = swapchain_->acquire(frame);
+        if (plan->usesSurface) {
+            TRY_ASSIGN(acquired, swapchain_->acquire(frame));
             if (acquired.result == VK_ERROR_OUT_OF_DATE_KHR) {
                 result.skipped = true;
                 result.surfaceOutOfDate = true;
-                context_->advanceFrame();
+                TRY(context_->advanceFrame());
                 return result;
             }
             result.surfaceOutOfDate = acquired.result == VK_SUBOPTIMAL_KHR;
@@ -435,43 +462,40 @@ public: // Compiling and running
         auto& slot = slots_[frame];
         for (auto& queue : slot.queues) {
             if (queue.pool) {
-                vkResetCommandPool(context_->device(), queue.pool->get(), 0);
+                VK_TRY(vkResetCommandPool(context_->device(), queue.pool->get(), 0), "Failed to reset command pool");
                 queue.used = 0;
             }
         }
-
-        FrameContext frameContext{*context_, *this, frame, context_->frameNumber(),
-                                  surfaceExtent()};
 
         // Each distinct material is updated once, just before the first submission recording it,
         // so CPU nodes ordered before its nodes have run
         std::set<Material*> updated;
 
-        std::vector<uint64_t> submissionValues(plan.submissions.size(), 0);
-        for (const auto& step : plan.steps) {
+        std::vector<uint64_t> submissionValues(plan->submissions.size(), 0);
+        for (const auto& step : plan->steps) {
             if (step.cpu) {
                 // Host work after the GPU work it depends on
-                for (uint32_t predecessor : plan.predecessors[step.index]) {
-                    int32_t submission = plan.nodeSubmission[predecessor];
+                for (uint32_t predecessor : plan->predecessors[step.index]) {
+                    int32_t submission = plan->nodeSubmission[predecessor];
                     if (submission >= 0) {
-                        context_->wait(plan.submissions[submission].queue, submissionValues[submission]);
+                        TRY(context_->wait(plan->submissions[submission].queue, submissionValues[submission]));
                     }
                 }
                 nodes_[step.index].node->run(frameContext);
                 continue;
             }
-            for (uint32_t node : plan.submissions[step.index].nodes) {
+            for (uint32_t node : plan->submissions[step.index].nodes) {
                 for (auto& material : nodes_[node].materials) {
                     if (updated.insert(material.get()).second) {
                         material->update(frame, frameContext.surfaceExtent);
                     }
                 }
             }
-            submissionValues[step.index] = recordAndSubmit(plan, step.index, slot, frameContext, submissionValues,
-                                                           foreignWork, acquired);
+            TRY_ASSIGN(submissionValues[step.index], recordAndSubmit(*plan, step.index, slot, frameContext,
+                                                                     submissionValues, foreignWork, acquired));
         }
 
-        if (plan.usesSurface) {
+        if (plan->usesSurface) {
             VkSemaphore renderFinished = swapchain_->getRenderFinishedSemaphore(acquired.imageIndex);
             VkSwapchainKHR swapchain = swapchain_->get();
             VkPresentInfoKHR presentInfo{};
@@ -485,18 +509,18 @@ public: // Compiling and running
             if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
                 result.surfaceOutOfDate = true;
             } else {
-                VK_SUCCESS_OR_THROW(presented, "Failed to present swapchain image");
+                VK_TRY(presented, "Failed to present swapchain image");
             }
         }
 
         lastFrameNumber_ = context_->frameNumber();
-        context_->advanceFrame();
+        TRY(context_->advanceFrame());
         return result;
     }
 
     // Blocks until everything this graph submitted has completed (not the whole device)
-    void waitIdle() {
-        context_->wait(submittedPoints_);
+    Result<void> waitIdle() {
+        return context_->wait(submittedPoints_);
     }
 
     // Called with compiler warnings (by default printed to std::cerr)
@@ -505,16 +529,18 @@ public: // Compiling and running
     }
 
     // The current plan, for debugging
-    std::string dumpPlan() {
-        prepare();
-        return currentPlan().describe(lastDesc_);
+    Result<std::string> dumpPlan() {
+        TRY(prepare());
+        TRY_ASSIGN(const CompiledGraph* plan, currentPlan());
+        return plan->describe(lastDesc_);
     }
 
     // The queue the current plan runs a node on; -1 for CPU and disabled nodes
-    int32_t queueOf(NodeId id) {
+    Result<int32_t> queueOf(NodeId id) {
         nodeRecord(id);
-        prepare();
-        return currentPlan().nodeQueue[id.index];
+        TRY(prepare());
+        TRY_ASSIGN(const CompiledGraph* plan, currentPlan());
+        return plan->nodeQueue[id.index];
     }
 
     // Number of plans compiled so far, and cached now (for tests)
@@ -602,28 +628,28 @@ private:
 
     NodeRecord& nodeRecord(NodeId id) {
         if (id.index >= nodes_.size()) {
-            throw std::out_of_range("Unknown node");
+            contractViolation("Unknown node");
         }
         return nodes_[id.index];
     }
 
     ImageRecord& imageRecord(ImageId id) {
         if (id.index >= images_.size()) {
-            throw std::out_of_range("Unknown image");
+            contractViolation("Unknown image");
         }
         return *images_[id.index];
     }
 
     BufferRecord& bufferRecord(BufferId id) {
         if (id.index >= buffers_.size()) {
-            throw std::out_of_range("Unknown buffer");
+            contractViolation("Unknown buffer");
         }
         return *buffers_[id.index];
     }
 
     void requireSurface() {
         if (!swapchain_) {
-            throw std::logic_error("The graph has no surface");
+            contractViolation("The graph has no surface");
         }
     }
 
@@ -728,8 +754,9 @@ private:
         }
     }
 
-    // Creates (or recreates) graph-owned resources whose usage or size changed
-    void prepare() {
+    // Creates (or recreates) graph-owned resources whose usage or size changed. If creating one
+    // fails, the next call tries again.
+    Result<void> prepare() {
         if (swapchain_) {
             const VkExtent2D extent = swapchain_->getExtent();
             if (swapchain_->getFormat() != surfaceFormat_) {
@@ -742,13 +769,11 @@ private:
         }
         if (!structureDirty_ && realizedSurfaceExtent_.width == surfaceExtent_.width
             && realizedSurfaceExtent_.height == surfaceExtent_.height) {
-            return;
+            return {};
         }
         if (structureDirty_) {
             plans_.clear();
-            structureDirty_ = false;
         }
-        realizedSurfaceExtent_ = surfaceExtent_;
 
         // Usage from every node's declared accesses, enabled or not, so toggling never reallocates
         std::vector<VkImageUsageFlags> imageUsage(images_.size(), 0);
@@ -777,29 +802,22 @@ private:
             retireImage(record);
             record.usage = usage;
             record.realizedExtent = extent;
-            auto create = [this, format = record.format, extent, usage, name = record.name]() {
-                Handle<Image> image;
-                if (usage == 0) {
-                    throw GraphError("Image '" + name + "' is never used");
-                }
-                VK_SUCCESS_OR_THROW(Image::create(image, *context_, extent.width, extent.height, format,
-                                                  VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                                  aspectFor(format)),
-                                    "Failed to create graph image");
-                return image;
-            };
             if (usage == 0) {
                 continue;   // Unused images are created once something uses them
             }
+            auto create = [this, format = record.format, extent, usage, name = record.name]() {
+                return Image::create(*context_, extent.width, extent.height, format, VK_IMAGE_TILING_OPTIMAL, usage,
+                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, aspectFor(format))
+                    .withContext("creating graph image '" + name + "'");
+            };
             if (record.perFrame) {
-                record.perFrameImages = std::make_unique<PerFrame<Handle<Image>>>(*context_, [create](uint32_t) {
-                    return create();
-                });
+                TRY_ASSIGN(auto images, PerFrame<Handle<Image>>::create(*context_, [create](uint32_t) { return create(); }));
+                record.perFrameImages = std::make_unique<PerFrame<Handle<Image>>>(std::move(images));
                 for (auto& state : *record.frameStates) {
                     state = ResourceSyncState::forImage();
                 }
             } else {
-                record.shared = create();
+                TRY_ASSIGN(record.shared, create());
                 record.sharedState = ResourceSyncState::forImage();
             }
         }
@@ -815,24 +833,27 @@ private:
             }
             retireBuffer(record);
             record.usage = usage;
-            auto create = [this, size = record.size, usage, memory = record.memory]() {
-                Handle<Buffer<uint8_t>> buffer;
-                VK_SUCCESS_OR_THROW(Buffer<uint8_t>::create(buffer, *context_, size, usage, memory),
-                                    "Failed to create graph buffer");
-                return buffer;
+            auto create = [this, size = record.size, usage, memory = record.memory, name = record.name]() {
+                return Buffer<uint8_t>::create(*context_, size, usage, memory)
+                    .withContext("creating graph buffer '" + name + "'");
             };
             if (record.perFrame) {
-                record.perFrameBuffers = std::make_unique<PerFrame<Handle<Buffer<uint8_t>>>>(*context_, [create](uint32_t) {
+                TRY_ASSIGN(auto buffers, PerFrame<Handle<Buffer<uint8_t>>>::create(*context_, [create](uint32_t) {
                     return create();
-                });
+                }));
+                record.perFrameBuffers = std::make_unique<PerFrame<Handle<Buffer<uint8_t>>>>(std::move(buffers));
                 for (auto& state : *record.frameStates) {
                     state = ResourceSyncState::forBuffer();
                 }
             } else {
-                record.shared = create();
+                TRY_ASSIGN(record.shared, create());
                 record.sharedState = ResourceSyncState::forBuffer();
             }
         }
+        // Only now, so a failure above is retried
+        structureDirty_ = false;
+        realizedSurfaceExtent_ = surfaceExtent_;
+        return {};
     }
 
     // Destroys a created image once the work that may use it has finished
@@ -883,8 +904,10 @@ private:
         return desc;
     }
 
-    // Checks what the compiler can't see: usage flags, formats, and images known twice
-    void validate(const CompiledGraph& plan) {
+    // Checks what the compiler can't see (usage flags, formats, images known twice, undeclared
+    // writes) and builds the plan's materials' pipelines
+    Result<void> validate(const CompiledGraph& plan) {
+        using detail::graphError;
         std::map<Image*, std::string> seen;
         for (uint32_t i = 0; i < images_.size(); ++i) {
             auto& record = *images_[i];
@@ -894,19 +917,19 @@ private:
             Image* resolved = image({i}, context_->currentFrame()).get();
             auto [it, inserted] = seen.emplace(resolved, record.name);
             if (!inserted) {
-                throw GraphError("Images '" + it->second + "' and '" + record.name + "' are the same image; import it once "
-                                 "(materials' entries are matched to imported images by handle)");
+                return graphError("Images '" + it->second + "' and '" + record.name + "' are the same image; import it once "
+                                  "(materials' entries are matched to imported images by handle)");
             }
         }
         for (uint32_t node : plan.order) {
             const auto& record = nodes_[node];
             for (const auto& material : record.materials) {
                 if (auto error = material->undeclaredWrites(); !error.empty()) {
-                    throw GraphError("Node '" + record.name + "': " + error);
+                    return graphError("Node '" + record.name + "': " + error);
                 }
             }
             if (record.node->kind() == NodeKind::Graphics && !record.target) {
-                throw GraphError("Graphics node '" + record.name + "' has no render target (see NodeBuilder::renderTo)");
+                return graphError("Graphics node '" + record.name + "' has no render target (see NodeBuilder::renderTo)");
             }
             for (const auto& use : record.uses) {
                 if (!use.image) {
@@ -921,9 +944,9 @@ private:
                 }
                 const VkImageUsageFlags required = requiredImageUsage(use.access);
                 if ((usage & required) != required) {
-                    throw GraphError("Node '" + record.name + "' uses image '" + image.name + "' with access "
-                                     + accessName(use.access) + ", which needs usage " + string_VkImageUsageFlags(required)
-                                     + " the image wasn't created with");
+                    return graphError("Node '" + record.name + "' uses image '" + image.name + "' with access "
+                                      + accessName(use.access) + ", which needs usage " + string_VkImageUsageFlags(required)
+                                      + " the image wasn't created with");
                 }
             }
             if (record.target) {
@@ -931,13 +954,17 @@ private:
                 for (const auto& material : record.materials) {
                     auto materialFormats = material->attachmentFormats();
                     if (materialFormats && !(*materialFormats == target)) {
-                        throw GraphError("Node '" + record.name + "' draws with a material built for attachment formats "
-                                         + materialFormats->describe() + " into a target with formats "
-                                         + target.describe());
+                        return graphError("Node '" + record.name + "' draws with a material built for attachment formats "
+                                          + materialFormats->describe() + " into a target with formats "
+                                          + target.describe());
                     }
                 }
             }
+            for (const auto& material : record.materials) {
+                TRY(material->ensurePipeline().withContext("building a pipeline of node '" + record.name + "'"));
+            }
         }
+        return {};
     }
 
     FrameBinding<DescriptorEntry> graphEntry(bool image, uint32_t index, DescriptorType type) {
@@ -961,7 +988,7 @@ private:
             auto& entry = (*entries.collection)[frame];
             if (entries.image) {
                 if (images_[entries.index]->kind == ImageKind::Surface) {
-                    throw GraphError("The surface image has no descriptor entries");
+                    contractViolation("The surface image has no descriptor entries");
                 }
                 Handle<Image> current = image({entries.index}, frame);
                 if (!entry || entry->image() != current) {
@@ -996,7 +1023,7 @@ private:
             }
             auto first = collection->empty() ? Handle<DescriptorEntry>() : (*collection)[0];
             if (!first) {
-                throw GraphError("Material " + name + " has no descriptor entry");
+                contractViolation("Material " + name + " has no descriptor entry");
             }
             if (first->type() == DescriptorType::Sampler) {
                 return std::nullopt;
@@ -1024,7 +1051,7 @@ private:
 
         auto entry = binding.entry.shared();
         if (!entry) {
-            throw GraphError("Material " + name + " has no descriptor entry");
+            contractViolation("Material " + name + " has no descriptor entry");
         }
         switch (entry->type()) {
             case DescriptorType::Sampler:
@@ -1062,18 +1089,19 @@ private:
         }
     }
 
-    const CompiledGraph& currentPlan() {
+    // The plan for the enabled nodes, compiled (and validated) unless cached
+    Result<const CompiledGraph*> currentPlan() {
         std::vector<bool> enabled;
         for (const auto& node : nodes_) {
             enabled.push_back(node.enabled);
         }
         auto it = plans_.find(enabled);
         if (it != plans_.end()) {
-            return it->second;
+            return &it->second;
         }
         lastDesc_ = describe();
-        CompiledGraph plan = compileGraph(lastDesc_);
-        validate(plan);
+        TRY_ASSIGN(CompiledGraph plan, compileGraph(lastDesc_));
+        TRY(validate(plan));
         ++compileCount_;
         for (const auto& warning : plan.warnings) {
             if (warningHandler_) {
@@ -1082,33 +1110,34 @@ private:
                 std::cerr << "[RenderGraph warning] " << warning << std::endl;
             }
         }
-        return plans_.emplace(std::move(enabled), std::move(plan)).first->second;
+        return &plans_.emplace(std::move(enabled), std::move(plan)).first->second;
     }
 
-    VkCommandBuffer nextCommandBuffer(FrameSlot& slot, uint32_t queue) {
+    Result<VkCommandBuffer> nextCommandBuffer(FrameSlot& slot, uint32_t queue) {
         auto& entry = slot.queues[queue];
         if (!entry.pool) {
-            entry.pool = context_->createCommandPool(queue, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
+            TRY_ASSIGN(entry.pool, context_->createCommandPool(queue, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT));
         }
         if (entry.used == entry.buffers.size()) {
-            entry.buffers.push_back(entry.pool->allocateOne());
+            TRY_ASSIGN(VkCommandBuffer buffer, entry.pool->allocateOne());
+            entry.buffers.push_back(buffer);
         }
         return entry.buffers[entry.used++];
     }
 
-    uint64_t recordAndSubmit(const CompiledGraph& plan, uint32_t submissionIndex, FrameSlot& slot,
+    Result<uint64_t> recordAndSubmit(const CompiledGraph& plan, uint32_t submissionIndex, FrameSlot& slot,
                              FrameContext& frameContext, const std::vector<uint64_t>& submissionValues,
                              const std::optional<VulkanContext::TimelinePoints>& foreignWork,
                              const Swapchain::Acquired& acquired) {
         const auto& submission = plan.submissions[submissionIndex];
         const uint32_t queue = submission.queue;
         const uint32_t frame = frameContext.frameIndex;
-        VkCommandBuffer commandBuffer = nextCommandBuffer(slot, queue);
+        TRY_ASSIGN(VkCommandBuffer commandBuffer, nextCommandBuffer(slot, queue));
 
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        VK_SUCCESS_OR_THROW(vkBeginCommandBuffer(commandBuffer, &beginInfo), "Failed to begin command buffer");
+        VK_TRY(vkBeginCommandBuffer(commandBuffer, &beginInfo), "Failed to begin command buffer");
 
         // The universal descriptor set, for every material recorded here
         auto& heap = context_->descriptors();
@@ -1124,7 +1153,7 @@ private:
                 return;
             }
             if (value == TimelinePoint::kPendingValue) {
-                throw std::logic_error("Render graph waited on work that wasn't submitted yet");
+                contractViolation("Render graph waited on work that wasn't submitted yet");
             }
             auto& wait = waits[waitQueue];
             wait.first = std::max(wait.first, value);
@@ -1283,7 +1312,7 @@ private:
         }
         recordBarriers(finalBarriers);
 
-        VK_SUCCESS_OR_THROW(vkEndCommandBuffer(commandBuffer), "Failed to record command buffer");
+        VK_TRY(vkEndCommandBuffer(commandBuffer), "Failed to record command buffer");
 
         VulkanContext::SubmitBatch batch;
         VkCommandBufferSubmitInfo commandBufferInfo{};
@@ -1312,7 +1341,7 @@ private:
             info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
             batch.signals.push_back(info);
         }
-        const uint64_t value = context_->submit(queue, batch);
+        TRY_ASSIGN(const uint64_t value, context_->submit(queue, batch));
         submittedPoints_[queue] = value;
         for (auto* state : touched) {
             state->resolvePending(queue, value);
@@ -1406,7 +1435,7 @@ private:
 
 inline NodeBuilder& NodeBuilder::read(ImageId image, Access access, VkPipelineStageFlags2 shaderStages) {
     if (accessInfo(access, 0).write) {
-        throw GraphError(std::string("read() with writing access ") + accessName(access) + "; use write()");
+        contractViolation(std::string("read() with writing access ") + accessName(access) + "; use write()");
     }
     graph_->imageRecord(image);
     graph_->nodes_[node_].uses.push_back({true, image.index, access, shaderStages, false});
@@ -1416,7 +1445,7 @@ inline NodeBuilder& NodeBuilder::read(ImageId image, Access access, VkPipelineSt
 
 inline NodeBuilder& NodeBuilder::write(ImageId image, Access access, VkPipelineStageFlags2 shaderStages) {
     if (!accessInfo(access, 0).write) {
-        throw GraphError(std::string("write() with read-only access ") + accessName(access) + "; use read()");
+        contractViolation(std::string("write() with read-only access ") + accessName(access) + "; use read()");
     }
     graph_->imageRecord(image);
     graph_->nodes_[node_].uses.push_back({true, image.index, access, shaderStages, false});
@@ -1426,7 +1455,7 @@ inline NodeBuilder& NodeBuilder::write(ImageId image, Access access, VkPipelineS
 
 inline NodeBuilder& NodeBuilder::read(BufferId buffer, Access access, VkPipelineStageFlags2 shaderStages) {
     if (accessInfo(access, 0).write) {
-        throw GraphError(std::string("read() with writing access ") + accessName(access) + "; use write()");
+        contractViolation(std::string("read() with writing access ") + accessName(access) + "; use write()");
     }
     graph_->bufferRecord(buffer);
     graph_->nodes_[node_].uses.push_back({false, buffer.index, access, shaderStages, false});
@@ -1436,7 +1465,7 @@ inline NodeBuilder& NodeBuilder::read(BufferId buffer, Access access, VkPipeline
 
 inline NodeBuilder& NodeBuilder::write(BufferId buffer, Access access, VkPipelineStageFlags2 shaderStages) {
     if (!accessInfo(access, 0).write) {
-        throw GraphError(std::string("write() with read-only access ") + accessName(access) + "; use read()");
+        contractViolation(std::string("write() with read-only access ") + accessName(access) + "; use read()");
     }
     graph_->bufferRecord(buffer);
     graph_->nodes_[node_].uses.push_back({false, buffer.index, access, shaderStages, false});
@@ -1447,10 +1476,10 @@ inline NodeBuilder& NodeBuilder::write(BufferId buffer, Access access, VkPipelin
 inline NodeBuilder& NodeBuilder::renderTo(const RenderTarget& target) {
     auto& record = graph_->nodes_[node_];
     if (record.node->kind() != NodeKind::Graphics) {
-        throw GraphError("Only graphics nodes render to targets ('" + record.name + "')");
+        contractViolation("Only graphics nodes render to targets ('" + record.name + "')");
     }
     if (record.target) {
-        throw GraphError("Node '" + record.name + "' already has a render target");
+        contractViolation("Node '" + record.name + "' already has a render target");
     }
     record.target = target;
     for (const auto& attachment : target.color) {
