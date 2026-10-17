@@ -3,23 +3,25 @@
           scribble/core
           "helpers.rkt")
 
-@title{ZGAL: shader interfaces and render graphs for the Vulkan wrapper}
+@title{ZGAL: shaders and render graphs for the Vulkan wrapper}
 
-ZGAL (Zach's Graphics Application Language) is a small language for the part of a shader that C++ has to agree with: the structs in
-buffers, a material's bindings and push constants, vertex formats, and what one stage passes to the
-next. A @tt{.zgal} file declares them once, and its compiler generates both sides: a C++ header
-for the wrapper (@tt{include/}) and complete GLSL shaders, each the shader's own code (its
-@deftech{body}) preceded by its material's interface. The @tt{.zgal} file is the source of truth,
-so the shaders and the C++ can't disagree about a binding's order, a field's offset or a vertex
-attribute's location.
+ZGAL (Zach's Graphics Application Language) is a small language for a Vulkan application's
+shaders and render graphs. A @tt{.zgal} file declares a material's interface (the structs in its
+buffers, its bindings and push constants, its vertex format, what one stage passes to the next)
+once, and its shaders in an expression language. The compiler generates both sides: complete GLSL
+shaders, and a C++ header for the wrapper (@tt{include/}) with a class per material. The
+@tt{.zgal} file is the source of truth, so the shaders and the C++ can't disagree about a
+binding's order, a field's offset or a vertex attribute's location, and bindings' accesses, which
+the render graph synchronizes on, are inferred from what the shaders do.
 
 A @tt{.zgal} file can also declare render graphs (@secref["graphs"]): their parameters, inputs,
 resources, materials and nodes. The compiler generates a @tt{build()} function adding them to a
 @tt{RenderGraph}, so C++ supplies only what changes at runtime: meshes, imported images and
-per-frame values.
+per-frame values. Functions that don't use textures are also compiled to C++, so the CPU and the
+shaders can share code.
 
-ZGAL is written in Racket (@tt{dsl/}). It describes interfaces and graphs; shader bodies are still
-GLSL. Later stages are planned to describe shader bodies and application state (see
+ZGAL is written in Racket (@tt{dsl/}). Shaders can also still be written in GLSL, with only their
+interface in ZGAL (@secref["glsl"]). A later stage is planned to describe application state (see
 @secref["roadmap"]).
 
 This document is built from the compiler: every example is compiled while it builds, and the
@@ -32,52 +34,41 @@ generated code it shows is the compiler's actual output. Build it with @tt{make 
 @section[#:tag "tour"]{A first material}
 
 The scene example's tonemap pass reads the HDR image through a sampler, multiplies it by an
-exposure and maps it to the display. Its interface, in @tt{examples/scene/scene.zgal}:
+exposure and maps it to the display with an ACES curve, drawing a triangle that covers the screen.
+In @tt{examples/scene/scene.zgal}:
 
-@(define tonemap-source #<<ZGAL
-(graphics-material Tonemap
-  (shaders "shaders/tonemap.vert" "shaders/tonemap.frag")
-  (bindings
-   (hdr texture #:stages (fragment))
-   (hdrSampler sampler))
-  (push
-   (exposure float))
-  (varyings
-   (uv vec2))
-  (outputs
-   (outColor vec4)))
-ZGAL
-)
-@(define tonemap-bodies
-   (hash "shaders/tonemap.vert" (repository-file "examples/scene/shaders/tonemap.vert")
-         "shaders/tonemap.frag" (repository-file "examples/scene/shaders/tonemap.frag")))
+@(define tonemap-source
+   (string-append
+    (repository-excerpt "examples/scene/scene.zgal" #:from #rx"^;; Krzysztof Narkowicz" #:to #rx"0[.]14[)][)] 0[.]0 1[.]0[)][)]$")
+    "\n\n"
+    (repository-excerpt "examples/scene/scene.zgal" #:from #rx"^[(]graphics-material Tonemap" #:to #rx"exposure[)][)] 1[.]0[)][)][)]$")))
 
 @(zgal-source tonemap-source)
 
-The material has two shaders, two bindings (a texture used by the fragment shader, and a sampler),
-a push constant, a value the vertex shader passes to the fragment shader, and one colour output.
-The fragment shader's body uses them by name:
+The material has two bindings (a texture and a sampler), a push constant, a value the vertex shader
+passes to the fragment shader (a varying), and one colour output. Its @racket[vertex] and
+@racket[fragment] clauses are its shaders: expressions using those names. The vertex shader gives
+its results (the position, and every varying), and the fragment shader's value is its output.
+@tt{acesFilmic} is a function of the file, which any shader can call.
 
-@(file-excerpt "examples/scene/shaders/tonemap.frag" #:from #rx"^void main")
+The compiler generates a GLSL shader per stage, the interface followed by the body:
 
-Bindings and push constants are used through @tt{name()} accessors, and varyings and outputs as the
-variables they are. The compiler writes everything before the body:
+@(generated-file tonemap-source "Tonemap.frag")
 
-@(generated-file tonemap-source "tonemap.frag" #:bodies tonemap-bodies)
+The @tt{#line} directives make glslc report errors at the line of the @tt{.zgal} file they came
+from (see @secref["errors"]). The C++ header declares a @tt{Tonemap} class deriving from
+@tt{GraphicsMaterial}. It loads exactly the shaders generated for it, takes its bindings by name
+(with the stages using them, inferred from the shaders), and asks for its push constants through
+@tt{writePush}:
 
-The @tt{#line} directives make glslc report errors at the line they came from: in the
-@tt{.zgal} file for the interface, and in the body file for the body (see @secref["errors"]).
+@(generated-file tonemap-source "example.zgal.h" #:from #rx"struct Bindings" #:to #rx"^    };")
+@(generated-file tonemap-source "example.zgal.h" #:from #rx"Fills the push constants" #:to #rx"writePush")
 
-On the C++ side, the generated header declares a @tt{Tonemap} class deriving from
-@tt{GraphicsMaterial}. It loads exactly the shaders it was generated with, takes its bindings by
-name, and asks for its push constants through @tt{writePush}:
+@tt{acesFilmic} uses no textures, so it's compiled to C++ too, for the CPU to use:
 
-@(generated-file tonemap-source "example.zgal.h" #:bodies tonemap-bodies
-                 #:from #rx"struct Bindings" #:to #rx"^    };")
-@(generated-file tonemap-source "example.zgal.h" #:bodies tonemap-bodies
-                 #:from #rx"Fills the push constants" #:to #rx"writePush")
+@(generated-file tonemap-source "example.zgal.h" #:from #rx"^inline glm::vec3 acesFilmic" #:to #rx"^}")
 
-C++ can subclass it to supply the push constants, and create it from the shaders
+C++ can subclass a material to supply its push constants, and create it from the shaders
 @tt{loadShaders} finds in the context's shader library, as this GPU test does with another
 material:
 
@@ -91,7 +82,7 @@ per-frame input (@secref["graphs"]):
 @(file-excerpt "examples/scene/scene.zgal" #:from #rx"[(]material tonemap Tonemap" #:to #rx"#:push [(][(]exposure exposure")
 
 Nothing else describes the interface. Adding a binding means adding it to the @tt{.zgal} file,
-which gives the shaders its accessor and the C++ a member of @tt{Bindings} to fill (creating the
+which gives the shaders its name and the C++ a member of @tt{Bindings} to fill (creating the
 material without an entry for it is a contract violation), or a graph a binding to give.
 
 @; -----------------------------------------------------------------------------------------------
@@ -147,15 +138,18 @@ Errors are printed as @tt{file:line:column: error: message [id]} and the exit st
 @subsection{Syntax and names}
 
 A @tt{.zgal} file is a sequence of s-expressions: @racket[struct], @racket[vertex-format],
-@racket[graphics-material], @racket[compute-material] and @racket[graph] forms, in any order except
-that anything is declared before it's used. Comments start with @tt{;} and run to the end of the
+@racket[define] (functions and constants, @secref["functions"]), @racket[graphics-material],
+@racket[compute-material] and @racket[graph] forms, in any order except that anything is declared
+before it's used. Comments start with @tt{;} and run to the end of the
 line. The reader only reads data: @tt{#lang} and @tt{#reader}, which would run code, are rejected.
 
 @racketgrammar*[
- #:literals (struct vertex-format graphics-material compute-material graph array)
+ #:literals (struct vertex-format define graphics-material compute-material graph array :)
  [file (code:line form ...)]
  [form (struct Name field ...+)
        (vertex-format Name field ...+)
+       (define (name [parameter : type] ...) : type body ...+)
+       (define name expression)
        (graphics-material Name graphics-clause ...)
        (compute-material Name compute-clause ...)
        (graph Name graph-item ...)]
@@ -249,9 +243,11 @@ attribute's location is its position in the format, whichever attributes a mater
 @subsection{@racket[graphics-material]}
 
 @racketgrammar*[
- #:literals (graphics-material shaders vertex-input bindings push varyings outputs flat noperspective smooth)
+ #:literals (graphics-material shaders vertex fragment vertex-input bindings push varyings outputs flat noperspective smooth)
  [graphics-material-form (graphics-material Name graphics-clause ...)]
- [graphics-clause (shaders vertex-path fragment-path)
+ [graphics-clause (vertex body ...)
+                  (fragment body ...)
+                  (shaders glsl-path ...+)
                   (vertex-input Format attribute ...)
                   (bindings binding ...)
                   (push (name type) ...)
@@ -259,20 +255,22 @@ attribute's location is its position in the format, whichever attributes a mater
                   (outputs (name type) ...)]
  [varying (name type) (name type flat) (name type noperspective) (name type smooth)]]
 
-A material drawing with a vertex and a fragment shader. Each clause appears at most once;
-@racket[shaders] and @racket[outputs] are required.
+A material drawing with a vertex and a fragment shader. Each clause appears at most once, and
+@racket[outputs] is required.
 @itemlist[
- @item{@racket[shaders]: the vertex (@tt{.vert}) and fragment (@tt{.frag}) shader bodies, relative
-       to the @tt{.zgal} file.}
+ @item{@racket[vertex], @racket[fragment]: the shaders, written in ZGAL (@secref["bodies"]).}
+ @item{@racket[shaders]: shaders written in GLSL instead (@secref["glsl"]): paths of @tt{.vert}
+       and @tt{.frag} bodies, relative to the @tt{.zgal} file. A material can have one stage in
+       each.}
  @item{@racket[vertex-input]: the vertex buffers' format and the attributes the vertex shader reads
-       (all of them if none are named). The vertex shader gets each attribute as @tt{in} followed
-       by its name (@tt{position} is @tt{inPosition}), at its location in the format. Without
-       @racket[vertex-input] the material reads no vertex buffers, e.g. a fullscreen triangle built
-       from @tt{gl_VertexIndex}.}
+       (all of them if none are named), at their locations in the format. The vertex shader reads
+       an attribute by its name (in GLSL bodies, @tt{in} followed by its name: @tt{inPosition}).
+       Without @racket[vertex-input] the material reads no vertex buffers, e.g. a fullscreen
+       triangle built from the vertex index.}
  @item{@racket[bindings]: the descriptor entries the shaders use (@secref["bindings"]).}
- @item{@racket[push]: push constants after the binding indices. The shaders read them through
-       @tt{name()}; C++ writes them in @tt{writePush}. With the binding indices, they fit in
-       @(number->string push-limit) bytes.}
+ @item{@racket[push]: push constants after the binding indices. The shaders read them by name;
+       C++ writes them in @tt{writePush}, or a graph computes them. With the binding indices, they
+       fit in @(number->string push-limit) bytes.}
  @item{@racket[varyings]: values the vertex shader writes (@tt{out}) and the fragment shader reads
        (@tt{in}), at locations in declaration order. Integer varyings must be @racket[flat];
        @racket[noperspective] interpolates linearly in screen space.}
@@ -283,21 +281,23 @@ A material drawing with a vertex and a fragment shader. Each clause appears at m
 
 The scene example's lit material uses most of them:
 
-@(file-excerpt "examples/scene/scene.zgal" #:from #rx"^[(]graphics-material Lit" #:to #rx"[(]outColor vec4")
+@(file-excerpt "examples/scene/scene.zgal" #:from #rx"^[(]graphics-material Lit" #:to #rx"[(]vec4 [(][+] direct ambient[)] 1[.]0[)][)][)]")
 
 @subsection{@racket[compute-material]}
 
 @racketgrammar*[
- #:literals (compute-material shaders workgroup bindings push)
+ #:literals (compute-material compute shaders workgroup bindings push)
  [compute-material-form (compute-material Name compute-clause ...)]
- [compute-clause (shaders compute-path)
+ [compute-clause (compute body ...)
+                 (shaders glsl-path)
                  (workgroup x)
                  (workgroup x y)
                  (workgroup x y z)
                  (bindings binding ...)
                  (push (name type) ...)]]
 
-A material dispatching a compute shader. @racket[shaders] and @racket[workgroup] are required.
+A material dispatching a compute shader: a @racket[compute] clause (in ZGAL) or a @tt{.comp} in
+@racket[shaders] (in GLSL). @racket[workgroup] is required.
 @racket[workgroup] is the shader's local size (omitted dimensions are 1): the generated shader
 declares it, and the C++ class exposes it, with @tt{workgroupsFor(x, y, z)} giving the
 workgroups covering that many invocations for @tt{getDispatchDimensions}. Bindings and push
@@ -309,20 +309,21 @@ constants are as for graphics materials, without stages.
   (velocity vec2))
 
 (compute-material Simulate
-  (shaders "simulate.comp")
   (workgroup 256)
   (bindings
-   (particles (buffer-array Particle read-write)))
+   (particles (buffer-array Particle)))
   (push
    (count uint)
-   (dt float)))
+   (dt float))
+  (compute
+   (let* ([i globalInvocationId.x]
+          [p (at particles i)])
+     (when (< i count)
+       (write! (at particles i) (with p #:position (+ p.position (* p.velocity dt))))))))
 ZGAL
 )
-@(define compute-bodies
-   (hash "simulate.comp"
-         "void main() {\n    uint i = gl_GlobalInvocationID.x;\n    if (i >= count()) {\n        return;\n    }\n    particles()[i].position += particles()[i].velocity * dt();\n}\n"))
-@(zgal-example compute-source #:bodies compute-bodies #:show '("simulate.comp"))
-@(generated-file compute-source "example.zgal.h" #:bodies compute-bodies
+@(zgal-example compute-source #:show '("Simulate.comp"))
+@(generated-file compute-source "example.zgal.h"
                  #:from #rx"The compute shader's workgroup size" #:to #rx"ComputeMaterial[(]context")
 
 @subsection[#:tag "bindings"]{Bindings}
@@ -332,44 +333,222 @@ ZGAL
  [binding (name kind) (name kind #:stages (stage ...+))]
  [kind texture
        sampler
-       (storage-image access)
-       (buffer type access)
-       (buffer-array type access)]
+       (storage-image maybe-access)
+       (buffer type maybe-access)
+       (buffer-array type maybe-access)]
+ [maybe-access (code:line) access]
  [access read write read-write]
  [stage vertex fragment]]
 
 A binding is a descriptor entry of the universal descriptor set (@tt{DescriptorHeap}). The
-material pushes the entries' indices, in the bindings' order, and the shaders read them through an
-accessor named after the binding:
+material pushes the entries' indices, in the bindings' order, and the shaders use the binding by
+its name (in GLSL bodies, through an accessor, @tt{name()}):
 
 @tabular[
  #:style 'boxed
  #:sep (hspace 2)
  #:row-properties '(bottom-border ())
  (list
-  (list @bold{Kind} @bold{Entry} @bold{The accessor is} @bold{Render graph access})
+  (list @bold{Kind} @bold{Entry} @bold{In a shader, the binding is} @bold{Render graph access})
   (list @tt{texture} @tt{heap.sampledImage} @tt{texture2D} @tt{SampledRead})
   (list @tt{sampler} @tt{heap.sampler} @tt{sampler} "none")
   (list @tt{(storage-image access)} @tt{heap.storageImage} @tt{image2D} @elem{@tt{StorageRead}, @tt{StorageWrite}, @tt{StorageReadWrite}})
   (list @tt{(buffer type access)} @tt{heap.storageBuffer} "the buffer's value, a type" @elem{@tt{StorageBufferRead}, ...})
   (list @tt{(buffer-array type access)} @tt{heap.storageBuffer} "an unsized array of type" @elem{@tt{StorageBufferRead}, ...}))]
 
-Combine a texture and a sampler in GLSL: @tt{texture(sampler2D(albedo(), albedoSampler()), uv)}.
-Buffer accessors are l-values, so shaders write through them: @tt{particles()[i].velocity = v}.
 There are no uniform buffers: per-frame data goes in a @tt{buffer} binding with a buffer per frame
-in flight (the scene example's @tt{LitMaterial} shows how).
+in flight (a graph's @racket[uniform] makes them).
 
-The access is required for storage images and buffers. It's what the render graph synchronizes on,
-and synchronization validation can't see accesses through the bindless arrays, so a write declared
-as a read is a silent race: declare it accurately. ZGAL declares buffers @tt{readonly} when none
-of the material's buffer bindings is written, but it can't enforce one binding's access while
-another is written (MoltenVK can't alias a @tt{readonly} block with a writable one), and it
-doesn't see which binding a body writes through. The render graph still rejects materials whose
+A storage image's or buffer's access is what the render graph synchronizes on, and
+synchronization validation can't see accesses through the bindless arrays, so a write declared as
+a read would be a silent race. When all of a material's shaders are ZGAL bodies, accesses are
+inferred from what they do (@secref["inference"]), and a declared one must agree. When one is a
+GLSL body, the access is required: declare it accurately. ZGAL declares buffers @tt{readonly}
+when none of the material's buffer bindings is written (MoltenVK can't alias a @tt{readonly}
+block with a writable one, so it's all or none), and the render graph rejects materials whose
 shaders write storage buffers or images when no binding declares such a write.
 
 @racket[#:stages] lists the stages using a graphics material's binding, so the graph synchronizes
-with just those; by default, both. Samplers aren't synchronized and compute bindings are always
-used by the compute stage, so neither takes @racket[#:stages].
+with just those. With ZGAL bodies they're inferred; with GLSL ones they default to both. Samplers
+aren't synchronized and compute bindings are always used by the compute stage, so neither takes
+@racket[#:stages].
+
+@; -----------------------------------------------------------------------------------------------
+@section[#:tag "bodies"]{Shader bodies}
+
+A material's @racket[vertex], @racket[fragment] and @racket[compute] clauses are its shaders,
+written in ZGAL's expression language. Bodies are expressions: values are bound once with
+@racket[let*] and never changed, loops are folds over ranges, and the only effects are writes to
+buffers and images. The compiler checks them, infers what they do to bindings, and lowers them to
+GLSL statements.
+
+@subsection{Stages and results}
+
+@itemlist[
+ @item{A @racket[vertex] body gives its results: @racket[(results #:position p #:varying v ...)],
+       its clip-space position (a @tt{vec4}) and every varying.}
+ @item{A @racket[fragment] body gives @racket[(results #:output v ...)], every output, or, with one
+       output, just its value. A material without outputs (depth only) has an empty
+       @racket[(fragment)].}
+ @item{A @racket[compute] body has no results: it writes buffers and images.}
+]
+A body's last expression (e.g. inside @racket[let*] and @racket[if]) gives its results, so
+@racket[(let* ([c ...]) (results #:position ... ))] is the usual shape.
+
+@subsection{Names}
+
+A body names, besides its own locals:
+@itemlist[
+ @item{the material's bindings: a texture is a @tt{texture2D}, a sampler a @tt{sampler}, a storage
+       image an @tt{image2D}, a @tt{buffer} binding its value, and a @tt{buffer-array} binding an
+       array of its element type;}
+ @item{its push constants, by name;}
+ @item{in a vertex shader, its @racket[vertex-input]'s attributes, by name;}
+ @item{in a fragment shader, the varyings, by name;}
+ @item{the file's constants and functions (@secref["functions"]);}
+ @item{its stage's built-in variables:}
+]
+@(stage-variable-table)
+
+A stage's outputs (a vertex shader's varyings, a fragment shader's outputs) can't be read, and
+locals can't have their names, or the names of bindings, push constants, functions and constants.
+
+Fields and swizzles follow names after dots: @tt{scene.lightDirection}, @tt{albedoRoughness.rgb},
+@tt{p.position.x}. On other expressions, they're functions: @racket[(.rgb (sample hdr s uv))].
+
+@subsection[#:tag "body-expressions"]{Expressions}
+
+@racketgrammar*[
+ #:literals (let* if cond else when unless begin fold sum for range values with at results)
+ [expression literal
+             name
+             (.field expression)
+             (let* ([name expression] ...) body ...+)
+             (let* ([(name ...) expression] ...) body ...+)
+             (if condition expression expression)
+             (cond [condition expression] ... [else expression])
+             (when condition effect ...+)
+             (unless condition effect ...+)
+             (begin effect ... expression)
+             (fold ([accumulator initial] ...+) ([name (range from to)] ...+) expression)
+             (sum ([name (range from to)] ...+) expression)
+             (for ([name (range from to)] ...+) effect ...+)
+             (values expression ...+)
+             (with struct #:field value ...)
+             (at array-or-vector index)
+             (results #:name expression ...)
+             (operator expression ...)
+             (constructor expression ...)
+             (function expression ...)]]
+
+@itemlist[
+ @item{@bold{Literals}: numbers and @tt{#t}/@tt{#f}. Integer literals take the type their context
+       needs, so @racket[(* 2 v)] is a @tt{vec3} when @tt{v} is, and a literal alone is an
+       @tt{int}.}
+ @item{@bold{Types} are GLSL's, and expressions are typed as in GLSL: arithmetic on scalars,
+       vectors and matrices of the same kind (@racket[(* m v)] for a matrix and a vector), with
+       no implicit conversions but literals'. Convert with @racket[(float x)], @racket[(int x)],
+       @racket[(uint x)] and the vector constructors.}
+ @item{@bold{Operators}: @racket[+], @racket[-] (also negation), @racket[*], @racket[/] (n-ary,
+       left to right), @racket[remainder], @racket[bitand], @racket[bitor], @racket[bitxor],
+       @racket[shl], @racket[shr] and @racket[bitnot] on ints and uints, @racket[<], @racket[<=],
+       @racket[>], @racket[>=] on scalars, @racket[=] and @racket[not=], and @racket[and],
+       @racket[or] and @racket[not].}
+ @item{@bold{Constructors}: @racket[vec2] to @racket[vec4] (and @tt{ivec}, @tt{uvec}, @tt{bvec})
+       from scalars and vectors with as many components (or one scalar for all of them),
+       @racket[mat2] to @racket[mat4] from floats, columns, one float (the diagonal) or a matrix,
+       structs from their fields in order, and @racket[(array type element ...)].}
+ @item{@bold{Binding}: @racket[let*] binds in order; @racket[[(a b) e]] binds the values of a
+       @racket[fold] with several accumulators (or of @racket[values]).}
+ @item{@bold{Loops}: @racket[fold] starts its accumulators at their initial values, and for each
+       value of the ranges (nested, the first outermost; @racket[(range from to)] goes up to, and
+       doesn't include, @tt{to}) computes their new values from the body, a single value or
+       @racket[(values ...)]. @racket[sum] adds its body up. @racket[for] runs effects.}
+ @item{@racket[with] is a copy of a struct with some fields replaced:
+       @racket[(with p #:velocity v)].}
+]
+
+@subsection{Effects}
+
+@itemlist[
+ @item{@racket[(write! place value)] writes a buffer binding: its value, or a field or element of
+       it, e.g. @racket[(write! (at particles i) p)] or @racket[(write! result.count n)].}
+ @item{@racket[(store! image texel value)] stores a @tt{vec4} to a storage image at an @tt{ivec2}
+       texel.}
+]
+Effects have no value. In a sequence (a body, @racket[begin], @racket[when], @racket[let*]'s
+body) every expression but the last is an effect.
+
+@subsection{Textures and images}
+
+@tabular[
+ #:style 'boxed
+ #:sep (hspace 2)
+ #:row-properties '(bottom-border ())
+ (list
+  (list @bold{Form} @bold{Value} @bold{GLSL})
+  (list @tt{(sample t s uv)} @tt{vec4} @tt{texture(sampler2D(t, s), uv)})
+  (list @tt{(sample-lod t s uv lod)} @tt{vec4} @tt{textureLod})
+  (list @tt{(fetch t s texel level)} @tt{vec4} @elem{@tt{texelFetch}, at an @tt{ivec2} texel})
+  (list @tt{(sample-compare t s uv reference)} @tt{float} "with a comparison sampler: the fraction of texels passing")
+  (list @tt{(texture-size t level)} @tt{ivec2} @tt{textureSize})
+  (list @tt{(image-load image texel)} @tt{vec4} @tt{imageLoad})
+  (list @tt{(image-size image)} @tt{ivec2} @tt{imageSize})
+  (list @tt{(store! image texel value)} "an effect" @tt{imageStore}))]
+
+@subsection{Built-in functions}
+
+GLSL's, with its overloads (scalars and vectors, and a scalar where GLSL takes one, e.g.
+@racket[(clamp v 0.0 1.0)]):
+
+@(builtin-function-list)
+
+@racket[not] on a bool vector is GLSL's @tt{not}.
+
+@subsection[#:tag "functions"]{Functions and constants}
+
+@racketgrammar*[
+ #:literals (define :)
+ [function (define (name [parameter : type] ...) : result-type body ...+)]
+ [constant (define name expression)]]
+
+Functions and constants are declared at the top level and used by any shader (and function)
+declared after them, so functions can't recurse. A function's parameters and result are any type,
+plus @tt{texture2D}, @tt{sampler} and @tt{image2D} parameters and a @tt{void} result for functions
+that only have effects; it can't name bindings or stage variables (pass them). Constants are
+computed from literals, other constants, constructors, operators and built-in functions.
+
+Shaders get the functions and constants they use. Those that use no textures, images, stage
+variables or effects are also compiled to C++, as @tt{inline} functions and constants over GLM in
+the generated header, so the CPU computes the same thing. The scene example's @tt{SunLight} uses
+@tt{sunDirection} this way. C++ evaluates them with the CPU's floating point, so results agree to
+the GPU's precision, and integer arithmetic exactly.
+
+Metal (through MoltenVK) can't pass storage images to functions, so a function with an
+@tt{image2D} parameter is inlined where it's called, its locals renamed so they can't clash with
+the caller's.
+
+@subsection[#:tag "inference"]{Inferred accesses}
+
+When every shader of a material is a ZGAL body, the compiler infers each binding's use: a storage
+image or buffer is read where the bodies read it (including through functions they pass it to)
+and written where they @racket[write!] or @racket[store!] it, giving its access (@tt{read},
+@tt{write} or @tt{read-write}); and a graphics material's binding is used by the stages naming it.
+A declared access or @racket[#:stages] must say the same. A storage binding no shader uses has no
+access to infer, so it's an error unless declared. The accesses go into the generated C++ like
+declared ones, so the render graph synchronizes exactly what the shaders do.
+
+@subsection{What's generated}
+
+The particles example's simulation, and the shader the compiler generates for it:
+
+@(define particles-source
+   (string-append
+    (repository-excerpt "examples/particles/particles.zgal" #:from #rx"^[(]struct SimParams" #:to #rx"[(]maxLife float[)][)]")
+    "\n\n"
+    (repository-excerpt "examples/particles/particles.zgal" #:from #rx"^;; PCG hash" #:to #rx"[(]with p #:position position")))
+@(zgal-source particles-source)
+@(generated-file particles-source "ParticleSim.comp" #:from #rx"^#define particles")
 
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "graphs"]{Graphs}
@@ -441,7 +620,7 @@ collections), its number, and the graph's surface extent. Missing functions and 
 contract violation when the graph is built. The graph's materials and nodes keep the functions, so
 whatever they use must outlive the graph.
 
-@subsection{Expressions}
+@subsection[#:tag "graph-expressions"]{Expressions}
 
 @racketgrammar*[
  #:literals (if and or not = < <= > >= + - * / min max float int uint width height)
@@ -582,9 +761,11 @@ graph's: @tt{app.setActiveGraph(graph)} or @tt{graph.execute()}, @tt{graph.setEn
 ...)}, and readbacks.
 
 @; -----------------------------------------------------------------------------------------------
-@section[#:tag "glsl"]{Shader bodies}
+@section[#:tag "glsl"]{GLSL bodies}
 
-A generated shader is, in order,
+A material's shaders can be written in GLSL instead, listed in its @racket[shaders] clause, with
+the interface still in ZGAL. Accesses can't be inferred from GLSL, so its storage bindings declare
+theirs. A generated shader is then, in order,
 @itemlist[#:style 'ordered
  @item{@tt{#version 450}, @tt{GL_GOOGLE_cpp_style_line_directive} (for @tt{#line} with file names)
        and @tt{#include "bindless.glsl"} (the universal descriptor set's arrays);}
@@ -594,23 +775,28 @@ A generated shader is, in order,
  @item{one buffer block declaration per buffer type (shared by bindings of the same type), all
        @tt{readonly} unless a buffer binding is written;}
  @item{an accessor macro per binding and push field;}
- @item{the stage's inputs and outputs: vertex inputs and varyings for vertex shaders, varyings and
-       outputs for fragment shaders, the local size for compute shaders;}
- @item{the body, from its first line.}
+ @item{the stage's inputs and outputs: vertex inputs (named @tt{in} followed by the attribute's
+       name, e.g. @tt{inPosition}) and varyings for vertex shaders, varyings and outputs for
+       fragment shaders, the local size for compute shaders;}
+ @item{the body, from its first line, numbered as itself (glslc reports its errors at its lines).}
 ]
 So a body starts with its own code: no @tt{#version}, push constant block, bindings, inputs or
 outputs (a @tt{#version} line is an error). It can define functions, constants and macros, and
 @tt{#include} files beside it.
 
-Accessors are function-like macros (@tt{#define hdr() (bindlessTextures[materialPush.hdr])}), so
-they only expand where the name is followed by @tt{(}: the push constant block's members, struct
-members and local variables can share their names (@tt{SceneUniforms scene = scene();}).
+Bindings and push constants are read through accessors, function-like macros
+(@tt{#define hdr() (bindlessTextures[materialPush.hdr])}), so they only expand where the name is
+followed by @tt{(}: the push constant block's members, struct members and local variables can share
+their names (@tt{SceneUniforms scene = scene();}). Combine a texture and a sampler as GLSL does,
+@tt{texture(sampler2D(albedo(), albedoSampler()), uv)}, and write buffers through their accessors,
+@tt{particles()[i].velocity = v}.
 
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "cpp"]{The generated C++}
 
 The header includes the wrapper's material headers and declares, in file order, the structs, the
-vertex formats, then a class per material. Using the material's members needs nothing but the
+vertex formats, the functions and constants that compile to C++ (@secref["functions"]), a class
+per material, then a struct per graph. Using the material's members needs nothing but the
 header.
 
 @subsection{A material's class}
@@ -680,6 +866,9 @@ document was built.
 
 What ZGAL doesn't describe yet:
 @itemlist[
+ @item{in shader bodies: early returns, loops other than over ranges, recursion, discarding
+       fragments, derivatives, atomics, shared memory and barriers, and functions reading bindings
+       (pass them as arguments). GLSL bodies can do all of these;}
  @item{vertex attributes in other formats than 32-bit ones (e.g. normalized bytes), several vertex
        buffers, or per-instance attributes;}
  @item{images other than 2D ones, and arrays of bindings;}
@@ -691,9 +880,8 @@ Graphs can't yet import buffers, use storage images other than 2D ones, run a no
 queue, dispatch indirectly (a size an earlier pass writes on the GPU), or compute anything per
 frame but push constants, dispatch sizes and uniforms.
 
-ZGAL is planned to grow in stages: after interfaces and graphs, shader bodies in an expression
-language with GLSL and C++ backends (graphs' expressions are its start), from which bindings'
-accesses are inferred; and application state. The compiler's checked program (@tt{dsl/private/ast.rkt}) describes interfaces
+ZGAL has grown in stages: interfaces, graphs, then shader bodies, with functions shared by the GLSL
+and C++ backends and bindings' accesses inferred. Application state is planned next. The compiler's checked program (@tt{dsl/private/ast.rkt}) describes interfaces
 without assuming a backend, so other backends (e.g. WebGL) only add emitters.
 
 @; -----------------------------------------------------------------------------------------------
@@ -710,6 +898,10 @@ without assuming a backend, so other backends (e.g. WebGL) only add emitters.
   (list @tt{dsl/private/parse.rkt} "reading and checking a file into the program")
   (list @tt{dsl/private/syntax.rkt} "helpers for reading forms: shapes, names, namespaces")
   (list @tt{dsl/private/graph.rkt} "reading and checking graphs, and their expressions' types")
+  (list @tt{dsl/private/builtins.rkt} "shader bodies' built-in functions and stage variables")
+  (list @tt{dsl/private/body.rkt} "checking shader bodies and functions into typed expressions, inlining, and inferring accesses")
+  (list @tt{dsl/private/lower.rkt} "lowering typed expressions to statements, for any backend")
+  (list @tt{dsl/private/print-body.rkt} "printing lowered bodies and functions as GLSL or C++")
   (list @tt{dsl/private/ast.rkt} "the checked program, independent of any backend")
   (list @tt{dsl/private/layout.rkt} "std430 layouts, and which types each place accepts")
   (list @tt{dsl/private/names.rkt} "valid and reserved names")
@@ -744,11 +936,14 @@ This document is part of the language: change it in the same commit as the compi
 @itemlist[
  @item{@tt{dsl/tests/layout-test.rkt}: std430 layouts.}
  @item{@tt{dsl/tests/errors-test.rkt}: the error catalog, and the errors' messages and locations.}
+ @item{@tt{dsl/tests/body-test.rkt}: shader bodies: typing, scoping, inference, inlining, and which
+       functions compile to C++.}
  @item{@tt{dsl/tests/golden-test.rkt}: the output for @tt{golden/features.zgal}, which uses every
        feature.}
  @item{@tt{dsl/tests/toolchain-test.rkt}: the generated shaders and header through glslc and the C++
        compiler (with the build's flags, from @tt{make test-dsl}), @tt{#line} mapping, and the
        command line.}
- @item{@tt{tests/gpu/ZgalTest.cpp}: generated materials on the device, checking that the C++
-       structs and push constants have the layout the shaders write and read.}
+ @item{@tt{tests/gpu/ZgalTest.cpp}: generated materials and graphs on the device: the C++ structs
+       and push constants have the layout the shaders write and read, and a function computes the
+       same on the CPU (as C++) as on the GPU.}
 ]

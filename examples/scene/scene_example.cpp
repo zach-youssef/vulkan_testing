@@ -101,9 +101,9 @@ struct SunLight {
     // Half the size of the area the shadow map covers: tighter is sharper
     static constexpr float kSceneRadius = 7.0f;
 
-    // Unit vector from the scene towards the light
+    // Unit vector from the scene towards the light (sunDirection in scene.zgal)
     glm::vec3 direction() const {
-        return {std::cos(elevation) * std::sin(azimuth), std::sin(elevation), std::cos(elevation) * std::cos(azimuth)};
+        return sunDirection(azimuth, elevation);
     }
 
     glm::mat4 viewProjection() const {
@@ -309,7 +309,7 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
                      "  S                  toggle shadows\n"
                      "  + / -              exposure\n"
                      "  Esc                quit\n"
-                     "Shaders reload when their SPIR-V changes: edit examples/scene/shaders and run `make shaders`."
+                     "Shaders reload when their SPIR-V changes: edit examples/scene/scene.zgal and run `make shaders`."
                   << std::endl;
     }
 

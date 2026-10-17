@@ -1,8 +1,9 @@
-;; The scene example's shader interfaces, in ZGAL (dsl/; `make docs` for the language). The build
-;; generates scene.zgal.h, with the structs and a class per material, and the complete shaders:
-;; each body in shaders/ preceded by its material's interface.
+;; The scene example's shaders and graph, in ZGAL (dsl/; `make docs` for the language). The build
+;; generates scene.zgal.h, with the structs, functions, a class per material and the graph, and
+;; the complete shaders.
 
-;; Per-frame data shared by the shadow and lit passes, written by LitMaterial::update
+;; Per-frame data shared by the shadow and lit passes, computed by sceneUniforms in
+;; scene_example.cpp
 (struct SceneUniforms
   (viewProjection mat4)         ; Camera
   (lightViewProjection mat4)    ; World to shadow map clip space
@@ -18,45 +19,118 @@
   (normal vec3)
   (albedoRoughness vec4))       ; rgb: linear albedo, a: roughness
 
+(define PI 3.14159265359)
+
+;; The unit vector towards a sun at an azimuth (around +Y, from +Z) and an elevation. Also
+;; compiled to C++: SunLight in scene_example.cpp uses it.
+(define (sunDirection [azimuth : float] [elevation : float]) : vec3
+  (vec3 (* (cos elevation) (sin azimuth)) (sin elevation) (* (cos elevation) (cos azimuth))))
+
+;; Fraction of light reaching a point, filtered over 3x3 bilinear comparisons (PCF). The sampler
+;; compares: sampling returns the fraction of texels closer to the light than the reference.
+(define (shadowFactor [shadowMap : texture2D] [shadowSampler : sampler] [lightViewProjection : mat4]
+                      [position : vec3] [normal : vec3] [toLight : vec3]) : float
+  (let* ([texelSize (/ 1.0 (vec2 (texture-size shadowMap 0)))]
+         ;; Offset along the normal, more at grazing angles, so surfaces don't shadow themselves
+         [cosTheta (clamp (dot normal toLight) 0.0 1.0)]
+         [offsetPosition (+ position (* normal (+ 0.02 (* 0.04 (- 1.0 cosTheta)))))]
+         [clip (* lightViewProjection (vec4 offsetPosition 1.0))]
+         [ndc (/ clip.xyz clip.w)]
+         ;; Vulkan NDC y points down the image, matching texture coordinates
+         [uv (+ (* ndc.xy 0.5) 0.5)]
+         [reference (- ndc.z 0.001)])
+    (/ (sum ([y (range -1 2)] [x (range -1 2)])
+            (sample-compare shadowMap shadowSampler (+ uv (* (vec2 x y) texelSize)) reference))
+       9.0)))
+
+;; Cook-Torrance GGX specular for a dielectric (F0 = 0.04) plus Lambert diffuse
+(define (brdf [albedo : vec3] [roughness : float] [n : vec3] [v : vec3] [l : vec3]) : vec3
+  (let* ([h (normalize (+ v l))]
+         [nDotL (max (dot n l) 0.0)]
+         [nDotV (max (dot n v) 1e-4)]
+         [nDotH (max (dot n h) 0.0)]
+         [vDotH (max (dot v h) 0.0)]
+         [alpha (max (* roughness roughness) 1e-3)]
+         [alpha2 (* alpha alpha)]
+         [denom (+ (* nDotH nDotH (- alpha2 1.0)) 1.0)]
+         [distribution (/ alpha2 (* PI denom denom))]
+         [k (/ (* (+ roughness 1.0) (+ roughness 1.0)) 8.0)]
+         [geometry (* (/ nDotV (+ (* nDotV (- 1.0 k)) k)) (/ nDotL (+ (* nDotL (- 1.0 k)) k)))]
+         [fresnel (+ (vec3 0.04) (* (- 1.0 0.04) (pow (- 1.0 vDotH) 5.0)))]
+         [specular (/ (* distribution geometry fresnel) (max (* 4.0 nDotV nDotL) 1e-4))]
+         [diffuse (/ (* (- 1.0 fresnel) albedo) PI)])
+    (+ diffuse specular)))
+
+;; Krzysztof Narkowicz's fit of the ACES filmic curve
+(define (acesFilmic [x : vec3]) : vec3
+  (clamp (/ (* x (+ (* 2.51 x) 0.03)) (+ (* x (+ (* 2.43 x) 0.59)) 0.14)) 0.0 1.0))
+
 ;; The scene's depth from the light, into the shadow map. It reads the same vertex buffers as the
 ;; lit pass, skipping all but the positions.
 (graphics-material Shadow
-  (shaders "shaders/shadow.vert" "shaders/shadow.frag")
   (vertex-input SceneVertex position)
   (bindings
-   (scene (buffer SceneUniforms read) #:stages (vertex)))
-  (outputs))                    ; Depth only
+   (scene (buffer SceneUniforms)))
+  (outputs)                     ; Depth only
+  (vertex
+   (results #:position (* scene.lightViewProjection (vec4 position 1.0))))
+  ;; No colour attachments, so nothing to write
+  (fragment))
 
 ;; PBR shading with filtered shadows, into the HDR image
 (graphics-material Lit
-  (shaders "shaders/lit.vert" "shaders/lit.frag")
   (vertex-input SceneVertex)
   (bindings
-   (scene (buffer SceneUniforms read))
-   (shadowMap texture #:stages (fragment))   ; The shadow pass's depth image
-   (shadowSampler sampler))                  ; A comparison sampler: returns the fraction lit
+   (scene (buffer SceneUniforms))
+   (shadowMap texture)          ; The shadow pass's depth image
+   (shadowSampler sampler))     ; A comparison sampler
   (push
    (shadowsEnabled uint))       ; 0 while the shadow pass is disabled, as its map is stale
   (varyings
    (worldPosition vec3)
    (worldNormal vec3)
-   (albedoRoughness vec4))
+   (surface vec4))              ; The vertices' albedoRoughness
   (outputs
-   (outColor vec4)))            ; Linear HDR radiance
+   (outColor vec4))             ; Linear HDR radiance
+  ;; The world is the model space (nothing moves), so positions and normals pass through
+  (vertex
+   (results #:position (* scene.viewProjection (vec4 position 1.0))
+            #:worldPosition position
+            #:worldNormal normal
+            #:surface albedoRoughness))
+  (fragment
+   (let* ([albedo surface.rgb]
+          [roughness surface.a]
+          [n (normalize worldNormal)]
+          [v (normalize (- scene.cameraPosition worldPosition))]
+          [l scene.lightDirection]
+          [shadow (if (not= shadowsEnabled 0)
+                      (shadowFactor shadowMap shadowSampler scene.lightViewProjection worldPosition n l)
+                      1.0)]
+          [direct (* (brdf albedo roughness n v l) scene.lightRadiance (max (dot n l) 0.0) shadow)]
+          ;; Hemisphere ambient: sky from above, light bounced off the ground from below
+          [ambient (* (mix scene.groundAmbient scene.skyAmbient (+ (* n.y 0.5) 0.5)) albedo)])
+     (vec4 (+ direct ambient) 1.0))))
 
-;; Exposure and an ACES curve, from the HDR image to the display. A fullscreen triangle without
-;; vertex input.
+;; Exposure and an ACES curve, from the HDR image to the display: a triangle covering the screen,
+;; built from the vertex index alone (no vertex input). Its corners, (0, 0), (0, 2) and (2, 0) in
+;; texture coordinates, are counter-clockwise in framebuffer coordinates (y down), so back face
+;; culling keeps it.
 (graphics-material Tonemap
-  (shaders "shaders/tonemap.vert" "shaders/tonemap.frag")
   (bindings
-   (hdr texture #:stages (fragment))
+   (hdr texture)
    (hdrSampler sampler))
   (push
    (exposure float))
   (varyings
    (uv vec2))
   (outputs
-   (outColor vec4)))            ; Linear: the sRGB target encodes it
+   (outColor vec4))             ; Linear: the sRGB target encodes it
+  (vertex
+   (let* ([corner (vec2 (bitand vertexIndex 2) (bitand (shl vertexIndex 1) 2))])
+     (results #:position (vec4 (- (* corner 2.0) 1.0) 0.0 1.0) #:uv corner)))
+  (fragment
+   (vec4 (acesFilmic (* (.rgb (sample hdr hdrSampler uv)) exposure)) 1.0)))
 
 ;; The frame: a shadow map from the light, the lit scene into an HDR image the size of the surface,
 ;; then the tonemap to the display. The render graph orders the passes, picks queues and

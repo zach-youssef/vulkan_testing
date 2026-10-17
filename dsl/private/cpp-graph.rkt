@@ -6,6 +6,7 @@
          racket/match
          racket/string
          "ast.rkt"
+         "builtins.rkt"
          "cpp-common.rkt"
          "graph.rkt"
          "writer.rkt")
@@ -288,7 +289,7 @@
         [(t-surface clear depth _)
          (line (format "~a = graph.surfaceTarget(~a, ~a);" variable (color->cpp clear)
                        (if (eq? depth 'none) "std::nullopt" (hash-ref image-formats depth))))]
-        [(t-if c then else _)
+        [(t-target-if c then else _)
          (line (format "if (~a) {" (build-expr c (scalar-t 'bool))))
          (emit-spec then (string-append indent "    "))
          (line "} else {")

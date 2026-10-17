@@ -10,6 +10,7 @@
          "layout.rkt"
          "cpp-common.rkt"
          "cpp-graph.rkt"
+         "print-body.rkt"
          "parse.rkt"
          "writer.rkt")
 
@@ -315,6 +316,7 @@
   (gen "")
   (gen "#include <glm/glm.hpp>")
   (gen "")
+  (gen "#include <array>")
   (gen "#include <cstddef>")
   (gen "#include <cstdint>")
   (when (pair? materials)
@@ -328,6 +330,15 @@
     (gen "#include <optional>"))
   (for ([d (in-list (program-structs prog))]) (emit-struct! w d))
   (for ([f (in-list (program-vertex-formats prog))]) (emit-vertex-format! w f))
+  ;; Functions and constants the CPU can use too
+  (define cpu-declarations
+    (filter (λ (d) (if (function-decl? d) (function-decl-cpu? d) (constant-decl-cpu? d))) (program-functions prog)))
+  (unless (null? cpu-declarations)
+    (gen "")
+    (gen "// The file's functions and constants, compiled for the CPU too (those using no textures,")
+    (gen "// images or stage variables)")
+    (for ([d (in-list cpu-declarations)])
+      (if (function-decl? d) (emit-function! w d 'cpp) (emit-constant! w d 'cpp))))
   (for ([m (in-list materials)]) (emit-material! w prog m))
   (for ([g (in-list graphs)]) (emit-graph! w prog g))
   (writer-text w))

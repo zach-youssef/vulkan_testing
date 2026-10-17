@@ -272,3 +272,58 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL uniforms are computed once a frame and only wri
     runFrames(2 * frames);
     CHECK(uniform->writes() == 2 * frames);
 }
+
+namespace {
+
+class Evaluator : public Evaluate {
+public:
+    Evaluator(VulkanContext& context, const Shaders& shaders, Bindings bindings, uint32_t count)
+    : Evaluate(context, shaders, std::move(bindings)), count_(count) {}
+
+    void update(uint32_t, VkExtent2D) override {}
+
+    glm::vec3 getDispatchDimensions() override {
+        return workgroupsFor(count_);
+    }
+
+protected:
+    void writePush(uint32_t, Push& push) override {
+        push.count = count_;
+    }
+
+private:
+    uint32_t count_;
+};
+
+} // namespace
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL functions compute the same on the CPU as on the GPU") {
+    auto& ctx = context();
+    constexpr uint32_t kCount = 200;
+    auto output = Buffer<glm::vec4>::create(ctx, kCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT).value();
+    {
+        RenderGraph graph(ctx);
+        graph.importBuffer<glm::vec4>("output", output);
+        auto shaders = Evaluate::loadShaders(ctx).value();
+        // The binding's access (write) and stage were inferred from the body
+        auto material = ctx.resources().create<Evaluator>(
+            ctx, shaders, Evaluate::Bindings{.evaluated = ctx.descriptors().storageBuffer(output)}, kCount);
+        CHECK(material->bindings()[0].access == Access::StorageBufferWrite);
+        graph.add<DispatchNode>("evaluate", material);
+        graph.execute().value();
+        ctx.waitIdleAll();
+    }
+    output->mapAndExecute(0, kCount * sizeof(glm::vec4), [](void* data) {
+        const auto* gpu = static_cast<const glm::vec4*>(data);
+        for (uint32_t i = 0; i < kCount; ++i) {
+            CAPTURE(i);
+            // evaluate, compiled to C++ from the same definition
+            const glm::vec4 cpu = evaluate(i);
+            CHECK(gpu[i].w == cpu.w);   // Integer arithmetic: exact
+            for (int c = 0; c < 3; ++c) {
+                CHECK(gpu[i][c] == doctest::Approx(cpu[c]).epsilon(1e-4));
+            }
+        }
+    }).value();
+}

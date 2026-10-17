@@ -84,7 +84,7 @@
 (test-case "Accesses are required and checked"
   (check-zgal-error
    "(compute-material C (shaders \"c.comp\") (workgroup 1) (bindings (image (storage-image))))"
-   'bad-binding "(storage-image access)")
+   'bad-binding "declare read, write or read-write")
   (check-zgal-error
    "(compute-material C (shaders \"c.comp\") (workgroup 1) (bindings (image (storage-image readwrite))))"
    'bad-binding "read, write or read-write"))

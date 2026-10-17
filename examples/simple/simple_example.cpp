@@ -3,17 +3,21 @@
 #include "app/VulkanApp.h"
 #include "materials/Renderable.h"
 #include "descriptors/DescriptorHeap.h"
-#include "resources/Ubo.h"
 #include "materials/GraphicsMaterial.h"
-#include "resources/Ubo.h"
 #include "graph/RenderGraph.h"
 #include "graph/nodes/DispatchNode.h"
 #include "graph/nodes/RenderablesNode.h"
 #include "shaders/ShaderLibrary.h"
 #include "resources/Image.h"
 
+// Generated from simple.zgal: Camera, Vertex and the Tutorial and CopyTexture materials
+#include "simple.zgal.h"
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+
+#include <chrono>
+#include <cstring>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -29,123 +33,92 @@
 const std::string shaderDir = SIMPLE_EXAMPLE_SHADER_DIR;
 const std::string textureDir = SIMPLE_EXAMPLE_TEXTURE_DIR;
 
-struct Vertex {
-    glm::vec2 pos;
-    glm::vec3 color;
-    glm::vec2 texCoord0;
-    
-    // One interleaved buffer of these, read by shader.vert's inputs at locations 0-2
-    static VertexLayout layout() {
-        return VertexLayout::interleaved(sizeof(Vertex), {
-            {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, pos)},
-            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)},
-            {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord0)},
-        });
-    }
-};
-
-// Draws a texture with a rotating camera. Its shaders (shader.vert, shader.frag) find a uniform
-// buffer, the texture and a sampler by the indices of its bindings, in that order.
-class TutorialMaterial : public GraphicsMaterial {
+// Draws a texture with a rotating camera (Tutorial in simple.zgal). Owns the camera's per-frame
+// uniform buffers, which update() writes.
+class TutorialMaterial : public Tutorial {
 public:
-    using Mapping = Buffer<UniformBufferObject>::Mapping;
+    using Mapping = Buffer<Camera>::Mapping;
 
-    // Creates the material's per-frame resources, which can fail, then the material
+    // Loads the shaders and creates the material's per-frame resources, which can fail, then the
+    // material
     static Result<Handle<TutorialMaterial>> create(VulkanContext& context,
                                                    AttachmentFormats formats,
                                                    FrameBinding<DescriptorEntry> texture,
-                                                   FrameBinding<DescriptorEntry> sampler,
-                                                   Handle<Shader> vertexShader,
-                                                   Handle<Shader> fragmentShader) {
+                                                   FrameBinding<DescriptorEntry> sampler) {
+        TRY_ASSIGN(auto shaders, loadShaders(context));
         // A uniform buffer per frame (read by the vertex shader as a storage buffer), and its
         // descriptor entries and mappings. They are created in that order, so they are also resized
         // in that order when the number of frames in flight changes.
-        TRY_ASSIGN(auto buffers, PerFrameHandles<Buffer<UniformBufferObject>>::createManaged(context, [&context](uint32_t) {
-            return Buffer<UniformBufferObject>::create(context, 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        TRY_ASSIGN(auto buffers, PerFrameHandles<Buffer<Camera>>::createManaged(context, [&context](uint32_t) {
+            return Buffer<Camera>::create(context, 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         }));
         auto entries = context.resources().create<PerFrameHandles<DescriptorEntry>>(
             context, [ctx = &context, buffers](uint32_t frameIdx) {
                 return ctx->descriptors().storageBuffer((*buffers)[frameIdx]);
             });
         TRY_ASSIGN(auto mappings, PerFrame<Mapping>::create(context, [buffers](uint32_t frameIdx) {
-            return (*buffers)[frameIdx]->getPersistentMapping(0, sizeof(UniformBufferObject));
+            return (*buffers)[frameIdx]->getPersistentMapping(0, sizeof(Camera));
         }));
-        return context.resources().create<TutorialMaterial>(context, std::move(formats), std::move(texture),
-                                                            std::move(sampler), std::move(vertexShader),
-                                                            std::move(fragmentShader), std::move(buffers),
-                                                            std::move(entries), std::move(mappings));
+        return context.resources().create<TutorialMaterial>(context, shaders, std::move(formats), std::move(texture),
+                                                            std::move(sampler), std::move(buffers), std::move(entries),
+                                                            std::move(mappings));
     }
 
     TutorialMaterial(VulkanContext& context,
+                     const Shaders& shaders,
                      AttachmentFormats formats,
                      FrameBinding<DescriptorEntry> texture,
                      FrameBinding<DescriptorEntry> sampler,
-                     Handle<Shader> vertexShader,
-                     Handle<Shader> fragmentShader,
-                     Handle<PerFrameHandles<Buffer<UniformBufferObject>>> uniformBuffers,
+                     Handle<PerFrameHandles<Buffer<Camera>>> uniformBuffers,
                      Handle<PerFrameHandles<DescriptorEntry>> uniformEntries,
                      PerFrame<Mapping> mappedUniformBuffers)
-    :  GraphicsMaterial(context,
-                        {},
-                        std::move(formats),
-                        std::move(vertexShader),
-                        std::move(fragmentShader),
-                        GraphicsPipelineOptions{.vertexLayout = Vertex::layout()}),
-    uniformBuffers_(std::move(uniformBuffers)),
-    uniformEntries_(std::move(uniformEntries)),
-    mappedUniformBuffers_(std::move(mappedUniformBuffers)) {
-        bindings_ = {
-            MaterialBinding::storageBuffer(uniformEntries_, Access::StorageBufferRead, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT),
-            MaterialBinding::sampled(std::move(texture), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT),
-            MaterialBinding::sampler(std::move(sampler)),
-        };
-    }
-    
-    void update(uint32_t currentImage, VkExtent2D swapChainExtent) {
+    : Tutorial(context, shaders,
+               // The bindings, by name: the generated class gives each its access and stages
+               Bindings{.camera = uniformEntries, .albedo = std::move(texture), .albedoSampler = std::move(sampler)},
+               std::move(formats), GraphicsPipelineOptions{}),
+      uniformBuffers_(std::move(uniformBuffers)),
+      uniformEntries_(std::move(uniformEntries)),
+      mappedUniformBuffers_(std::move(mappedUniformBuffers)) {}
+
+    void update(uint32_t currentImage, VkExtent2D swapChainExtent) override {
         static auto startTime = std::chrono::high_resolution_clock::now();
-        
+
         auto currentTime = std::chrono::high_resolution_clock::now();
         float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
-        
+
         auto model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.f), glm::vec3(0.0f, 0.0f, 1.0f));
         auto view =
         glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
         auto projection = glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float) swapChainExtent.height, 0.1f, 10.0f);
-        
+
         // GLM was originally designed for OpenGL where the Y coordinate of the clip coordinates is inverted
         projection[1][1] *= -1;
 
-        auto ubo = UniformBufferObject::fromModelViewProjection(model, view, projection);
-        
-        memcpy(mappedUniformBuffers_[currentImage].get(), &ubo, sizeof(ubo));
+        const Camera camera{.mvp = projection * view * model};
+        memcpy(mappedUniformBuffers_[currentImage].get(), &camera, sizeof(camera));
     }
+
 private:
-    Handle<PerFrameHandles<Buffer<UniformBufferObject>>> uniformBuffers_;
+    Handle<PerFrameHandles<Buffer<Camera>>> uniformBuffers_;
     Handle<PerFrameHandles<DescriptorEntry>> uniformEntries_;
     PerFrame<Mapping> mappedUniformBuffers_;
 };
 
-// Copies a texture into a storage image (test.comp)
-class TestComputeMat : public ComputeMaterial {
+// Copies a texture into a storage image (CopyTexture in simple.zgal), one invocation per pixel
+class CopyTextureMaterial : public CopyTexture {
 public:
-    TestComputeMat(VulkanContext& context,
-                   Handle<Shader> computeShader,
-                   std::vector<MaterialBinding> bindings,
-                   uint32_t imageWidth, uint32_t imageHeight)
-    : ComputeMaterial(context, std::move(bindings), std::move(computeShader)),
-    imageWidth_(imageWidth),
-    imageHeight_(imageHeight){}
-    
-    void update(uint32_t currentImage, VkExtent2D swapChainExtent) {
-        // no-op
+    CopyTextureMaterial(VulkanContext& context, const Shaders& shaders, Bindings bindings,
+                        uint32_t imageWidth, uint32_t imageHeight)
+    : CopyTexture(context, shaders, std::move(bindings)), imageWidth_(imageWidth), imageHeight_(imageHeight) {}
+
+    void update(uint32_t, VkExtent2D) override {}
+
+    glm::vec3 getDispatchDimensions() override {
+        // Rounded up to whole workgroups (the workgroup size is in simple.zgal)
+        return workgroupsFor(imageWidth_, imageHeight_);
     }
-    
-    glm::vec3 getDispatchDimensions() {
-        // "32" here matches layout size defined in shader
-        return glm::vec3{imageWidth_ / 32u, imageHeight_ / 32u, 1};
-    }
-    
+
 private:
     uint32_t imageWidth_;
     uint32_t imageHeight_;
@@ -165,7 +138,7 @@ const std::vector<uint16_t> indexData = {
 std::vector<Vertex> transformVertices(const std::vector<Vertex>& vertices, float scale, glm::vec2 offset) {
     std::vector<Vertex> transformed = vertices;
     for (auto& vertex : transformed) {
-        vertex.pos = vertex.pos * scale + offset;
+        vertex.position = vertex.position * scale + offset;
     }
     return transformed;
 }
@@ -211,20 +184,15 @@ Result<void> runExample() {
     RenderTarget screen = graph.surfaceTarget();
 
     // A compute material copying the texture, and a material drawing the copy, shared by two
-    // renderables. Their bindings tell the graph which resources they use, and how.
-    TRY_ASSIGN(auto copyShader, context.shaders().get("test.comp"));
-    TRY_ASSIGN(auto vertexShader, context.shaders().get("shader.vert"));
-    TRY_ASSIGN(auto fragmentShader, context.shaders().get("shader.frag"));
-    auto computeMaterial = context.resources().create<TestComputeMat>(
-        context, copyShader,
-        std::vector<MaterialBinding>{
-            MaterialBinding::sampled(textureEntry),
-            MaterialBinding::sampler(samplerEntry),
-            MaterialBinding::storageImage(graph.storageEntry(copied), Access::StorageWrite),
-        },
+    // renderables, both from simple.zgal. Their bindings tell the graph which resources they use,
+    // and how: the generated classes give each binding the access and stages its shaders use.
+    TRY_ASSIGN(auto copyShaders, CopyTexture::loadShaders(context));
+    auto computeMaterial = context.resources().create<CopyTextureMaterial>(
+        context, copyShaders,
+        CopyTexture::Bindings{.source = textureEntry, .sourceSampler = samplerEntry, .copy = graph.storageEntry(copied)},
         texture->getWidth(), texture->getHeight());
     TRY_ASSIGN(auto material, TutorialMaterial::create(context, graph.formats(screen), graph.sampledEntry(copied),
-                                                       samplerEntry, vertexShader, fragmentShader));
+                                                       samplerEntry));
 
     std::vector<Handle<Renderable>> renderables;
     for (glm::vec2 offset : {glm::vec2{-0.3f, 0.0f}, glm::vec2{0.3f, 0.0f}}) {

@@ -108,3 +108,30 @@
   (dispatch clearRow clear)
   (dispatch markRow mark)
   (readback readback row))
+
+;; For the CPU and GPU test: functions compiled for both. Its integer part must match exactly,
+;; its floating point part to the GPU's precision.
+(define (pcgHash [v : uint]) : uint
+  (let* ([state (+ (* v 747796405) 2891336453)]
+         [word (* (bitxor (shr state (+ (shr state 28) 4)) state) 277803737)])
+    (bitxor (shr word 22) word)))
+
+(define (evaluate [i : uint]) : vec4
+  (let* ([t (/ (float i) 7.0)]
+         [v (normalize (vec3 (sin t) (cos (* 2.0 t)) (+ 1.0 t)))]
+         [c (cross v (vec3 0.0 1.0 0.0))]
+         [s (sum ([k (range 0 4)]) (pow (+ 1.0 (* 0.1 (float k))) 1.5))]
+         [blend (mix c v (smoothstep 0.0 4.0 t))])
+    (vec4 blend.zx (+ s (exp (- t))) (float (remainder (pcgHash i) 1000)))))
+
+;; Writes evaluate(i) for each invocation i (a ZGAL body)
+(compute-material Evaluate
+  (workgroup 64)
+  (bindings
+   (evaluated (buffer-array vec4)))
+  (push
+   (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (write! (at evaluated i) (evaluate i))))))

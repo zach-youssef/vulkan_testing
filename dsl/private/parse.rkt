@@ -5,9 +5,12 @@
 (require racket/list
          racket/match
          racket/path
+         racket/set
          racket/string
          "ast.rkt"
          "errors.rkt"
+         "body.rkt"
+         "builtins.rkt"
          "graph.rkt"
          "layout.rkt"
          "names.rkt"
@@ -160,7 +163,7 @@
            (zgal-error 'duplicate-name stx "~a is already declared as a struct" name))
          (scope name stx))
 
-       (define shaders (parse-shaders (require-clause 'shaders) kind name))
+       (define glsl-shaders (if (clause 'shaders) (parse-shaders (clause 'shaders) name) '()))
        (define workgroup (and (eq? kind 'compute) (parse-workgroup (require-clause 'workgroup))))
        (define input (and (clause 'vertex-input) (parse-vertex-input (clause 'vertex-input) declare!)))
        (define bindings (if (clause 'bindings) (parse-bindings (clause 'bindings) kind declare!) '()))
@@ -182,7 +185,14 @@
                  (declare! (field-name f) s))
                fields)
              '()))
-       (define m (material kind name shaders bindings push input varyings outputs workgroup (stx->loc stx)))
+       (define zgal-shaders
+         (for/list ([stage (in-list (if (eq? kind 'graphics) '(vertex fragment) '(compute)))]
+                    #:when (clause stage))
+           (parse-stage-body (clause stage) stage name bindings push input varyings outputs)))
+       (define shaders (append glsl-shaders zgal-shaders))
+       (check-stages stx kind name shaders)
+       (define m (material kind name shaders (infer-accesses bindings shaders kind) push input varyings outputs
+                           workgroup (stx->loc stx)))
        (hash-set! materials name m)
        m]
       [_ (zgal-error 'malformed stx "expected (~a Name clause ...)" form-name)]))
@@ -190,8 +200,8 @@
   (define (parse-clauses stxs kind form-name)
     (define allowed
       (if (eq? kind 'graphics)
-          '(shaders vertex-input bindings push varyings outputs)
-          '(shaders workgroup bindings push)))
+          '(shaders vertex fragment vertex-input bindings push varyings outputs)
+          '(shaders compute workgroup bindings push)))
     (for/fold ([clauses (hasheq)]) ([stx (in-list stxs)])
       (define key (head-symbol stx))
       (unless key
@@ -203,7 +213,28 @@
         (zgal-error 'duplicate-clause stx "~a has two (~a ...) clauses" form-name key))
       (hash-set clauses key stx)))
 
-  (define (parse-shaders stx kind material-name)
+  ;; A shader's name, which the shader library finds it by: unique in the file
+  (define (claim-shader-name! name material-name where)
+    (match (hash-ref shader-names name #f)
+      [(cons other previous)
+       (zgal-error 'shader-reused where "~a is already a shader of material ~a (line ~a)"
+                   name other (loc-line previous))]
+      [_ (hash-set! shader-names name (cons material-name (stx->loc where)))]))
+
+  ;; A material has one shader per stage: GLSL bodies (shaders) or ZGAL ones (vertex, fragment,
+  ;; compute clauses)
+  (define (check-stages stx kind material-name shaders)
+    (define stages (map shader-stage shaders))
+    (define expected (if (eq? kind 'graphics) '(vertex fragment) '(compute)))
+    (unless (and (= (length stages) (length expected))
+                 (for/and ([s (in-list expected)]) (memq s stages)))
+      (zgal-error 'bad-shader stx "~a needs ~a, but has ~a" material-name
+                  (if (eq? kind 'graphics)
+                      "a vertex and a fragment shader (a .vert and a .frag in shaders, or vertex and fragment clauses)"
+                      "one compute shader (a .comp in shaders, or a compute clause)")
+                  (if (null? shaders) "none" (string-join (map shader-name shaders) " and ")))))
+
+  (define (parse-shaders stx material-name)
     (define shaders
       (for/list ([path-stx (in-list (cdr (syntax->list stx)))])
         (define path (syntax-e path-stx))
@@ -218,20 +249,237 @@
                            "~a doesn't end in .vert, .frag or .comp, which give a shader's stage" path)]))
         (define resolved (path->string (simplify-path (build-path directory path) #f)))
         (define name (path->string (file-name-from-path resolved)))
-        (match (hash-ref shader-names name #f)
-          [(cons other where)
-           (zgal-error 'shader-reused path-stx "~a is already a shader of material ~a (line ~a)"
-                       name other (loc-line where))]
-          [_ (hash-set! shader-names name (cons material-name (stx->loc path-stx)))])
+        (claim-shader-name! name material-name path-stx)
         (shader resolved name stage (stx->loc path-stx))))
-    (define stages (map shader-stage shaders))
-    (define expected (if (eq? kind 'graphics) '(vertex fragment) '(compute)))
-    (unless (and (= (length stages) (length expected))
-                 (for/and ([s (in-list expected)]) (memq s stages)))
-      (zgal-error 'bad-shader stx "~a needs ~a, but has ~a" material-name
-                  (if (eq? kind 'graphics) "a .vert and a .frag shader" "one .comp shader")
-                  (if (null? shaders) "none" (string-join (map shader-name shaders) " and "))))
     shaders)
+
+  ;; ---------------------------------------------------------------------------------------------
+  ;; ZGAL bodies
+
+  (define functions (make-hash))     ; name -> function-decl
+  (define constants (make-hash))     ; name -> constant-decl
+  (define summaries (make-hash))     ; function name -> its opaque parameters' accesses
+  (define cpu-functions (mutable-set))
+  (define cpu-constants (mutable-set))
+
+  (define (parse-value-type stx #:void? [void? #f])
+    (case (syntax-e stx)
+      [(texture2D sampler image2D) (opaque-t (syntax-e stx))]
+      [(void) (if void? (void-t) (zgal-error 'unknown-type stx "void is only a function's result type"))]
+      [else (parse-type stx)]))
+
+  ;; The file's functions and constants used by checked code, closed over what they use, in
+  ;; declaration order
+  (define declaration-order (make-hash))
+  (define (uses-closure direct)
+    (define seen (mutable-set))
+    (let visit ([names (set->list direct)])
+      (for ([n (in-list names)] #:unless (set-member? seen n))
+        (set-add! seen n)
+        (visit (match (or (hash-ref functions n #f) (hash-ref constants n #f))
+                 [(function-decl _ _ _ _ _ uses _) uses]
+                 [(constant-decl _ _ _ _ uses _) uses]))))
+    (sort (set->list seen) < #:key (λ (n) (hash-ref declaration-order n))))
+
+  (define (parse-define stx items)
+    (match items
+      ;; A function
+      [(list* _ signature-stx rest) #:when (syntax->list signature-stx)
+       (match-define (cons name-stx param-stxs) (syntax->list signature-stx))
+       (define name (parse-name name-stx "the function's name"))
+       (top-level name name-stx)
+       (define-values (result-type body-stxs)
+         (match rest
+           [(list* colon result-stx body) #:when (and (eq? (syntax-e colon) ':) (pair? body))
+            (values (parse-value-type result-stx #:void? #t) body)]
+           [_ (zgal-error 'malformed stx "expected (define (~a [parameter : type] ...) : result-type body ...)" name)]))
+       (define ctx (make-context structs functions constants (hash) 'function))
+       (define param-names (make-namespace (format "as a parameter of ~a" name)))
+       (define-values (params locals)
+         (for/fold ([params '()] [locals (hash)] #:result (values (reverse params) locals))
+                   ([p (in-list param-stxs)])
+           (match (syntax->list p)
+             [(list n colon t) #:when (eq? (syntax-e colon) ':)
+              (define param (local-name n ctx))
+              (param-names param n)
+              (define type (parse-value-type t))
+              (define spelling (spell! ctx param))
+              (values (cons (cons spelling type) params) (hash-set locals param (t-local spelling type (stx->loc n))))]
+             [_ (zgal-error 'malformed p "expected a parameter [name : type]")])))
+       (define body
+         (let ([b (check-sequence body-stxs stx ctx locals)])
+           (if (void-t? result-type)
+               (begin
+                 (unless (void-t? (texpr-type b))
+                   (zgal-error 'type-mismatch stx "~a returns void, but its body is ~a" name (a-type (texpr-type b))))
+                 b)
+               (coerce (settle-unless-literal b result-type) result-type stx (format "~a's body" name)))))
+       (define uses (uses-closure (context-uses ctx)))
+       (define cpu? (and (not (void-t? result-type))
+                         (not (ormap (λ (p) (opaque-t? (cdr p))) params))
+                         (cpu-expression? body cpu-functions cpu-constants)))
+       (when cpu? (set-add! cpu-functions name))
+       (hash-set! summaries name (parameter-accesses params body summaries))
+       (define decl (function-decl name params result-type body cpu? uses (stx->loc stx)))
+       (hash-set! declaration-order name (hash-count declaration-order))
+       (hash-set! functions name decl)
+       decl]
+      ;; A constant
+      [(list _ name-stx value-stx) #:when (symbol? (syntax-e name-stx))
+       (define name (parse-name name-stx "the constant's name"))
+       (top-level name name-stx)
+       (define ctx (make-context structs functions constants (hash) 'function))
+       (define value (settle (check value-stx ctx (hash))))
+       (unless (constant-expression? value)
+         (zgal-error 'malformed value-stx "a constant is computed from literals, other constants, constructors, operators and built-in functions"))
+       (define uses (uses-closure (context-uses ctx)))
+       (define cpu? (cpu-expression? value cpu-functions cpu-constants))
+       (when cpu? (set-add! cpu-constants name))
+       (define decl (constant-decl name (texpr-type value) value cpu? uses (stx->loc stx)))
+       (hash-set! declaration-order name (hash-count declaration-order))
+       (hash-set! constants name decl)
+       decl]
+      [_ (zgal-error 'malformed stx "expected (define name value) or (define (name [parameter : type] ...) : type body ...)")]))
+
+  (define (settle-unless-literal b t) b)
+
+  (define (constant-expression? e)
+    (match e
+      [(or (t-lit _ _ _) (t-global 'constant _ _ _ _)) #t]
+      [(or (t-op _ args _ _) (t-construct args _ _) (t-call _ args _ _)) (andmap constant-expression? args)]
+      [_ #f]))
+
+  ;; A stage's body: checked with the material's names in scope
+  (define (parse-stage-body stx stage material-name bindings push input varyings outputs)
+    (define body-stxs (cdr (syntax->list stx)))
+    (define globals (make-hash))
+    (define (global! name g where)
+      (when (hash-ref globals name #f)
+        (zgal-error 'duplicate-name where "~a names two things in material ~a's ~a shader" name material-name stage))
+      (hash-set! globals name g))
+    (for ([b (in-list bindings)])
+      (global! (binding-name b)
+               (global 'binding (binding-name b) (binding-name b)
+                       (case (binding-kind b)
+                         [(texture) (opaque-t 'texture2D)]
+                         [(sampler) (opaque-t 'sampler)]
+                         [(storage-image) (opaque-t 'image2D)]
+                         [(buffer) (binding-element b)]
+                         [(buffer-array) (runtime-array-t (binding-element b))])
+                       b)
+               stx))
+    (for ([f (in-list push)])
+      (global! (field-name f) (global 'push (field-name f) (field-name f) (field-type f) f) stx))
+    (when (and (eq? stage 'vertex) input)
+      (for ([entry (in-list (vertex-input-attributes input))])
+        (define a (cdr entry))
+        (global! (field-name a) (global 'input (field-name a) (input-variable-name (field-name a)) (field-type a) a) stx)))
+    (when (eq? stage 'fragment)
+      (for ([v (in-list varyings)])
+        (global! (varying-name v) (global 'varying (varying-name v) (varying-name v) (varying-type v) v) stx))
+      (for ([o (in-list outputs)])
+        (global! (field-name o) (global 'output (field-name o) (field-name o) (field-type o) o) stx)))
+    (when (eq? stage 'vertex)
+      (for ([v (in-list varyings)])
+        (global! (varying-name v) (global 'output (varying-name v) (varying-name v) (varying-type v) v) stx)))
+    (define ctx (make-context structs functions constants (for/hash ([(k v) (in-hash globals)]) (values k v)) stage))
+    ;; What a stage's results must name
+    (define expected
+      (case stage
+        [(vertex) (cons (cons "position" (vector-t 'float 4)) (for/list ([v (in-list varyings)]) (cons (varying-name v) (varying-type v))))]
+        [(fragment) (for/list ([o (in-list outputs)]) (cons (field-name o) (field-type o)))]
+        [else '()]))
+    (define (results-checker fields where)
+      (unless (memq stage '(vertex fragment))
+        (zgal-error 'bad-results where "a compute shader has no results: it writes buffers and images"))
+      (define given (make-hash))
+      (for ([f (in-list fields)])
+        (match-define (list name e k) f)
+        (define t (or (for/first ([x (in-list expected)] #:when (string=? (car x) name)) (cdr x))
+                      (zgal-error 'bad-results k "the ~a shader has no output ~a; it gives ~a" stage name
+                                  (string-join (map car expected) ", "))))
+        (when (hash-ref given name #f)
+          (zgal-error 'bad-results k "~a is given twice" name))
+        (hash-set! given name (coerce e t k (format "output ~a" name))))
+      (t-results (for/list ([x (in-list expected)])
+                   (cons (car x) (or (hash-ref given (car x) #f)
+                                     (zgal-error 'bad-results where "the ~a shader's results don't give ~a" stage (car x)))))
+                 (stx->loc where)))
+    (define body
+      (parameterize ([current-results-checker results-checker])
+        (cond
+          [(null? body-stxs)
+           (unless (null? expected)
+             (zgal-error 'bad-results stx "the ~a shader's body is empty, but it gives ~a" stage (string-join (map car expected) ", ")))
+           (t-results '() (stx->loc stx))]
+          [else
+           (define b (check-sequence body-stxs stx ctx (hash)))
+           (match* (stage (texpr-type b))
+             [(_ (results-t)) b]
+             ;; A fragment shader's one output can be its body's value
+             [('fragment t) #:when (and (= (length expected) 1) (not (void-t? t)))
+              (t-results (list (cons (car (first expected)) (coerce b (cdr (first expected)) stx (format "output ~a" (car (first expected))))))
+                         (stx->loc stx))]
+             [('compute (void-t)) b]
+             [(_ (void-t)) #:when (null? expected) (t-begin (list b (t-results '() (stx->loc stx))) (results-t) (stx->loc stx))]
+             [(_ t) (zgal-error 'bad-results stx "the ~a shader's body is ~a, but should give ~a" stage (a-type t)
+                                (case stage
+                                  [(compute) "nothing (it writes buffers and images)"]
+                                  [else (format "(results ~a)" (string-join (map (λ (x) (format "#:~a ..." (car x))) expected) " "))]))])])))
+    (define name (format "~a.~a" material-name (case stage [(vertex) "vert"] [(fragment) "frag"] [(compute) "comp"])))
+    (claim-shader-name! name material-name stx)
+    (zgal-shader #f name stage (stx->loc stx) body (uses-closure (context-uses ctx))))
+
+  ;; Fills in the accesses and stages of bindings from ZGAL bodies, and checks declared ones
+  (define (infer-accesses bindings shaders kind)
+    (define all-zgal? (andmap zgal-shader? shaders))
+    (define accesses (make-hash))
+    (define stages-using (make-hash))
+    (for ([s (in-list shaders)] #:when (zgal-shader? s))
+      (for ([(name access) (in-hash (binding-accesses (zgal-shader-body s) summaries))])
+        (hash-update! accesses name (λ (a) (set-union a access)) (set))
+        (hash-update! stages-using name (λ (a) (set-add a (shader-stage s))) (set))))
+    (for/list ([b (in-list bindings)])
+      (define storage? (memq (binding-kind b) '(storage-image buffer buffer-array)))
+      (define used (hash-ref accesses (binding-name b) (set)))
+      (define inferred
+        (cond [(set-empty? used) #f]
+              [(and (set-member? used 'read) (set-member? used 'write)) 'read-write]
+              [(set-member? used 'write) 'write]
+              [else 'read]))
+      (define access
+        (cond
+          [(not storage?) #f]
+          [(not all-zgal?)
+           (or (binding-access b)
+               (zgal-error 'bad-binding (binding-loc b)
+                           "binding ~a has no access, which can only be inferred when all of its material's shaders are ZGAL bodies; declare read, write or read-write"
+                           (binding-name b)))]
+          [(not inferred)
+           (or (binding-access b)
+               (zgal-error 'unused-binding (binding-loc b) "binding ~a isn't used by the material's shaders, so its access can't be inferred"
+                           (binding-name b)))]
+          [(and (binding-access b) (not (eq? (binding-access b) inferred)))
+           (zgal-error 'access-mismatch (binding-loc b) "binding ~a is declared ~a, but the shaders ~a it"
+                       (binding-name b) (binding-access b)
+                       (case inferred [(read) "only read"] [(write) "only write"] [else "read and write"]))]
+          [else inferred]))
+      (define stages
+        (cond
+          [(or (eq? kind 'compute) (eq? (binding-kind b) 'sampler)) (binding-stages b)]
+          [(not all-zgal?) (binding-stages b)]
+          [else
+           (define using (filter (λ (s) (set-member? (hash-ref stages-using (binding-name b) (set)) s)) '(vertex fragment)))
+           (cond
+             [(null? (binding-stages b)) using]
+             [(and (pair? using) (not (equal? (sort (binding-stages b) symbol<?) (sort using symbol<?))))
+              (zgal-error 'access-mismatch (binding-loc b) "binding ~a is declared for the ~a shader~a, but the ~a shader~a use~a it"
+                          (binding-name b) (string-join (map symbol->string (binding-stages b)) " and ")
+                          (if (= (length (binding-stages b)) 1) "" "s")
+                          (string-join (map symbol->string using) " and ") (if (= (length using) 1) "" "s")
+                          (if (= (length using) 1) "s" ""))]
+             [else (binding-stages b)])]))
+      (struct-copy binding b [access access] [stages stages])))
 
   (define (parse-workgroup stx)
     (define sizes (cdr (syntax->list stx)))
@@ -294,10 +542,13 @@
       ['storage-image
        (match items
          [(list _ access) (values 'storage-image #f (parse-access access "storage image"))]
-         [_ (zgal-error 'bad-binding stx "binding ~a: expected (storage-image access), with access read, write or read-write" name)])]
+         ;; Inferred from ZGAL bodies
+         [(list _) (values 'storage-image #f #f)]
+         [_ (zgal-error 'bad-binding stx "binding ~a: expected (storage-image [access]), with access read, write or read-write" name)])]
       [(or 'buffer 'buffer-array)
        (match items
-         [(list _ type-stx access)
+         [(list _ type-stx access ...)
+          #:when (<= (length access) 1)
           (define t (parse-type type-stx))
           (when (array-t? t)
             (zgal-error 'type-not-allowed type-stx
@@ -306,8 +557,8 @@
           ;; A buffer-array's elements are laid out like an array's
           (define problem (std430-problem (if (eq? head 'buffer-array) (array-t t 1) t)))
           (when problem (zgal-error 'type-not-allowed type-stx "binding ~a: ~a" name problem))
-          (values head t (parse-access access (symbol->string head)))]
-         [_ (zgal-error 'bad-binding stx "binding ~a: expected (~a type access), with access read, write or read-write"
+          (values head t (and (pair? access) (parse-access (first access) (symbol->string head))))]
+         [_ (zgal-error 'bad-binding stx "binding ~a: expected (~a type [access]), with access read, write or read-write"
                         name head)])]
       [_ (zgal-error 'bad-binding stx
                      "binding ~a: unknown kind ~a; expected texture, sampler, (storage-image access), (buffer type access) or (buffer-array type access)"
@@ -377,10 +628,13 @@
         ['graphics-material (values ss fs (cons (parse-material form items 'graphics) ms) gs)]
         ['compute-material (values ss fs (cons (parse-material form items 'compute) ms) gs)]
         ['graph (values ss fs ms (cons (parse-graph form parse-type top-level materials) gs))]
+        ['define (parse-define form items) (values ss fs ms gs)]
         [_ (zgal-error 'unknown-form form
-                       "expected struct, vertex-format, graphics-material, compute-material or graph, found ~a"
+                       "expected struct, vertex-format, define, graphics-material, compute-material or graph, found ~a"
                        (let ([head (head-symbol form)]) (if head (format "(~a ...)" head) (show form))))])))
-  (program source structs-out formats-out materials-out graphs-out))
+  (program source structs-out formats-out materials-out graphs-out
+           (sort (append (hash-values functions) (hash-values constants)) <
+                 #:key (λ (d) (hash-ref declaration-order (if (function-decl? d) (function-decl-name d) (constant-decl-name d)))))))
 
 ;; Vertex inputs are named "in" followed by the attribute, e.g. inPosition
 (define (input-variable-name attribute)

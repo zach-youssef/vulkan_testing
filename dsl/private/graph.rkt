@@ -6,6 +6,7 @@
          racket/match
          racket/string
          "ast.rkt"
+         "builtins.rkt"
          "errors.rkt"
          "layout.rkt"
          "syntax.rkt")
@@ -14,7 +15,6 @@
          (struct-out entry)
          graph-environment
          expression-type
-         literal-type
          unify
          image-formats
          depth-format?)
@@ -52,9 +52,6 @@
 ;; ---------------------------------------------------------------------------------------------
 ;; Expressions and their types
 
-;; Integer literals take the type their context needs (int, uint or float), so they have a type of
-;; their own until unified
-(define literal-type (scalar-t 'literal))
 
 (define (numeric-scalar? t) (and (scalar-t? t) (memq (scalar-t-kind t) '(literal int uint float)) #t))
 (define (numeric? t)
@@ -459,7 +456,7 @@
          ['if
           (match parts
             [(list _ c then else)
-             (t-if (build-time c (scalar-t 'bool) "a target's condition")
+             (t-target-if (build-time c (scalar-t 'bool) "a target's condition")
                    (parse-target-spec (list then) then) (parse-target-spec (list else) else) (stx->loc one))]
             [_ (zgal-error 'malformed one "expected (if condition target target)")])]
          ['attachments (parse-target-spec (cdr parts) one)])]

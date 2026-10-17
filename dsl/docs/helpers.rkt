@@ -15,11 +15,15 @@
          "../compile.rkt"
          "../private/ast.rkt"
          "../private/errors.rkt"
+         "../private/builtins.rkt"
          "../private/graph.rkt"
          "../private/layout.rkt"
          "../private/parse.rkt")
 
 (provide format-table
+         repository-excerpt
+         builtin-function-list
+         stage-variable-table
          repository-file
          prose
          zgal-source
@@ -129,6 +133,25 @@
    (cons (list (bold "ZGAL") (bold "Vulkan"))
          (for/list ([f (in-list (sort (hash-keys image-formats) symbol<?))])
            (list (tt (symbol->string f)) (tt (hash-ref image-formats f)))))))
+
+;; Lines of a repository file, from one matching `from` through one matching `to`, as a string
+(define (repository-excerpt path #:from [from #f] #:to [to #f])
+  (excerpt (string-trim (file->string (build-path repository path)) "\n" #:left? #f) from to))
+
+;; The built-in functions, by name
+(define (builtin-function-list)
+  (para (add-between (for/list ([n (in-list (builtin-names))]) (tt (symbol->string n))) ", ")))
+
+;; The stage variables: their ZGAL names, types and GLSL spellings
+(define (stage-variable-table)
+  (tabular
+   #:style 'boxed
+   #:sep (hspace 2)
+   #:row-properties '(bottom-border ())
+   (cons (list (bold "Stage") (bold "Name") (bold "Type") (bold "GLSL"))
+         (for*/list ([stage (in-list '(vertex fragment compute))]
+                     [entry (in-list (sort (hash->list (hash-ref stage-variables stage)) string<? #:key car))])
+           (list (symbol->string stage) (tt (car entry)) (tt (type-name (third entry))) (tt (second entry)))))))
 
 ;; A file in the repository, as a string
 (define (repository-file path)

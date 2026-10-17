@@ -1,63 +1,137 @@
-;; The image filter's shader interfaces and graph, in ZGAL (dsl/; `make docs` for the language).
-;; The build generates image_filter.zgal.h and the complete shaders, each body in shaders/ preceded
-;; by its material's interface.
+;; The image filter's shaders and graph, in ZGAL (dsl/; `make docs` for the language). The build
+;; generates image_filter.zgal.h and the complete shaders.
 ;;
-;; Every pass is a compute shader run once per pixel of the working image (16 x 16 workgroups).
+;; Every pass is a compute shader run once per pixel of the working image (16 x 16 workgroups),
+;; which holds linear colour (see image_filter.cpp).
+
+;; The dispatch is rounded up to whole workgroups, so some invocations fall outside the image
+(define (outside [texel : ivec2] [size : ivec2]) : bool
+  (any (greaterThanEqual texel size)))
+
+;; Reads a storage image, clamping to its edge so kernels don't darken the border
+(define (loadClamped [image : image2D] [texel : ivec2]) : vec4
+  (image-load image (clamp texel (ivec2 0) (- (image-size image) 1))))
+
+;; Rec. 709 luminance of linear colour
+(define (luminance [linear : vec3]) : float
+  (dot linear (vec3 0.2126 0.7152 0.0722)))
+
+;; The sRGB transfer functions (IEC 61966-2-1)
+(define (srgbEncode [linear : vec3]) : vec3
+  (let* ([c (clamp linear 0.0 1.0)])
+    (mix (* c 12.92) (- (* 1.055 (pow c (vec3 (/ 1.0 2.4)))) 0.055) (greaterThan c (vec3 0.0031308)))))
+
+(define (srgbDecode [encoded : vec3]) : vec3
+  (mix (/ encoded 12.92) (pow (/ (+ encoded 0.055) 1.055) (vec3 2.4)) (greaterThan encoded (vec3 0.04045))))
+
+;; Brightness as people perceive it (and as image editors show it): sRGB-encoded luminance
+(define (perceivedBrightness [linear : vec3]) : float
+  (.r (srgbEncode (vec3 (luminance linear)))))
 
 ;; Copies the input into the working image. The input is an sRGB texture, so sampling decodes it to
 ;; linear colour.
 (compute-material Load
-  (shaders "shaders/load.comp")
   (workgroup 16 16)
   (bindings
    (source texture)
    (sourceSampler sampler)
-   (working (storage-image write))))
+   (working (storage-image)))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     (unless (outside texel (image-size working))
+       (store! working texel (fetch source sourceSampler texel 0))))))
 
 ;; One direction of a separable Gaussian blur, in linear light (so bright and dark areas mix as
 ;; light does)
 (compute-material Blur
-  (shaders "shaders/blur.comp")
   (workgroup 16 16)
   (bindings
-   (source (storage-image read))
-   (destination (storage-image write)))
+   (source (storage-image))
+   (destination (storage-image)))
   (push
    (direction ivec2)            ; (1, 0) for the horizontal pass, (0, 1) for the vertical one
    (radius int)                 ; In pixels; the kernel covers [-radius, radius]
-   (sigma float)))
+   (sigma float))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     (unless (outside texel (image-size destination))
+       (let* ([(weighted total)
+               (fold ([weighted (vec4 0.0)] [total 0.0])
+                     ([i (range (- radius) (+ radius 1))])
+                 (let* ([weight (exp (/ (- (float (* i i))) (* 2.0 sigma sigma)))])
+                   (values (+ weighted (* weight (loadClamped source (+ texel (* i direction)))))
+                           (+ total weight))))])
+         (store! destination texel (/ weighted total)))))))
 
-;; The two halves of a separable Sobel operator on perceived brightness
+;; The perceived brightness of a pixel, clamped to the image
+(define (brightness [image : image2D] [texel : ivec2]) : float
+  (perceivedBrightness (.rgb (loadClamped image texel))))
+
+;; The horizontal half of a separable Sobel operator on perceived brightness. The 3x3 kernels
+;; factor into a [1 2 1] smoothing and a [-1 0 1] difference:
+;;     Gx = [1 2 1]^T * [-1 0 1]      Gy = [-1 0 1]^T * [1 2 1]
+;; This pass applies the horizontal factors, storing the difference (for Gx) in red and the
+;; smoothing (for Gy) in green. SobelColumns applies the vertical ones.
 (compute-material SobelRows
-  (shaders "shaders/sobel_rows.comp")
   (workgroup 16 16)
   (bindings
-   (source (storage-image read))
-   (destination (storage-image write))))
-(compute-material SobelColumns
-  (shaders "shaders/sobel_columns.comp")
-  (workgroup 16 16)
-  (bindings
-   (source (storage-image read))
-   (destination (storage-image write))))
+   (source (storage-image))
+   (destination (storage-image)))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     (unless (outside texel (image-size destination))
+       (let* ([left (brightness source (- texel (ivec2 1 0)))]
+              [centre (brightness source texel)]
+              [right (brightness source (+ texel (ivec2 1 0)))])
+         (store! destination texel (vec4 (- right left) (+ left (* 2.0 centre) right) 0.0 1.0)))))))
 
-;; Makes each pixel black or white, in place
-(compute-material Threshold
-  (shaders "shaders/threshold.comp")
+;; The vertical half of the separable Sobel operator. Writes the gradient magnitude as grey.
+(compute-material SobelColumns
   (workgroup 16 16)
   (bindings
-   (working (storage-image read-write)))
+   (source (storage-image))
+   (destination (storage-image)))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     (unless (outside texel (image-size destination))
+       (let* ([above (.rg (loadClamped source (- texel (ivec2 0 1))))]
+              [centre (.rg (loadClamped source texel))]
+              [below (.rg (loadClamped source (+ texel (ivec2 0 1))))]
+              [gx (+ above.r (* 2.0 centre.r) below.r)]
+              [gy (- below.g above.g)]
+              ;; The magnitude is in perceived brightness (at most 4 * sqrt(2) for a hard edge):
+              ;; scale it so a full-contrast edge saturates, then decode so the output shows that
+              ;; brightness
+              [magnitude (clamp (/ (length (vec2 gx gy)) 4.0) 0.0 1.0)])
+         (store! destination texel (vec4 (srgbDecode (vec3 magnitude)) 1.0)))))))
+
+;; Makes each pixel black or white, in place. Compares perceived brightness, so a threshold of 0.5
+;; splits at the mid grey of an image editor.
+(compute-material Threshold
+  (workgroup 16 16)
+  (bindings
+   (working (storage-image)))
   (push
-   (threshold float)))
+   (threshold float))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     (unless (outside texel (image-size working))
+       (let* ([colour (image-load working texel)]
+              [value (if (>= (perceivedBrightness colour.rgb) threshold) 1.0 0.0)])
+         (store! working texel (vec4 (vec3 value) colour.a)))))))
 
 ;; Encodes the linear working image as sRGB bytes for the PNG. Storage images can't be sRGB, so
 ;; the output is UNORM and the encoding happens here.
 (compute-material Store
-  (shaders "shaders/store.comp")
   (workgroup 16 16)
   (bindings
-   (working (storage-image read))
-   (encoded (storage-image write))))
+   (working (storage-image))
+   (encoded (storage-image)))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     (unless (outside texel (image-size encoded))
+       (let* ([colour (image-load working texel)])
+         (store! encoded texel (vec4 (srgbEncode colour.rgb) (clamp colour.a 0.0 1.0))))))))
 
 ;; Each filter takes the working image back to the working image, so the graph contains every pass
 ;; and the ones the user didn't ask for are disabled (see image_filter.cpp)

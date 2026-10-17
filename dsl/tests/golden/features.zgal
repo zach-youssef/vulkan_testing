@@ -51,6 +51,73 @@
   (shaders "shaders/plain.vert" "shaders/plain.frag")
   (outputs (color vec4)))
 
+;; Functions and constants: pure ones also compile to C++, and every form of the body language
+(define golden 1.618)
+(define offsets (array vec2 (vec2 0 1) (vec2 1 0)))
+
+(define (polish [x : vec3] [n : int]) : vec3
+  (let* ([(total count) (fold ([total (vec3 0.0)] [count 0])
+                              ([i (range 0 n)] [j (range i n)])
+                          (values (+ total (* x (float j))) (+ count 1)))]
+         [scaled (cond [(< count 2) total]
+                       [(< count 10) (* total 0.5)]
+                       [else (/ total (float count))])])
+    (+ scaled (vec3 (sum ([k (range 0 3)]) (at (at offsets (remainder k 2)) 0))
+                    golden
+                    (float (bitxor (shl 1 n) 3))))))
+
+;; Uses textures, so it's GLSL only
+(define (sampled [t : texture2D] [s : sampler] [uv : vec2]) : vec4
+  (+ (sample t s uv) (sample-lod t s uv 0.0) (fetch t s (ivec2 0) 0)
+     (vec4 (sample-compare t s uv 0.5)) (vec4 (vec2 (texture-size t 0)) 0.0 0.0)))
+
+;; Takes a storage image, so it's inlined where it's called
+(define (loadEdge [image : image2D] [texel : ivec2]) : vec4
+  (image-load image (min texel (- (image-size image) 1))))
+
+;; ZGAL bodies, with accesses and stages inferred
+(graphics-material Shaded
+  (vertex-input MeshVertex position uv material)
+  (bindings
+   (lights (buffer Lights))
+   (albedo texture)
+   (albedoSampler sampler))
+  (push
+   (tint vec3))
+  (varyings
+   (texCoord vec2)
+   (id uint flat))
+  (outputs
+   (color vec4)
+   (glow vec4))
+  (vertex
+   (let* ([p (vec4 position 1.0)])
+     (results #:position (* (mat4 1.0) p) #:texCoord uv #:id material)))
+  (fragment
+   (let* ([base (sampled albedo albedoSampler texCoord)]
+          [light (at lights.lights (int (min id 3)))])
+     (results #:color (vec4 (* (polish base.rgb 2) tint light.color.rgb) base.a)
+              #:glow (if (and (> light.intensity 0.5) (not frontFacing))
+                         (vec4 light.direction 1.0)
+                         (vec4 0.0))))))
+
+(compute-material Scatter
+  (workgroup 8 8)
+  (bindings
+   (sums (buffer-array float))
+   (target (storage-image))
+   (settings (buffer Lights)))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)]
+          [index (+ (* globalInvocationId.y 8) globalInvocationId.x)])
+     (begin
+       (unless (= settings.count 0)
+         (write! (at sums index) (+ (at sums index) (.r (loadEdge target texel)))))
+       (for ([i (range 0 2)])
+         (store! target (+ texel (ivec2 i 0)) (vec4 (float i))))
+       (when (> index 0)
+         (write! (at sums 0) 0.0))))))
+
 ;; Every graph item, node and option
 (graph Everything
   (parameter enabled bool)

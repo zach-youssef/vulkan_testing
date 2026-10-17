@@ -39,13 +39,20 @@ ZGAL = $(RACKET) $(DSL_DIR)/zgal.rkt
 $(ZGAL_COMPILED): $(DSL_SRCS)
 	$(RACO) make $(DSL_DIR)/zgal.rkt
 
-# Generates <out>/<name>.zgal.h and <out>/shaders/<shader> from <dir>/<name>.zgal, and a depfile
-# making the stamp depend on the shader bodies:
-#   $(call zgal-rule,<dir>/<name>.zgal,<out>)
-# Shaders compile from <out>/shaders with -I<dir>/shaders, for files their bodies include.
+# Generates <out>/<name>.zgal.h and <out>/shaders/<shader> from <dir>/<name>.zgal, and compiles the
+# shaders into <spv> (<spv>/<shader>.spv), with a depfile making the stamp depend on GLSL bodies:
+#   $(call zgal-rule,<dir>/<name>.zgal,<out>,<spv>)
+# GLSL bodies' includes are found in <dir>/shaders. Any change regenerates and recompiles them all.
 define zgal-rule
-$(2)/$(notdir $(1)).stamp: $(1) $(ZGAL_COMPILED)
+$(2)/$(notdir $(1)).stamp: $(1) $(ZGAL_COMPILED) $(GLSL_INCLUDES)
+	@rm -rf $(2)/shaders
 	$(ZGAL) --cpp-out $(2) --glsl-out $(2)/shaders --depfile $(2)/$(notdir $(1)).d --dep-target $$@ $$<
+	@mkdir -p $(3)
+	@for shader in $(2)/shaders/*; do \
+		[ -e "$$$$shader" ] || continue; \
+		echo glslc $$$$shader; \
+		glslc $(GLSLC_FLAGS) -I$(dir $(1))shaders $$$$shader -o $(3)/$$$$(basename $$$$shader).spv || exit 1; \
+	done
 	@touch $$@
 -include $(2)/$(notdir $(1)).d
 endef
@@ -59,22 +66,20 @@ EXAMPLES_OUT = $(OUT)/examples
 
 SIMPLE_DIR = $(EXAMPLES_DIR)/simple
 SIMPLE_OUT = $(EXAMPLES_OUT)/simple
-SIMPLE_SHADER_SRCS = $(wildcard $(SIMPLE_DIR)/shaders/*)
-SIMPLE_SHADERS = $(patsubst $(SIMPLE_DIR)/shaders/%,$(SIMPLE_OUT)/shaders/%.spv,$(SIMPLE_SHADER_SRCS))
-SIMPLE_CFLAGS = $(CFLAGS) \
+# The shaders are in simple.zgal; the graph is built in C++
+SIMPLE_GEN = $(SIMPLE_OUT)/generated
+SIMPLE_ZGAL_STAMP = $(SIMPLE_GEN)/simple.zgal.stamp
+SIMPLE_CFLAGS = $(CFLAGS) -I$(SIMPLE_GEN) \
                 -DSIMPLE_EXAMPLE_SHADER_DIR='"$(abspath $(SIMPLE_OUT)/shaders)"' \
                 -DSIMPLE_EXAMPLE_TEXTURE_DIR='"$(abspath $(SIMPLE_DIR)/textures)"'
 
-# SPIR-V is written to <out>/shaders/<name>.<stage>.spv
-$(SIMPLE_OUT)/shaders/%.spv : $(SIMPLE_DIR)/shaders/% $(GLSL_INCLUDES)
-	@mkdir -p $(dir $@)
-	glslc $(GLSLC_FLAGS) $< -o $@
+$(eval $(call zgal-rule,$(SIMPLE_DIR)/simple.zgal,$(SIMPLE_GEN),$(SIMPLE_OUT)/shaders))
 
-$(SIMPLE_OUT)/simple_example.o : $(SIMPLE_DIR)/simple_example.cpp $(HEADERS)
+$(SIMPLE_OUT)/simple_example.o : $(SIMPLE_DIR)/simple_example.cpp $(SIMPLE_ZGAL_STAMP) $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -c -o $@ $< $(SIMPLE_CFLAGS)
 
-$(SIMPLE_OUT)/simple_example: $(SIMPLE_OUT)/simple_example.o | $(SIMPLE_SHADERS)
+$(SIMPLE_OUT)/simple_example: $(SIMPLE_OUT)/simple_example.o
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
@@ -86,10 +91,7 @@ $(SIMPLE_OUT)/simple_example: $(SIMPLE_OUT)/simple_example.o | $(SIMPLE_SHADERS)
 IMAGE_FILTER_DIR = $(EXAMPLES_DIR)/image_filter
 IMAGE_FILTER_OUT = $(EXAMPLES_OUT)/image_filter
 IMAGE_FILTER_BIN = $(IMAGE_FILTER_OUT)/image_filter
-IMAGE_FILTER_SHADER_SRCS = $(wildcard $(IMAGE_FILTER_DIR)/shaders/*.comp)
-IMAGE_FILTER_SHADER_INCLUDES = $(wildcard $(IMAGE_FILTER_DIR)/shaders/*.glsl)
-IMAGE_FILTER_SHADERS = $(patsubst $(IMAGE_FILTER_DIR)/shaders/%,$(IMAGE_FILTER_OUT)/shaders/%.spv,$(IMAGE_FILTER_SHADER_SRCS))
-# The shaders' interfaces and the graph are in image_filter.zgal
+# The shaders and the graph are in image_filter.zgal
 IMAGE_FILTER_GEN = $(IMAGE_FILTER_OUT)/generated
 IMAGE_FILTER_ZGAL_STAMP = $(IMAGE_FILTER_GEN)/image_filter.zgal.stamp
 IMAGE_FILTER_CFLAGS = $(CFLAGS) -I$(IMAGE_FILTER_GEN) -DIMAGE_FILTER_SHADER_DIR='"$(abspath $(IMAGE_FILTER_OUT)/shaders)"'
@@ -97,17 +99,13 @@ IMAGE_FILTER_TEST_DIR = $(IMAGE_FILTER_DIR)/tests
 IMAGE_FILTER_TEST_OUT = $(IMAGE_FILTER_OUT)/tests
 IMAGE_FILTER_DIFF = $(IMAGE_FILTER_TEST_OUT)/image_diff
 
-$(eval $(call zgal-rule,$(IMAGE_FILTER_DIR)/image_filter.zgal,$(IMAGE_FILTER_GEN)))
-
-$(IMAGE_FILTER_SHADERS): $(IMAGE_FILTER_OUT)/shaders/%.spv : $(IMAGE_FILTER_ZGAL_STAMP) $(IMAGE_FILTER_SHADER_INCLUDES) $(GLSL_INCLUDES)
-	@mkdir -p $(dir $@)
-	glslc $(GLSLC_FLAGS) -I$(IMAGE_FILTER_DIR)/shaders $(IMAGE_FILTER_GEN)/shaders/$* -o $@
+$(eval $(call zgal-rule,$(IMAGE_FILTER_DIR)/image_filter.zgal,$(IMAGE_FILTER_GEN),$(IMAGE_FILTER_OUT)/shaders))
 
 $(IMAGE_FILTER_OUT)/image_filter.o : $(IMAGE_FILTER_DIR)/image_filter.cpp $(IMAGE_FILTER_ZGAL_STAMP) $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -c -o $@ $< $(IMAGE_FILTER_CFLAGS)
 
-$(IMAGE_FILTER_BIN): $(IMAGE_FILTER_OUT)/image_filter.o | $(IMAGE_FILTER_SHADERS)
+$(IMAGE_FILTER_BIN): $(IMAGE_FILTER_OUT)/image_filter.o
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
@@ -136,24 +134,18 @@ test-example-image_filter: $(IMAGE_FILTER_BIN) $(IMAGE_FILTER_DIFF)
 # ---------------------------------------------------------------------------
 PARTICLES_DIR = $(EXAMPLES_DIR)/particles
 PARTICLES_OUT = $(EXAMPLES_OUT)/particles
-# The shaders' interfaces and the graph are in particles.zgal
+# The shaders and the graph are in particles.zgal
 PARTICLES_GEN = $(PARTICLES_OUT)/generated
 PARTICLES_ZGAL_STAMP = $(PARTICLES_GEN)/particles.zgal.stamp
-PARTICLES_SHADER_SRCS = $(wildcard $(PARTICLES_DIR)/shaders/*)
-PARTICLES_SHADERS = $(patsubst $(PARTICLES_DIR)/shaders/%,$(PARTICLES_OUT)/shaders/%.spv,$(PARTICLES_SHADER_SRCS))
 PARTICLES_CFLAGS = $(CFLAGS) -I$(PARTICLES_GEN) -DPARTICLES_SHADER_DIR='"$(abspath $(PARTICLES_OUT)/shaders)"'
 
-$(eval $(call zgal-rule,$(PARTICLES_DIR)/particles.zgal,$(PARTICLES_GEN)))
-
-$(PARTICLES_SHADERS): $(PARTICLES_OUT)/shaders/%.spv : $(PARTICLES_ZGAL_STAMP) $(GLSL_INCLUDES)
-	@mkdir -p $(dir $@)
-	glslc $(GLSLC_FLAGS) -I$(PARTICLES_DIR)/shaders $(PARTICLES_GEN)/shaders/$* -o $@
+$(eval $(call zgal-rule,$(PARTICLES_DIR)/particles.zgal,$(PARTICLES_GEN),$(PARTICLES_OUT)/shaders))
 
 $(PARTICLES_OUT)/particles.o : $(PARTICLES_DIR)/particles.cpp $(PARTICLES_ZGAL_STAMP) $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -c -o $@ $< $(PARTICLES_CFLAGS)
 
-$(PARTICLES_OUT)/particles: $(PARTICLES_OUT)/particles.o | $(PARTICLES_SHADERS)
+$(PARTICLES_OUT)/particles: $(PARTICLES_OUT)/particles.o
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
@@ -167,25 +159,18 @@ test-example-particles: $(PARTICLES_OUT)/particles
 # ---------------------------------------------------------------------------
 SCENE_DIR = $(EXAMPLES_DIR)/scene
 SCENE_OUT = $(EXAMPLES_OUT)/scene
-# The shaders' interfaces are in scene.zgal: the generated shaders are its bodies (shaders/) with
-# the interface prepended
+# The shaders and the graph are in scene.zgal
 SCENE_GEN = $(SCENE_OUT)/generated
 SCENE_ZGAL_STAMP = $(SCENE_GEN)/scene.zgal.stamp
-SCENE_SHADER_SRCS = $(wildcard $(SCENE_DIR)/shaders/*.vert $(SCENE_DIR)/shaders/*.frag)
-SCENE_SHADERS = $(patsubst $(SCENE_DIR)/shaders/%,$(SCENE_OUT)/shaders/%.spv,$(SCENE_SHADER_SRCS))
 SCENE_CFLAGS = $(CFLAGS) -I$(SCENE_GEN) -DSCENE_EXAMPLE_SHADER_DIR='"$(abspath $(SCENE_OUT)/shaders)"'
 
-$(eval $(call zgal-rule,$(SCENE_DIR)/scene.zgal,$(SCENE_GEN)))
-
-$(SCENE_SHADERS): $(SCENE_OUT)/shaders/%.spv : $(SCENE_ZGAL_STAMP) $(GLSL_INCLUDES)
-	@mkdir -p $(dir $@)
-	glslc $(GLSLC_FLAGS) -I$(SCENE_DIR)/shaders $(SCENE_GEN)/shaders/$* -o $@
+$(eval $(call zgal-rule,$(SCENE_DIR)/scene.zgal,$(SCENE_GEN),$(SCENE_OUT)/shaders))
 
 $(SCENE_OUT)/scene_example.o : $(SCENE_DIR)/scene_example.cpp $(wildcard $(SCENE_DIR)/*.h) $(SCENE_ZGAL_STAMP) $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -c -o $@ $< $(SCENE_CFLAGS)
 
-$(SCENE_OUT)/scene_example: $(SCENE_OUT)/scene_example.o | $(SCENE_SHADERS)
+$(SCENE_OUT)/scene_example: $(SCENE_OUT)/scene_example.o
 	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
 	install_name_tool -add_rpath /usr/local/lib ./$@
 
@@ -198,7 +183,7 @@ test-examples: test-example-image_filter test-example-particles test-example-sce
 
 examples: $(SIMPLE_OUT)/simple_example $(IMAGE_FILTER_BIN) $(PARTICLES_OUT)/particles $(SCENE_OUT)/scene_example
 
-shaders: $(SIMPLE_SHADERS) $(IMAGE_FILTER_SHADERS) $(PARTICLES_SHADERS) $(SCENE_SHADERS)
+shaders: $(SIMPLE_ZGAL_STAMP) $(IMAGE_FILTER_ZGAL_STAMP) $(PARTICLES_ZGAL_STAMP) $(SCENE_ZGAL_STAMP)
 
 .DEFAULT_GOAL := examples
 
@@ -229,25 +214,16 @@ CPU_TEST_OBJS = $(patsubst $(TEST_DIR)/%.cpp,$(TEST_OUT)/%.o,$(CPU_TEST_SRCS))
 GPU_TEST_SRCS = $(wildcard $(TEST_DIR)/gpu/*.cpp)
 GPU_TEST_OBJS = $(patsubst $(TEST_DIR)/%.cpp,$(TEST_OUT)/%.o,$(GPU_TEST_SRCS))
 
-# SPIR-V used by the GPU tests: test-only shaders plus the simple example's shaders,
-# compiled to $(TEST_SHADER_OUT)/<name>.<stage>.spv
-GPU_TEST_SHADER_SRCS = $(wildcard $(TEST_DIR)/gpu/shaders/*) $(SIMPLE_SHADER_SRCS)
-GPU_TEST_SHADERS = $(patsubst %,$(TEST_SHADER_OUT)/%.spv,$(notdir $(GPU_TEST_SHADER_SRCS)))
-TEST_ZGAL_SHADERS = $(patsubst %,$(TEST_SHADER_OUT)/%.spv,$(notdir $(wildcard $(TEST_ZGAL_DIR)/shaders/*)))
-GPU_TEST_SHADERS += $(TEST_ZGAL_SHADERS)
+# SPIR-V used by the GPU tests, compiled to $(TEST_SHADER_OUT)/<name>.<stage>.spv: test-only shaders,
+# and those of the tests' ZGAL file (with the stamp, as its shaders' names aren't files)
+GPU_TEST_SHADER_SRCS = $(wildcard $(TEST_DIR)/gpu/shaders/*)
+GPU_TEST_SHADERS = $(patsubst %,$(TEST_SHADER_OUT)/%.spv,$(notdir $(GPU_TEST_SHADER_SRCS))) $(TEST_ZGAL_STAMP)
 
-$(eval $(call zgal-rule,$(TEST_ZGAL_DIR)/interfaces.zgal,$(TEST_GEN)))
-
-$(TEST_ZGAL_SHADERS): $(TEST_SHADER_OUT)/%.spv : $(TEST_ZGAL_STAMP) $(GLSL_INCLUDES)
-	@mkdir -p $(dir $@)
-	glslc $(GLSLC_FLAGS) -I$(TEST_ZGAL_DIR)/shaders $(TEST_GEN)/shaders/$* -o $@
+$(eval $(call zgal-rule,$(TEST_ZGAL_DIR)/interfaces.zgal,$(TEST_GEN),$(TEST_SHADER_OUT)))
 
 $(TEST_OUT)/gpu/ZgalTest.o: $(TEST_ZGAL_STAMP)
 
 $(TEST_SHADER_OUT)/%.spv : $(TEST_DIR)/gpu/shaders/% $(GLSL_INCLUDES)
-	@mkdir -p $(dir $@)
-	glslc $(GLSLC_FLAGS) $< -o $@
-$(TEST_SHADER_OUT)/%.spv : $(SIMPLE_DIR)/shaders/% $(GLSL_INCLUDES)
 	@mkdir -p $(dir $@)
 	glslc $(GLSLC_FLAGS) $< -o $@
 

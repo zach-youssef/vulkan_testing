@@ -43,7 +43,7 @@
          "(struct Light\n  (direction vec3)")
    (kind 'unknown-form
          "Unknown top-level form"
-         "A file is a sequence of `struct`, `vertex-format`, `graphics-material`, `compute-material` and `graph` forms, and a graph of the items and nodes the reference lists."
+         "A file is a sequence of `struct`, `vertex-format`, `define`, `graphics-material`, `compute-material` and `graph` forms, and a graph of the items and nodes the reference lists."
          "(structure Light (direction vec3))")
    (kind 'malformed
          "A form doesn't have the expected shape"
@@ -79,11 +79,11 @@
          "(struct Weights (values (array float 0)))")
    (kind 'unknown-clause
          "Unknown or misplaced material clause"
-         "Graphics materials take `shaders`, `vertex-input`, `bindings`, `push`, `varyings` and `outputs`; compute materials take `shaders`, `workgroup`, `bindings` and `push`."
+         "Graphics materials take `shaders`, `vertex`, `fragment`, `vertex-input`, `bindings`, `push`, `varyings` and `outputs`; compute materials take `shaders`, `compute`, `workgroup`, `bindings` and `push`."
          "(compute-material Blur\n  (shaders \"blur.comp\")\n  (workgroup 16 16)\n  (outputs (color vec4)))")
    (kind 'missing-clause
          "A required material clause is missing"
-         "Every material needs `shaders`. Graphics materials need `outputs` (write `(outputs)` for depth-only materials): it fixes how many colour attachments their targets have. Compute materials need `workgroup`."
+         "Graphics materials need `outputs` (write `(outputs)` for depth-only materials): it fixes how many colour attachments their targets have. Compute materials need `workgroup`."
          "(graphics-material Flat\n  (shaders \"flat.vert\" \"flat.frag\"))")
    (kind 'duplicate-clause
          "A material clause appears twice"
@@ -91,7 +91,7 @@
          "(graphics-material Flat\n  (shaders \"flat.vert\" \"flat.frag\")\n  (outputs (color vec4))\n  (outputs (normal vec4)))")
    (kind 'bad-shader
          "The material's shaders don't fit it"
-         "Shaders are paths relative to the .zgal file, and their extension is their stage: `.vert`, `.frag` or `.comp`. A graphics material has one vertex and one fragment shader, a compute material one compute shader."
+         "A graphics material has one vertex and one fragment shader, and a compute material one compute shader, each either a ZGAL body (a `vertex`, `fragment` or `compute` clause) or a GLSL body in `shaders`: paths relative to the .zgal file, whose extension is their stage (`.vert`, `.frag` or `.comp`)."
          "(graphics-material Flat\n  (shaders \"flat.vert\")\n  (outputs (color vec4)))")
    (kind 'shader-not-found
          "A shader body doesn't exist"
@@ -99,11 +99,11 @@
          "(graphics-material Flat\n  (shaders \"missing.vert\" \"missing.frag\")\n  (outputs (color vec4)))")
    (kind 'shader-reused
          "Two materials use the same shader"
-         "Each shader body is compiled with its material's interface, so it belongs to one material. The shader library finds shaders by file name, so two shaders can't share one either, even in different directories. Share code between shaders with GLSL `#include`."
+         "Each shader body is compiled with its material's interface, so it belongs to one material. The shader library finds shaders by name (a GLSL body's file name; a ZGAL body's material name and stage, e.g. `Lit.frag`), so two shaders can't share one either, even in different directories. Share code between shaders with functions (`define`), or with GLSL `#include` in GLSL bodies."
          "(graphics-material A\n  (shaders \"flat.vert\" \"flat.frag\")\n  (outputs (color vec4)))\n(graphics-material B\n  (shaders \"flat.vert\" \"other.frag\")\n  (outputs (color vec4)))")
    (kind 'bad-binding
          "A binding's kind or access is invalid"
-         "A binding is `(name kind)`, where the kind is `texture`, `sampler`, `(storage-image access)`, `(buffer type access)` or `(buffer-array type access)`, and the access is `read`, `write` or `read-write`. The access is what the render graph synchronizes on, so it's required: declare it accurately."
+         "A binding is `(name kind)`, where the kind is `texture`, `sampler`, `(storage-image [access])`, `(buffer type [access])` or `(buffer-array type [access])`, and the access is `read`, `write` or `read-write`. The access is what the render graph synchronizes on. It's inferred when every shader of the material is a ZGAL body, and must be declared, accurately, when one is GLSL."
          "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64)\n  (bindings (result (buffer float))))")
    (kind 'bad-stages
          "A binding's stages are invalid"
@@ -157,6 +157,22 @@
          "A keyword option is missing, unknown or invalid"
          "Options follow a form's positional arguments as `#:keyword value`. The message says what the form takes; some are required, e.g. an image's `#:frames` (`shared` or `per-frame`, a trade-off the wrapper makes explicit too)."
          "(graph G\n  (image i rgba8 (fixed 4 4)))")
+   (kind 'access-mismatch
+         "A declared access or stage contradicts the shaders"
+         "When all of a material's shaders are ZGAL bodies, its bindings' accesses and stages are inferred from what the bodies do. A declared one must say the same: remove it, or fix the body."
+         "(compute-material Fill\n  (workgroup 64)\n  (bindings (result (buffer-array float read)))\n  (compute\n   (write! (at result globalInvocationId.x) 1.0)))")
+   (kind 'unused-binding
+         "A binding's access can't be inferred, as no shader uses it"
+         "A storage binding's access is inferred from the shaders using it. If none does, remove the binding, or declare its access."
+         "(compute-material Fill\n  (workgroup 64)\n  (bindings (unused (buffer float)))\n  (compute))")
+   (kind 'bad-write
+         "write! writes to something that isn't a buffer"
+         "`write!` writes a buffer binding's value, or a field or element of it, e.g. `(write! (at particles i) p)`. Locals are immutable: bind a new one with `let*` instead. Images are written with `store!`."
+         "(compute-material Fill\n  (workgroup 64)\n  (bindings (result (buffer-array float)))\n  (compute\n   (let* ([x 1.0])\n     (write! x 2.0))))")
+   (kind 'bad-results
+         "A shader's results are missing, unknown or in the wrong place"
+         "A vertex shader's body gives `(results #:position ... #:varying ...)`: its position and every varying. A fragment shader's gives `(results #:output ...)` with every output, or its one output's value. Compute shaders have no results."
+         "(graphics-material Flat\n  (varyings (uv vec2))\n  (outputs (color vec4))\n  (vertex\n   (results #:position (vec4 0.0)))\n  (fragment\n   (vec4 1.0)))")
    (kind 'version-in-body
          "A shader body declares what ZGAL generates"
          "ZGAL writes the start of every shader: `#version`, the extensions it needs and `bindless.glsl`, then the material's interface. Bodies start with their own code, so remove the line."

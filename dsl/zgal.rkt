@@ -23,7 +23,8 @@
 (define (dependency-rule target source prog)
   (define bodies
     (remove-duplicates
-     (for*/list ([m (in-list (program-materials prog))] [s (in-list (material-shaders m))]) (shader-path s))))
+     (for*/list ([m (in-list (program-materials prog))] [s (in-list (material-shaders m))] #:when (shader-path s))
+       (shader-path s))))
   (string-append
    (format "~a: ~a\n" target (string-join (cons source bodies) " "))
    (string-append* (for/list ([b (in-list bodies)]) (format "~a:\n" b)))))

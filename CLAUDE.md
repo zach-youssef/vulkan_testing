@@ -58,9 +58,10 @@ images, define `STB_IMAGE_WRITE_IMPLEMENTATION` in one translation unit and incl
 
 ## Writing an application
 
-Read `examples/simple/simple_example.cpp` first: it uses every major feature of the C++ API. The
-other examples declare their shader interfaces and graphs in ZGAL (see "Shaders and graphs in
-ZGAL"), and show common kinds of application:
+Read `examples/simple/simple_example.cpp` first: it builds its graph with the C++ API, using
+materials generated from `simple.zgal`. Every example's shaders are written in ZGAL (see "Shaders
+and graphs in ZGAL"), and the others declare their graphs there too. They show common kinds of
+application:
 
 | Example | Shows |
 |---|---|
@@ -236,17 +237,26 @@ int main() { return exitStatus(runApp()); }            // prints the error
 
 ### Shaders and graphs in ZGAL
 
-A material's interface (its bindings, push constants, vertex input, varyings and outputs, and the
-structs its buffers hold) can be declared once in a `.zgal` file instead of in both the shaders and
-C++, and so can a render graph using those materials. The compiler (`dsl/zgal.rkt`, run by the
-Makefile's `zgal-rule`) generates a header with a class per material and a struct per graph, and the
-complete shaders: each shader body (GLSL without `#version`, bindings or inputs) preceded by its
-material's interface. Prefer it for new applications; the image_filter, particles and scene
-examples use it. Read `build/docs/zgal.txt` (from `make docs`) before writing ZGAL: it has the
-language, what's generated and every error. In short:
+A `.zgal` file declares materials (their interface, declared once instead of in both the shaders
+and C++: bindings, push constants, vertex input, varyings, outputs and the structs their buffers
+hold), their shaders, in ZGAL's expression language, and render graphs using them. The compiler
+(`dsl/zgal.rkt`, run by the Makefile's `zgal-rule`, which also compiles the shaders) generates a
+header with a class per material and a struct per graph, and the complete GLSL shaders. Prefer it
+for new applications; every example uses it. Read `build/docs/zgal.txt` (from `make docs`) before
+writing ZGAL: it has the language, what's generated and every error. In short:
 
-- Bodies use bindings and push constants through accessors, `name()`, e.g.
-  `texture(sampler2D(hdr(), hdrSampler()), uv) * exposure()`, and vertex inputs as `inName`.
+- Shaders are `(vertex ...)`, `(fragment ...)` and `(compute ...)` clauses: expressions, with
+  immutable `let*` bindings, folds over ranges (`fold`, `sum`, `for`), and effects (`write!` to
+  buffers, `store!` to images). They name bindings, push constants, vertex attributes and varyings
+  directly (`scene.viewProjection`, `(sample hdr hdrSampler uv)`). A vertex shader gives
+  `(results #:position ... #:varying ...)`; a fragment shader its output's value.
+- Storage bindings' accesses and graphics bindings' stages are inferred from the shaders, so the
+  graph synchronizes what they actually do; don't declare them unless a shader is GLSL.
+- Top-level `(define (f [x : vec3]) : vec3 ...)` functions and `(define name value)` constants are
+  shared by the shaders, and those without textures, images or effects also compile to C++
+  (`sunDirection` in the scene example), so the CPU computes the same thing.
+- GLSL bodies (a `(shaders "x.frag" ...)` clause) still work: they use bindings and push constants
+  through accessors, `name()`, and vertex inputs as `inName`. Prefer ZGAL bodies.
 - A `(graph Name ...)` declares parameters and inputs, samplers, uniforms (per-frame buffers the
   graph writes from a C++ function, only when the value changes), images, buffers, targets,
   material instances and nodes. Push constants and dispatch sizes (`#:invocations`) are computed
@@ -257,13 +267,14 @@ language, what's generated and every error. In short:
 - Outside a graph, C++ builds a generated material from `Name::loadShaders(ctx)` and
   `Name::Bindings{.binding = entry, ...}`, and fills push constants by overriding
   `writePush(frameIndex, Push&)`.
-- Never edit generated files (under `build/`): change the `.zgal` file or the body.
+- Never edit generated files (under `build/`): change the `.zgal` file (or a GLSL body).
 
 ### Shaders
 
 - The wrapper doesn't compile GLSL. Compile to SPIR-V (`glslc -I include/glsl --target-env=vulkan1.3`;
   the Makefile has rules) and load with `ctx.shaders().get("name.stage")`, which finds
-  `<name.stage>.spv` in the search paths. The stage comes from the extension.
+  `<name.stage>.spv` in the search paths. The stage comes from the extension. Shaders written in
+  ZGAL are named after their material, e.g. `Lit.frag`, and their generated classes load them.
 - `BINDLESS_BUFFER_ARRAY(qualifiers, Block, Type, name)` declares buffers holding arrays sized by the
   buffer (`name[i].data[j]`); pass element counts yourself, as MoltenVK can't compile `.length()`.
 - `app.reloadShaders()` (or `AppConfig::autoReloadShaders`) reloads changed SPIR-V. Materials rebuild

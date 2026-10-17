@@ -51,9 +51,11 @@
      (define shaders
        (for*/list ([m (in-list (program-materials prog))]
                    [s (in-list (material-shaders m))])
+         ;; GLSL bodies are files; ZGAL ones are in the program
          (define body
-           (or (read-body (shader-path s))
-               (zgal-error 'shader-not-found (shader-loc s) "shader body ~a doesn't exist" (shader-path s))))
+           (and (shader-path s)
+                (or (read-body (shader-path s))
+                    (zgal-error 'shader-not-found (shader-loc s) "shader body ~a doesn't exist" (shader-path s)))))
          (define out-path (join shader-dir (shader-name s)))
          (output out-path (emit-shader prog m s body out-path))))
      (values prog (cons (output header-path (emit-header prog header-path)) shaders))]))

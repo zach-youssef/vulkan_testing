@@ -3,7 +3,8 @@
 ;; interface (types, bindings, stages) without assuming a backend, so adding a backend only adds an
 ;; emitter.
 
-(require racket/match)
+(require racket/match
+         racket/string)
 
 (provide (all-defined-out))
 
@@ -13,6 +14,14 @@
 (struct matrix-t (size) #:transparent)          ; square float matrices, 2-4 columns
 (struct array-t (element length) #:transparent) ; fixed length
 (struct struct-t (decl) #:transparent)          ; a struct-decl
+
+;; Types only shader bodies have: opaque resources ('texture2D 'sampler 'image2D), the unsized
+;; array a buffer-array binding holds, nothing ('void, for effects and functions returning
+;; nothing), and several values (from a fold with several accumulators)
+(struct opaque-t (kind) #:transparent)
+(struct runtime-array-t (element) #:transparent)
+(struct void-t () #:transparent)
+(struct values-t (types) #:transparent)
 
 ;; Declarations. Every `loc` is where the declaration is in the .zgal file.
 (struct field (name type loc) #:transparent)
@@ -40,8 +49,18 @@
 (struct material (kind name shaders bindings push vertex-input varyings outputs workgroup loc)
   #:transparent)
 
+;; A shader whose body is written in ZGAL (shader-path is #f). body: the checked body, a typed
+;; expression (see body.rkt); uses: the functions and constants it uses, in dependency order.
+(struct zgal-shader shader (body uses) #:transparent)
+
+;; Top-level functions and constants. params: (cons name type). body: a typed expression.
+;; cpu?: whether it can also be C++ (pure, without opaque types or stage built-ins). uses: the
+;; functions and constants it uses, in dependency order.
+(struct function-decl (name params result body cpu? uses loc) #:transparent)
+(struct constant-decl (name type body cpu? uses loc) #:transparent)
+
 ;; source: the .zgal file's path. Declarations are in file order.
-(struct program (source structs vertex-formats materials graphs) #:transparent)
+(struct program (source structs vertex-formats materials graphs functions) #:transparent)
 
 (define (type-name t)
   (match t
@@ -49,7 +68,11 @@
     [(vector-t k n) (format "~a~a" (case k [(float) "vec"] [(int) "ivec"] [(uint) "uvec"] [(bool) "bvec"]) n)]
     [(matrix-t n) (format "mat~a" n)]
     [(array-t e n) (format "(array ~a ~a)" (type-name e) n)]
-    [(struct-t d) (struct-decl-name d)]))
+    [(struct-t d) (struct-decl-name d)]
+    [(opaque-t k) (symbol->string k)]
+    [(runtime-array-t e) (format "(array ~a)" (type-name e))]
+    [(void-t) "void"]
+    [(values-t ts) (format "(values ~a)" (string-join (map type-name ts) " "))]))
 
 (define (material-shader m stage)
   (for/first ([s (in-list (material-shaders m))] #:when (eq? (shader-stage s) stage)) s))
@@ -89,12 +112,12 @@
 ;; (list 'extent-of import-name). frames: 'shared or 'per-frame. when: an expression or #f.
 (struct g-image (name format extent frames when loc) #:transparent)
 (struct g-buffer (name type count frames when loc) #:transparent)
-;; spec: a t-attachments, t-surface or t-if
+;; spec: a t-attachments, t-surface or t-target-if
 (struct g-target (name spec loc) #:transparent)
 (struct t-attachments (colors depth loc) #:transparent)       ; depth: a t-attachment or #f
 (struct t-attachment (image load store clear loc) #:transparent) ; clear: a list of 4 reals, or a real
 (struct t-surface (clear depth loc) #:transparent)              ; depth: a format symbol or 'none
-(struct t-if (condition then else loc) #:transparent)
+(struct t-target-if (condition then else loc) #:transparent)
 ;; An instance of a material declared in the file. bindings: (cons binding resource-name) in the
 ;; material's order. push: (cons field expression) in the material's order. options: an
 ;; association list of pipeline options. invocations: expressions (compute) or #f.
