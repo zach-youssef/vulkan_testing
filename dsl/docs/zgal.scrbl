@@ -230,6 +230,32 @@ alignment, without std140's rounding to 16 bytes. So a scalar packs into the 4 b
 ZGAL
    )
 
+@(define model-source #<<ZGAL
+(vertex-format Vertex
+  (position vec3)
+  (normal vec3 #:as snorm16)
+  (uv vec2)
+  (color vec4 #:as unorm8 #:default (vec4 1 1 1 1)))   ; White when a file has no colours
+
+(graphics-material Paint
+  (vertex-input Vertex)
+  (bindings (baseColors (array texture)) (factors (buffer-array vec4)) (linear sampler))
+  (varyings (texCoord vec2) (tint vec4) (material uint flat))
+  (outputs (paint vec4))
+  (vertex (results #:position (vec4 position 1.0) #:texCoord uv #:tint color
+                   #:material (uint instanceIndex)))
+  (fragment (* tint (at factors material) (sample (at baseColors material) linear texCoord))))
+
+(graph Ship
+  (model ship "ship.glb" Vertex #:base-colors shipColors #:base-color-factors shipFactors)
+  (sampler linear)
+  (image canvas rgba8 (fixed 256 256) #:frames shared)
+  (target onCanvas (color canvas))
+  (material paint Paint (baseColors shipColors) (factors shipFactors) linear)
+  (draw-meshes draw onCanvas ship paint))
+ZGAL
+   )
+
 @(define packed-source #<<ZGAL
 (vertex-format Vertex
   (position vec3)
@@ -287,7 +313,8 @@ them; the header declares it as a C++ struct with that layout.
 
 @racketgrammar*[#:literals (vertex-format)
  [vertex-format-form (vertex-format Name attribute ...+)]
- [attribute (name type) (name type #:as storage)]]
+ [attribute (name type attribute-option ...)]
+ [attribute-option (code:line #:as storage) (code:line #:default value)]]
 
 Declares the vertices of a vertex buffer: a C++ struct, laid out as C++ lays it out, which materials
 read through @racket[vertex-input]. Attributes are scalars or vectors of @tt{float}, @tt{int} or
@@ -308,6 +335,9 @@ integer, aligned to 4 bytes (as Metal requires; so the struct's size is a multip
 @tt{gtc/packing.hpp} converts floats to it, as the generated comment says. Not every device reads
 every format from vertex buffers (3-component 8-bit formats are the usual gap): building a pipeline
 reading one it can't fails with @tt{ErrorCode::Unsupported}.
+
+@racket[#:default] gives the value a graph's @racket[model] gives the attribute (a number, or a
+vector like @racket[(vec4 1 1 1 1)]) when its file doesn't (@secref["assets"]).
 
 @(zgal-example packed-source #:show '())
 @(generated-file packed-source "example.zgal.h" #:from #rx"^struct Vertex" #:to #rx"^};")
@@ -849,7 +879,7 @@ Its app (@secref["apps"]) computes the uniforms, shadows and exposure from its s
 and C++ supplies the meshes.
 
 @racketgrammar*[
- #:literals (graph parameter input per-frame data meshes cpu extern path import-image import-images image-file import-buffer upload
+ #:literals (graph parameter input per-frame data meshes cpu extern path import-image import-images image-file model import-buffer upload
              constant sampler uniform image buffer target surface attachments if color depth material
              dispatch draw-meshes draw readback copy clear fixed extent-of)
  [graph-form (graph Name graph-item ...)]
@@ -864,6 +894,7 @@ and C++ supplies the meshes.
              (import-image name #:resting resting-state)
              (import-images name #:resting resting-state)
              (image-file name asset #:color color-space)
+             (model name asset Format model-option ...)
              (import-buffer name type)
              (upload name data-input)
              (constant name expression)
@@ -875,7 +906,7 @@ and C++ supplies the meshes.
              (material name Material binding ... material-option ...)
              node]
  [node (dispatch name material node-option ...)
-       (draw-meshes name target meshes-input material node-option ...)
+       (draw-meshes name target meshes-input-or-model material node-option ...)
        (draw name target material vertex-count node-option ...)
        (readback name image-or-buffer node-option ...)
        (cpu name cpu-input cpu-option ... node-option ...)
@@ -893,6 +924,7 @@ and C++ supplies the meshes.
  [maybe-when (code:line) (code:line #:when expression)]
  [frames shared per-frame]
  [asset "path" path-input]
+ [model-option (code:line #:base-colors name) (code:line #:base-color-factors name)]
  [color-space srgb linear]]
 
 Items and nodes appear in any order, and refer to items declared before them. Items share one
@@ -943,6 +975,40 @@ to linear, and @tt{linear} for data (normal maps, masks, lookup tables), read as
 
 @(zgal-example image-file-source)
 @(generated-file image-file-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto file_albedo" #:to #rx"result.images.mask")
+
+@racket[(model name asset Format)] loads a glTF (@tt{.gltf}, @tt{.glb}) or OBJ (@tt{.obj}, with its
+@tt{.mtl}) file: its triangles, with its nodes' transforms baked in, as meshes of @tt{Format}'s
+vertices, which @racket[draw-meshes] draws. Each mesh's instance index is its material's (the file's
+materials, then a default one for meshes without any), which vertex shaders read as
+@racket[instanceIndex]. The file's materials give their base colours: @tt{#:base-colors} declares
+their textures (sRGB; white for materials without one), for an @racket[(array texture)] binding,
+and @tt{#:base-color-factors} a buffer of their factors (@tt{vec4}s, linear), for a
+@racket[(buffer-array vec4)] binding, both indexed by material. Texture coordinates have glTF's
+convention (@tt{v} is 0 at the top of the image; OBJ's are flipped to it).
+
+Models fill the vertex format's attributes by name, converting them to each attribute's type and
+storage:
+
+@tabular[
+ #:style 'boxed
+ #:sep (hspace 2)
+ #:row-properties '(bottom-border ())
+ (list
+  (list @bold{Attribute names} @bold{From} @bold{Types})
+  (list @elem{@tt{position}, @tt{pos}} "glTF POSITION, OBJ v" @elem{@tt{vec2}, @tt{vec3}, @tt{vec4} (w 1)})
+  (list @tt{normal} "NORMAL, vn" @elem{@tt{vec3}, @tt{vec4} (w 0)})
+  (list @elem{@tt{uv}, @tt{uv0}, @tt{texCoord}, @tt{texcoord}} "TEXCOORD_0, vt" @tt{vec2})
+  (list @elem{@tt{color}, @tt{colour}} "COLOR_0, OBJ vertex colours" @elem{@tt{vec3}, @tt{vec4}})
+  (list @tt{tangent} "TANGENT" @elem{@tt{vec3}, @tt{vec4} (w: the bitangent's sign)}))]
+
+Other attributes need a @racket[#:default], which also fills a named one a file lacks; without
+one, a file lacking it fails @tt{build()} (@tt{ErrorCode::InvalidData}). The generated vertex struct
+has the conversion, @tt{fromModel}, which @tt{zgal::loadModel} (@tt{include/zgal/Assets.h}) uses
+with the wrapper's loaders (@tt{resources/Model.h}).
+
+@(zgal-example model-source #:show '("Paint.vert"))
+@(generated-file model-source "example.zgal.h" #:from #rx"static Result<std::vector<Vertex>> fromModel" #:to #rx"^    }$")
+@(generated-file model-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto model_ship" #:to #rx"result.buffers.shipFactors")
 
 @subsection[#:tag "graph-expressions"]{Expressions}
 
@@ -1045,8 +1111,10 @@ material is used by a node.
 Nodes:
 @itemlist[
  @item{@racket[dispatch]: a compute material (a @tt{DispatchNode}).}
- @item{@racket[draw-meshes]: draws each mesh of a meshes input with a graphics material that has a
-       @racket[vertex-input] (a @tt{RenderablesNode}).}
+ @item{@racket[draw-meshes]: draws each mesh of a meshes input or a @racket[model] with a graphics
+       material that has a @racket[vertex-input] (a @tt{RenderablesNode}); a model's material reads
+       its vertex format. Each draw's first instance is its mesh's instance index
+       (@tt{Mesh::create}'s, or a model mesh's material).}
  @item{@racket[draw]: draws a vertex count with a graphics material without one, e.g. a fullscreen
        triangle or particles pulled from a buffer.}
  @item{@racket[readback]: copies an image or a buffer to the CPU each frame (a @tt{ReadbackNode}

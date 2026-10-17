@@ -182,6 +182,50 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL image files load from the asset search paths in
                 "Asset 'missing.png' not found");
 }
 
+TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs draw models with their materials' base colours") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    auto ids = Models::build(ctx, graph, Models::Inputs{.file = "halves.gltf"}).value();
+    // Two materials and the default one
+    CHECK(ids.images.halfColors.size() == 3);
+    graph.execute().value();
+    const auto pixels = ids.canvasReadPixels(graph).value();
+    const auto pixel = [&](size_t x, size_t y) {
+        return std::vector<uint8_t>(pixels.begin() + (y * 4 + x) * 4, pixels.begin() + (y * 4 + x) * 4 + 4);
+    };
+    // The left half samples quadrants.png (sRGB, decoded), the right half is the green factor
+    CHECK(pixel(0, 0) == std::vector<uint8_t>{255, 0, 0, 255});
+    CHECK(pixel(1, 1) == std::vector<uint8_t>{0, 255, 0, 255});
+    CHECK(pixel(0, 3) == std::vector<uint8_t>{0, 0, 255, 255});
+    CHECK(pixel(1, 2) == std::vector<uint8_t>{55, 55, 55, 255});
+    for (size_t y = 0; y < 4; ++y) {
+        CHECK(pixel(2, y) == std::vector<uint8_t>{0, 128, 0, 255});
+        CHECK(pixel(3, y) == std::vector<uint8_t>{0, 128, 0, 255});
+    }
+
+    // OBJ files too: the quad's material, then the default one for the triangle without any
+    RenderGraph obj(ctx);
+    auto objIds = Models::build(ctx, obj, Models::Inputs{.file = "quad.obj"}).value();
+    CHECK(objIds.images.halfColors.size() == 2);
+    obj.execute().value();
+
+    // Attributes without defaults must be in the file; ones with defaults take them
+    ModelPrimitive bare;
+    bare.positions = {glm::vec3(0.0f)};
+    bare.uvs = {glm::vec2(0.5f)};
+    CHECK_ERROR(ModelVertex::fromModel(bare), ErrorCode::InvalidData,
+                "the model has no normals, which ModelVertex's normal reads (or give it a #:default)");
+    bare.normals = {glm::vec3(0.0f, 0.0f, 1.0f)};
+    const auto vertices = ModelVertex::fromModel(bare).value();
+    CHECK(vertices[0].color == glm::u8vec4(255));
+    CHECK(vertices[0].uv == glm::packHalf(glm::vec2(0.5f)));
+
+    // A model that can't be found
+    RenderGraph missing(ctx);
+    CHECK_ERROR(Models::build(ctx, missing, Models::Inputs{.file = "missing.gltf"}), ErrorCode::NotFound,
+                "Asset 'missing.gltf' not found");
+}
+
 TEST_CASE_FIXTURE(GpuTest, "ZGAL materials check their bindings, formats and options") {
     auto& ctx = context();
     auto& heap = ctx.descriptors();

@@ -435,3 +435,29 @@
   (dispatch linear readLinear)
   (readback srgbRead srgbTexels)
   (readback linearRead linearTexels))
+
+;; Vertices models fill by name: packed, and a colour that's white when a file has none
+(vertex-format ModelVertex
+  (position vec3)
+  (uv vec2 #:as float16)
+  (normal vec3 #:as snorm16)
+  (color vec4 #:as unorm8 #:default (vec4 1 1 1 1)))
+
+;; A model's base colours: each mesh's material is its instance index
+(graphics-material ModelColor
+  (vertex-input ModelVertex)
+  (bindings (baseColors (array texture)) (factors (buffer-array vec4)) (pick sampler))
+  (varyings (texCoord vec2) (material uint flat) (tint vec4))
+  (outputs (modelColor vec4))
+  (vertex (results #:position (vec4 position.xy 0.0 1.0) #:texCoord uv #:material (uint instanceIndex) #:tint color))
+  (fragment (* tint (at factors material) (sample (at baseColors material) pick texCoord))))
+
+;; Draws a model C++ names into a 4x4 image
+(graph Models (input file path)
+  (model halves file ModelVertex #:base-colors halfColors #:base-color-factors halfFactors)
+  (sampler pick #:filter nearest)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target onCanvas (color canvas #:clear (0 0 0 1)))
+  (material drawModel ModelColor (baseColors halfColors) (factors halfFactors) pick #:cull none)
+  (draw-meshes draw onCanvas halves drawModel)
+  (readback canvasRead canvas))

@@ -158,7 +158,7 @@
        (define decl (vertex-format name (for/list ([a (in-list attributes)]) (parse-attribute a name names)) (stx->loc stx)))
        (hash-set! formats name decl)
        decl]
-      [_ (zgal-error 'malformed stx "expected (vertex-format Name (attribute type [#:as storage]) ...)")]))
+      [_ (zgal-error 'malformed stx "expected (vertex-format Name (attribute type [#:as storage] [#:default value]) ...)")]))
 
   ;; (name type [#:as storage])
   (define (parse-attribute stx format-name names)
@@ -173,8 +173,9 @@
        (define-values (positional options) (split-options option-stxs (format "attribute ~a" name)))
        (unless (null? positional)
          (zgal-error 'malformed (car positional) "expected an attribute (name type [#:as storage]), found ~a" (show stx)))
-       (check-known-options options '(#:as) (format "attribute ~a" name))
+       (check-known-options options '(#:as #:default) (format "attribute ~a" name))
        (define kind (if (vector-t? t) (vector-t-kind t) (scalar-t-kind t)))
+       (define default (let ([d (hash-ref options '#:default #f)]) (and d (parse-attribute-default d t name))))
        (define storage
          (choice-option options '#:as all-attribute-storages (format "attribute ~a" name)))
        (when (and storage (not (memq storage (hash-ref attribute-storages kind))))
@@ -182,8 +183,26 @@
                      "~a in ~a is read as ~a, so it's stored as ~a, not ~a"
                      name format-name (type-name t)
                      (string-join (map symbol->string (hash-ref attribute-storages kind)) ", ") storage))
-       (attribute name t (stx->loc stx) storage)]
-      [_ (zgal-error 'malformed stx "expected an attribute (name type [#:as storage]), found ~a" (show stx))]))
+       (attribute name t (stx->loc stx) storage default)]
+      [_ (zgal-error 'malformed stx "expected an attribute (name type [#:as storage] [#:default value]), found ~a" (show stx))]))
+
+  ;; A literal of the attribute's type t: a number, or (vecN number ...)
+  (define (parse-attribute-default stx t name)
+    (define (number-of s)
+      (define n (syntax-e s))
+      (define kind (if (vector-t? t) (vector-t-kind t) (scalar-t-kind t)))
+      (unless (and (real? n) (or (eq? kind 'float) (exact-integer? n)) (or (not (eq? kind 'uint)) (>= n 0)))
+        (zgal-error 'type-mismatch s "attribute ~a's #:default is ~a, so its components are ~a numbers, not ~a"
+                    name (type-name t) kind (show s)))
+      n)
+    (cond
+      [(scalar-t? t) (number-of stx)]
+      [else
+       (define items (syntax->list stx))
+       (unless (and items (equal? (head-symbol stx) (string->symbol (type-name t))) (= (length (cdr items)) (vector-t-size t)))
+         (zgal-error 'type-mismatch stx "attribute ~a's #:default is a ~a, e.g. (~a ~a), not ~a" name (type-name t) (type-name t)
+                     (string-join (make-list (vector-t-size t) "0") " ") (show stx)))
+       (map number-of (cdr items))]))
 
   (define (parse-material stx items kind)
     (define form-name (if (eq? kind 'graphics) "graphics-material" "compute-material"))
@@ -727,7 +746,7 @@
         ['graphics-material (values ss fs (cons (parse-material form items 'graphics) ms) gs as)]
         ['compute-material (values ss fs (cons (parse-material form items 'compute) ms) gs as)]
         ['graph
-         (define g (parse-graph form parse-type top-level materials))
+         (define g (parse-graph form parse-type top-level materials formats))
          (hash-set! graphs (graph-name g) g)
          (values ss fs ms (cons g gs) as)]
         ['app

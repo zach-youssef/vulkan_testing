@@ -65,3 +65,47 @@
   (check-zgal-error (string-replace files "\"logo.png\"" "\"\"") 'malformed "an asset's path isn't empty")
   (check-zgal-error (string-replace files "(target canvas)" "(target logo)") 'binding-mismatch
                     "binding target is a storage image, but logo is an image file, which shaders only sample"))
+
+(define models
+  (string-append
+   "(vertex-format V (position vec3) (normal vec3 #:as snorm8) (colour vec3 #:default (vec3 1 1 1)) (id uint #:default 3))\n"
+   "(graphics-material Paint (vertex-input V) (bindings (colors (array texture)) (factors (buffer-array vec4)) (s sampler))\n"
+   "  (varyings (m uint flat)) (outputs (o vec4))\n"
+   "  (vertex (results #:position (vec4 (+ position normal colour) 1.0) #:m (+ id (uint instanceIndex))))\n"
+   "  (fragment (* (at factors m) (sample (at colors m) s (vec2 0.5)))))\n"
+   "(graph G (input file path)\n"
+   "  (model ship file V #:base-colors shipColors #:base-color-factors shipFactors)\n"
+   "  (sampler s) (image canvas rgba8 (fixed 4 4) #:frames shared) (target t (color canvas))\n"
+   "  (material paint Paint (colors shipColors) (factors shipFactors) s)\n"
+   "  (draw-meshes draw t ship paint))\n"))
+
+(test-case "Models fill their vertex format by name, and give their materials' base colours"
+  (define h (named (compile-text models) ".zgal.h"))
+  (check-true (string-contains? h "#include \"zgal/Assets.h\""))
+  (check-true (string-contains? h "static Result<std::vector<V>> fromModel(const ModelPrimitive& primitive) {"))
+  (check-true (string-contains? h "vertices[i].normal = glm::packSnorm<int8_t>(primitive.normals[i]);"))
+  ;; A default fills a named attribute the file lacks, or an attribute models don't give
+  (check-true (string-contains? h "vertices[i].colour = (primitive.colors.empty() ? glm::vec3(1.0f, 1.0f, 1.0f) : glm::vec3(primitive.colors[i]));"))
+  (check-true (string-contains? h "vertices[i].id = 3u;"))
+  (check-true (string-contains? h "TRY_ASSIGN(auto model_ship, zgal::loadModel<V>(context, in->file, \"G's model ship\"));"))
+  (check-true (string-contains? h "zgal::importImages(graph, \"shipColors\", model_ship.baseColorTextures, ImageState::shaderReadOnly())"))
+  (check-true (string-contains? h "graph.importBuffer<glm::vec4>(\"shipFactors\", upload_shipFactors)"))
+  (check-true (string-contains? h "for (const auto& mesh : model_ship.meshes) {")))
+
+(test-case "Models need vertex formats they can fill, read by the materials drawing them"
+  (check-zgal-error (string-replace models " (id uint #:default 3)" " (id uint)") 'model-attribute
+                    "models don't give attribute id of V: name it after what they give (position, normal, uv, color, tangent) or give it a #:default")
+  (check-zgal-error (string-replace (string-replace models "(normal vec3 #:as snorm8)" "(normal vec2)") "(+ position normal colour)" "(+ position colour)")
+                    'model-attribute
+                    "attribute normal of V takes models' normals, so it's vec3 or vec4, not vec2")
+  (check-zgal-error (string-replace models "(id uint #:default 3)" "(id uint #:default -1)") 'type-mismatch
+                    "attribute id's #:default is uint, so its components are uint numbers, not -1")
+  (check-zgal-error (string-replace models "#:default (vec3 1 1 1)" "#:default (vec4 1 1 1 1)") 'type-mismatch
+                    "attribute colour's #:default is a vec3, e.g. (vec3 0 0 0), not (vec4 1 1 1 1)")
+  (check-zgal-error (string-replace models "(model ship file V" "(model ship file W") 'unknown-name
+                    "W isn't a vertex format declared earlier in the file")
+  (define other
+    (string-replace (string-replace models "(graphics-material Paint (vertex-input V)" "(vertex-format W (position vec3))\n(graphics-material Paint (vertex-input W)")
+                    "(+ position normal colour)" "position"))
+  (check-zgal-error (string-replace other "(+ id (uint instanceIndex))" "(uint instanceIndex)") 'type-mismatch
+                    "model ship's vertices are V, but material paint (Paint) reads W"))

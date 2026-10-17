@@ -3,7 +3,7 @@ CC = /usr/bin/g++
 CXX = $(CC)
 
 # Include paths
-CFLAGS = -std=c++20 -Wc++11-extensions -Wc++14-extensions -I/usr/local/include -Ithird_party/stb -I/Users/zyoussef/VulkanSDK/1.4.321.0/macOS/include/
+CFLAGS = -std=c++20 -Wc++11-extensions -Wc++14-extensions -I/usr/local/include -Ithird_party/stb -Ithird_party/cgltf -Ithird_party/tinyobjloader -I/Users/zyoussef/VulkanSDK/1.4.321.0/macOS/include/
 CXXFLAGS = $(CFLAGS)
 
 # Library paths

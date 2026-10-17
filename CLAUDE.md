@@ -38,7 +38,7 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | Directory | Contents |
 |---|---|
 | `include/core` | `VulkanContext` (instance, device, queues, timelines, frames, deferred destruction), `ResourceManager`/`Handle`, `PerFrame`/`FrameBinding`, Vulkan object wrappers, device feature requirements |
-| `include/resources` | `Buffer<T>`, `Image` |
+| `include/resources` | `Buffer<T>`, `Image`, `Model` (glTF and OBJ loading: `ModelData`, `uploadModel`) |
 | `include/descriptors` | `DescriptorHeap`: the universal descriptor set and `DescriptorEntry` |
 | `include/shaders` | `ShaderLibrary` and `Shader` (SPIR-V loading and reloading), `SpirvReflection` (what shaders write) |
 | `include/materials` | `Material`, `ComputeMaterial`, `GraphicsMaterial`, `MaterialBinding`, `Renderable`, `Mesh`, `MeshRenderable`, `AttachmentFormats` |
@@ -52,7 +52,9 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 
 Include headers relative to `include/`, e.g. `#include "graph/RenderGraph.h"`. Exactly one
 translation unit must `#define VK_WRAP_UTIL_IMPL` before including the wrapper and
-`#define STB_IMAGE_IMPLEMENTATION` before including `<stb_image.h>` (see the example). To write
+`#define STB_IMAGE_IMPLEMENTATION` before including `<stb_image.h>` (see the example). That
+translation unit must also include `"resources/Model.h"` if any uses it (directly, or through code
+generated for a ZGAL `model`), as it compiles cgltf's and tinyobjloader's implementations there. To write
 images, define `STB_IMAGE_WRITE_IMPLEMENTATION` in one translation unit and include
 `"util/StbImageWrite.h"` rather than `<stb_image_write.h>`.
 
@@ -284,8 +286,12 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   `uint`/`int` and narrow explicitly to write them (`(uint8 x)`). A material using them needs device
   features: add its (or its graph's) `requiredFeatures()` to the context's features.
 - Graphs load assets when they're built: `(image-file name "file.png" #:color srgb)` (or `linear`)
-  imports an image file found in the asset search paths; the path can be a `(input p path)`
-  (`std::filesystem::path`) instead of a string.
+  imports an image file found in the asset search paths; `(model m "ship.gltf" Format
+  #:base-colors textures #:base-color-factors factors)` loads a glTF or OBJ model as meshes of a
+  vertex format, filling its attributes by name (`position`, `normal`, `uv`, `color`, `tangent`;
+  others need `#:default`), which `draw-meshes` draws; shaders read a mesh's material as
+  `instanceIndex` and index the textures (an `(array texture)`) and factors (a `buffer-array vec4`)
+  with it. An asset's path can be a `(input p path)` (`std::filesystem::path`) instead of a string.
 - Vertex attributes can be stored packed, `(color vec4 #:as unorm8)` (`float16`, `unorm8/16`,
   `snorm8/16`, `uint8/16`, `int8/16`): shaders read the declared type, and the C++ struct holds
   GLM's sized types (fill them with `glm::packUnorm` etc., as the generated comments say).
@@ -352,9 +358,12 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   device can't store to (e.g. any sRGB format). `Image::supportsUsage` checks a format first.
 - Samplers: `VulkanSampler::create(ctx, SamplerDesc{...})` (filter, address mode, a
   `compareOp` for shadow maps, anisotropy); `createWithAddressMode` is shorthand.
-- Meshes: `Mesh::create(ctx, vertices, indices)` (16- or 32-bit indices) holds the
+- Meshes: `Mesh::create(ctx, vertices, indices[, instanceIndex])` (16- or 32-bit indices) holds the
   buffers; `create<MeshRenderable>(mesh, material)` draws one with a material, so passes can share
-  geometry.
+  geometry. Vertex shaders read the mesh's instance index as `gl_InstanceIndex`.
+- Models: `ModelData::load(path)` reads a glTF or OBJ file (triangles with transforms baked in, and
+  base colour materials); `uploadModel<Vertex>(ctx, data, toVertices)` makes a `Model` (meshes whose
+  instance index is their material, base colour factors and sRGB textures).
 - Colours: textures are sRGB and sampling decodes them to linear. The swapchain is preferably
   `B8G8R8A8_SRGB`, so shaders output linear values.
 

@@ -202,6 +202,8 @@
   (define inputs (of-type g-input?))
   (define imports (of-type g-import?))
   (define image-files (of-type g-image-file?))
+  (define model-textures (of-type g-model-textures?))
+  (define model-factors (of-type g-model-factors?))
   (define image-sets (of-type g-import-images?))
   (define buffer-imports (of-type g-import-buffer?))
   (define uploads (of-type g-upload?))
@@ -232,17 +234,19 @@
              (append (for/list ([i (in-list imports)]) (list "ImageId" (g-import-name i) i))
                      (for/list ([i (in-list image-files)]) (list "ImageId" (g-image-file-name i) i))
                      (for/list ([i (in-list image-sets)]) (list "std::vector<ImageId>" (g-import-images-name i) i))
+                     (for/list ([i (in-list model-textures)]) (list "std::vector<ImageId>" (g-model-textures-name i) i))
                      (for/list ([i (in-list images)]) (list (id-type "ImageId" (g-image-when i)) (g-image-name i) i))))
   (id-struct "Buffers"
              (append (for/list ([b (in-list buffer-imports)]) (list "BufferId" (g-import-buffer-name b) b))
                      (for/list ([b (in-list uploads)]) (list "BufferId" (g-upload-name b) b))
+                     (for/list ([b (in-list model-factors)]) (list "BufferId" (g-model-factors-name b) b))
                      (for/list ([b (in-list buffers)]) (list (id-type "BufferId" (g-buffer-when b)) (g-buffer-name b) b))))
   (id-struct "Nodes"
              (for/list ([n (in-list nodes)])
                ;; An extern node is the nodes C++ adds (none when its condition is false)
                (list (if (eq? (g-node-kind n) 'extern) "std::vector<NodeId>" (id-type "NodeId" (g-node-when n)))
                      (g-node-name n) n)))
-  (unless (and (null? imports) (null? image-files) (null? image-sets) (null? images)) (gen "    Images images;"))
+  (unless (and (null? imports) (null? image-files) (null? image-sets) (null? model-textures) (null? images)) (gen "    Images images;"))
   ;; Readbacks' results, typed
   (define readbacks (filter (λ (n) (eq? (g-node-kind n) 'readback)) nodes))
   (unless (null? readbacks)
@@ -262,7 +266,7 @@
        (at n (format "    // The elements readback ~a copied in the most recent frame (waiting for it)" (g-node-name n)))
        (at n (format "    Result<std::vector<~a>> ~aContents(RenderGraph& graph) const { return graph.nodeAs<BufferReadbackNode>(~a).contents<~a>(); }"
                      t (g-node-name n) id t))]))
-  (unless (and (null? buffer-imports) (null? uploads) (null? buffers)) (gen "    Buffers buffers;"))
+  (unless (and (null? buffer-imports) (null? uploads) (null? model-factors) (null? buffers)) (gen "    Buffers buffers;"))
   (unless (null? nodes) (gen "    Nodes nodes;"))
   (gen "")
   (gen "    // The device features the graph's materials need beyond the wrapper's: add them to the")
@@ -308,6 +312,21 @@
                   (cpp-string (format "~a's image-file ~a" name n))))
     (at i (format "        const ImageId image_~a = graph.importImage(~a, file_~a, ImageState::shaderReadOnly());" n (cpp-string n) n))
     (gen (format "        result.images.~a = image_~a;" n n)))
+  ;; Models: loaded and uploaded, then their materials' textures imported and factors uploaded
+  (for ([item (in-list items)] #:when (or (g-model? item) (g-model-textures? item) (g-model-factors? item)))
+    (match item
+      [(g-model n source f _)
+       (at item (format "        TRY_ASSIGN(auto model_~a, zgal::loadModel<~a>(context, ~a, ~a));" n (vertex-format-name f)
+                        (asset-path source) (cpp-string (format "~a's model ~a" name n))))]
+      [(g-model-textures n model _)
+       (at item (format "        const std::vector<ImageId> images_~a = zgal::importImages(graph, ~a, model_~a.baseColorTextures, ImageState::shaderReadOnly());"
+                        n (cpp-string n) model))
+       (gen (format "        result.images.~a = images_~a;" n n))]
+      [(g-model-factors n model _)
+       (at item (format "        TRY_ASSIGN(auto upload_~a, zgal::upload(context, model_~a.baseColorFactors, ~a));" n model
+                        (cpp-string (format "~a's base colour factors ~a" name n))))
+       (at item (format "        const BufferId buffer_~a = graph.importBuffer<glm::vec4>(~a, upload_~a);" n (cpp-string n) n))
+       (gen (format "        result.buffers.~a = buffer_~a;" n n))]))
   ;; Imported sets of images, each imported
   (for ([i (in-list image-sets)])
     (define n (g-import-images-name i))
@@ -565,7 +584,10 @@
               "        {"))
     (when (eq? (g-node-kind n) 'draw-meshes)
       (line "            std::vector<Handle<Renderable>> renderables;")
-      (line (format "            for (const auto& mesh : in->~a) {" (g-node-subject n)))
+      (line (format "            for (const auto& mesh : ~a) {"
+                    (if (eq? (entry-kind (hash-ref env (g-node-subject n))) 'model)
+                        (format "model_~a.meshes" (g-node-subject n))
+                        (format "in->~a" (g-node-subject n)))))
       (line (format "                renderables.push_back(context.resources().create<MeshRenderable>(mesh, material_~a));" (g-node-material n)))
       (line "            }"))
     (cond
@@ -586,6 +608,6 @@
 
 (define (item-loc item)
   (match item
-    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
+    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
     [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ l) l]))

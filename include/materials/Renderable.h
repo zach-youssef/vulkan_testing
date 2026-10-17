@@ -28,6 +28,8 @@ public:
     virtual VkBuffer getIndexBuffer() = 0;
     virtual VkIndexType getIndexType() = 0;
     virtual uint32_t getIndexCount() = 0;
+    // The draw's first instance, which vertex shaders read as gl_InstanceIndex
+    virtual uint32_t getFirstInstance() { return 0; }
 
 protected:
     Renderable(Handle<Material> material)
@@ -47,12 +49,13 @@ protected:
  */
 class Mesh {
 public:
-    // Uploads the vertices and indices, blocking until they're on the device
+    // Uploads the vertices and indices, blocking until they're on the device. Drawing it, vertex
+    // shaders read instanceIndex as gl_InstanceIndex, e.g. to choose the mesh's material.
     template<typename Vertex, typename Index>
     static Result<Handle<Mesh>> create(VulkanContext& context, const std::vector<Vertex>& vertices,
-                                       const std::vector<Index>& indices) {
+                                       const std::vector<Index>& indices, uint32_t instanceIndex = 0) {
         static_assert(std::is_trivially_copyable_v<Vertex>);
-        std::unique_ptr<Mesh> mesh(new Mesh(indexTypeOf<Index>(), static_cast<uint32_t>(indices.size())));
+        std::unique_ptr<Mesh> mesh(new Mesh(indexTypeOf<Index>(), static_cast<uint32_t>(indices.size()), instanceIndex));
         TRY_ASSIGN(mesh->vertexBuffer_, Buffer<uint8_t>::createAndInitialize(context, bytesOf(vertices),
                                                                              VK_BUFFER_USAGE_VERTEX_BUFFER_BIT));
         TRY_ASSIGN(mesh->indexBuffer_, Buffer<uint8_t>::createAndInitialize(context, bytesOf(indices),
@@ -64,9 +67,11 @@ public:
     VkBuffer indexBuffer() { return indexBuffer_->getBuffer(); }
     VkIndexType indexType() const { return indexType_; }
     uint32_t indexCount() const { return indexCount_; }
+    uint32_t instanceIndex() const { return instanceIndex_; }
 
 private:
-    Mesh(VkIndexType indexType, uint32_t indexCount) : indexType_(indexType), indexCount_(indexCount) {}
+    Mesh(VkIndexType indexType, uint32_t indexCount, uint32_t instanceIndex)
+    : indexType_(indexType), indexCount_(indexCount), instanceIndex_(instanceIndex) {}
 
     template<typename Index>
     static constexpr VkIndexType indexTypeOf() {
@@ -88,6 +93,7 @@ private:
     Handle<Buffer<uint8_t>> indexBuffer_;
     VkIndexType indexType_;
     uint32_t indexCount_;
+    uint32_t instanceIndex_;
 };
 
 // A mesh drawn with a material
@@ -100,6 +106,7 @@ public:
     VkBuffer getIndexBuffer() override { return mesh_->indexBuffer(); }
     VkIndexType getIndexType() override { return mesh_->indexType(); }
     uint32_t getIndexCount() override { return mesh_->indexCount(); }
+    uint32_t getFirstInstance() override { return mesh_->instanceIndex(); }
 
     const Handle<Mesh>& mesh() const { return mesh_; }
 

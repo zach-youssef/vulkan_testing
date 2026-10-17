@@ -125,7 +125,88 @@
   (emit-placed-struct! w (struct-decl-name d) (struct-decl-name d) placed-fields 0
                        (std430-size (struct-t d)) (struct-decl-loc d) ""))
 
-(define (emit-vertex-format! w f)
+;; Converts value, of the attribute's type, to how vertex buffers store it
+(define (stored a value)
+  (define t (field-type a))
+  (define vector? (vector-t? t))
+  (match (attribute-storage a)
+    [#f value]
+    ['float16 (format "~a(~a)" (if vector? "glm::packHalf" "glm::packHalf1x16") value)]
+    [(and s (or 'unorm8 'unorm16))
+     (if vector?
+         (format "glm::packUnorm<~a>(~a)" (if (eq? s 'unorm8) "uint8_t" "uint16_t") value)
+         (format "glm::packUnorm1x~a(~a)" (storage-bits s) value))]
+    [(and s (or 'snorm8 'snorm16))
+     (if vector?
+         (format "glm::packSnorm<~a>(~a)" (if (eq? s 'snorm8) "int8_t" "int16_t") value)
+         (format "static_cast<~a>(glm::packSnorm1x~a(~a))" (attribute-cpp-type a) (storage-bits s) value))]
+    [_ (format "~a(~a)" (if vector? (attribute-cpp-type a) (format "static_cast<~a>" (attribute-cpp-type a))) value)]))
+
+;; An attribute's #:default in C++, of its type
+(define (default-cpp a)
+  (define t (field-type a))
+  (define kind (if (vector-t? t) (vector-t-kind t) (scalar-t-kind t)))
+  (define (number n)
+    (case kind
+      [(float) (let ([x (exact->inexact n)]) (format "~af" (if (integer? x) (format "~a.0" (inexact->exact x)) x)))]
+      [(uint) (format "~au" n)]
+      [else (format "~a" n)]))
+  (match (attribute-default a)
+    [(list ns ...) (format "~a(~a)" (cpp-type t) (string-join (map number ns) ", "))]
+    [n (number n)]))
+
+;; fromModel: a model primitive's vertices, each attribute from what models give by its name, or its
+;; default
+(define (emit-from-model! w f)
+  (define name (vertex-format-name f))
+  (define attributes (vertex-format-attributes f))
+  (define (gen text) (emit! w text))
+  (define (source a)
+    (define m (model-attribute-of a))
+    (and m
+         (let* ([member (format "primitive.~a[i]" (model-attribute-member m))]
+                [size (model-attribute-size m)]
+                [wanted (vector-t-size (field-type a))])
+           (cond
+             [(= wanted size) member]
+             [(< wanted size) (format "glm::vec~a(~a)" wanted member)]
+             [else (format "glm::vec~a(~a, ~af)" wanted member (model-attribute-fill m))]))))
+  (gen "")
+  (gen (format "    // A model primitive's vertices (graphs' models): ~a"
+               (string-join (for/list ([a (in-list attributes)])
+                              (define m (model-attribute-of a))
+                              (format "~a from ~a" (field-name a)
+                                      (cond [(and m (attribute-default a)) (format "~a (or its default)" (model-attribute-member m))]
+                                            [m (model-attribute-member m)]
+                                            [else "its default"])))
+                            ", ")))
+  (gen (format "    static Result<std::vector<~a>> fromModel(const ModelPrimitive& primitive) {" name))
+  (for ([a (in-list attributes)] #:when (and (model-attribute-of a) (not (attribute-default a))))
+    (define member (model-attribute-member (model-attribute-of a)))
+    (unless (equal? member "positions")
+      (emit! w (format "        if (primitive.~a.empty()) {" member) #:at (field-loc a))
+      (emit! w (format "            return Error(ErrorCode::InvalidData, ~a);"
+                       (cpp-string (format "the model has no ~a, which ~a's ~a reads (or give it a #:default)" member name (field-name a))))
+             #:at (field-loc a))
+      (emit! w "        }" #:at (field-loc a))))
+  (gen (format "        std::vector<~a> vertices(primitive.positions.size());" name))
+  (gen "        for (size_t i = 0; i < vertices.size(); ++i) {")
+  (for ([a (in-list attributes)])
+    (define from (source a))
+    (define value
+      (cond
+        [(and from (attribute-default a))
+         (format "primitive.~a.empty() ? ~a : ~a" (model-attribute-member (model-attribute-of a)) (default-cpp a) from)]
+        [from from]
+        [else (default-cpp a)]))
+    (emit! w (format "            vertices[i].~a = ~a;" (field-name a)
+                     (stored a (if (and from (attribute-default a)) (format "(~a)" value) value)))
+           #:at (field-loc a)))
+  (gen "        }")
+  (gen "        return vertices;")
+  (gen "    }"))
+
+(define (emit-vertex-format! w f from-model?)
   (emit! w "")
   (emit! w (format "// vertex-format ~a: read from vertex buffers as C++ lays it out" (vertex-format-name f)))
   (emit! w (format "struct ~a {" (vertex-format-name f)) #:at (vertex-format-loc f))
@@ -138,6 +219,8 @@
                          storage (type-name (field-type a)) (packing-hint a))
                  (format "    ~a;" (cpp-declaration (field-type a) (field-name a))))
            #:at (field-loc a)))
+  (when from-model?
+    (emit-from-model! w f))
   (emit! w "};" #:at (vertex-format-loc f)))
 
 ;; How C++ converts floats to an attribute's storage (GLM's gtc/packing.hpp), for its comment
@@ -440,7 +523,9 @@
   (when (pair? graphs)
     (for ([h (in-list '("graph/RenderGraph.h" "graph/nodes/DispatchNode.h" "graph/nodes/ReadbackNode.h"
                         "graph/nodes/RenderablesNode.h" "graph/nodes/BufferReadbackNode.h" "materials/Renderable.h" "zgal/Runtime.h"))])
-      (gen (format "#include \"~a\"" h))))
+      (gen (format "#include \"~a\"" h)))
+    (when (for*/or ([g (in-list graphs)] [item (in-list (graph-items g))]) (g-model? item))
+      (gen "#include \"zgal/Assets.h\"")))
   (when (pair? apps)
     (when (null? graphs) (gen "#include \"graph/RenderGraph.h\""))
     (gen "#include \"zgal/App.h\""))
@@ -470,7 +555,12 @@
   (gen (format "// Everything generated from ~a is in its namespace" (program-source prog)))
   (gen (format "namespace ~a {" (program-namespace prog)))
   (for ([d (in-list (program-structs prog))]) (emit-struct! w d))
-  (for ([f (in-list (program-vertex-formats prog))]) (emit-vertex-format! w f))
+  ;; Formats graphs' models load convert from them
+  (define model-formats
+    (for*/list ([g (in-list (program-graphs prog))] [item (in-list (graph-items g))] #:when (g-model? item))
+      (vertex-format-name (g-model-format item))))
+  (for ([f (in-list (program-vertex-formats prog))])
+    (emit-vertex-format! w f (and (member (vertex-format-name f) model-formats) #t)))
   ;; Functions and constants the CPU can use too
   (define cpu-declarations
     (filter (λ (d) (if (function-decl? d) (function-decl-cpu? d) (constant-decl-cpu? d))) (program-functions prog)))

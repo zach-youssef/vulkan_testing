@@ -36,6 +36,10 @@
     [(g-import _ _ _) (entry 'import #f item)]
     ;; An imported image, which the generated code imports
     [(g-image-file _ _ _ _) (entry 'import #f item)]
+    [(g-model _ _ _ _) (entry 'model #f item)]
+    ;; A set of images, like imported ones, and an uploaded buffer
+    [(g-model-textures _ _ _) (entry 'import-images #f item)]
+    [(g-model-factors _ _ _) (entry 'upload (vector-t 'float 4) item)]
     [(g-import-images _ _ _) (entry 'import-images #f item)]
     [(g-import-buffer _ t _) (entry 'import-buffer t item)]
     [(g-upload _ _ t _) (entry 'upload t item)]
@@ -53,7 +57,7 @@
 
 (define kind-names
   (hash 'parameter "a parameter" 'constant "a constant" 'per-frame "a per-frame input" 'meshes "a meshes input"
-        'cpu "a cpu input" 'extern "an extern input" 'path "a path input" 'per-frame-data "a per-frame data input" 'import "an imported image" 'import-images "imported images" 'import-buffer "an imported buffer" 'data "a data input" 'upload "an uploaded buffer" 'sampler "a sampler" 'uniform "a uniform"
+        'cpu "a cpu input" 'extern "an extern input" 'path "a path input" 'model "a model" 'per-frame-data "a per-frame data input" 'import "an imported image" 'import-images "imported images" 'import-buffer "an imported buffer" 'data "a data input" 'upload "an uploaded buffer" 'sampler "a sampler" 'uniform "a uniform"
         'image "an image" 'buffer "a buffer" 'target "a target" 'material "a material"))
 
 ;; ---------------------------------------------------------------------------------------------
@@ -246,7 +250,7 @@
 
 ;; stx: the (graph Name item ...) form. parse-type: parses a type. top-level: declares a top-level
 ;; name. materials: the file's materials so far, by name.
-(define (parse-graph stx parse-type top-level materials)
+(define (parse-graph stx parse-type top-level materials formats)
   (define items (syntax->list stx))
   (unless (and items (>= (length items) 2))
     (zgal-error 'malformed stx "expected (graph Name item ...)"))
@@ -276,6 +280,24 @@
     (and stx (build-time stx (scalar-t 'bool) (format "~a" key))))
   (define (frames options form where)
     (choice-option options '#:frames '(shared per-frame) form #:required? #t #:where where))
+
+  ;; Models fill a vertex format's attributes by name, or with their defaults
+  (define (check-model-format fmt where)
+    (for ([a (in-list (vertex-format-attributes fmt))])
+      (define m (model-attribute-of a))
+      (define t (field-type a))
+      (cond
+        [m
+         (define size (cond [(vector-t? t) (and (eq? (vector-t-kind t) 'float) (vector-t-size t))] [else #f]))
+         (unless (memv size (model-attribute-sizes m))
+           (zgal-error 'model-attribute where "attribute ~a of ~a takes models' ~a, so it's ~a, not ~a"
+                       (field-name a) (vertex-format-name fmt) (model-attribute-member m)
+                       (string-join (for/list ([n (in-list (model-attribute-sizes m))]) (format "vec~a" n)) " or ")
+                       (type-name t)))]
+        [(not (attribute-default a))
+         (zgal-error 'model-attribute where "models don't give attribute ~a of ~a: name it after what they give (~a) or give it a #:default"
+                     (field-name a) (vertex-format-name fmt)
+                     (string-join (for/list ([m (in-list model-attributes)]) (first (model-attribute-names m))) ", "))])))
 
   ;; An asset's path: a string, or a path input's name
   (define (parse-asset-source stx)
@@ -344,6 +366,23 @@
        (check-known-options options '(#:color) form)
        (define color (choice-option options '#:color '(srgb linear) form #:required? #t #:where stx))
        (declare! (g-image-file (item-name) (parse-asset-source (second args)) color (stx->loc stx)) stx)]
+      ['model
+       (args! 3 "(model name asset Format #:base-colors name #:base-color-factors name)")
+       (check-known-options options '(#:base-colors #:base-color-factors) form)
+       (define model-name (item-name))
+       (define source (parse-asset-source (second args)))
+       (define format-name (syntax-e (third args)))
+       (define fmt
+         (or (and (symbol? format-name) (hash-ref formats (symbol->string format-name) #f))
+             (zgal-error 'unknown-name (third args) "~a isn't a vertex format declared earlier in the file" (show (third args)))))
+       (check-model-format fmt (third args))
+       (define model (declare! (g-model model-name source fmt (stx->loc stx)) stx))
+       ;; Its materials' base colours, under the names given
+       (define (declare-part! key make)
+         (define part-stx (hash-ref options key #f))
+         (and part-stx (declare! (make (parse-name part-stx (format "~a's ~a" form key)) model-name (stx->loc part-stx)) part-stx)))
+       (filter values (list model (declare-part! '#:base-colors g-model-textures)
+                            (declare-part! '#:base-color-factors g-model-factors)))]
       ['import-images
        (args! 1 "(import-images name #:resting state)")
        (check-known-options options '(#:resting) form)
@@ -425,7 +464,7 @@
        (unless (>= (length args) 2)
          (zgal-error 'malformed stx "expected (material name Material (binding resource) ... #:option value ...)"))
        (declare! (parse-material-instance stx args options) stx)]
-      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, image-file, import-buffer, upload, constant, sampler, uniform, image, buffer, target, material and nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern)"
+      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, image-file, model, import-buffer, upload, constant, sampler, uniform, image, buffer, target, material and nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern)"
                      name head)]))
 
   ;; The type of a buffer's elements
@@ -708,11 +747,19 @@
       ['draw-meshes
        (shape 4 "(draw-meshes name target meshes material)")
        (define target (lookup (second args) '(target) "a target"))
-       (define meshes (lookup (third args) '(meshes) "a meshes input"))
+       (define meshes (lookup (third args) '(meshes model) "a meshes input or a model"))
        (define-values (m-name m) (material-of (fourth args) 'graphics))
        (unless (material-vertex-input m)
          (zgal-error 'material-kind (fourth args) "draw-meshes reads vertex buffers, but material ~a (~a) has no vertex-input; draw it with (draw name target material vertex-count)"
                      m-name (material-name m)))
+       (match (hash-ref env meshes)
+         [(entry 'model _ model)
+          (define model-format (vertex-format-name (g-model-format model)))
+          (define read (vertex-format-name (vertex-input-format (material-vertex-input m))))
+          (unless (equal? model-format read)
+            (zgal-error 'type-mismatch (third args) "model ~a's vertices are ~a, but material ~a (~a) reads ~a"
+                        meshes model-format m-name (material-name m) read))]
+         [_ (void)])
        (node 'draw-meshes #:target target #:material m-name #:subject meshes)]
       ['draw
        (shape 4 "(draw name target material vertex-count)")
@@ -785,7 +832,9 @@
               ([item-stx (in-list (cddr items))])
       (if (memq (head-symbol item-stx) '(dispatch draw-meshes draw readback cpu copy clear extern))
           (values items (cons (parse-node item-stx) nodes))
-          (values (cons (parse-item item-stx) items) nodes))))
+          ;; An item, or the items a model declares
+          (let ([parsed (parse-item item-stx)])
+            (values (append (reverse (if (list? parsed) parsed (list parsed))) items) nodes)))))
 
   ;; Every material is used, and a graphics material draws into one target
   (for ([item (in-list graph-items)] #:when (g-material? item))

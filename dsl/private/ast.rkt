@@ -43,9 +43,10 @@
 (struct struct-decl (name fields loc) #:transparent)
 (struct vertex-format (name attributes loc) #:transparent)   ; attributes: attributes
 
-;; A vertex-format attribute: a field (its type is what shaders read), and how vertex buffers store
-;; its components: #f for 32 bits, else a storage kind (below) converting to the field's kind
-(struct attribute field (storage) #:transparent)
+;; A vertex-format attribute: a field (its type is what shaders read), how vertex buffers store its
+;; components (#f for 32 bits, else a storage kind, below, converting to the field's kind), and the
+;; value models give it when they don't (a number, a list of a vector's numbers, or #f for none)
+(struct attribute field (storage default) #:transparent)
 ;; Storage kinds, by the kind of the attribute they're read as: normalized integers and halves read
 ;; as floats, small integers as uints and ints
 (define attribute-storages
@@ -53,6 +54,20 @@
 (define all-attribute-storages '(float16 unorm8 snorm8 unorm16 snorm16 uint8 uint16 int8 int16))
 (define (storage-bits s)
   (case s [(unorm8 snorm8 uint8 int8) 8] [(float16 unorm16 snorm16 uint16 int16) 16]))
+;; What models (resources/Model.h) give vertex formats' attributes, chosen by the attribute's name:
+;; member: ModelPrimitive's member; names: the attribute names taking it; size: its vec size; sizes:
+;; the float vector sizes it converts to; fill: the components added converting it to a larger one
+(struct model-attribute (member names size sizes fill) #:transparent)
+(define model-attributes
+  (list (model-attribute "positions" '("position" "pos") 3 '(2 3 4) 1.0)
+        (model-attribute "normals" '("normal") 3 '(3 4) 0.0)
+        (model-attribute "uvs" '("uv" "uv0" "texCoord" "texcoord") 2 '(2) #f)
+        (model-attribute "colors" '("color" "colour") 4 '(3 4) #f)
+        (model-attribute "tangents" '("tangent") 4 '(3 4) #f)))
+;; The model attribute an attribute takes, or #f
+(define (model-attribute-of a)
+  (for/first ([m (in-list model-attributes)] #:when (member (field-name a) (model-attribute-names m))) m))
+
 ;; Whether a format has attributes stored in fewer than 32 bits
 (define (vertex-format-packed? f)
   (for/or ([a (in-list (vertex-format-attributes f))]) (and (attribute-storage a) #t)))
@@ -190,6 +205,14 @@
 ;; Where an asset is: path, a string (found in the asset search paths if relative), or input, the
 ;; name of a path input C++ gives
 (struct asset-source (path input) #:transparent)
+;; A model loaded from a file when the graph is built (resources/Model.h): meshes of the vertex
+;; format's vertices, which draw-meshes draws, each with its material's index as its instance index.
+;; source: an asset-source. format: a vertex-format.
+(struct g-model (name source format loc) #:transparent)
+;; A model's materials' base colour textures (images, for array bindings) and factors (a buffer of
+;; vec4s), one per material. model: the model's name.
+(struct g-model-textures (name model loc) #:transparent)
+(struct g-model-factors (name model loc) #:transparent)
 ;; A buffer the application owns, holding elements of type
 (struct g-import-buffer (name type loc) #:transparent)
 ;; A device-local buffer holding a data input's elements, uploaded when the graph is built
@@ -227,6 +250,6 @@
 ;; The declaration of a graph-level name
 (define (graph-item-name item)
   (match item
-    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-image-file n _ _ _) n] [(g-import-images n _ _) n] [(g-import-buffer n _ _) n] [(g-upload n _ _ _) n] [(g-constant n _ _ _) n]
+    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-image-file n _ _ _) n] [(g-model n _ _ _) n] [(g-model-textures n _ _) n] [(g-model-factors n _ _) n] [(g-import-images n _ _) n] [(g-import-buffer n _ _) n] [(g-upload n _ _ _) n] [(g-constant n _ _ _) n]
     [(g-sampler n _ _) n] [(g-uniform n _ _ _) n] [(g-image n _ _ _ _ _) n] [(g-buffer n _ _ _ _ _) n]
     [(g-target n _ _) n] [(g-material n _ _ _ _ _ _) n]))

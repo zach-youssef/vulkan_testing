@@ -157,6 +157,10 @@
          "A keyword option is missing, unknown or invalid"
          "Options follow a form's positional arguments as `#:keyword value`. The message says what the form takes; some are required, e.g. an image's `#:frames` (`shared` or `per-frame`, a trade-off the wrapper makes explicit too)."
          "(graph G\n  (image i rgba8 (fixed 4 4)))")
+   (kind 'model-attribute
+         "A vertex format's attribute a model can't fill"
+         "A graph's `model` fills its vertex format's attributes by name: `position` (or `pos`) a `vec2`, `vec3` or `vec4` (w 1), `normal` a `vec3` or `vec4` (w 0), `uv` (or `uv0`, `texCoord`) a `vec2`, `color` (or `colour`) and `tangent` a `vec3` or `vec4`, converted to the attribute's `#:as` storage. Other attributes need a `#:default` value, which also fills the named ones when a file lacks them."
+         "(vertex-format Vertex (position vec3) (shininess float))\n(graph G\n  (model ship \"ship.gltf\" Vertex))")
    (kind 'access-mismatch
          "A declared access or stage contradicts the shaders"
          "When all of a material's shaders are ZGAL bodies, its bindings' accesses and stages are inferred from what the bodies do. A declared one must say the same: remove it, or fix the body."
