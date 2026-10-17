@@ -1,0 +1,15 @@
+#version 450
+#include "bindless.glsl"
+
+// Doubles the first `count` elements of a runtime-sized array into another
+layout(push_constant) uniform Indices { uint source; uint target; uint count; } indices;
+BINDLESS_BUFFER_ARRAY(, Values, uint, values);
+
+layout(local_size_x = 64) in;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i < indices.count) {
+        values[indices.target].data[i] = 2 * values[indices.source].data[i];
+    }
+}

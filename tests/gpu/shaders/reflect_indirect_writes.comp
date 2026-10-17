@@ -1,0 +1,19 @@
+#version 450
+#include "bindless.glsl"
+
+// Writes a storage image through a function parameter and a storage buffer with an atomic
+// (reflection tests on the CPU only: MoltenVK can't pass bindless images to functions)
+layout(push_constant) uniform Indices { uint image; uint counter; } indices;
+struct Counter { uint count; };
+BINDLESS_BUFFER(, CounterBuffers, Counter, counters);
+
+layout(local_size_x = 1) in;
+
+void fill(image2D target) {
+    imageStore(target, ivec2(0), vec4(1.0));
+}
+
+void main() {
+    fill(bindlessStorageImages[indices.image]);
+    atomicAdd(counters[indices.counter].data.count, 1);
+}

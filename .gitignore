@@ -1,1 +1,4 @@
-vulkan_test.xcodeproj/*
+build/
+# Screenshot test outputs awaiting approval (see make approve-screenshots)
+tests/**/*.received.png
+tests/**/*.flip.png

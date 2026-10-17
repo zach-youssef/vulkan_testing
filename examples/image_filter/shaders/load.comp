@@ -1,0 +1,19 @@
+#version 450
+#include "filter_common.glsl"
+
+// Copies the input into the working image. The input is an sRGB texture, so sampling decodes it
+// to linear colour.
+layout(push_constant) uniform Indices {
+    uint source;
+    uint sourceSampler;
+    uint working;
+} indices;
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (outside(texel, imageSize(bindlessStorageImages[indices.working]))) {
+        return;
+    }
+    vec4 colour = texelFetch(sampler2D(bindlessTextures[indices.source], bindlessSamplers[indices.sourceSampler]), texel, 0);
+    imageStore(bindlessStorageImages[indices.working], texel, colour);
+}

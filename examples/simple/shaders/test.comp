@@ -1,0 +1,19 @@
+#version 450
+#include "bindless.glsl"
+
+// The material's bindings, in order
+layout(push_constant) uniform Indices {
+    uint inputTexture;   // Sampled, which decodes an sRGB texture to linear
+    uint inputSampler;
+    uint outputImage;    // Storage image (storage images can't be sRGB)
+} indices;
+
+// 32 x 32 = 1024, which appears to be the limit on my device
+// (unclear if this is a standard or hardware specific)
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    vec4 readPixel = texelFetch(sampler2D(bindlessTextures[indices.inputTexture], bindlessSamplers[indices.inputSampler]), texel, 0);
+    imageStore(bindlessStorageImages[indices.outputImage], texel, readPixel);
+}

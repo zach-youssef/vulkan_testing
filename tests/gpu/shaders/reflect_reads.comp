@@ -1,0 +1,16 @@
+#version 450
+#include "bindless.glsl"
+
+// Reads a storage image and a storage buffer without writing either (reflection tests)
+layout(push_constant) uniform Indices { uint image; uint valueBuffer; } indices;
+struct Values { vec4 value; };
+BINDLESS_BUFFER(readonly, ValueBuffers, Values, values);
+
+layout(local_size_x = 1) in;
+
+vec4 sum = vec4(0.0);
+
+void main() {
+    sum += imageLoad(bindlessStorageImages[indices.image], ivec2(0));
+    sum += values[indices.valueBuffer].data.value;
+}
