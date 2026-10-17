@@ -57,7 +57,7 @@ The old wrapper threw `std::runtime_error` (often through `VK_SUCCESS_OR_THROW`)
   `throwingContractViolationHandler` and check misuse with `CHECK_THROWS_AS(..., ContractViolation)`.
   `Result::value()` on an error is also a contract violation.
 - **Out parameters are gone**: factories return the handle, e.g.
-  `TRY_ASSIGN(auto image, Image::createFromFile(ctx, path))`.
+  `TRY_ASSIGN(auto image, Image::createFromFile(ctx, path, ColorSpace::Srgb))` (the colour space is required: `Srgb` as before, or `Linear` for data).
 - **Materials can't fail to construct**: their pipelines are built when a graph compiles a plan using
   them (or by `material->ensurePipeline()`), so pipeline errors come from `graph.compile()` /
   `execute()` / `app.run()`. A material that creates fallible resources (per-frame uniform buffers)
@@ -92,7 +92,7 @@ The old wrapper threw `std::runtime_error` (often through `VK_SUCCESS_OR_THROW`)
 | Old | New |
 |---|---|
 | `std::unique_ptr<Image>` / `std::unique_ptr<Buffer<T>>` out parameters | Factories returning `Result<Handle<Image>>` / `Result<Handle<Buffer<T>>>` (handles are reference counted; see `core/ResourceManager.h`) |
-| `Image::createFromFile(out, path, queue, pool, device, physicalDevice)` | `TRY_ASSIGN(auto image, Image::createFromFile(ctx, path))` (same for `createFromUcharBuffer`, `createEmpty`, `createEmptyRGBA`) |
+| `Image::createFromFile(out, path, queue, pool, device, physicalDevice)` | `TRY_ASSIGN(auto image, Image::createFromFile(ctx, path, ColorSpace::Srgb))` (`createFromUcharBuffer` also takes a `ColorSpace`; same for `createEmpty`, `createEmptyRGBA`) |
 | `Image::createEmpty*` used as a storage image | `Image::createStorage(ctx, format, w, h)`. Storage images can't be sRGB; use e.g. `R16G16B16A16_SFLOAT` or `R8G8B8A8_UNORM` (unsupported formats fail with `ErrorCode::Unsupported`). Sampled-only images no longer get storage usage. |
 | `Image::transitionImageLayout(image, ..., queue, pool, device)` | `TRY(image->transitionLayout(old, new))`. Usually unnecessary: the render graph transitions images it uses. |
 | `image->readback(...)` returning pixels | `TRY_ASSIGN(auto pixels, image->readback(layout))` |

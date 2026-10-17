@@ -35,3 +35,33 @@
   (check-zgal-error "(vertex-format V (p vec3 #:as half))" 'bad-option
                     "attribute p's #:as is one of float16, unorm8, snorm8, unorm16, snorm16, uint8, uint16, int8, int16, not half")
   (check-zgal-error "(vertex-format V (p vec3 #:stride 4))" 'bad-option "attribute p takes no #:stride option"))
+
+(define files
+  (string-append
+   "(compute-material Copy (workgroup 1) (bindings (picture texture) (s sampler) (target (storage-image)))\n"
+   "  (compute (store! target (ivec2 0) (sample picture s (vec2 0.5)))))\n"
+   "(graph G (input chosen path) (parameter n uint)\n"
+   "  (image-file logo \"logo.png\" #:color srgb)\n"
+   "  (image-file data chosen #:color linear)\n"
+   "  (sampler s)\n"
+   "  (image canvas rgba8 (extent-of data) #:frames shared)\n"
+   "  (material copy Copy (picture logo) s (target canvas) #:invocations ((width logo)))\n"
+   "  (dispatch run copy))\n"))
+
+(test-case "Image files load from paths, or path inputs, when the graph is built"
+  (define h (named (compile-text files) ".zgal.h"))
+  (check-true (string-contains? h "std::filesystem::path chosen;"))
+  (check-true (string-contains? h "TRY_ASSIGN(auto file_logo, zgal::loadImage(context, std::filesystem::path(\"logo.png\"), ColorSpace::Srgb, \"G's image-file logo\"));"))
+  (check-true (string-contains? h "TRY_ASSIGN(auto file_data, zgal::loadImage(context, in->chosen, ColorSpace::Linear, \"G's image-file data\"));"))
+  (check-true (string-contains? h "const ImageId image_logo = graph.importImage(\"logo\", file_logo, ImageState::shaderReadOnly());"))
+  ;; Their sizes are known when the graph is built
+  (check-true (string-contains? h "FixedExtent{zgal::extentOf(context, file_data, \"data\")}"))
+  (check-true (string-contains? h "zgal::extentOf(context, file_logo, \"logo\").width")))
+
+(test-case "Image files have a colour space and a path, and are only sampled"
+  (check-zgal-error (string-replace files " #:color srgb" "") 'bad-option "image-file needs #:color (srgb, linear)")
+  (check-zgal-error (string-replace files "\"logo.png\"" "n") 'type-mismatch "n is a parameter, not a path input")
+  (check-zgal-error (string-replace files "\"logo.png\"" "3") 'malformed "expected an asset's path, a string or a path input, found 3")
+  (check-zgal-error (string-replace files "\"logo.png\"" "\"\"") 'malformed "an asset's path isn't empty")
+  (check-zgal-error (string-replace files "(target canvas)" "(target logo)") 'binding-mismatch
+                    "binding target is a storage image, but logo is an image file, which shaders only sample"))

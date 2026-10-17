@@ -222,6 +222,14 @@ structs, whose size is rounded up to it. Arrays' elements are each aligned to th
 alignment, without std140's rounding to 16 bytes. So a scalar packs into the 4 bytes after a
 @tt{vec3}, and a @tt{vec3} followed by a @tt{vec3} leaves a gap:
 
+@(define image-file-source #<<ZGAL
+(graph Textures
+  (input maskPath path)                       ; Chosen by C++, e.g. from the command line
+  (image-file albedo "textures/albedo.png" #:color srgb)
+  (image-file mask maskPath #:color linear))
+ZGAL
+   )
+
 @(define packed-source #<<ZGAL
 (vertex-format Vertex
   (position vec3)
@@ -841,7 +849,7 @@ Its app (@secref["apps"]) computes the uniforms, shadows and exposure from its s
 and C++ supplies the meshes.
 
 @racketgrammar*[
- #:literals (graph parameter input per-frame data meshes cpu extern import-image import-images import-buffer upload
+ #:literals (graph parameter input per-frame data meshes cpu extern path import-image import-images image-file import-buffer upload
              constant sampler uniform image buffer target surface attachments if color depth material
              dispatch draw-meshes draw readback copy clear fixed extent-of)
  [graph-form (graph Name graph-item ...)]
@@ -852,8 +860,10 @@ and C++ supplies the meshes.
              (input name extern)
              (input name (data type))
              (input name (per-frame (data type)))
+             (input name path)
              (import-image name #:resting resting-state)
              (import-images name #:resting resting-state)
+             (image-file name asset #:color color-space)
              (import-buffer name type)
              (upload name data-input)
              (constant name expression)
@@ -881,7 +891,9 @@ and C++ supplies the meshes.
  [copy-option (code:line #:count expression) (code:line #:source-offset expression)
               (code:line #:destination-offset expression)]
  [maybe-when (code:line) (code:line #:when expression)]
- [frames shared per-frame]]
+ [frames shared per-frame]
+ [asset "path" path-input]
+ [color-space srgb linear]]
 
 Items and nodes appear in any order, and refer to items declared before them. Items share one
 namespace (in the graph, and C++'s @tt{Inputs}, @tt{Images} and @tt{Buffers}); nodes have their own
@@ -904,6 +916,7 @@ C++ passes them to @tt{build()} in an @tt{Inputs} struct, by name:
   (list @tt{(input n extern)} @tt{zgal::ExternNodes<Graph>} @elem{a function adding an @racket[extern] node's nodes (@secref["extern"])})
   (list @tt{(input n (data T))} @tt{std::vector<T>} @elem{elements an @racket[upload] puts in a buffer when the graph is built, e.g. a model or a data structure the CPU computed})
   (list @tt{(input n (per-frame (data T)))} @tt{zgal::FrameSource<zgal::Data<T>>} @elem{elements each frame, e.g. an app's @racket[(data T)] state: an @racket[upload] of them is a buffer per frame in flight, sized to them and filled again when they change})
+  (list @tt{(input n path)} @tt{std::filesystem::path} @elem{where an asset is, e.g. an @racket[image-file]'s (@secref["assets"])})
   (list @tt{(import-image n #:resting s)} @tt{FrameBinding<Image>} "an image the application owns, returned to its resting state (shader-read-only, general or transfer-src) after each frame")
   (list @tt{(import-images n #:resting s)} @tt{std::vector<FrameBinding<Image>>} @elem{images the application owns, as many as it gives, imported one by one, for an @racket[array] binding (@secref["arrays"]): e.g. textures loaded from files})
   (list @tt{(import-buffer n T)} @tt{FrameBinding<Buffer<T>>} "a buffer the application owns (and fills, maps or reads), with the usage its uses need, one or one per frame"))]
@@ -912,6 +925,24 @@ C++ passes them to @tt{build()} in an @tt{Inputs} struct, by name:
 collections), its number, and the graph's surface extent. Missing functions and images are a
 contract violation when the graph is built. The graph's materials and nodes keep the functions, so
 whatever they use must outlive the graph.
+
+@subsection[#:tag "assets"]{Assets}
+
+Graphs load files when they're built, so C++ needn't. An asset is a path string or a path input:
+a relative path is found in the context's asset search paths (@tt{VulkanContextConfig::assetSearchPaths},
+@tt{AppConfig::assetSearchPaths}), in order, or without any relative to the working directory, by
+@tt{VulkanContext::findAsset}. A file that isn't found or can't be read fails @tt{build()}
+(@tt{ErrorCode::NotFound} or @tt{InvalidData}), naming the item.
+
+@racket[(image-file name asset #:color color-space)] loads an image (PNG, JPEG, ... through
+stb_image) into an RGBA8 image for sampling, imported like an @racket[import-image] resting
+shader-read-only: textures and arrays of them bind it, and its size is known when the graph is built
+(@racket[(width name)], @tt{(extent-of name)}). Shaders only sample it. The colour space is required,
+since it changes what shaders read: @tt{srgb} for colours (photos, albedo), which sampling decodes
+to linear, and @tt{linear} for data (normal maps, masks, lookup tables), read as stored.
+
+@(zgal-example image-file-source)
+@(generated-file image-file-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto file_albedo" #:to #rx"result.images.mask")
 
 @subsection[#:tag "graph-expressions"]{Expressions}
 

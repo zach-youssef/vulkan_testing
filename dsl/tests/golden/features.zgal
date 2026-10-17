@@ -336,3 +336,14 @@
     (with state #:warm #t #:lights (brighten copied) #:seen (+ (count copied) (uint (.intensity (at copied 0))))))
   (run Warmup (lights state.lights) #:when (not state.warm))
   (run Everything (enabled #t)))
+
+;; Assets: image files, found by a path in the asset search paths or a path input C++ gives
+(graph Assets
+  (input decalPath path)
+  (image-file albedoMap "textures/albedo.png" #:color srgb)
+  (image-file decalMap decalPath #:color linear)
+  (input frameLights (per-frame Lights))
+  (uniform lightBuffer Lights frameLights)
+  (image mask rgba8 (extent-of decalMap) #:frames shared)
+  (material pick Pick (decals (albedoMap decalMap)) (settings (lightBuffer)) (targets (mask)) #:invocations ((width albedoMap) (height albedoMap)))
+  (dispatch pick pick))

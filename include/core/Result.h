@@ -31,7 +31,7 @@
  Propagate errors with the macros:
 
     Result<Handle<Image>> loadTextures(VulkanContext& context) {
-        TRY_ASSIGN(auto image, Image::createFromFile(context, path));    // declares image
+        TRY_ASSIGN(auto image, Image::createFromFile(context, path, ColorSpace::Srgb));    // declares image
         TRY(image->transitionLayout(...));                                // Result<void>, or any value discarded
         VK_TRY(vkSomething(...), "Failed to do something");             // a VkResult
         return image;

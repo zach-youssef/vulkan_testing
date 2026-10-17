@@ -135,7 +135,7 @@ TEST_CASE_FIXTURE(GpuTest, "Example copy shader (test.comp) copies a sampled sRG
     }
 
     // The input is sampled (and so stays in SHADER_READ_ONLY_OPTIMAL); the output is a storage image
-    auto input = Image::createFromUcharBuffer(ctx, source.data(), width, height, source.size()).value();
+    auto input = Image::createFromUcharBuffer(ctx, source.data(), width, height, source.size(), ColorSpace::Srgb).value();
     auto output = createStorageImage(ctx, VK_FORMAT_R16G16B16A16_SFLOAT, width, height);
     auto sampler = VulkanSampler::createWithModeAndFilter(ctx, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                                    VK_FILTER_NEAREST).value();

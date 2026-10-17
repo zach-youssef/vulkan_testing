@@ -292,7 +292,7 @@
              [#f (zgal-error 'unknown-name n "graph ~a has no parameter or input ~a" (graph-name g) input)]
              [(entry kind _ _)
               (zgal-error 'type-mismatch n "~a is ~a, which C++ gives (through the app's inputs); apps compute parameters and per-frame inputs"
-                          input (case kind [(meshes) "a meshes input"] [(cpu) "a cpu input"] [(extern) "an extern input"]
+                          input (case kind [(meshes) "a meshes input"] [(cpu) "a cpu input"] [(extern) "an extern input"] [(path) "a path input"]
                                   [(import import-images import-buffer) "an imported resource"] [(data) "a data input"] [else "not an input"]))]))
          (cons input (cpu-only e))]
         [_ (zgal-error 'malformed b "expected (input expression)")])))

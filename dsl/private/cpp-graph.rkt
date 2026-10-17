@@ -92,7 +92,7 @@
        [(width height)
         (define image (e-ref-name (first args)))
         (match (hash-ref env image)
-          [(entry 'import _ _) (format "zgal::extentOf(context, in->~a, ~a).~a" image (cpp-string image) op)]
+          [(entry 'import _ item) (format "zgal::extentOf(context, ~a, ~a).~a" (imported-image item) (cpp-string image) op)]
           [(entry 'image _ item)
            (define id (format "image_~a" image))
            (format "graph.imageExtent(~a, frame.frameIndex).~a"
@@ -101,6 +101,18 @@
        [else
         (define component (scalar-t (vector-t-kind t)))
         (format "~a(~a)" (cpp-type t) (string-join (map (λ (a) (cpp-expr a env component)) args) ", "))])]))
+
+;; An asset's path in C++: a string literal or a path input
+(define (asset-path source)
+  (if (asset-source-path source)
+      (format "std::filesystem::path(~a)" (cpp-string (asset-source-path source)))
+      (format "in->~a" (asset-source-input source))))
+
+;; An imported image's binding: the input C++ gives, or the image a file was loaded into
+(define (imported-image item)
+  (if (g-image-file? item)
+      (format "file_~a" (g-image-file-name item))
+      (format "in->~a" (graph-item-name item))))
 
 ;; ---------------------------------------------------------------------------------------------
 ;; Choices
@@ -154,7 +166,8 @@
                        ['per-frame-data (format "zgal::FrameSource<zgal::Data<~a>>" (cpp-type t))]
                        ['meshes "std::vector<Handle<Mesh>>"]
                        ['cpu "RenderGraph::RunFn"]
-                       ['extern (format "zgal::ExternNodes<~a>" name)])
+                       ['extern (format "zgal::ExternNodes<~a>" name)]
+                       ['path "std::filesystem::path"])
                      n)]
             [(g-import n resting _) (format "FrameBinding<Image> ~a;   // Imported, resting ~a" n (symbol->string resting))]
             [(g-import-images n resting _) (format "std::vector<FrameBinding<Image>> ~a;   // Imported, resting ~a" n (symbol->string resting))]
@@ -188,6 +201,7 @@
   (define parameters (of-type g-parameter?))
   (define inputs (of-type g-input?))
   (define imports (of-type g-import?))
+  (define image-files (of-type g-image-file?))
   (define image-sets (of-type g-import-images?))
   (define buffer-imports (of-type g-import-buffer?))
   (define uploads (of-type g-upload?))
@@ -216,6 +230,7 @@
   (define (id-type base conditional?) (if conditional? (format "std::optional<~a>" base) base))
   (id-struct "Images"
              (append (for/list ([i (in-list imports)]) (list "ImageId" (g-import-name i) i))
+                     (for/list ([i (in-list image-files)]) (list "ImageId" (g-image-file-name i) i))
                      (for/list ([i (in-list image-sets)]) (list "std::vector<ImageId>" (g-import-images-name i) i))
                      (for/list ([i (in-list images)]) (list (id-type "ImageId" (g-image-when i)) (g-image-name i) i))))
   (id-struct "Buffers"
@@ -227,7 +242,7 @@
                ;; An extern node is the nodes C++ adds (none when its condition is false)
                (list (if (eq? (g-node-kind n) 'extern) "std::vector<NodeId>" (id-type "NodeId" (g-node-when n)))
                      (g-node-name n) n)))
-  (unless (and (null? imports) (null? image-sets) (null? images)) (gen "    Images images;"))
+  (unless (and (null? imports) (null? image-files) (null? image-sets) (null? images)) (gen "    Images images;"))
   ;; Readbacks' results, typed
   (define readbacks (filter (λ (n) (eq? (g-node-kind n) 'readback)) nodes))
   (unless (null? readbacks)
@@ -263,8 +278,9 @@
   (gen "    // the inputs' callbacks, so whatever those use must outlive the graph.")
   (gen (format "    static Result<~a> build(VulkanContext& context, RenderGraph& graph, Inputs inputs) {" name))
   (gen "        const auto in = std::make_shared<const Inputs>(std::move(inputs));")
-  ;; Functions must be given; meshes and data may be empty (an upload checks its own)
-  (for ([i (in-list inputs)] #:unless (memq (g-input-kind i) '(meshes data)))
+  ;; Functions must be given; meshes and data may be empty (an upload checks its own), and paths are
+  ;; checked when they're loaded
+  (for ([i (in-list inputs)] #:unless (memq (g-input-kind i) '(meshes data path)))
     (at i (format "        if (!in->~a) {" (g-input-name i)))
     (at i (format "            contractViolation(~a);" (cpp-string (format "~a's input ~a isn't given" name (g-input-name i)))))
     (at i "        }"))
@@ -284,6 +300,14 @@
     (at i (format "        const ImageId image_~a = graph.importImage(~a, in->~a, ~a);" (g-import-name i)
                   (cpp-string (g-import-name i)) (g-import-name i) (resting-state (g-import-resting i))))
     (gen (format "        result.images.~a = image_~a;" (g-import-name i) (g-import-name i))))
+  ;; Image files, loaded and imported
+  (for ([i (in-list image-files)])
+    (define n (g-image-file-name i))
+    (at i (format "        TRY_ASSIGN(auto file_~a, zgal::loadImage(context, ~a, ~a, ~a));" n (asset-path (g-image-file-source i))
+                  (if (eq? (g-image-file-color i) 'srgb) "ColorSpace::Srgb" "ColorSpace::Linear")
+                  (cpp-string (format "~a's image-file ~a" name n))))
+    (at i (format "        const ImageId image_~a = graph.importImage(~a, file_~a, ImageState::shaderReadOnly());" n (cpp-string n) n))
+    (gen (format "        result.images.~a = image_~a;" n n)))
   ;; Imported sets of images, each imported
   (for ([i (in-list image-sets)])
     (define n (g-import-images-name i))
@@ -352,7 +376,7 @@
                            [(list 'fixed w h) (format "FixedExtent{{~a, ~a}}" (build-expr w (scalar-t 'uint)) (build-expr h (scalar-t 'uint)))]
                            [(list 'surface scale) (format "SurfaceRelative{~a}" (literal->cpp scale (scalar-t 'float)))]
                            [(list 'extent-of import)
-                            (format "FixedExtent{zgal::extentOf(context, in->~a, ~a)}" import (cpp-string import))])))]
+                            (format "FixedExtent{zgal::extentOf(context, ~a, ~a)}" (imported-image (entry-item (hash-ref env import))) (cpp-string import))])))]
         [(g-buffer n t count frames when _)
          (values (format "buffer_~a" n) "buffers" when
                  (if (per-frame-expression? count env)
@@ -562,6 +586,6 @@
 
 (define (item-loc item)
   (match item
-    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
+    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
     [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ l) l]))

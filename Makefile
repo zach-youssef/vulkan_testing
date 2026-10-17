@@ -206,7 +206,8 @@ TEST_ZGAL_DIR = $(TEST_DIR)/gpu/zgal
 TEST_ZGAL_STAMP = $(TEST_GEN)/interfaces.zgal.stamp
 TEST_CFLAGS = $(CFLAGS) -Ithird_party -Ithird_party/approvaltests -Ithird_party/flip -I$(TEST_DIR) -I$(TEST_GEN) \
               -DTEST_SHADER_DIR='"$(abspath $(TEST_SHADER_OUT))"' \
-              -DTEST_TEXTURE_DIR='"$(abspath $(SIMPLE_DIR)/textures)"'
+              -DTEST_TEXTURE_DIR='"$(abspath $(SIMPLE_DIR)/textures)"' \
+              -DTEST_ASSET_DIR='"$(abspath $(TEST_DIR)/gpu/assets)"'
 TEST_HEADERS = $(HEADERS) $(wildcard $(TEST_DIR)/*/*.h)
 
 CPU_TEST_SRCS = $(wildcard $(TEST_DIR)/cpu/*.cpp)

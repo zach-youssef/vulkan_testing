@@ -414,3 +414,24 @@
   (on (key-pressed space) (with state #:seeds (extend state.seeds)))
   (run SeedGraph #:when (not state.ready))
   (run UseGraph (seeds state.seeds)))
+
+;; Copies a 2x2 texture's texels into a buffer, row by row
+(compute-material ReadTexels (workgroup 2 2)
+  (bindings (picture texture) (pick sampler) (texels (buffer-array vec4)))
+  (compute
+   (write! (at texels (+ (* globalInvocationId.y 2) globalInvocationId.x))
+           (fetch picture pick (ivec2 (int globalInvocationId.x) (int globalInvocationId.y)) 0))))
+
+;; The same image file read as sRGB colours and as linear data, one found by the path C++ gives
+(graph ImageFiles (input chosen path)
+  (image-file colors "quadrants.png" #:color srgb)
+  (image-file data chosen #:color linear)
+  (sampler pick #:filter nearest)
+  (buffer srgbTexels vec4 (* (width colors) (height colors)) #:frames shared)
+  (buffer linearTexels vec4 4 #:frames shared)
+  (material readSrgb ReadTexels (picture colors) pick (texels srgbTexels) #:invocations (2 2))
+  (material readLinear ReadTexels (picture data) pick (texels linearTexels) #:invocations (2 2))
+  (dispatch srgb readSrgb)
+  (dispatch linear readLinear)
+  (readback srgbRead srgbTexels)
+  (readback linearRead linearTexels))

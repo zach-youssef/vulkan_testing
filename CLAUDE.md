@@ -77,13 +77,14 @@ Result<void> runApp() {
     config.window = WindowConfig{"My app", 1280, 720};   // std::nullopt for headless
     config.enableValidation = true;
     config.shaderSearchPaths = {MY_SHADER_DIR};            // where <name>.spv files are
+    config.assetSearchPaths = {MY_ASSET_DIR};              // where ctx.findAsset(path) looks
     config.autoReloadShaders = true;                       // optional
     VulkanApp app;
     TRY(app.init(config));
     VulkanContext& ctx = app.getContext();
 
     // Resources are owned by the context's ResourceManager and shared through Handle<T>
-    TRY_ASSIGN(auto texture, Image::createFromFile(ctx, path));
+    TRY_ASSIGN(auto texture, Image::createFromFile(ctx, path, ColorSpace::Srgb));
     TRY_ASSIGN(auto sampler, VulkanSampler::createWithAddressMode(ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT));
     TRY_ASSIGN(auto copyShader, ctx.shaders().get("copy.comp"));
 
@@ -282,6 +283,9 @@ writing ZGAL: it has the language, what's generated and every error. In short:
 - `uint8`, `int8`, `uint16` and `int16` pack buffers and shared memory. Bodies read them widened to
   `uint`/`int` and narrow explicitly to write them (`(uint8 x)`). A material using them needs device
   features: add its (or its graph's) `requiredFeatures()` to the context's features.
+- Graphs load assets when they're built: `(image-file name "file.png" #:color srgb)` (or `linear`)
+  imports an image file found in the asset search paths; the path can be a `(input p path)`
+  (`std::filesystem::path`) instead of a string.
 - Vertex attributes can be stored packed, `(color vec4 #:as unorm8)` (`float16`, `unorm8/16`,
   `snorm8/16`, `uint8/16`, `int8/16`): shaders read the declared type, and the C++ struct holds
   GLM's sized types (fill them with `glm::packUnorm` etc., as the generated comments say).
@@ -341,7 +345,9 @@ writing ZGAL: it has the language, what's generated and every error. In short:
 
 ### Images and formats
 
-- `Image::createFromFile` / `createFromUcharBuffer` / `createEmptyRGBA` make sampled sRGB images.
+- `Image::createFromFile` / `createFromEncoded` / `createFromUcharBuffer` make sampled RGBA8 images
+  in the `ColorSpace` given (`Srgb` for colours, `Linear` for data); `createEmptyRGBA` makes sRGB
+  ones. `ctx.findAsset(path)` finds files in `assetSearchPaths`.
   `Image::createStorage` makes storage images, and fails (`ErrorCode::Unsupported`) for formats the
   device can't store to (e.g. any sRGB format). `Image::supportsUsage` checks a format first.
 - Samplers: `VulkanSampler::create(ctx, SamplerDesc{...})` (filter, address mode, a

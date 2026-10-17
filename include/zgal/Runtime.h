@@ -12,6 +12,7 @@
 #include <glm/glm.hpp>
 
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -436,6 +437,14 @@ Result<Handle<Buffer<T>>> upload(VulkanContext& context, const std::vector<T>& d
 }
 
 // The extent of an imported image (the current frame's, if it has one per frame)
+// A graph's image-file: the image at path (found with VulkanContext::findAsset), loaded for sampling.
+// what names it in errors.
+inline Result<Handle<Image>> loadImage(VulkanContext& context, const std::filesystem::path& path, ColorSpace colorSpace,
+                                       const char* what) {
+    TRY_ASSIGN(auto found, context.findAsset(path).withContext(std::string("loading ") + what));
+    return Image::createFromFile(context, found, colorSpace).withContext(std::string("loading ") + what);
+}
+
 inline VkExtent2D extentOf(VulkanContext& context, const FrameBinding<Image>& image, const char* name) {
     auto handle = image.get(context.currentFrame());
     if (!handle) {

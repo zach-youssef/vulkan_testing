@@ -162,6 +162,26 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL vertex attributes can be stored in fewer bits t
     }
 }
 
+TEST_CASE_FIXTURE(GpuTest, "ZGAL image files load from the asset search paths in their colour space") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    auto ids = ImageFiles::build(ctx, graph, ImageFiles::Inputs{.chosen = "quadrants.png"}).value();
+    graph.execute().value();
+    const auto srgb = ids.srgbReadContents(graph).value();
+    const auto linear = ids.linearReadContents(graph).value();
+    REQUIRE(srgb.size() == 4);
+    REQUIRE(linear.size() == 4);
+    CHECK(srgb[0] == glm::vec4(1.0f, 0.0f, 0.0f, 1.0f));
+    CHECK(linear[2] == glm::vec4(0.0f, 0.0f, 1.0f, 1.0f));
+    // Grey 128: decoded from sRGB, or as stored
+    CHECK(srgb[3].r == doctest::Approx(0.2158f).epsilon(0.01));
+    CHECK(linear[3].r == doctest::Approx(128.0f / 255.0f));
+
+    RenderGraph missing(ctx);
+    CHECK_ERROR(ImageFiles::build(ctx, missing, ImageFiles::Inputs{.chosen = "missing.png"}), ErrorCode::NotFound,
+                "Asset 'missing.png' not found");
+}
+
 TEST_CASE_FIXTURE(GpuTest, "ZGAL materials check their bindings, formats and options") {
     auto& ctx = context();
     auto& heap = ctx.descriptors();

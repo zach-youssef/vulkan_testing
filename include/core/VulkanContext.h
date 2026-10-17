@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <list>
@@ -168,6 +169,10 @@ struct VulkanContextConfig {
     // Directories the shader library looks for SPIR-V in (see ShaderLibrary)
     std::vector<std::string> shaderSearchPaths;
 
+    // Directories assets (models, images) loaded by relative path are found in, in order (see
+    // VulkanContext::findAsset). Without any, relative paths are relative to the working directory.
+    std::vector<std::string> assetSearchPaths;
+
     // Number of frames the CPU may record while the GPU is still executing earlier ones. Can be
     // changed later with VulkanContext::setFramesInFlight.
     uint32_t framesInFlight = 2;
@@ -243,6 +248,27 @@ public: // Accessors
     // The shader library, created on first use. Defined in shaders/ShaderLibrary.h, which must be
     // included to use it.
     ShaderLibrary& shaders();
+
+    // Where an asset (a model, an image) is: an absolute path as it is, a relative one in the first
+    // of the asset search paths holding it (or, without any, relative to the working directory).
+    // Fails with ErrorCode::NotFound, naming where it looked.
+    Result<std::filesystem::path> findAsset(const std::filesystem::path& path) const {
+        if (path.is_absolute() || config_.assetSearchPaths.empty()) {
+            if (std::filesystem::exists(path)) {
+                return path;
+            }
+            return Error(ErrorCode::NotFound, "Asset '" + path.string() + "' not found");
+        }
+        std::string searched;
+        for (const auto& directory : config_.assetSearchPaths) {
+            const std::filesystem::path candidate = std::filesystem::path(directory) / path;
+            if (std::filesystem::exists(candidate)) {
+                return candidate;
+            }
+            searched += (searched.empty() ? "" : ", ") + directory;
+        }
+        return Error(ErrorCode::NotFound, "Asset '" + path.string() + "' not found in the asset search paths (" + searched + ")");
+    }
 
     bool hasSurface() { return surface_ != nullptr; }
     VkSurfaceKHR surface() {

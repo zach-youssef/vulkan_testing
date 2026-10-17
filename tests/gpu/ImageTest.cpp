@@ -2,6 +2,9 @@
 #include "resources/Image.h"
 #include "TestShaders.h"
 
+#include <fstream>
+#include <iterator>
+
 namespace {
 
 std::vector<uint8_t> makePattern(uint32_t width, uint32_t height) {
@@ -26,7 +29,7 @@ TEST_CASE_FIXTURE(GpuTest, "Image::createFromUcharBuffer uploads pixels that rea
     constexpr uint32_t height = 19;
     auto pixels = makePattern(width, height);
 
-    auto image = Image::createFromUcharBuffer(ctx, pixels.data(), width, height, pixels.size()).value();
+    auto image = Image::createFromUcharBuffer(ctx, pixels.data(), width, height, pixels.size(), ColorSpace::Srgb).value();
     REQUIRE(image);
     CHECK(image->getWidth() == width);
     CHECK(image->getHeight() == height);
@@ -59,7 +62,7 @@ TEST_CASE_FIXTURE(GpuTest, "Sampled images are not created with storage usage") 
 
     // sRGB formats are rarely supported as storage images, so requesting storage usage for them
     // would fail on many devices
-    auto uploaded = Image::createFromUcharBuffer(ctx, pixels.data(), 4, 4, pixels.size()).value();
+    auto uploaded = Image::createFromUcharBuffer(ctx, pixels.data(), 4, 4, pixels.size(), ColorSpace::Srgb).value();
     CHECK(uploaded->getFormat() == VK_FORMAT_R8G8B8A8_SRGB);
     CHECK((uploaded->getUsage() & VK_IMAGE_USAGE_SAMPLED_BIT) != 0);
     CHECK((uploaded->getUsage() & VK_IMAGE_USAGE_STORAGE_BIT) == 0);
@@ -110,12 +113,42 @@ TEST_CASE("Image::bytesPerPixel") {
 
 TEST_CASE_FIXTURE(GpuTest, "Loading an image that can't be read names the file and the reason") {
     auto& ctx = context();
-    CHECK_ERROR(Image::createFromFile(ctx, "missing/texture.png"), ErrorCode::NotFound,
+    CHECK_ERROR(Image::createFromFile(ctx, "missing/texture.png", ColorSpace::Srgb), ErrorCode::NotFound,
                 "Image 'missing/texture.png' not found");
 
     // A file that isn't an image
-    CHECK_ERROR(Image::createFromFile(ctx, testShaderDir() + "/pattern.comp.spv"), ErrorCode::InvalidData,
+    CHECK_ERROR(Image::createFromFile(ctx, testShaderDir() + "/pattern.comp.spv", ColorSpace::Srgb), ErrorCode::InvalidData,
                 "pattern.comp.spv': ");
+}
+
+TEST_CASE_FIXTURE(GpuTest, "Images load from files or encoded bytes in the colour space given") {
+    auto& ctx = context();
+    const auto path = ctx.findAsset("quadrants.png").value();
+    auto srgb = Image::createFromFile(ctx, path, ColorSpace::Srgb).value();
+    auto linear = Image::createFromFile(ctx, path, ColorSpace::Linear).value();
+    CHECK(srgb->getFormat() == VK_FORMAT_R8G8B8A8_SRGB);
+    CHECK(linear->getFormat() == VK_FORMAT_R8G8B8A8_UNORM);
+    CHECK(linear->getWidth() == 2);
+    CHECK(linear->getHeight() == 2);
+
+    // The same file's bytes, decoded from memory
+    std::ifstream file(path, std::ios::binary);
+    const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    auto decoded = Image::createFromEncoded(ctx, bytes.data(), bytes.size(), ColorSpace::Linear, "the test's bytes").value();
+    CHECK(decoded->getWidth() == 2);
+    const std::vector<uint8_t> garbage{1, 2, 3};
+    CHECK_ERROR(Image::createFromEncoded(ctx, garbage.data(), garbage.size(), ColorSpace::Linear, "the test's garbage"),
+                ErrorCode::InvalidData, "Failed to decode the test's garbage: ");
+}
+
+TEST_CASE_FIXTURE(GpuTest, "Assets are found in the asset search paths") {
+    auto& ctx = context();
+    CHECK(ctx.findAsset("quadrants.png").value() == std::filesystem::path(TEST_ASSET_DIR) / "quadrants.png");
+    // Absolute paths are used as they are
+    const auto absolute = std::filesystem::path(TEST_ASSET_DIR) / "quadrants.png";
+    CHECK(ctx.findAsset(absolute).value() == absolute);
+    CHECK_ERROR(ctx.findAsset("missing.png"), ErrorCode::NotFound,
+                std::string("Asset 'missing.png' not found in the asset search paths (") + TEST_ASSET_DIR + ")");
 }
 
 TEST_CASE_FIXTURE(GpuTest, "Images used only for transfers have no view") {

@@ -144,7 +144,7 @@ struct FilteredImage {
 // Builds the graph and runs it once. Every handle created here is released before returning, so
 // before the context is destroyed.
 Result<FilteredImage> filterImage(VulkanContext& context, const Options& options) {
-    TRY_ASSIGN(auto source, Image::createFromFile(context, options.input));
+    TRY_ASSIGN(auto source, Image::createFromFile(context, options.input, ColorSpace::Srgb));
     const VkExtent2D extent{source->getWidth(), source->getHeight()};
 
     // The app, FilterApp in image_filter.zgal, builds its graph, FilterGraph: every pass, with the

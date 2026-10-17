@@ -178,12 +178,18 @@
 ;; type: a scalar-t (bool, int, uint or float)
 (struct g-parameter (name type loc) #:transparent)
 ;; kind: 'per-frame or 'data (with a type: a value each frame, or elements C++ gives once),
-;; 'meshes, 'cpu or 'extern
+;; 'meshes, 'cpu, 'extern or 'path (an asset's path)
 (struct g-input (name kind type loc) #:transparent)
 ;; resting: 'shader-read-only, 'general or 'transfer-src
 (struct g-import (name resting loc) #:transparent)
 ;; Images the application owns, however many it gives, for array bindings
 (struct g-import-images (name resting loc) #:transparent)
+;; An image loaded from a file when the graph is built, sampled (resting shader-read-only).
+;; source: an asset-source. color: 'srgb or 'linear.
+(struct g-image-file (name source color loc) #:transparent)
+;; Where an asset is: path, a string (found in the asset search paths if relative), or input, the
+;; name of a path input C++ gives
+(struct asset-source (path input) #:transparent)
 ;; A buffer the application owns, holding elements of type
 (struct g-import-buffer (name type loc) #:transparent)
 ;; A device-local buffer holding a data input's elements, uploaded when the graph is built
@@ -221,6 +227,6 @@
 ;; The declaration of a graph-level name
 (define (graph-item-name item)
   (match item
-    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-import-images n _ _) n] [(g-import-buffer n _ _) n] [(g-upload n _ _ _) n] [(g-constant n _ _ _) n]
+    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-image-file n _ _ _) n] [(g-import-images n _ _) n] [(g-import-buffer n _ _) n] [(g-upload n _ _ _) n] [(g-constant n _ _ _) n]
     [(g-sampler n _ _) n] [(g-uniform n _ _ _) n] [(g-image n _ _ _ _ _) n] [(g-buffer n _ _ _ _ _) n]
     [(g-target n _ _) n] [(g-material n _ _ _ _ _ _) n]))

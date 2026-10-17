@@ -57,6 +57,7 @@ private:
         VulkanContextConfig config;
         config.applicationName = "vulkan_test GPU tests";
         config.shaderSearchPaths = {TEST_SHADER_DIR};
+        config.assetSearchPaths = {TEST_ASSET_DIR};   // Models and images (tests/gpu/assets)
         const char* disableSyncValidation = std::getenv("VK_TEST_DISABLE_SYNC_VALIDATION");
         config.enableValidation = !(disableValidation && strcmp(disableValidation, "1") == 0);
         config.enableSynchronizationValidation = !(disableSyncValidation && strcmp(disableSyncValidation, "1") == 0);

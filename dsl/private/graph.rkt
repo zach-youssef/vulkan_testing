@@ -23,7 +23,8 @@
 ;; ---------------------------------------------------------------------------------------------
 ;; Names in a graph
 
-;; kind: 'parameter 'constant 'per-frame 'meshes 'cpu 'extern 'import 'import-buffer 'sampler
+;; kind: 'parameter 'constant 'per-frame 'meshes 'cpu 'extern 'path 'import (imported images and
+;; image files) 'import-buffer 'sampler
 ;; 'uniform 'image 'buffer 'target 'material. type: the value's type (parameters, constants, per-frame inputs, uniforms,
 ;; buffers' elements), else #f. item: the declaration.
 (struct entry (kind type item) #:transparent)
@@ -33,6 +34,8 @@
     [(g-parameter _ t _) (entry 'parameter t item)]
     [(g-input _ kind t _) (entry kind t item)]
     [(g-import _ _ _) (entry 'import #f item)]
+    ;; An imported image, which the generated code imports
+    [(g-image-file _ _ _ _) (entry 'import #f item)]
     [(g-import-images _ _ _) (entry 'import-images #f item)]
     [(g-import-buffer _ t _) (entry 'import-buffer t item)]
     [(g-upload _ _ t _) (entry 'upload t item)]
@@ -50,7 +53,7 @@
 
 (define kind-names
   (hash 'parameter "a parameter" 'constant "a constant" 'per-frame "a per-frame input" 'meshes "a meshes input"
-        'cpu "a cpu input" 'extern "an extern input" 'per-frame-data "a per-frame data input" 'import "an imported image" 'import-images "imported images" 'import-buffer "an imported buffer" 'data "a data input" 'upload "an uploaded buffer" 'sampler "a sampler" 'uniform "a uniform"
+        'cpu "a cpu input" 'extern "an extern input" 'path "a path input" 'per-frame-data "a per-frame data input" 'import "an imported image" 'import-images "imported images" 'import-buffer "an imported buffer" 'data "a data input" 'upload "an uploaded buffer" 'sampler "a sampler" 'uniform "a uniform"
         'image "an image" 'buffer "a buffer" 'target "a target" 'material "a material"))
 
 ;; ---------------------------------------------------------------------------------------------
@@ -274,6 +277,17 @@
   (define (frames options form where)
     (choice-option options '#:frames '(shared per-frame) form #:required? #t #:where where))
 
+  ;; An asset's path: a string, or a path input's name
+  (define (parse-asset-source stx)
+    (define d (syntax-e stx))
+    (cond
+      [(string? d)
+       (when (string=? d "")
+         (zgal-error 'malformed stx "an asset's path isn't empty"))
+       (asset-source d #f)]
+      [(symbol? d) (asset-source #f (lookup stx '(path) "a path input"))]
+      [else (zgal-error 'malformed stx "expected an asset's path, a string or a path input, found ~a" (show stx))]))
+
   (define (parse-item stx)
     (define parts (syntax->list stx))
     (unless (and parts (pair? parts) (symbol? (syntax-e (car parts))))
@@ -294,7 +308,7 @@
          (zgal-error 'type-not-allowed (second args) "a parameter is a bool, int, uint or float, not ~a" (type-name t)))
        (declare! (g-parameter (item-name) t (stx->loc stx)) stx)]
       ['input
-       (args! 2 "(input name (per-frame type)), (input name (data type)), (input name (per-frame (data type))), (input name meshes), (input name cpu) or (input name extern)")
+       (args! 2 "(input name (per-frame type)), (input name (data type)), (input name (per-frame (data type))), (input name meshes), (input name cpu), (input name extern) or (input name path)")
        (check-known-options options '() form)
        (define kind-stx (second args))
        (define item
@@ -302,6 +316,7 @@
            ['meshes (g-input (item-name) 'meshes #f (stx->loc stx))]
            ['cpu (g-input (item-name) 'cpu #f (stx->loc stx))]
            ['extern (g-input (item-name) 'extern #f (stx->loc stx))]
+           ['path (g-input (item-name) 'path #f (stx->loc stx))]
            [_
             (match (syntax->list kind-stx)
               ;; Elements each frame: re-uploaded when they change
@@ -316,7 +331,7 @@
                (g-input (item-name) 'per-frame t (stx->loc stx))]
               [(list k t-stx) #:when (eq? (syntax-e k) 'data)
                (g-input (item-name) 'data (buffer-element-type t-stx "a data input") (stx->loc stx))]
-              [_ (zgal-error 'malformed kind-stx "an input is (per-frame type), (data type), (per-frame (data type)), meshes, cpu or extern, not ~a" (show kind-stx))])]))
+              [_ (zgal-error 'malformed kind-stx "an input is (per-frame type), (data type), (per-frame (data type)), meshes, cpu, extern or path, not ~a" (show kind-stx))])]))
        (declare! item stx)]
       ['import-image
        (args! 1 "(import-image name #:resting state)")
@@ -324,6 +339,11 @@
        (define resting (choice-option options '#:resting '(shader-read-only general transfer-src) form
                                       #:required? #t #:where stx))
        (declare! (g-import (item-name) resting (stx->loc stx)) stx)]
+      ['image-file
+       (args! 2 "(image-file name source #:color color)")
+       (check-known-options options '(#:color) form)
+       (define color (choice-option options '#:color '(srgb linear) form #:required? #t #:where stx))
+       (declare! (g-image-file (item-name) (parse-asset-source (second args)) color (stx->loc stx)) stx)]
       ['import-images
        (args! 1 "(import-images name #:resting state)")
        (check-known-options options '(#:resting) form)
@@ -405,7 +425,7 @@
        (unless (>= (length args) 2)
          (zgal-error 'malformed stx "expected (material name Material (binding resource) ... #:option value ...)"))
        (declare! (parse-material-instance stx args options) stx)]
-      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, import-buffer, upload, constant, sampler, uniform, image, buffer, target, material and nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern)"
+      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, image-file, import-buffer, upload, constant, sampler, uniform, image, buffer, target, material and nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern)"
                      name head)]))
 
   ;; The type of a buffer's elements
@@ -611,6 +631,9 @@
       [(not (memq (entry-kind e) kinds))
        (zgal-error 'binding-mismatch stx "binding ~a is ~a ~a, so it takes ~a, but ~a is ~a"
                    (binding-name b) (if array "an array of" "a") (binding-kind b) what r (hash-ref kind-names (entry-kind e)))])
+    (when (and (eq? (binding-kind b) 'storage-image) (g-image-file? (entry-item e)))
+      (zgal-error 'binding-mismatch stx "binding ~a is a storage image, but ~a is an image file, which shaders only sample"
+                  (binding-name b) r))
     (when (memq (binding-kind b) '(buffer buffer-array))
       (unless (equal? (entry-type e) (binding-element b))
         (zgal-error 'binding-mismatch stx "binding ~a holds ~a, but ~a holds ~a" (binding-name b)

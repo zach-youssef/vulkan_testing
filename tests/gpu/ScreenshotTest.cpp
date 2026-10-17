@@ -74,7 +74,7 @@ public:
     explicit TexturedScene(VulkanContext& ctx) : ctx_(ctx), graph_(ctx) {
         auto& resources = ctx.resources();
 
-        texture_ = Image::createFromFile(ctx, std::string(TEST_TEXTURE_DIR) + "/texture.jpg").value();
+        texture_ = Image::createFromFile(ctx, std::string(TEST_TEXTURE_DIR) + "/texture.jpg", ColorSpace::Srgb).value();
         auto sampler = VulkanSampler::createWithAddressMode(ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT).value();
 
         auto uniformBuffer = Buffer<UniformBufferObject>::create(ctx, 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,

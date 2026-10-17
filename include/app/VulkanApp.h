@@ -58,6 +58,8 @@ struct AppConfig {
     DeviceFeatures features;
     // Directories the shader library loads SPIR-V from (see ShaderLibrary)
     std::vector<std::string> shaderSearchPaths;
+    // Directories assets loaded by relative path are found in (see VulkanContext::findAsset)
+    std::vector<std::string> assetSearchPaths;
     // Reload shaders whose SPIR-V files change on disk, checking between frames (errors are printed
     // to std::cerr). Otherwise call reloadShaders().
     bool autoReloadShaders = false;
@@ -328,6 +330,7 @@ private:
         config.framesInFlight = config_.framesInFlight;
         config.features = config_.features;
         config.shaderSearchPaths = config_.shaderSearchPaths;
+        config.assetSearchPaths = config_.assetSearchPaths;
 
         if (hasWindow()) {
             uint32_t glfwExtensionCount = 0;

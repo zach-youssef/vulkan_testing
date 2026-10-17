@@ -169,7 +169,7 @@ Result<void> runExample() {
     auto& descriptors = context.descriptors();
     
     // Load texture file, and create a sampler
-    TRY_ASSIGN(auto texture, Image::createFromFile(context, textureDir + "/texture.jpg"));
+    TRY_ASSIGN(auto texture, Image::createFromFile(context, textureDir + "/texture.jpg", ColorSpace::Srgb));
     TRY_ASSIGN(auto sampler, VulkanSampler::createWithAddressMode(context, VK_SAMPLER_ADDRESS_MODE_REPEAT));
     auto textureEntry = descriptors.sampledImage(texture);
     auto samplerEntry = descriptors.sampler(sampler);
