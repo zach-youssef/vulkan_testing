@@ -30,7 +30,8 @@
 
 (define (declaration-types d)
   (match d
-    [(function-decl _ params result body _ _ _) (append (map cdr params) (list result) (texpr-types body))]
+    ;; GLSL functions have no body to look into
+    [(function-decl _ params result body _ _ _) (append (map cdr params) (list result) (if body (texpr-types body) '()))]
     [(constant-decl _ type body _ _ _) (cons type (texpr-types body))]))
 
 (define (declarations-by-name prog)

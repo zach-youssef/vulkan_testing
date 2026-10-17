@@ -95,6 +95,8 @@
 #include "features.zgal.h"
 #include <type_traits>
 
+using namespace features;
+
 struct SurfaceMaterial : Surface {
     using Surface::Surface;
     void writePush(uint32_t, Push& push) override { push.object = 1; push.tint = glm::vec3(1.0f); }
@@ -117,17 +119,21 @@ CPP
       (with-check-info (['compiler text])
         (check-equal? status 0))))
 
-  (test-case "C++ errors in generated declarations point at the .zgal file"
+  (test-case "Files' declarations are in their own namespaces, and C++ errors in them point at the .zgal file"
     (with-temporary-directory (directory)
-      ;; Two files declaring the same struct, included together
+      ;; Two files declaring the same struct can be included together
       (for ([name '("a" "b")])
         (write-outputs (compile-text "\n(struct Shared\n  (x float))" #:source (format "check/~a.zgal" name))
                        directory))
       (define-values (status text)
-        (compile-cxx directory "#include \"a.zgal.h\"\n#include \"b.zgal.h\"\n"))
-      (check-not-equal? status 0)
-      (check-regexp-match #rx"check/b[.]zgal:2:[0-9]+: error: redefinition of 'Shared'" text)
-      (check-regexp-match #rx"check/a[.]zgal:2:" text))))
+        (compile-cxx directory "#include \"a.zgal.h\"\n#include \"b.zgal.h\"\nstatic_assert(sizeof(a::Shared) == sizeof(b::Shared));\n"))
+      (with-check-info (['compiler text])
+        (check-equal? status 0))
+      ;; A C++ declaration clashing with a generated one is reported at the .zgal line
+      (define-values (clash-status clash-text)
+        (compile-cxx directory "namespace a { struct Shared {}; }\n#include \"a.zgal.h\"\n"))
+      (check-not-equal? clash-status 0)
+      (check-regexp-match #rx"check/a[.]zgal:2:[0-9]+: error: redefinition of 'Shared'" clash-text))))
 
 (define (command-line-tests)
   (test-case "The command line reports errors in the compiler's format"

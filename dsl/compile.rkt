@@ -48,6 +48,16 @@
     [check-only? (values prog '())]
     [else
      (define header-path (join header-dir (header-file-name source)))
+     ;; The files of the GLSL functions it declares
+     (define glsl-files
+       (for/hash ([path (in-list (program-glsl-files prog))])
+         (values path
+                 (or (read-body path)
+                     (zgal-error 'shader-not-found
+                                 (for/first ([d (in-list (program-functions prog))]
+                                             #:when (and (glsl-function-decl? d) (equal? (glsl-function-decl-path d) path)))
+                                   (function-decl-loc d))
+                                 "GLSL file ~a doesn't exist" path)))))
      (define shaders
        (for*/list ([m (in-list (program-materials prog))]
                    [s (in-list (material-shaders m))])
@@ -57,5 +67,5 @@
                 (or (read-body (shader-path s))
                     (zgal-error 'shader-not-found (shader-loc s) "shader body ~a doesn't exist" (shader-path s)))))
          (define out-path (join shader-dir (shader-name s)))
-         (output out-path (emit-shader prog m s body out-path))))
+         (output out-path (emit-shader prog m s body out-path #:glsl-files glsl-files))))
      (values prog (cons (output header-path (emit-header prog header-path)) shaders))]))

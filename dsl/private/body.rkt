@@ -978,3 +978,16 @@
        (walk body (or uniform-locals locals)
              (or divergence (and (not uniform-locals) "in a loop whose range can differ between invocations")))]
       [_ (for-each go (texpr-children e))])))
+
+;; ---------------------------------------------------------------------------------------------
+;; App bodies
+
+;; App bodies run on the CPU: checks e only calls functions in cpu-callable (a set of names)
+(define (check-cpu-only e cpu-callable)
+  (let walk ([e e])
+    (match e
+      [(t-user-call f _ _ l)
+       (unless (set-member? cpu-callable f)
+         (zgal-error 'gpu-only l "~a doesn't compile to C++ (it's GLSL, or calls GLSL), so only shaders can call it, not apps" f))]
+      [_ (void)])
+    (for-each walk (texpr-children e))))

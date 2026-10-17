@@ -40,7 +40,8 @@ $(ZGAL_COMPILED): $(DSL_SRCS)
 	$(RACO) make $(DSL_DIR)/zgal.rkt
 
 # Generates <out>/<name>.zgal.h and <out>/shaders/<shader> from <dir>/<name>.zgal, and compiles the
-# shaders into <spv> (<spv>/<shader>.spv), with a depfile making the stamp depend on GLSL bodies:
+# shaders into <spv> (<spv>/<shader>.spv), with a depfile making the stamp depend on the files it
+# imports and its GLSL bodies:
 #   $(call zgal-rule,<dir>/<name>.zgal,<out>,<spv>)
 # GLSL bodies' includes are found in <dir>/shaders. Any change regenerates and recompiles them all.
 define zgal-rule

@@ -128,12 +128,9 @@
     (count state.count)
     #:enabled ((markRow state.marking))))
 
-;; For the CPU and GPU test: functions compiled for both. Its integer part must match exactly,
-;; its floating point part to the GPU's precision.
-(define (pcgHash [v : uint]) : uint
-  (let* ([state (+ (* v 747796405) 2891336453)]
-         [word (* (bitxor (shr state (+ (shr state 28) 4)) state) 277803737)])
-    (bitxor (shr word 22) word)))
+;; For the CPU and GPU test: functions compiled for both (pcgHash from the standard library). Its
+;; integer part must match exactly, its floating point part to the GPU's precision.
+(import random)
 
 (define (evaluate [i : uint]) : vec4
   (let* ([t (/ (float i) 7.0)]
@@ -208,3 +205,48 @@
   (dispatch reduce reduce)
   (copy toHost sumsBuffer results #:destination-offset 1)
   (extern repack copyBack))
+
+;; For the data test: uploaded inputs, a clear, a buffer copied into an image, and buffer readbacks.
+;; The doubling is a GLSL function.
+(extern-glsl "shaders/twice.glsl" ((twice [x : uint]) : uint))
+
+(compute-material Double
+  (workgroup 64)
+  (bindings
+   (source (buffer-array uint))
+   (target (buffer-array uint)))
+  (push
+   (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (write! (at target i) (twice (at source i)))))))
+
+(graph DataGraph
+  (input values (data uint))
+  (input texels (data uint))      ; A 2x2 rgba8 image's texels, packed
+  (upload valuesBuffer values)
+  (upload texelBuffer texels)
+  (buffer doubled uint (count values) #:frames shared)
+  (buffer filled uint 4 #:frames shared)
+  (image picture rgba8 (fixed 2 2) #:frames shared)
+  (material doubling Double (source valuesBuffer) (target doubled)
+            #:push ((count (count values)))
+            #:invocations ((count values)))
+  (dispatch run doubling)
+  (clear fill filled #:value 7)
+  (copy toPicture texelBuffer picture)
+  ;; Then texel (1, 1) from the buffer's first texel: a region, which keeps the rest of the image
+  (copy patchTexel texelBuffer picture #:source-offset 0 #:destination-offset (1 1) #:extent (1 1))
+  (readback readDoubled doubled)
+  (readback readFilled filled)
+  (readback readPicture picture))
+
+;; For the extern function test: an app calling functions C++ gives
+(app Echo
+  (extern (scale [x : float]) : float)
+  (extern (record [x : float]) : void)
+  (state (value float 1.0))
+  (on (key-pressed space)
+    (record state.value)
+    (with state #:value (scale state.value))))

@@ -30,7 +30,8 @@
 #include "graph/nodes/ReadbackNode.h"
 #include "resources/Image.h"
 
-// Generated from image_filter.zgal: the filters' materials, FilterGraph and FilterApp
+// Generated from image_filter.zgal, in namespace image_filter: the filters' materials, FilterGraph
+// and FilterApp
 #include "image_filter.zgal.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -150,7 +151,7 @@ Result<FilteredImage> filterImage(VulkanContext& context, const Options& options
     // ones the user didn't ask for disabled each frame. Disabled passes still need valid
     // parameters: the radius is only used if the blur runs.
     RenderGraph graph(context);
-    TRY_ASSIGN(auto filter, FilterApp::create(context, graph, FilterApp::Inputs{
+    TRY_ASSIGN(auto filter, image_filter::FilterApp::create(context, graph, image_filter::FilterApp::Inputs{
         .blur = options.blurRadius.has_value(),
         .radius = options.blurRadius.value_or(1),
         .edges = options.edges,

@@ -51,8 +51,9 @@
                   "shader bodies don't declare #version: ZGAL writes it, with the material's interface, before the body"))))
 
 ;; The complete source of shader s of material m. body: a GLSL body's text (#f for a ZGAL body).
-;; out-path: where the shader is written (for #line directives naming it).
-(define (emit-shader prog m s body out-path)
+;; out-path: where the shader is written (for #line directives naming it). glsl-files: the texts of
+;; the files of the GLSL functions the program declares, by path.
+(define (emit-shader prog m s body out-path #:glsl-files [glsl-files (hash)])
   (when body (check-body body (shader-path s)))
   (define w (make-writer out-path))
   (emit! w "#version 450")
@@ -147,9 +148,21 @@
      (define declarations
        (for/hash ([d (in-list (program-functions prog))])
          (values (if (function-decl? d) (function-decl-name d) (constant-decl-name d)) d)))
+     (define included (make-hash))
      (for ([name (in-list (zgal-shader-uses s))])
        (define d (hash-ref declarations name))
-       (if (function-decl? d) (emit-function! w d 'glsl) (emit-constant! w d 'glsl)))
+       (cond
+         [(glsl-function-decl? d)
+          ;; Its file, once, numbered as itself
+          (define path (glsl-function-decl-path d))
+          (unless (hash-ref included path #f)
+            (hash-set! included path #t)
+            (define text (hash-ref glsl-files path))
+            (for ([line (in-list (string-split (string-trim text "\n" #:left? #f #:repeat? #t) "\n" #:trim? #f))]
+                  [number (in-naturals 1)])
+              (emit! w line #:at (loc path number 1))))]
+         [(function-decl? d) (emit-function! w d 'glsl)]
+         [else (emit-constant! w d 'glsl)]))
      (emit-main! w s)])
   (writer-text w))
 

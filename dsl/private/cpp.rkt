@@ -356,7 +356,7 @@
   (define apps (program-apps prog))
   (when (pair? graphs)
     (for ([h (in-list '("graph/RenderGraph.h" "graph/nodes/DispatchNode.h" "graph/nodes/ReadbackNode.h"
-                        "graph/nodes/RenderablesNode.h" "materials/Renderable.h" "zgal/Runtime.h"))])
+                        "graph/nodes/RenderablesNode.h" "graph/nodes/BufferReadbackNode.h" "materials/Renderable.h" "zgal/Runtime.h"))])
       (gen (format "#include \"~a\"" h))))
   (when (pair? apps)
     (when (null? graphs) (gen "#include \"graph/RenderGraph.h\""))
@@ -377,8 +377,12 @@
     (gen "#include <memory>")
     (gen "#include <optional>"))
   (when (pair? apps)
+    (gen "#include <functional>")
     (gen "#include <iostream>")
     (gen "#include <variant>"))
+  (gen "")
+  (gen (format "// Everything generated from ~a is in its namespace" (program-source prog)))
+  (gen (format "namespace ~a {" (program-namespace prog)))
   (for ([d (in-list (program-structs prog))]) (emit-struct! w d))
   (for ([f (in-list (program-vertex-formats prog))]) (emit-vertex-format! w f))
   ;; Functions and constants the CPU can use too
@@ -393,4 +397,6 @@
   (for ([m (in-list materials)]) (emit-material! w prog m))
   (for ([g (in-list graphs)]) (emit-graph! w prog g))
   (for ([a (in-list apps)]) (emit-app! w prog a))
+  (gen "")
+  (gen (format "} // namespace ~a" (program-namespace prog)))
   (writer-text w))

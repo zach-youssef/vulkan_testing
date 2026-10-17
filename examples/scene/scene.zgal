@@ -2,6 +2,11 @@
 ;; build generates scene.zgal.h, with the structs, functions, a class per material, the graph and
 ;; the app, and the complete shaders.
 
+;; From the standard library: PI; acesFilmic; lookAt, perspective, ortho and orbit
+(import math)
+(import color)
+(import camera)
+
 ;; Per-frame data shared by the shadow and lit passes, computed by the app from its state
 (struct SceneUniforms
   (viewProjection mat4)         ; Camera
@@ -17,8 +22,6 @@
   (position vec3)
   (normal vec3)
   (albedoRoughness vec4))       ; rgb: linear albedo, a: roughness
-
-(define PI 3.14159265359)
 
 ;; The unit vector towards a sun at an azimuth (around +Y, from +Z) and an elevation. Used by the
 ;; app (compiled to C++) and could be by shaders.
@@ -59,10 +62,6 @@
          [specular (/ (* distribution geometry fresnel) (max (* 4.0 nDotV nDotL) 1e-4))]
          [diffuse (/ (* (- 1.0 fresnel) albedo) PI)])
     (+ diffuse specular)))
-
-;; Krzysztof Narkowicz's fit of the ACES filmic curve
-(define (acesFilmic [x : vec3]) : vec3
-  (clamp (/ (* x (+ (* 2.51 x) 0.03)) (+ (* x (+ (* 2.43 x) 0.59)) 0.14)) 0.0 1.0))
 
 ;; The scene's depth from the light, into the shadow map. It reads the same vertex buffers as the
 ;; lit pass, skipping all but the positions.
@@ -181,36 +180,9 @@
 ;; ---------------------------------------------------------------------------------------------
 ;; The app: an orbit camera and an animated sun, as state the handlers compute the next of
 
-;; Right-handed view and projection matrices, as GLM computes them (depth from 0 to 1, as Vulkan's).
-;; Projections flip y: Vulkan's clip space points it down.
-(define (lookAt [eye : vec3] [center : vec3] [up : vec3]) : mat4
-  (let* ([f (normalize (- center eye))]
-         [s (normalize (cross f up))]
-         [u (cross s f)])
-    (mat4 (vec4 s.x u.x (- f.x) 0.0)
-          (vec4 s.y u.y (- f.y) 0.0)
-          (vec4 s.z u.z (- f.z) 0.0)
-          (vec4 (- (dot s eye)) (- (dot u eye)) (dot f eye) 1.0))))
-
-(define (perspective [fovy : float] [aspect : float] [near : float] [far : float]) : mat4
-  (let* ([tanHalfFovy (tan (/ fovy 2.0))])
-    (mat4 (vec4 (/ 1.0 (* aspect tanHalfFovy)) 0.0 0.0 0.0)
-          (vec4 0.0 (- (/ 1.0 tanHalfFovy)) 0.0 0.0)
-          (vec4 0.0 0.0 (/ far (- near far)) -1.0)
-          (vec4 0.0 0.0 (/ (- (* far near)) (- far near)) 0.0))))
-
-(define (ortho [left : float] [right : float] [bottom : float] [top : float] [near : float] [far : float]) : mat4
-  (mat4 (vec4 (/ 2.0 (- right left)) 0.0 0.0 0.0)
-        (vec4 0.0 (- (/ 2.0 (- top bottom))) 0.0 0.0)
-        (vec4 0.0 0.0 (/ -1.0 (- far near)) 0.0)
-        (vec4 (/ (- (+ right left)) (- right left)) (/ (- (+ top bottom)) (- top bottom)) (/ (- near) (- far near)) 1.0)))
-
-;; The camera orbits a target, at a yaw (around +Y, from +Z), a pitch above the horizon and a
-;; radius
+;; The camera orbits this point (orbit, from the camera module)
 (define cameraTarget (vec3 0.0 0.75 0.0))
 
-(define (cameraPosition [yaw : float] [pitch : float] [radius : float]) : vec3
-  (+ cameraTarget (* radius (vec3 (* (cos pitch) (sin yaw)) (sin pitch) (* (cos pitch) (cos yaw))))))
 
 ;; The shadow map covers a sphere around the origin of this radius
 (define sceneRadius 7.0)
@@ -251,7 +223,7 @@
   (run SceneGraph
     (uniforms
      (let* ([aspect (/ surfaceSize.x surfaceSize.y)]
-            [eye (cameraPosition state.yaw state.pitch state.orbitRadius)]
+            [eye (orbit cameraTarget state.yaw state.pitch state.orbitRadius)]
             [light (sunDirection state.azimuth state.elevation)])
        (SceneUniforms (* (perspective (radians 45.0) aspect 0.1 100.0) (lookAt eye cameraTarget (vec3 0.0 1.0 0.0)))
                       (* (ortho (- sceneRadius) sceneRadius (- sceneRadius) sceneRadius 0.1 (* 4.0 sceneRadius))

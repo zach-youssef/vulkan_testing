@@ -1,6 +1,10 @@
 ;; Every feature of the language, for the golden tests (golden-test.rkt): the generated header and
 ;; shaders are compared with expected/, and compiled by toolchain-test.rkt
 
+;; The standard library: its declarations become the file's
+(import camera)
+(import random)
+
 (struct Light
   (direction vec3)
   (intensity float)             ; Packed after the vec3
@@ -71,6 +75,10 @@
   (+ (sample t s uv) (sample-lod t s uv 0.0) (fetch t s (ivec2 0) 0)
      (vec4 (sample-compare t s uv 0.5)) (vec4 (vec2 (texture-size t 0)) 0.0 0.0)))
 
+;; Written in GLSL: shaders include its file, and functions calling it don't compile to C++
+(extern-glsl "shaders/noise.glsl" ((hashNoise [p : vec2]) : float))
+(define (grain [p : vec2]) : float (* 0.5 (hashNoise p)))
+
 ;; Takes a storage image, so it's inlined where it's called
 (define (loadEdge [image : image2D] [texel : ivec2]) : vec4
   (image-load image (min texel (- (image-size image) 1))))
@@ -114,7 +122,7 @@
        (unless (= settings.count 0)
          (write! (at sums index) (+ (at sums index) (.r (loadEdge target texel)))))
        (for ([i (range 0 2)])
-         (store! target (+ texel (ivec2 i 0)) (vec4 (float i))))
+         (store! target (+ texel (ivec2 i 0)) (vec4 (+ (float i) (grain (vec2 texel))))))
        (when (> index 0)
          (write! (at sums 0) 0.0))))))
 
@@ -164,6 +172,9 @@
   (import-image picture #:resting shader-read-only)
   (import-buffer packedInput Packed)
   (import-buffer staging Packed)
+  (input seeds (data uint))
+  (upload seedBuffer seeds)
+  (image seedImage rgba8 (fixed 2 2) #:frames shared)
   (constant pictureWidth (width picture))
   (constant halfScale (/ scale 2.0))
   (constant doubled (* (uint count) 2))
@@ -202,13 +213,21 @@
   (copy copyAll packedInput packedCopy)
   (copy copySome staging packedCopy #:count 32 #:source-offset 1 #:destination-offset (uint count) #:enabled enabled)
   (dispatch reduce reduce)
-  (extern customNodes custom #:when enabled))
+  (extern customNodes custom #:when enabled)
+  ;; Data in and out: a clear, a buffer copied into an image, and readbacks of buffers
+  (clear clearTotal totalBuffer #:value (count seeds))
+  (copy toSeedImage seedBuffer seedImage)
+  (copy seedCorner seedBuffer seedImage #:source-offset 1 #:destination-offset (1 (uint count)) #:extent (1 1))
+  (readback readSeeds seedBuffer)
+  (readback readTotal totalBuffer #:when enabled))
 
 ;; Every event, effect and kind of graph binding: parameters computed once, per-frame inputs from
 ;; the state, node enables (one of a #:when node), and the rest passed through from C++
 (app Explorer
   (parameter level int)
   (parameter gain float)
+  (extern (noise [p : vec2]) : float)
+  (extern (report [frame : uint] [view : mat4]) : void)
   (state
    (tint vec3 (vec3 gain))
    (cursor vec2 (vec2 0.0))
@@ -227,7 +246,8 @@
   (on (frame dt)
     (let* ([next (+ state.frames 1)])
       (when (= (remainder next 100) 0)
-        (print! "frame " next " of " framesInFlight " in flight at " surfaceSize.x))
+        (print! "frame " next " of " framesInFlight " in flight at " surfaceSize.x)
+        (report next (lookAt (vec3 (noise state.cursor) 0.0 (unitFloat (pcgHash next))) (vec3 0.0) (vec3 0.0 1.0 0.0))))
       (with state #:frames next)))
   (run Everything
     (enabled (> level 0))

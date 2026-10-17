@@ -43,8 +43,7 @@ In @tt{examples/scene/scene.zgal}:
 
 @(define tonemap-source
    (string-append
-    (repository-excerpt "examples/scene/scene.zgal" #:from #rx"^;; Krzysztof Narkowicz" #:to #rx"0[.]14[)][)] 0[.]0 1[.]0[)][)]$")
-    "\n\n"
+    "(import color)\n\n"
     (repository-excerpt "examples/scene/scene.zgal" #:from #rx"^[(]graphics-material Tonemap" #:to #rx"exposure[)][)] 1[.]0[)][)][)]$")))
 
 @(zgal-source tonemap-source)
@@ -53,7 +52,8 @@ The material has two bindings (a texture and a sampler), a push constant, a valu
 passes to the fragment shader (a varying), and one colour output. Its @racket[vertex] and
 @racket[fragment] clauses are its shaders: expressions using those names. The vertex shader gives
 its results (the position, and every varying), and the fragment shader's value is its output.
-@tt{acesFilmic} is a function of the file, which any shader can call.
+@tt{acesFilmic} comes from the standard library's @tt{color} module (@secref["library"]), whose
+functions become the file's, for any shader to call.
 
 The compiler generates a GLSL shader per stage, the interface followed by the body:
 
@@ -97,7 +97,9 @@ material without an entry for it is a contract violation), or a graph a binding 
 For @tt{name.zgal}, the compiler writes
 @itemlist[
  @item{@tt{name.zgal.h}: the structs, vertex formats, a class per material (@secref["cpp"]), a
-       struct per graph (@secref["graphs"]) and a class per app (@secref["apps"]).}
+       struct per graph (@secref["graphs"]) and a class per app (@secref["apps"]), all in
+       @tt{namespace name} (e.g. @tt{scene::SceneApp}), so files can declare the same names. The
+       file's name must therefore be a valid name.}
  @item{one complete shader per material shader, named like its body (e.g. @tt{tonemap.frag}), to
        compile with glslc (@secref["glsl"]).}
 ]
@@ -141,16 +143,19 @@ Errors are printed as @tt{file:line:column: error: message [id]} and the exit st
 
 @subsection{Syntax and names}
 
-A @tt{.zgal} file is a sequence of s-expressions: @racket[struct], @racket[vertex-format],
+A @tt{.zgal} file is a sequence of s-expressions: @racket[import] (@secref["imports"]), @racket[struct], @racket[vertex-format],
 @racket[define] (functions and constants, @secref["functions"]), @racket[graphics-material],
 @racket[compute-material], @racket[graph] and @racket[app] forms, in any order except that anything is declared
 before it's used. Comments start with @tt{;} and run to the end of the
 line. The reader only reads data: @tt{#lang} and @tt{#reader}, which would run code, are rejected.
 
 @racketgrammar*[
- #:literals (struct vertex-format define graphics-material compute-material graph app array :)
+ #:literals (import struct vertex-format define graphics-material compute-material graph app array :)
  [file (code:line form ...)]
- [form (struct Name field ...+)
+ [form (import module)
+       (import "file.zgal")
+       (extern-glsl "file.glsl" ((name [parameter : type] ...) : type) ...+)
+       (struct Name field ...+)
        (vertex-format Name field ...+)
        (define (name [parameter : type] ...) : type body ...+)
        (define name expression)
@@ -176,6 +181,21 @@ use them (@tt{shadowMap}, not @tt{shadow-map}). A name can't be
        @tt{Shaders}, @tt{loadShaders}, @tt{vertexLayout}, @tt{writePush}, or anything starting with
        @tt{gl_} or @tt{zgal}.}
 ]
+
+@subsection[#:tag "imports"]{Imports and the standard library}
+
+@racket[(import module)] imports a module of the standard library, and
+@racket[(import "file.zgal")] a file, relative to the importing one. An imported file holds
+structs, vertex formats, functions, constants and imports, which become declarations of the
+importing file, as if written where it imports them: so they're in its namespace, compile to its
+shaders and header, and their names can't be declared again. A file imported twice (even through
+other imports) is read once, and a file can't import itself.
+
+@subsubsection[#:tag "library"]{The standard library}
+
+Modules in @tt{dsl/lib}, each a @tt{.zgal} file:
+
+@(library-modules)
 
 @subsection[#:tag "types"]{Types and layout}
 
@@ -624,6 +644,35 @@ Metal (through MoltenVK) can't pass storage images to functions, so a function w
 @tt{image2D} parameter is inlined where it's called, its locals renamed so they can't clash with
 the caller's.
 
+@subsubsection[#:tag "extern-glsl"]{Functions written in GLSL}
+
+For what ZGAL bodies can't express yet, @racket[extern-glsl] declares functions written in a GLSL
+file (relative to the declaring @tt{.zgal} file), which bodies call like any function:
+
+@(define glsl-function-source #<<ZGAL
+(extern-glsl "noise.glsl" ((noise [p : vec2]) : float))
+
+(define (grain [p : vec2]) : float
+  (* 0.5 (noise p)))
+
+(compute-material Grain
+  (workgroup 8 8)
+  (bindings (target (storage-image)))
+  (compute
+   (store! target (ivec2 globalInvocationId.xy) (vec4 (grain (vec2 globalInvocationId.xy))))))
+ZGAL
+)
+@(zgal-source glsl-function-source)
+@(generated-file glsl-function-source "Grain.comp"
+                 #:bodies (hash "noise.glsl" "float noise(vec2 p) {\n    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);\n}\n")
+                 #:from #rx"^#line 1 \"noise[.]glsl\"" #:to #rx"^}")
+
+A shader using one includes its file once (numbered as itself, so glslc reports errors at its
+lines). Their parameters and results are values (no textures, images or effects), so they can't
+touch bindings and access inference stays sound. They have no C++ version, so apps can't call them,
+nor ZGAL functions calling them (@tt{grain} isn't in the header). Prefer ZGAL bodies: a GLSL
+function is opaque to the compiler, and to backends other than GLSL.
+
 @subsection[#:tag "inference"]{Inferred accesses}
 
 When every shader of a material is a ZGAL body, the compiler infers each binding's use: a storage
@@ -642,7 +691,8 @@ The particles example's simulation, and the shader the compiler generates for it
    (string-append
     (repository-excerpt "examples/particles/particles.zgal" #:from #rx"^[(]struct SimParams" #:to #rx"[(]maxLife float[)][)]")
     "\n\n"
-    (repository-excerpt "examples/particles/particles.zgal" #:from #rx"^;; PCG hash" #:to #rx"[(]with p #:position position")))
+    "(import random)\n\n"
+    (repository-excerpt "examples/particles/particles.zgal" #:from #rx"^;; A new particle on a ring" #:to #rx"[(]with p #:position position")))
 @(zgal-source particles-source)
 @(generated-file particles-source "ParticleSim.comp" #:from #rx"^#define particles")
 
@@ -664,17 +714,19 @@ Its app (@secref["apps"]) computes the uniforms, shadows and exposure from its s
 and C++ supplies the meshes.
 
 @racketgrammar*[
- #:literals (graph parameter input per-frame meshes cpu extern import-image import-buffer constant
-             sampler uniform image buffer target surface attachments if color depth material dispatch
-             draw-meshes draw readback copy fixed extent-of)
+ #:literals (graph parameter input per-frame data meshes cpu extern import-image import-buffer upload
+             constant sampler uniform image buffer target surface attachments if color depth material
+             dispatch draw-meshes draw readback copy clear fixed extent-of)
  [graph-form (graph Name graph-item ...)]
  [graph-item (parameter name type)
              (input name (per-frame type))
              (input name meshes)
              (input name cpu)
              (input name extern)
+             (input name (data type))
              (import-image name #:resting resting-state)
              (import-buffer name type)
+             (upload name data-input)
              (constant name expression)
              (sampler name sampler-option ...)
              (uniform name type per-frame-input)
@@ -686,10 +738,15 @@ and C++ supplies the meshes.
  [node (dispatch name material node-option ...)
        (draw-meshes name target meshes-input material node-option ...)
        (draw name target material vertex-count node-option ...)
-       (readback name image node-option ...)
+       (readback name image-or-buffer node-option ...)
        (cpu name cpu-input cpu-option ... node-option ...)
        (copy name source-buffer destination-buffer copy-option ... node-option ...)
+       (copy name source-buffer destination-image region-option ... node-option ...)
+       (clear name buffer maybe-value node-option ...)
        (extern name extern-input maybe-when)]
+ [maybe-value (code:line) (code:line #:value expression)]
+ [region-option (code:line #:source-offset expression) (code:line #:destination-offset (x y))
+                (code:line #:extent (width height))]
  [node-option (code:line #:when expression) (code:line #:enabled expression)]
  [cpu-option (code:line #:reads (imported-buffer ...)) (code:line #:writes (imported-buffer ...))]
  [copy-option (code:line #:count expression) (code:line #:source-offset expression)
@@ -716,6 +773,7 @@ C++ passes them to @tt{build()} in an @tt{Inputs} struct, by name:
   (list @tt{(input n meshes)} @tt{std::vector<Handle<Mesh>>} @elem{the meshes a @racket[draw-meshes] node draws})
   (list @tt{(input n cpu)} @tt{RenderGraph::RunFn} @elem{a @racket[cpu] node's work, each frame})
   (list @tt{(input n extern)} @tt{zgal::ExternNodes<Graph>} @elem{a function adding an @racket[extern] node's nodes (@secref["extern"])})
+  (list @tt{(input n (data T))} @tt{std::vector<T>} @elem{elements an @racket[upload] puts in a buffer when the graph is built, e.g. a model or a data structure the CPU computed})
   (list @tt{(import-image n #:resting s)} @tt{FrameBinding<Image>} "an image the application owns, returned to its resting state (shader-read-only, general or transfer-src) after each frame")
   (list @tt{(import-buffer n T)} @tt{FrameBinding<Buffer<T>>} "a buffer the application owns (and fills, maps or reads), with the usage its uses need, one or one per frame"))]
 
@@ -735,14 +793,15 @@ whatever they use must outlive the graph.
              (+ a b ...+) (- a b ...) (* a b ...+) (/ a b) (min a b) (max a b)
              (float a) (int a) (uint a)
              (vec2 a b) (ivec3 a b c) (code:line ...)
-             (width image) (height image)]]
+             (width image) (height image) (count data-input)]]
 
 Expressions are typed like GLSL: arithmetic operands share a type (scalars or vectors), and
 conditions are bools. Integer literals take the type their context needs, so @tt{(* 6 count)} is a
 @tt{uint} when @tt{count} is. A name is a parameter, constant or per-frame input.
 
 Most expressions are computed once, when the graph is built: conditions, constants, extents and
-counts. They can use parameters, constants and imported images' sizes. Push constants and compute
+counts. They can use parameters, constants, imported images' sizes and the number of elements C++
+gives a data input (@racket[(count input)]). Push constants and compute
 materials' @tt{#:invocations} are computed each frame, so they can also use per-frame inputs and the
 current size of the graph's own images, which the graph can recreate (e.g. surface-relative ones,
 when the surface resizes).
@@ -768,6 +827,9 @@ when the surface resizes).
        let frames overlap, @tt{shared} ones save memory.}
  @item{@racket[buffer]: @tt{count} elements of a type, for @tt{buffer} and @tt{buffer-array}
        bindings, in device-local memory.}
+ @item{@racket[upload]: a device-local buffer holding a data input's elements, created and
+       uploaded when the graph is built. It binds and copies like a graph buffer. An upload given
+       no elements is a contract violation (a buffer can't be empty).}
  @item{@racket[import-buffer]: a buffer the application owns, of elements of a type, which it
        creates with the usage its uses need (e.g. @tt{TRANSFER_SRC} to be copied from). Bindings
        and copies use it like a graph buffer, and @racket[cpu] nodes' work can map it.}
@@ -815,15 +877,27 @@ Nodes:
        @racket[vertex-input] (a @tt{RenderablesNode}).}
  @item{@racket[draw]: draws a vertex count with a graphics material without one, e.g. a fullscreen
        triangle or particles pulled from a buffer.}
- @item{@racket[readback]: copies an image to the CPU each frame (a @tt{ReadbackNode}): C++ reads
-       it with @tt{graph.nodeAs<ReadbackNode>(*nodes.name).pixels()}.}
+ @item{@racket[readback]: copies an image or a buffer to the CPU each frame (a @tt{ReadbackNode}
+       or @tt{BufferReadbackNode}). C++ reads the most recent copy through the generated struct:
+       @tt{namePixels(graph)} gives an image's bytes, and @tt{nameContents(graph)} a buffer's
+       elements, typed.}
  @item{@racket[cpu]: runs a cpu input each frame, in graph order. @tt{#:reads} and @tt{#:writes} list
        the imported buffers its work reads and writes (the CPU can't map the graph's own buffers,
        which are device local), so the graph orders it with the GPU's uses: e.g. filling a staging
        buffer before a copy reads it. Give such a buffer a copy per frame (a
        @tt{PerFrameHandles}), so the CPU never writes one an earlier frame is still reading.}
- @item{@racket[copy]: copies elements between two buffers (graph or imported) of the same element
-       type: @tt{#:count} elements (by default, the rest of the source), from @tt{#:source-offset}
+ @item{@racket[clear]: fills a buffer with a @tt{uint} value (by default 0) each frame, e.g. to
+       reset accumulated sums.}
+ @item{@racket[copy] into an image: copies texels from a buffer, tightly packed in the image's
+       format, into a region of the image, e.g. a picture the CPU wrote to a staging buffer. By
+       default the region is the whole image and the texels start at the buffer's start;
+       @tt{#:source-offset} (in the buffer's elements), @tt{#:destination-offset (x y)} and
+       @tt{#:extent (width height)} (in texels) choose others, computed when the graph is built.
+       The rest of the image keeps its contents. A region outside the image, a buffer too small for
+       it, or a source offset that isn't a multiple of 4 bytes and of the texel size (Vulkan's
+       rule) is a contract violation when it's recorded.}
+ @item{@racket[copy]: copies elements between two buffers (graph, imported or uploaded) of the
+       same element type: @tt{#:count} elements (by default, the rest of the source), from @tt{#:source-offset}
        to @tt{#:destination-offset} (in elements, by default 0), computed when the graph is
        built. A range outside either buffer is a contract violation when it's recorded.}
  @item{@racket[extern]: nodes C++ adds (@secref["extern"]).}
@@ -908,6 +982,7 @@ The particles example's app:
              cursor-moved scrolled frame left right middle)
  [app-form (app Name app-clause ...)]
  [app-clause (parameter name type)
+             (extern (name [parameter : type] ...) : result-type)
              (state (field type initial-value) ...)
              (on event body ...+)
              (run Graph (input expression) ... maybe-enabled)]
@@ -925,6 +1000,9 @@ The particles example's app:
 
 @itemlist[
  @item{@racket[parameter]s are values C++ gives when it creates the app, of any type.}
+ @item{@racket[extern] declares a function C++ gives (a @tt{std::function} in the app's
+       @tt{Inputs}), which bodies call like the file's functions: for what ZGAL can't do itself,
+       e.g. reading a dataset or saving results. Its result may be @tt{void}, for effects.}
  @item{@racket[state] declares the state's fields, any type (@tt{bool} too: the state stays on the
        CPU), and their initial values, computed from the parameters.}
  @item{@racket[on] handles an event. Its body names @tt{state}, the event's value (bound to the
@@ -1005,7 +1083,7 @@ A class @tt{Name} has
 @itemlist[
  @item{@tt{struct State}, and @tt{state()} and @tt{setState()} (for tests driving the app);}
  @item{@tt{struct Inputs}: the parameters, a @tt{zgal::Timestep timestep} (with a frame handler),
-       and the graph's inputs the app doesn't compute;}
+       the extern functions, and the graph's inputs the app doesn't compute;}
  @item{@tt{static Result<std::unique_ptr<Name>> create(context, graph, inputs)}, which computes the
        initial state and builds the graph into the @tt{RenderGraph} (without @racket[run], the app
        has no graph of its own: C++ builds one, and reads the state);}
@@ -1028,7 +1106,7 @@ each after @tt{beginFrame()}, until the window closes or the app quits; @tt{zgal
 one, for headless loops. Without a @tt{VulkanApp} (the image filter), C++ calls @tt{beginFrame()}
 and executes the graph itself. The particles example's @tt{main}:
 
-@(file-excerpt "examples/particles/particles.cpp" #:from #rx"TRY_ASSIGN[(]auto particles, ParticlesApp::create" #:to #rx"TRY[(]zgal::run[(]app, [*]particles[)][)];")
+@(file-excerpt "examples/particles/particles.cpp" #:from #rx"TRY_ASSIGN[(]auto particlesApp, particles::ParticlesApp::create" #:to #rx"TRY[(]zgal::run[(]app, [*]particlesApp[)][)];")
 
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "glsl"]{GLSL bodies}
@@ -1149,7 +1227,6 @@ What ZGAL doesn't describe yet:
  @item{vertex attributes in other formats than 32-bit ones (e.g. normalized bytes), several vertex
        buffers, or per-instance attributes;}
  @item{images other than 2D ones, and arrays of bindings;}
- @item{sharing declarations between @tt{.zgal} files (each file is compiled alone);}
  @item{a shader used by more than one material.}
 ]
 
@@ -1187,6 +1264,7 @@ without assuming a backend, so other backends (e.g. WebGL) only add emitters.
   (list @tt{dsl/private/layout.rkt} "std430 layouts, and which types each place accepts")
   (list @tt{dsl/private/features.rkt} "the device features (8- and 16-bit integers) materials need")
   (list @tt{dsl/private/names.rkt} "valid and reserved names")
+  (list @tt{dsl/lib/} "the standard library's modules")
   (list @tt{dsl/private/errors.rkt} "the error catalog")
   (list @tt{dsl/private/writer.rkt} "writing generated code with #line directives")
   (list @tt{dsl/private/glsl.rkt} "the GLSL backend")
@@ -1225,6 +1303,8 @@ This document is part of the language: change it in the same commit as the compi
  @item{@tt{dsl/tests/body-test.rkt}: shader bodies: typing, scoping, inference, inlining, which
        functions compile to C++, small integers, shared memory and barriers.}
  @item{@tt{dsl/tests/app-test.rkt}: apps: handlers, events, effects and their graphs.}
+ @item{@tt{dsl/tests/module-test.rkt}: imports, the standard library, namespaces, and data in and
+       out of graphs (uploads, clears, copies into images, readbacks).}
  @item{@tt{dsl/tests/golden-test.rkt}: the output for @tt{golden/features.zgal}, which uses every
        feature.}
  @item{@tt{dsl/tests/toolchain-test.rkt}: the generated shaders and header through glslc and the C++
@@ -1234,6 +1314,7 @@ This document is part of the language: change it in the same commit as the compi
        and push constants have the layout the shaders write and read (8- and 16-bit integers
        included), a function computes the same on the CPU (as C++) as on the GPU, a reduction
        through shared memory, imported buffers, copies, cpu and extern nodes in a graph, and an
-       app's state, events and graph inputs. @tt{tests/gpu/VulkanAppTest.cpp} checks
+       app's state, events, extern functions and graph inputs, and uploads, clears, copies into
+       images and buffer readbacks. @tt{tests/gpu/VulkanAppTest.cpp} checks
        @tt{zgal::connect} turns window input into events.}
 ]

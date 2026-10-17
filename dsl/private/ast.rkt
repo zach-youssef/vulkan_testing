@@ -3,7 +3,9 @@
 ;; interface (types, bindings, stages) without assuming a backend, so adding a backend only adds an
 ;; emitter.
 
-(require racket/match
+(require racket/list
+         racket/match
+         racket/path
          racket/string)
 
 (provide (all-defined-out))
@@ -67,17 +69,22 @@
 ;; functions and constants it uses, in dependency order.
 (struct function-decl (name params result body cpu? uses loc) #:transparent)
 (struct constant-decl (name type body cpu? uses loc) #:transparent)
+;; A function written in GLSL, in the file at path (as given, relative to the working directory),
+;; which shaders include. It has no body (#f), and no C++ version.
+(struct glsl-function-decl function-decl (path) #:transparent)
 
 ;; source: the .zgal file's path. Declarations are in file order.
-(struct program (source structs vertex-formats materials graphs functions apps) #:transparent)
+;; imports: the paths of the files it imports (directly or not), as their declarations' locs name them.
+(struct program (source structs vertex-formats materials graphs functions apps imports) #:transparent)
 
 ;; ---------------------------------------------------------------------------------------------
 ;; Apps: state, the handlers changing it, and the graph they run. Bodies are typed expressions
 ;; (body.rkt), compiled for the CPU.
 
-;; parameters: fields C++ gives. state: a struct-decl (named State) and the fields' initial values,
-;; in order. handlers: list of handler. run: a graph-run, or #f.
-(struct app (name parameters state initial handlers run loc) #:transparent)
+;; parameters: fields C++ gives. externs: function-decls (without bodies) of the functions C++ gives,
+;; which bodies call. state: a struct-decl (named State) and the fields' initial values, in order.
+;; handlers: list of handler. run: a graph-run, or #f.
+(struct app (name parameters externs state initial handlers run loc) #:transparent)
 ;; event: kind 'key-pressed 'key-released (keys: key name symbols), 'mouse-pressed 'mouse-released
 ;; (button: 'left 'right 'middle), 'cursor-moved 'scrolled 'frame. binding: the name the event's
 ;; value is bound to (a cursor position, scroll offset or time step), or #f. body: the next state.
@@ -86,6 +93,19 @@
 ;; bindings: (cons graph-item-name expression) for the graph's parameters (computed once) and
 ;; per-frame inputs (each frame). enables: (cons node-name expression), computed each frame.
 (struct graph-run (graph bindings enables loc) #:transparent)
+
+
+;; The C++ namespace of prog's generated code: its file's name without .zgal (scene.zgal: scene)
+(define (program-namespace prog)
+  (source-namespace (program-source prog)))
+(define (source-namespace source)
+  (define name (let-values ([(_dir file _must-be-dir) (split-path source)]) (path->string file)))
+  (regexp-replace #px"[.]zgal$" name ""))
+
+;; The files of prog's GLSL functions, each once
+(define (program-glsl-files prog)
+  (remove-duplicates
+   (for/list ([d (in-list (program-functions prog))] #:when (glsl-function-decl? d)) (glsl-function-decl-path d))))
 
 (define (type-name t)
   (match t
@@ -123,12 +143,15 @@
 
 ;; type: a scalar-t (bool, int, uint or float)
 (struct g-parameter (name type loc) #:transparent)
-;; kind: 'per-frame (with a type), 'meshes, 'cpu or 'extern
+;; kind: 'per-frame or 'data (with a type: a value each frame, or elements C++ gives once),
+;; 'meshes, 'cpu or 'extern
 (struct g-input (name kind type loc) #:transparent)
 ;; resting: 'shader-read-only, 'general or 'transfer-src
 (struct g-import (name resting loc) #:transparent)
 ;; A buffer the application owns, holding elements of type
 (struct g-import-buffer (name type loc) #:transparent)
+;; A device-local buffer holding a data input's elements, uploaded when the graph is built
+(struct g-upload (name source type loc) #:transparent)
 ;; Build-time values. type: the expression's type
 (struct g-constant (name expr type loc) #:transparent)
 ;; options: an association list of option symbols (e.g. 'filter) to values (symbols, booleans, numbers)
@@ -149,16 +172,17 @@
 ;; material's order. push: (cons field expression) in the material's order. options: an
 ;; association list of pipeline options. invocations: expressions (compute) or #f.
 (struct g-material (name material bindings push options invocations loc) #:transparent)
-;; kind: 'dispatch 'draw-meshes 'draw 'readback 'cpu 'copy 'extern. target, material, subject (the
-;; meshes, image or cpu input): names or #f. count: an expression or #f (a draw's vertices, a copy's
-;; elements). reads, writes: the buffers a cpu node's work or a copy reads and writes (names).
-;; offsets: a copy's (cons source-offset destination-offset) expressions, else #f. when, enabled:
-;; expressions or #f.
+;; kind: 'dispatch 'draw-meshes 'draw 'readback 'cpu 'copy 'clear 'extern. target, material,
+;; subject (the meshes, image, cpu or extern input): names or #f. count: an expression or #f (a
+;; draw's vertices, a copy's elements, a clear's value), or for a copy into an image its region's
+;; (width height) expressions or #f. reads, writes: the resources a cpu node's work, a copy or a
+;; clear reads and writes (names). offsets: a copy's (cons source-offset destination-offset), the
+;; destination offset an image's (x y) for a copy into one; else #f. when, enabled: expressions or #f.
 (struct g-node (kind name target material subject count reads writes offsets when enabled loc) #:transparent)
 
 ;; The declaration of a graph-level name
 (define (graph-item-name item)
   (match item
-    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-import-buffer n _ _) n] [(g-constant n _ _ _) n]
+    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-import-buffer n _ _) n] [(g-upload n _ _ _) n] [(g-constant n _ _ _) n]
     [(g-sampler n _ _) n] [(g-uniform n _ _ _) n] [(g-image n _ _ _ _ _) n] [(g-buffer n _ _ _ _ _) n]
     [(g-target n _ _) n] [(g-material n _ _ _ _ _ _) n]))

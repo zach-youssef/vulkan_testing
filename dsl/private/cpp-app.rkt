@@ -72,6 +72,11 @@
     (emit! w (format "        ~a{};" (declaration-cpp (field-type p) (field-name p))) #:at (field-loc p)))
   (when frame-handler
     (gen "        zgal::Timestep timestep;   // How far the frame handler's clock advances a frame"))
+  (for ([f (in-list (app-externs a))])
+    (emit! w (format "        std::function<~a(~a)> ~a;" (spell-type (function-decl-result f) 'cpp)
+                     (string-join (for/list ([p (in-list (function-decl-params f))]) (spell-type (cdr p) 'cpp)) ", ")
+                     (function-decl-name f))
+           #:at (function-decl-loc f)))
   (for ([m (in-list passthrough)])
     (emit! w (string-append "        " (cdr m)) #:at (item-loc (car m))))
   (gen "    };")
@@ -85,6 +90,10 @@
   (when frame-handler
     (gen "        if (!inputs.timestep.given()) {")
     (gen (format "            contractViolation(~a);" (cpp-string (format "~a's timestep isn't given: zgal::Timestep::realTime or fixed" name))))
+    (gen "        }"))
+  (for ([f (in-list (app-externs a))])
+    (emit! w (format "        if (!inputs.~a) {" (function-decl-name f)) #:at (function-decl-loc f))
+    (gen (format "            contractViolation(~a);" (cpp-string (format "~a's extern function ~a isn't given" name (function-decl-name f)))))
     (gen "        }"))
   (gen (format "        std::unique_ptr<~a> app(new ~a(context, graph, std::move(inputs)));" name name))
   (when run
@@ -179,6 +188,15 @@
   (gen "    : context_(&context), graph_(&graph), inputs_(std::move(inputs)), state_(initialState()) {}")
   (gen "")
   (emit-initial-state! w a)
+  ;; The extern functions, as bodies call them
+  (for ([f (in-list (app-externs a))])
+    (define params (function-decl-params f))
+    (emit! w (format "    ~a ~a(~a) { ~ainputs_.~a(~a); }" (spell-type (function-decl-result f) 'cpp) (function-decl-name f)
+                     (string-join (for/list ([p (in-list params)]) (format "~a ~a" (spell-type (cdr p) 'cpp) (car p))) ", ")
+                     (if (void-t? (function-decl-result f)) "" "return ")
+                     (function-decl-name f)
+                     (string-join (map car params) ", "))
+           #:at (function-decl-loc f)))
   (for ([h (in-list (app-handlers a))])
     (define binding (event-binding (handler-event h)))
     (define binding-type (if (eq? (event-kind (handler-event h)) 'frame) "float" "glm::vec2"))

@@ -13,6 +13,9 @@
 #include <mutex>
 #include <numeric>
 
+// The generated code is in the namespace of its file, interfaces.zgal
+using namespace interfaces;
+
 namespace {
 
 class Probe : public LayoutProbe {
@@ -529,4 +532,50 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL apps compute their state from events and frames
     RenderGraph other(ctx);
     CHECK_THROWS_WITH_AS((void)Counting::create(ctx, other, Counting::Inputs{.start = 1}), doctest::Contains("timestep isn't given"),
                          ContractViolation);
+}
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs upload data, clear buffers, copy buffers into images and read buffers back") {
+    auto& ctx = context();
+    const std::vector<uint32_t> values{1, 2, 3, 100, 12345};
+    const std::vector<uint32_t> texels{0xFF0000FFu, 0xFF00FF00u, 0xFFFF0000u, 0x80402010u};
+    {
+        RenderGraph graph(ctx);
+        const DataGraph data = DataGraph::build(ctx, graph, DataGraph::Inputs{.values = values, .texels = texels}).value();
+        graph.execute().value();
+
+        std::vector<uint32_t> doubled;
+        for (uint32_t v : values) {
+            doubled.push_back(2 * v);
+        }
+        CHECK(data.readDoubledContents(graph).value() == doubled);
+        CHECK(data.readFilledContents(graph).value() == std::vector<uint32_t>(4, 7u));
+        const auto pixels = data.readPicturePixels(graph).value();
+        REQUIRE(pixels.size() == texels.size() * 4);
+        // The whole image, then texel (1, 1) patched with the first texel
+        const std::vector<uint32_t> patched{texels[0], texels[1], texels[2], texels[0]};
+        CHECK(std::memcmp(pixels.data(), patched.data(), pixels.size()) == 0);
+        ctx.waitIdleAll();
+    }
+    {
+        // An upload needs data
+        RenderGraph graph(ctx);
+        CHECK_THROWS_WITH_AS((void)DataGraph::build(ctx, graph, DataGraph::Inputs{.values = values}),
+                             doctest::Contains("DataGraph's upload texelBuffer is given no data"), ContractViolation);
+    }
+}
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL apps call the extern functions C++ gives") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    std::vector<float> recorded;
+    auto echo = Echo::create(ctx, graph, Echo::Inputs{
+        .scale = [](float x) { return x * 2.0f; },
+        .record = [&recorded](float x) { recorded.push_back(x); },
+    }).value();
+    echo->handle(zgal::Event{zgal::KeyPressed{zgal::Key::Space}});
+    echo->handle(zgal::Event{zgal::KeyPressed{zgal::Key::Space}});
+    CHECK(recorded == std::vector<float>{1.0f, 2.0f});
+    CHECK(echo->state().value == 4.0f);
+    CHECK_THROWS_WITH_AS((void)Echo::create(ctx, graph, Echo::Inputs{.scale = [](float x) { return x; }}),
+                         doctest::Contains("Echo's extern function record isn't given"), ContractViolation);
 }

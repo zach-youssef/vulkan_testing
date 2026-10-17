@@ -18,13 +18,17 @@
     (when (path? directory) (make-directory* directory))
     (call-with-output-file path (λ (out) (void (write-string text out))) #:exists 'truncate/replace)))
 
-;; A Makefile rule making `target` depend on the .zgal file and its shader bodies, with an empty
-;; rule per body so deleting one doesn't break the build (as gcc -MP does)
+;; A Makefile rule making `target` depend on the .zgal file, the files it imports and its shader
+;; bodies, with an empty rule per one of those so deleting it doesn't break the build (as gcc -MP
+;; does)
 (define (dependency-rule target source prog)
   (define bodies
     (remove-duplicates
-     (for*/list ([m (in-list (program-materials prog))] [s (in-list (material-shaders m))] #:when (shader-path s))
-       (shader-path s))))
+     (append
+      (program-imports prog)
+      (program-glsl-files prog)
+      (for*/list ([m (in-list (program-materials prog))] [s (in-list (material-shaders m))] #:when (shader-path s))
+        (shader-path s)))))
   (string-append
    (format "~a: ~a\n" target (string-join (cons source bodies) " "))
    (string-append* (for/list ([b (in-list bodies)]) (format "~a:\n" b)))))

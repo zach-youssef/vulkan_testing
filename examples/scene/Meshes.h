@@ -31,7 +31,7 @@ struct SurfaceMaterial {
 };
 
 struct MeshData {
-    std::vector<SceneVertex> vertices;
+    std::vector<scene::SceneVertex> vertices;
     std::vector<uint16_t> indices;   // MeshRenderable draws 16-bit indices
 };
 

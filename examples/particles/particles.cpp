@@ -14,7 +14,8 @@
 #include "graph/nodes/ReadbackNode.h"
 #include "zgal/Window.h"
 
-// Generated from particles.zgal: SimParams, Particle, the materials, ParticlesGraph and ParticlesApp
+// Generated from particles.zgal, in namespace particles: SimParams, Particle, the materials,
+// ParticlesGraph and ParticlesApp
 #include "particles.zgal.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -85,7 +86,7 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
     // parameters computed from its state, the simulation and the draw. Headless, it draws into an
     // image instead of the window, and its clock advances a fixed step each frame.
     RenderGraph& graph = app.createGraph();
-    TRY_ASSIGN(auto particles, ParticlesApp::create(context, graph, ParticlesApp::Inputs{
+    TRY_ASSIGN(auto particlesApp, particles::ParticlesApp::create(context, graph, particles::ParticlesApp::Inputs{
         .headless = headless,
         .capture = options.capturePath.has_value(),
         .width = kHeadlessExtent.width,
@@ -104,10 +105,10 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
             } else if (i == 2 * frames / 3) {
                 context.setFramesInFlight(1);
             }
-            TRY(zgal::drawFrame(app, *particles));
+            TRY(zgal::drawFrame(app, *particlesApp));
         }
         if (options.capturePath && frames > 0) {
-            TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(*particles->ids().nodes.readback).pixels());
+            TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(*particlesApp->ids().nodes.readback).pixels());
             return std::optional(std::move(pixels));
         }
     } else {
@@ -116,7 +117,7 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
                      "  space       pause / resume\n"
                      "  R           reset the particles\n"
                      "  1, 2, 3     frames in flight\n";
-        TRY(zgal::run(app, *particles));
+        TRY(zgal::run(app, *particlesApp));
     }
     return std::nullopt;
 }

@@ -64,7 +64,12 @@ public:
         return **image_;
     }
 
+    // The image's view. Images used only for transfers (copies) have none, which Vulkan forbids
+    // for their usage: asking for it is a contract violation.
     VkImageView getImageView() {
+        if (!imageView_) {
+            contractViolation("The image has no view: its usage is only transfers");
+        }
         return **imageView_;
     }
 
@@ -426,8 +431,15 @@ private:
 
         VK_TRY(vkBindImageMemory(device, **image_, **memory_, 0), "Failed to bind image memory");
 
-        VK_TRY(VulkanImageView::createForImageWithFormat(imageView_, device, **image_, format_, aspect),
-               "Failed to create image view");
+        constexpr VkImageUsageFlags viewUsages = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT
+                                                 | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                                                 | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                                 | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT
+                                                 | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+        if (usage_ & viewUsages) {
+            VK_TRY(VulkanImageView::createForImageWithFormat(imageView_, device, **image_, format_, aspect),
+                   "Failed to create image view");
+        }
         return {};
     }
 

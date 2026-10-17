@@ -82,6 +82,7 @@
             (format "(-~a)" (cpp-expr (first args) env t))
             (format "(~a)" (string-join (map (λ (a) (cpp-expr a env t)) args) (format " ~a " op))))]
        [(min max) (format "std::~a(~a, ~a)" op (cpp-expr (first args) env t) (cpp-expr (second args) env t))]
+       [(count) (format "static_cast<uint32_t>(in->~a.size())" (e-ref-name (first args)))]
        [(float int uint)
         (format "static_cast<~a>(~a)" (value-cpp-type (scalar-t op)) (cpp-expr (first args) env #f))]
        [(width height)
@@ -145,6 +146,7 @@
              (format "~a ~a;"
                      (match kind
                        ['per-frame (format "zgal::FrameSource<~a>" (value-cpp-type t))]
+                       ['data (format "std::vector<~a>" (cpp-type t))]
                        ['meshes "std::vector<Handle<Mesh>>"]
                        ['cpu "RenderGraph::RunFn"]
                        ['extern (format "zgal::ExternNodes<~a>" name)])
@@ -175,11 +177,13 @@
         (format "zgal::require(~a, ~a, ~a)" variable (cpp-string name) (cpp-string n))
         variable))
   (define (build-expr e want) (cpp-expr e env want))
+  (define (image-kind? resource) (memq (entry-kind (hash-ref env resource)) '(image import)))
 
   (define parameters (of-type g-parameter?))
   (define inputs (of-type g-input?))
   (define imports (of-type g-import?))
   (define buffer-imports (of-type g-import-buffer?))
+  (define uploads (of-type g-upload?))
   (define images (of-type g-image?))
   (define buffers (of-type g-buffer?))
   (define materials (of-type g-material?))
@@ -208,6 +212,7 @@
                      (for/list ([i (in-list images)]) (list (id-type "ImageId" (g-image-when i)) (g-image-name i) i))))
   (id-struct "Buffers"
              (append (for/list ([b (in-list buffer-imports)]) (list "BufferId" (g-import-buffer-name b) b))
+                     (for/list ([b (in-list uploads)]) (list "BufferId" (g-upload-name b) b))
                      (for/list ([b (in-list buffers)]) (list (id-type "BufferId" (g-buffer-when b)) (g-buffer-name b) b))))
   (id-struct "Nodes"
              (for/list ([n (in-list nodes)])
@@ -215,7 +220,26 @@
                (list (if (eq? (g-node-kind n) 'extern) "std::vector<NodeId>" (id-type "NodeId" (g-node-when n)))
                      (g-node-name n) n)))
   (unless (and (null? imports) (null? images)) (gen "    Images images;"))
-  (unless (and (null? buffer-imports) (null? buffers)) (gen "    Buffers buffers;"))
+  ;; Readbacks' results, typed
+  (define readbacks (filter (λ (n) (eq? (g-node-kind n) 'readback)) nodes))
+  (unless (null? readbacks)
+    (gen ""))
+  (for ([n (in-list readbacks)])
+    (define subject (g-node-subject n))
+    (define id (if (g-node-when n)
+                   (format "zgal::require(nodes.~a, ~a, ~a)" (g-node-name n) (cpp-string name) (cpp-string (g-node-name n)))
+                   (format "nodes.~a" (g-node-name n))))
+    (cond
+      [(image-kind? subject)
+       (at n (format "    // The pixels readback ~a copied in the most recent frame (waiting for it)" (g-node-name n)))
+       (at n (format "    Result<std::vector<uint8_t>> ~aPixels(RenderGraph& graph) const { return graph.nodeAs<ReadbackNode>(~a).pixels(); }"
+                     (g-node-name n) id))]
+      [else
+       (define t (cpp-type (entry-type (hash-ref env subject))))
+       (at n (format "    // The elements readback ~a copied in the most recent frame (waiting for it)" (g-node-name n)))
+       (at n (format "    Result<std::vector<~a>> ~aContents(RenderGraph& graph) const { return graph.nodeAs<BufferReadbackNode>(~a).contents<~a>(); }"
+                     t (g-node-name n) id t))]))
+  (unless (and (null? buffer-imports) (null? uploads) (null? buffers)) (gen "    Buffers buffers;"))
   (unless (null? nodes) (gen "    Nodes nodes;"))
   (gen "")
   (gen "    // The device features the graph's materials need beyond the wrapper's: add them to the")
@@ -231,7 +255,8 @@
   (gen "    // the inputs' callbacks, so whatever those use must outlive the graph.")
   (gen (format "    static Result<~a> build(VulkanContext& context, RenderGraph& graph, Inputs inputs) {" name))
   (gen "        const auto in = std::make_shared<const Inputs>(std::move(inputs));")
-  (for ([i (in-list inputs)] #:unless (eq? (g-input-kind i) 'meshes))
+  ;; Functions must be given; meshes and data may be empty (an upload checks its own)
+  (for ([i (in-list inputs)] #:unless (memq (g-input-kind i) '(meshes data)))
     (at i (format "        if (!in->~a) {" (g-input-name i)))
     (at i (format "            contractViolation(~a);" (cpp-string (format "~a's input ~a isn't given" name (g-input-name i)))))
     (at i "        }"))
@@ -252,6 +277,13 @@
     (define n (g-import-buffer-name i))
     (at i (format "        const BufferId buffer_~a = graph.importBuffer<~a>(~a, in->~a);" n
                   (cpp-type (g-import-buffer-type i)) (cpp-string n) n))
+    (gen (format "        result.buffers.~a = buffer_~a;" n n)))
+  ;; Uploaded buffers: created from their data inputs, then imported
+  (for ([u (in-list uploads)])
+    (define n (g-upload-name u))
+    (at u (format "        TRY_ASSIGN(auto upload_~a, zgal::upload(context, in->~a, ~a));" n (g-upload-source u)
+                  (cpp-string (format "~a's upload ~a" name n))))
+    (at u (format "        const BufferId buffer_~a = graph.importBuffer<~a>(~a, upload_~a);" n (cpp-type (g-upload-type u)) (cpp-string n) n))
     (gen (format "        result.buffers.~a = buffer_~a;" n n)))
   ;; Constants
   (for ([c (in-list (of-type g-constant?))])
@@ -347,7 +379,7 @@
                   [('storage-image _) (format "graph.storageEntry(~a)" (resource-ref resource))]
                   [('sampler _) (format "context.descriptors().sampler(sampler_~a)" resource)]
                   [(_ 'uniform) (format "uniform_~a->entries()" resource)]
-                  [(_ (or 'buffer 'import-buffer)) (format "graph.storageBufferEntry(~a)" (resource-ref resource))]))))
+                  [(_ (or 'buffer 'import-buffer 'upload)) (format "graph.storageBufferEntry(~a)" (resource-ref resource))]))))
     (define target
       (for/first ([n (in-list nodes)] #:when (and (equal? (g-node-material n) instance) (g-node-target n)))
         (g-node-target n)))
@@ -397,7 +429,12 @@
          (format "graph.addGraphics(~a, [target = target_~a, material = material_~a](NodeBuilder& builder) { builder.renderTo(target).uses(material); }, [material = material_~a, count = ~a](RecordContext& record) { material->bind(record.commandBuffer, record.frameIndex); vkCmdDraw(record.commandBuffer, count, 1, 0, 0); })"
                  (cpp-string node-name) (g-node-target n) (g-node-material n) (g-node-material n)
                  (build-expr (g-node-count n) (scalar-t 'uint)))]
-        ['readback (format "graph.add<ReadbackNode>(~a, ~a)" (cpp-string node-name) (resource-ref (g-node-subject n)))]
+        ['readback (format "graph.add<~a>(~a, ~a)" (if (image-kind? (g-node-subject n)) "ReadbackNode" "BufferReadbackNode")
+                           (cpp-string node-name) (resource-ref (g-node-subject n)))]
+        ['clear
+         (format "graph.addTransfer(~a, [target = ~a](NodeBuilder& builder) { builder.write(target, Access::TransferDst); }, [target = ~a, value = ~a](RecordContext& record) { vkCmdFillBuffer(record.commandBuffer, record.graph.buffer(target, record.frameIndex), 0, VK_WHOLE_SIZE, value); })"
+                 (cpp-string node-name) (resource-ref (first (g-node-writes n))) (resource-ref (first (g-node-writes n)))
+                 (build-expr (g-node-count n) (scalar-t 'uint)))]
         ['cpu
          (define uses
            (append (for/list ([b (in-list (g-node-reads n))]) (format ".read(~a, Access::HostRead)" (resource-ref b)))
@@ -411,6 +448,20 @@
                                           ", ")
                              (string-join uses "")))
                  (g-node-subject n))]
+        ['copy
+         #:when (image-kind? (first (g-node-writes n)))
+         (define source (first (g-node-reads n)))
+         (define offset (cdr (g-node-offsets n)))
+         (define extent (g-node-count n))
+         (format "graph.addTransfer(~a, [source = ~a, destination = ~a](NodeBuilder& builder) { builder.read(source, Access::TransferSrc).write(destination, Access::TransferDst); }, [source = ~a, destination = ~a, sourceOffset = VkDeviceSize(~a) * sizeof(~a), offset = VkOffset2D{int32_t(~a), int32_t(~a)}, extent = ~a](RecordContext& record) { zgal::copyBufferToImage(record, source, destination, sourceOffset, offset, extent, ~a); })"
+                 (cpp-string node-name) (resource-ref source) (resource-ref (first (g-node-writes n)))
+                 (resource-ref source) (resource-ref (first (g-node-writes n)))
+                 (build-expr (car (g-node-offsets n)) (scalar-t 'uint)) (cpp-type (entry-type (hash-ref env source)))
+                 (build-expr (first offset) (scalar-t 'uint)) (build-expr (second offset) (scalar-t 'uint))
+                 (if extent
+                     (format "std::optional<VkExtent2D>(VkExtent2D{~a, ~a})" (build-expr (first extent) (scalar-t 'uint)) (build-expr (second extent) (scalar-t 'uint)))
+                     "std::optional<VkExtent2D>()")
+                 (cpp-string node-name))]
         ['copy
          (define source (first (g-node-reads n)))
          (define destination (first (g-node-writes n)))
@@ -445,6 +496,6 @@
 
 (define (item-loc item)
   (match item
-    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-import-buffer _ _ l) l] [(g-constant _ _ _ l) l]
+    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
     [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ l) l]))

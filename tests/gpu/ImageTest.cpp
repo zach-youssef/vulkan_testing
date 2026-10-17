@@ -117,3 +117,11 @@ TEST_CASE_FIXTURE(GpuTest, "Loading an image that can't be read names the file a
     CHECK_ERROR(Image::createFromFile(ctx, testShaderDir() + "/pattern.comp.spv"), ErrorCode::InvalidData,
                 "pattern.comp.spv': ");
 }
+
+TEST_CASE_FIXTURE(GpuTest, "Images used only for transfers have no view") {
+    auto& ctx = context();
+    auto image = Image::create(ctx, 4, 4, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_IMAGE_ASPECT_COLOR_BIT).value();
+    CHECK_THROWS_WITH_AS((void)image->getImageView(), doctest::Contains("no view"), ContractViolation);
+}

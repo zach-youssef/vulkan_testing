@@ -42,7 +42,7 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | `include/descriptors` | `DescriptorHeap`: the universal descriptor set and `DescriptorEntry` |
 | `include/shaders` | `ShaderLibrary` and `Shader` (SPIR-V loading and reloading), `SpirvReflection` (what shaders write) |
 | `include/materials` | `Material`, `ComputeMaterial`, `GraphicsMaterial`, `MaterialBinding`, `Renderable`, `Mesh`, `MeshRenderable`, `AttachmentFormats` |
-| `include/graph` | `RenderGraph` (runtime), `Node`/`NodeBuilder`, the pure compiler (`GraphCompiler.h`) and synchronization state machine (`GraphSync.h`), `nodes/` (`RenderablesNode`, `DispatchNode`, `ReadbackNode`) |
+| `include/graph` | `RenderGraph` (runtime), `Node`/`NodeBuilder`, the pure compiler (`GraphCompiler.h`) and synchronization state machine (`GraphSync.h`), `nodes/` (`RenderablesNode`, `DispatchNode`, `ReadbackNode`, `BufferReadbackNode`) |
 | `include/targets` | `RenderTarget`, `Swapchain` |
 | `include/app` | `VulkanApp` (the only GLFW user) |
 | `include/glsl` | `bindless.glsl`, included by shaders (`glslc -I include/glsl`) |
@@ -242,11 +242,17 @@ A `.zgal` file declares materials (their interface, declared once instead of in 
 and C++: bindings, push constants, vertex input, varyings, outputs and the structs their buffers
 hold), their shaders, in ZGAL's expression language, render graphs using them, and apps running a
 graph. The compiler (`dsl/zgal.rkt`, run by the Makefile's `zgal-rule`, which also compiles the
-shaders) generates a header with a class per material, a struct per graph and a class per app, and
-the complete GLSL shaders. Prefer it
+shaders) generates a header with a class per material, a struct per graph and a class per app (all
+in a namespace named after the file: `scene.zgal` gives `scene::SceneApp`), and the complete GLSL
+shaders. Prefer it
 for new applications; every example uses it. Read `build/docs/zgal.txt` (from `make docs`) before
 writing ZGAL: it has the language, what's generated and every error. In short:
 
+- `(import camera)` imports a standard library module (`dsl/lib`: `camera` with `lookAt`,
+  `perspective`, `ortho`, `orbit`; `color`; `random`; `math`), and `(import "file.zgal")` another
+  file's structs, functions and constants. Use the library before writing your own.
+- For what bodies can't express yet, `(extern-glsl "file.glsl" ((f [x : T]) : R))` declares
+  pure GLSL functions bodies can call (shaders only; apps can't). Prefer ZGAL.
 - Shaders are `(vertex ...)`, `(fragment ...)` and `(compute ...)` clauses: expressions, with
   immutable `let*` bindings, folds over ranges (`fold`, `sum`, `for`), and effects (`write!` to
   buffers, `store!` to images). They name bindings, push constants, vertex attributes and varyings
@@ -267,8 +273,11 @@ writing ZGAL: it has the language, what's generated and every error. In short:
 - A `(graph Name ...)` declares parameters and inputs, samplers, uniforms (per-frame buffers the
   graph writes from a C++ function, only when the value changes), images, buffers, imported images
   and buffers, targets, material instances and nodes: dispatches, draws, readbacks, `cpu` nodes
-  (with `#:reads`/`#:writes` of imported buffers they map), `copy` nodes between buffers, and
-  `extern` nodes, where a C++ function adds nodes that depend on the application's data. Push
+  (with `#:reads`/`#:writes` of imported buffers they map), `copy` nodes between buffers (or a buffer
+  into an image), `clear` nodes, readbacks of images and buffers (read through the generated
+  `nameContents(graph)` / `namePixels(graph)`), and `extern` nodes, where a C++ function adds nodes
+  that depend on the application's data. Data C++ computes goes in with `(input d (data T))` (a
+  `std::vector<T>`) and `(upload buf d)`, which creates and fills a buffer when the graph is built. Push
   constants and dispatch sizes (`#:invocations`) are computed each frame, so they can follow
   per-frame inputs and images' current sizes. `Name::build(ctx, graph, Name::Inputs{...})` adds
   them to a `RenderGraph` and returns their ids (`nodes.x` for `setEnabled` and readbacks). C++
@@ -284,7 +293,9 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   effects are `print!`, `set-frames-in-flight!` and `quit!`. `(run Graph (input expr) ...
   #:enabled ((node expr) ...))` computes the graph's parameters once and per-frame inputs and node
   enables each frame from the state; C++ gives the graph's other inputs through the app's
-  `Inputs`. C++ creates it with `Name::create(ctx, graph, Name::Inputs{..., .timestep =
+  `Inputs`. `(extern (f [x : T]) : R)` declares a function C++ gives (a `std::function` in
+  `Inputs`) that bodies call, for what ZGAL can't do (reading datasets, saving files). C++ creates
+  it with `Name::create(ctx, graph, Name::Inputs{..., .timestep =
   zgal::Timestep::realTime(max) or fixed(step)})` and runs it with `zgal::run(vulkanApp, *app)`
   (`include/zgal/Window.h`), or headless calls `app->beginFrame()` before each frame. Tests drive
   it with `handle(zgal::Event{...})`, `state()` and `setState()`.

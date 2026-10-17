@@ -5,6 +5,8 @@
 (require racket/list
          racket/match
          racket/path
+         racket/runtime-path
+         racket/file
          racket/set
          racket/string
          "app.rkt"
@@ -19,7 +21,11 @@
 
 (provide read-forms
          parse-program
-         push-constant-limit)
+         push-constant-limit
+         library-directory)
+
+;; The standard library's modules, which (import name) finds
+(define-runtime-path library-directory "../lib")
 
 ;; The wrapper's pipeline layout has 128 bytes of push constants (DescriptorHeap::kPushConstantSize;
 ;; the generated C++ checks they agree)
@@ -68,6 +74,15 @@
 
 ;; forms: the syntax read from the file at `source` (its path, as given)
 (define (parse-program forms source)
+  ;; The file's name names its C++ namespace
+  (let ([ns (source-namespace source)])
+    (unless (valid-identifier? ns)
+      (zgal-error 'bad-identifier (loc source 1 1)
+                  "the file's name, ~a, names its generated C++'s namespace, so it's letters, digits and underscores, starting with a letter: rename the file"
+                  ns))
+    (define reason (reserved-name-reason ns))
+    (when reason
+      (zgal-error 'reserved-name (loc source 1 1) "the file's name, ~a, names its generated C++'s namespace, but it ~a: rename the file" ns reason)))
   (define directory
     (let-values ([(dir _name _must-be-dir) (split-path source)])
       (if (path? dir) dir (string->path "."))))
@@ -353,6 +368,38 @@
 
   (define (settle-unless-literal b t) b)
 
+  ;; (extern-glsl "file.glsl" ((name [parameter : type] ...) : result) ...): functions written in
+  ;; GLSL, for what ZGAL bodies can't express yet. They take and give values (no textures, images
+  ;; or effects), so they can't touch bindings and inference stays sound. The path is relative to
+  ;; the file declaring them.
+  (define (parse-extern-glsl stx items)
+    (match items
+      [(list* _ path-stx signatures) #:when (and (string? (syntax-e path-stx)) (pair? signatures))
+       (define declared-in
+         (let-values ([(dir _f _d) (split-path (loc-source (stx->loc stx)))]) (if (path? dir) dir (string->path "."))))
+       (define path (path->string (simplify-path (build-path declared-in (syntax-e path-stx)) #f)))
+       (for ([sig (in-list signatures)])
+         (match (syntax->list sig)
+           [(list signature colon result) #:when (and (syntax->list signature) (eq? (syntax-e colon) ':))
+            (match-define (cons name-stx param-stxs) (syntax->list signature))
+            (define name (parse-name name-stx "the function's name"))
+            (top-level name name-stx)
+            (define param-names (make-namespace (format "as a parameter of ~a" name)))
+            (define params
+              (for/list ([p (in-list param-stxs)])
+                (match (syntax->list p)
+                  [(list n colon2 t) #:when (eq? (syntax-e colon2) ':)
+                   (define p-name (parse-name n "a parameter's name"))
+                   (param-names p-name n)
+                   (cons p-name (parse-type t))]
+                  [_ (zgal-error 'malformed p "expected a parameter [name : type]")])))
+            (define decl (glsl-function-decl name params (parse-type result) #f #f '() (stx->loc sig) path))
+            (hash-set! summaries name (for/list ([_ (in-list params)]) (set)))
+            (hash-set! declaration-order name (hash-count declaration-order))
+            (hash-set! functions name decl)]
+           [_ (zgal-error 'malformed sig "expected a GLSL function's signature ((name [parameter : type] ...) : result-type)")]))]
+      [_ (zgal-error 'malformed stx "expected (extern-glsl \"file.glsl\" ((name [parameter : type] ...) : result-type) ...)")]))
+
   (define (constant-expression? e)
     (match e
       [(or (t-lit _ _ _) (t-global 'constant _ _ _ _)) #t]
@@ -631,10 +678,11 @@
       (varying name t interpolation (stx->loc v-stx))))
 
   (define graphs (make-hash))   ; name -> graph
+  (define-values (all-forms imports) (expand-imports forms source))
   (define-values (structs-out formats-out materials-out graphs-out apps-out)
     (for/fold ([ss '()] [fs '()] [ms '()] [gs '()] [as '()]
                #:result (values (reverse ss) (reverse fs) (reverse ms) (reverse gs) (reverse as)))
-              ([form (in-list forms)])
+              ([form (in-list all-forms)])
       (define items (syntax->list form))
       (match (head-symbol form)
         ['struct (values (cons (parse-struct form items) ss) fs ms gs as)]
@@ -646,16 +694,86 @@
          (hash-set! graphs (graph-name g) g)
          (values ss fs ms (cons g gs) as)]
         ['app
-         (values ss fs ms gs (cons (parse-app form parse-type top-level structs functions constants graphs)
+         (values ss fs ms gs (cons (parse-app form parse-type top-level structs functions constants cpu-functions graphs)
                                    as))]
         ['define (parse-define form items) (values ss fs ms gs as)]
+        ['extern-glsl (parse-extern-glsl form items) (values ss fs ms gs as)]
+        ['import (values ss fs ms gs as)]
         [_ (zgal-error 'unknown-form form
-                       "expected struct, vertex-format, define, graphics-material, compute-material, graph or app, found ~a"
+                       "expected import, struct, vertex-format, define, extern-glsl, graphics-material, compute-material, graph or app, found ~a"
                        (let ([head (head-symbol form)]) (if head (format "(~a ...)" head) (show form))))])))
   (program source structs-out formats-out materials-out graphs-out
            (sort (append (hash-values functions) (hash-values constants)) <
                  #:key (λ (d) (hash-ref declaration-order (if (function-decl? d) (function-decl-name d) (constant-decl-name d)))))
-           apps-out))
+           apps-out
+           imports))
+
+;; ---------------------------------------------------------------------------------------------
+;; Imports
+
+;; A path as locations (and #line directives) name it: relative to the working directory, where the
+;; compilers reading the generated code run, so no machine's absolute paths end up in them
+(define (display-path p)
+  (define absolute (simplify-path (path->complete-path p)))
+  (path->string (find-relative-path (simplify-path (current-directory)) absolute)))
+
+;; The forms of the file at `source`, with each import replaced by the imported file's forms
+;; (before it, as declarations come before their uses), and the imported files' paths. A file is
+;; imported once however many files import it.
+(define (expand-imports forms source)
+  (define imported (make-hash))   ; complete path -> #t
+  (define order '())
+  (define (expand forms directory chain)
+    (append*
+     (for/list ([form (in-list forms)])
+       (cond
+         [(eq? (head-symbol form) 'import)
+          (define items (syntax->list form))
+          (unless (= (length items) 2)
+            (zgal-error 'bad-import form "expected (import module) for the standard library, or (import \"file.zgal\")"))
+          (define target (syntax-e (second items)))
+          (define file
+            (cond
+              [(symbol? target)
+               (define p (build-path library-directory (format "~a.zgal" target)))
+               (unless (file-exists? p)
+                 (zgal-error 'bad-import (second items) "the standard library has no module ~a; it has ~a" target
+                             (string-join (sort (for/list ([f (in-list (directory-list library-directory))]
+                                                           #:when (regexp-match? #px"[.]zgal$" (path->string f)))
+                                                  (regexp-replace #px"[.]zgal$" (path->string f) ""))
+                                                string<?)
+                                          ", ")))
+               p]
+              [(string? target)
+               (define p (build-path directory target))
+               (unless (file-exists? p)
+                 (zgal-error 'bad-import (second items) "~a doesn't exist" (path->string (simplify-path p #f))))
+               p]
+              [else (zgal-error 'bad-import (second items) "expected a module name or a file's path, found ~a" (show (second items)))]))
+          (define complete (simplify-path (path->complete-path file)))
+          (cond
+            [(member complete chain)
+             (zgal-error 'bad-import form "~a imports itself, through ~a" (display-path complete)
+                         (string-join (map display-path (reverse chain)) " -> "))]
+            [(hash-ref imported complete #f) '()]
+            [else
+             (hash-set! imported complete #t)
+             (define shown (display-path complete))
+             (define imported-forms (read-forms shown (open-input-string (file->string complete))))
+             (for ([f (in-list imported-forms)])
+               (unless (memq (head-symbol f) '(import struct vertex-format define extern-glsl))
+                 (zgal-error 'bad-import f "an imported file declares structs, vertex formats, functions, constants, GLSL functions and imports, not ~a"
+                             (let ([h (head-symbol f)]) (if h (format "(~a ...)" h) (show f))))))
+             (define expanded
+               (expand imported-forms (let-values ([(dir _f _d) (split-path complete)]) dir) (cons complete chain)))
+             (set! order (cons shown order))
+             expanded])]
+         [else (list form)]))))
+  (define directory
+    (let-values ([(dir _name _must-be-dir) (split-path source)])
+      (if (path? dir) dir (current-directory))))
+  (define start (simplify-path (path->complete-path source)))
+  (values (expand forms directory (list start)) (reverse order)))
 
 ;; Vertex inputs are named "in" followed by the attribute, e.g. inPosition
 (define (input-variable-name attribute)

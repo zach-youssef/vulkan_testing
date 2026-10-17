@@ -1,0 +1,17 @@
+;; ZGAL's standard library: colour. (import color)
+
+;; Linear colour to sRGB's encoding (clamped to [0, 1]), and back
+(define (srgbEncode [linear : vec3]) : vec3
+  (let* ([c (clamp linear 0.0 1.0)])
+    (mix (* c 12.92) (- (* 1.055 (pow c (vec3 (/ 1.0 2.4)))) 0.055) (greaterThan c (vec3 0.0031308)))))
+
+(define (srgbDecode [encoded : vec3]) : vec3
+  (mix (/ encoded 12.92) (pow (/ (+ encoded 0.055) 1.055) (vec3 2.4)) (greaterThan encoded (vec3 0.04045))))
+
+;; The relative luminance of a linear colour (Rec. 709 primaries, as sRGB's)
+(define (luminance [linear : vec3]) : float
+  (dot linear (vec3 0.2126 0.7152 0.0722)))
+
+;; HDR to [0, 1]: Krzysztof Narkowicz's fit of the ACES filmic curve
+(define (acesFilmic [x : vec3]) : vec3
+  (clamp (/ (* x (+ (* 2.51 x) 0.03)) (+ (* x (+ (* 2.43 x) 0.59)) 0.14)) 0.0 1.0))

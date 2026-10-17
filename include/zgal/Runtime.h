@@ -268,6 +268,61 @@ inline void copyBuffer(RecordContext& record, BufferId source, BufferId destinat
                     record.graph.buffer(destination, record.frameIndex), 1, &region);
 }
 
+// Records a copy node's copy of a buffer into a region of an image: the texels from sourceOffset
+// bytes into the buffer, tightly packed in the image's format, into the region at offset of the
+// given extent (by default, the rest of the image). A region outside the image, a buffer too small
+// for it, or an offset Vulkan can't copy from (not a multiple of 4 and of the texel size) is a
+// contract violation.
+inline void copyBufferToImage(RecordContext& record, BufferId source, ImageId destination, VkDeviceSize sourceOffset,
+                              VkOffset2D offset, std::optional<VkExtent2D> extent, const char* node) {
+    const VkExtent2D size = record.graph.imageExtent(destination, record.frameIndex);
+    const VkDeviceSize texelSize = Image::bytesPerPixel(record.graph.imageFormat(destination));
+    const auto fail = [node](const std::string& problem) {
+        contractViolation(std::string("Copy ") + node + " " + problem);
+    };
+    if (uint32_t(offset.x) > size.width || uint32_t(offset.y) > size.height) {
+        fail("starts at texel (" + std::to_string(offset.x) + ", " + std::to_string(offset.y) + "), outside the image");
+    }
+    const VkExtent2D region = extent.value_or(VkExtent2D{size.width - uint32_t(offset.x), size.height - uint32_t(offset.y)});
+    if (uint32_t(offset.x) + region.width > size.width || uint32_t(offset.y) + region.height > size.height) {
+        fail("copies a region of " + std::to_string(region.width) + "x" + std::to_string(region.height) + " at (" +
+             std::to_string(offset.x) + ", " + std::to_string(offset.y) + "), outside an image of " +
+             std::to_string(size.width) + "x" + std::to_string(size.height));
+    }
+    if (sourceOffset % 4 != 0 || sourceOffset % texelSize != 0) {
+        fail("starts " + std::to_string(sourceOffset) + " bytes into its buffer, which isn't a multiple of 4 and of the texel size");
+    }
+    const VkDeviceSize needed = texelSize * region.width * region.height;
+    const VkDeviceSize available = record.graph.bufferSize(source, record.frameIndex);
+    if (sourceOffset + needed > available) {
+        fail("copies " + std::to_string(needed) + " bytes from byte " + std::to_string(sourceOffset) + " of a buffer of " +
+             std::to_string(available));
+    }
+    if (region.width == 0 || region.height == 0) {
+        return;
+    }
+    VkBufferImageCopy copy{};
+    copy.bufferOffset = sourceOffset;
+    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.imageSubresource.layerCount = 1;
+    copy.imageOffset = {offset.x, offset.y, 0};
+    copy.imageExtent = {region.width, region.height, 1};
+    vkCmdCopyBufferToImage(record.commandBuffer, record.graph.buffer(source, record.frameIndex),
+                           record.graph.image(destination, record.frameIndex)->getImage(),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+}
+
+// A device-local buffer holding data, for a graph's upload (which the graph imports). what: the
+// upload, for the contract violation an empty one is (a buffer can't be empty)
+template<typename T>
+Result<Handle<Buffer<T>>> upload(VulkanContext& context, const std::vector<T>& data, const char* what) {
+    if (data.empty()) {
+        contractViolation(std::string(what) + " is given no data");
+    }
+    return Buffer<T>::createAndInitialize(context, data,
+                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+}
+
 // The extent of an imported image (the current frame's, if it has one per frame)
 inline VkExtent2D extentOf(VulkanContext& context, const FrameBinding<Image>& image, const char* name) {
     auto handle = image.get(context.currentFrame());

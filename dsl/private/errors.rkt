@@ -94,8 +94,8 @@
          "A graphics material has one vertex and one fragment shader, and a compute material one compute shader, each either a ZGAL body (a `vertex`, `fragment` or `compute` clause) or a GLSL body in `shaders`: paths relative to the .zgal file, whose extension is their stage (`.vert`, `.frag` or `.comp`)."
          "(graphics-material Flat\n  (shaders \"flat.vert\")\n  (outputs (color vec4)))")
    (kind 'shader-not-found
-         "A shader body doesn't exist"
-         "The path is relative to the .zgal file. Shader bodies are only read when generating GLSL, so checking a file (`--check`) doesn't report this."
+         "A shader body or GLSL file doesn't exist"
+         "Paths of GLSL bodies (in `shaders`) and of files of GLSL functions (`extern-glsl`) are relative to the .zgal file declaring them. They're only read when generating GLSL, so checking a file (`--check`) doesn't report this."
          "(graphics-material Flat\n  (shaders \"missing.vert\" \"missing.frag\")\n  (outputs (color vec4)))")
    (kind 'shader-reused
          "Two materials use the same shader"
@@ -181,6 +181,14 @@
          "A copy node's buffers don't fit"
          "A `copy` node copies elements between two different buffers (graph or imported) holding the same element type; its `#:count` and offsets count elements."
          "(graph G\n  (buffer a float 16 #:frames shared)\n  (buffer b uint 16 #:frames shared)\n  (copy c a b))")
+   (kind 'gpu-only
+         "An app calls a function only shaders can run"
+         "App bodies run on the CPU, so they call functions that compile to C++. Functions written in GLSL (`extern-glsl`), and ZGAL functions calling them, only compile for shaders."
+         "(extern-glsl \"noise.glsl\" ((noise [p : vec2]) : float))\n(app A\n  (state (x float 0.0))\n  (on (key-pressed space) (with state #:x (noise (vec2 1.0)))))")
+   (kind 'bad-import
+         "An import can't be found or used"
+         "`(import name)` imports a module of the standard library (`dsl/lib`, listed in the reference), and `(import \"file.zgal\")` a file, relative to the importing one. Imported files hold only structs, vertex formats, functions, constants and imports, which become declarations of the importing file. A file can't import itself, even indirectly."
+         "(import geometry)")
    (kind 'bad-effect
          "An app's effect outside an app"
          "`print!`, `set-frames-in-flight!` and `quit!` act on the running program, so only an app's handlers use them; shaders and functions compute values (and shaders write buffers and images)."

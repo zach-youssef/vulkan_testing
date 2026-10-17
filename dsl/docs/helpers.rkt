@@ -32,6 +32,7 @@
          layout-table
          error-catalog-section
          file-excerpt
+         library-modules
          push-limit)
 
 (define-runtime-path repository "../..")
@@ -158,6 +159,14 @@
   (file->string (build-path repository path)))
 
 ;; Lines of a file in the repository, from a line matching `from` through one matching `to`
+;; Every module of the standard library (dsl/lib), as its file reads
+(define (library-modules)
+  (define directory (build-path repository "dsl" "lib"))
+  (for/list ([f (in-list (sort (map path->string (directory-list directory)) string<?))]
+             #:when (regexp-match? #px"[.]zgal$" f))
+    (list (para (bold (tt (format "(import ~a)" (regexp-replace #px"[.]zgal$" f "")))))
+          (file-excerpt (string-append "dsl/lib/" f)))))
+
 (define (file-excerpt path #:from [from #f] #:to [to #f])
   (nested #:style 'code-inset
           (verbatim (excerpt (string-trim (file->string (build-path repository path)) "\n" #:left? #f) from to))))

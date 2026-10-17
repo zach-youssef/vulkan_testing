@@ -33,6 +33,7 @@
     [(g-input _ kind t _) (entry kind t item)]
     [(g-import _ _ _) (entry 'import #f item)]
     [(g-import-buffer _ t _) (entry 'import-buffer t item)]
+    [(g-upload _ _ t _) (entry 'upload t item)]
     [(g-constant _ _ t _) (entry 'constant t item)]
     [(g-sampler _ _ _) (entry 'sampler #f item)]
     [(g-uniform _ t _ _) (entry 'uniform t item)]
@@ -47,7 +48,7 @@
 
 (define kind-names
   (hash 'parameter "a parameter" 'constant "a constant" 'per-frame "a per-frame input" 'meshes "a meshes input"
-        'cpu "a cpu input" 'extern "an extern input" 'import "an imported image" 'import-buffer "an imported buffer" 'sampler "a sampler" 'uniform "a uniform"
+        'cpu "a cpu input" 'extern "an extern input" 'import "an imported image" 'import-buffer "an imported buffer" 'data "a data input" 'upload "an uploaded buffer" 'sampler "a sampler" 'uniform "a uniform"
         'image "an image" 'buffer "a buffer" 'target "a target" 'material "a material"))
 
 ;; ---------------------------------------------------------------------------------------------
@@ -142,6 +143,14 @@
         (arity! 1 1 args op where)
         (require-type (recur (first args)) numeric-scalar? (e-loc (first args)) (format "~a converts a number" op))
         (scalar-t op)]
+       [(count)
+        (arity! 1 1 args op where)
+        (match (first args)
+          [(e-ref name ref-where)
+           (match (hash-ref env name #f)
+             [(entry 'data _ _) (scalar-t 'uint)]
+             [_ (zgal-error 'type-mismatch ref-where "(count input) takes a data input, and ~a isn't one" name)])]
+          [other (zgal-error 'malformed (e-loc other) "(count input) takes a data input's name")])]
        [(width height)
         (arity! 1 1 args op where)
         (match (first args)
@@ -308,7 +317,7 @@
          (zgal-error 'type-not-allowed (second args) "a parameter is a bool, int, uint or float, not ~a" (type-name t)))
        (declare! (g-parameter (item-name) t (stx->loc stx)) stx)]
       ['input
-       (args! 2 "(input name (per-frame type)), (input name meshes), (input name cpu) or (input name extern)")
+       (args! 2 "(input name (per-frame type)), (input name (data type)), (input name meshes), (input name cpu) or (input name extern)")
        (check-known-options options '() form)
        (define kind-stx (second args))
        (define item
@@ -323,7 +332,9 @@
                (when (array-t? t)
                  (zgal-error 'type-not-allowed t-stx "a per-frame input isn't an array; use a struct holding one"))
                (g-input (item-name) 'per-frame t (stx->loc stx))]
-              [_ (zgal-error 'malformed kind-stx "an input is (per-frame type), meshes, cpu or extern, not ~a" (show kind-stx))])]))
+              [(list k t-stx) #:when (eq? (syntax-e k) 'data)
+               (g-input (item-name) 'data (buffer-element-type t-stx "a data input") (stx->loc stx))]
+              [_ (zgal-error 'malformed kind-stx "an input is (per-frame type), (data type), meshes, cpu or extern, not ~a" (show kind-stx))])]))
        (declare! item stx)]
       ['import-image
        (args! 1 "(import-image name #:resting state)")
@@ -335,6 +346,11 @@
        (args! 2 "(import-buffer name type)")
        (check-known-options options '() form)
        (declare! (g-import-buffer (item-name) (buffer-element-type (second args) form) (stx->loc stx)) stx)]
+      ['upload
+       (args! 2 "(upload name data-input)")
+       (check-known-options options '() form)
+       (define source (lookup (second args) '(data) "a data input"))
+       (declare! (g-upload (item-name) source (entry-type (hash-ref env source)) (stx->loc stx)) stx)]
       ['constant
        (args! 2 "(constant name expression)")
        (check-known-options options '() form)
@@ -399,7 +415,7 @@
        (unless (>= (length args) 2)
          (zgal-error 'malformed stx "expected (material name Material (binding resource) ... #:option value ...)"))
        (declare! (parse-material-instance stx args options) stx)]
-      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-buffer, constant, sampler, uniform, image, buffer, target, material and nodes (dispatch, draw-meshes, draw, readback, cpu, copy, extern)"
+      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-buffer, upload, constant, sampler, uniform, image, buffer, target, material and nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern)"
                      name head)]))
 
   ;; The type of a buffer's elements
@@ -573,8 +589,8 @@
       (case (binding-kind b)
         [(texture storage-image) '(image import)]
         [(sampler) '(sampler)]
-        [(buffer) '(uniform buffer import-buffer)]
-        [(buffer-array) '(buffer import-buffer)]))
+        [(buffer) '(uniform buffer import-buffer upload)]
+        [(buffer-array) '(buffer import-buffer upload)]))
     (define what
       (case (binding-kind b)
         [(texture storage-image) "an image"]
@@ -606,7 +622,8 @@
     (check-known-options options
                          (case head
                            [(cpu) '(#:when #:enabled #:reads #:writes)]
-                           [(copy) '(#:when #:enabled #:count #:source-offset #:destination-offset)]
+                           [(copy) '(#:when #:enabled #:count #:source-offset #:destination-offset #:extent)]
+                           [(clear) '(#:when #:enabled #:value)]
                            ;; C++ adds and enables the nodes
                            [(extern) '(#:when)]
                            [else '(#:when #:enabled)])
@@ -668,30 +685,59 @@
                      m-name (material-name m)))
        (node 'draw #:target target #:material m-name #:count (build-time (fourth args) (scalar-t 'uint) "a vertex count"))]
       ['readback
-       (shape 2 "(readback name image)")
-       (node 'readback #:subject (lookup (second args) '(image import) "an image"))]
+       (shape 2 "(readback name image-or-buffer)")
+       (node 'readback #:subject (lookup (second args) '(image import buffer import-buffer upload) "an image or buffer"))]
+      ['clear
+       (shape 2 "(clear name buffer #:value v)")
+       (define target (lookup (second args) '(buffer import-buffer upload) "a buffer"))
+       (define value (hash-ref options '#:value #f))
+       (node 'clear #:writes (list target)
+             #:count (if value (build-time value (scalar-t 'uint) "a clear's value") (e-literal 0 (stx->loc stx))))]
       ['cpu
        (shape 2 "(cpu name input #:reads (buffer ...) #:writes (buffer ...))")
        (node 'cpu #:subject (lookup (second args) '(cpu) "a cpu input")
              #:reads (host-buffers '#:reads) #:writes (host-buffers '#:writes))]
       ['copy
        (shape 3 "(copy name source destination #:count n #:source-offset n #:destination-offset n)")
-       (define source (lookup (second args) '(buffer import-buffer) "a buffer"))
-       (define destination (lookup (third args) '(buffer import-buffer) "a buffer"))
+       (define source (lookup (second args) '(buffer import-buffer upload) "a buffer"))
+       (define destination (lookup (third args) '(buffer import-buffer upload image import) "a buffer or image"))
        (when (equal? source destination)
          (zgal-error 'bad-copy (third args) "copy ~a copies ~a to itself; copy between two buffers" node-name source))
-       (define source-type (entry-type (hash-ref env source)))
-       (define destination-type (entry-type (hash-ref env destination)))
-       (unless (equal? source-type destination-type)
-         (zgal-error 'bad-copy (third args) "copy ~a copies elements, but ~a holds ~a and ~a holds ~a"
-                     node-name source (type-name source-type) destination (type-name destination-type)))
+       (define to-image? (memq (entry-kind (hash-ref env destination)) '(image import)))
+       (cond
+         [to-image?
+          ;; The buffer holds texels, tightly packed: a region is an offset and an extent
+          (when (hash-ref options '#:count #f)
+            (zgal-error 'bad-copy (hash-ref options '#:count) "copy ~a copies into an image, whose region is an #:extent (width height), not a #:count" node-name))]
+         [else
+          (when (hash-ref options '#:extent #f)
+            (zgal-error 'bad-copy (hash-ref options '#:extent) "copy ~a copies between buffers, which take a #:count of elements, not an #:extent" node-name))
+          (define source-type (entry-type (hash-ref env source)))
+          (define destination-type (entry-type (hash-ref env destination)))
+          (unless (equal? source-type destination-type)
+            (zgal-error 'bad-copy (third args) "copy ~a copies elements, but ~a holds ~a and ~a holds ~a"
+                        node-name source (type-name source-type) destination (type-name destination-type)))])
        (define (elements key what)
          (define stx (hash-ref options key #f))
          (and stx (build-time stx (scalar-t 'uint) what)))
-       (node 'copy #:reads (list source) #:writes (list destination)
-             #:count (elements '#:count "a copy's count")
-             #:offsets (cons (or (elements '#:source-offset "a copy's source offset") (e-literal 0 (stx->loc stx)))
-                             (or (elements '#:destination-offset "a copy's destination offset") (e-literal 0 (stx->loc stx)))))]
+       ;; (x y) build-time uint expressions, or #f
+       (define (texels key what)
+         (define stx (hash-ref options key #f))
+         (and stx
+              (match (syntax->list stx)
+                [(list x y) (list (build-time x (scalar-t 'uint) what) (build-time y (scalar-t 'uint) what))]
+                [_ (zgal-error 'bad-copy stx "copy ~a's ~a is (x y), in texels" node-name key)])))
+       (define zero (e-literal 0 (stx->loc stx)))
+       (define source-offset (or (elements '#:source-offset "a copy's source offset") zero))
+       (if to-image?
+           ;; count: the region's (width height), or #f for the rest of the image
+           (node 'copy #:reads (list source) #:writes (list destination)
+                 #:count (texels '#:extent "a copy's extent")
+                 #:offsets (cons source-offset (or (texels '#:destination-offset "a copy's destination offset") (list zero zero))))
+           (node 'copy #:reads (list source) #:writes (list destination)
+                 #:count (elements '#:count "a copy's count")
+                 #:offsets (cons source-offset
+                                 (or (elements '#:destination-offset "a copy's destination offset") zero))))]
       ['extern
        (shape 2 "(extern name input)")
        (node 'extern #:subject (lookup (second args) '(extern) "an extern input"))]))
@@ -699,7 +745,7 @@
   (define-values (graph-items nodes)
     (for/fold ([items '()] [nodes '()] #:result (values (reverse items) (reverse nodes)))
               ([item-stx (in-list (cddr items))])
-      (if (memq (head-symbol item-stx) '(dispatch draw-meshes draw readback cpu copy extern))
+      (if (memq (head-symbol item-stx) '(dispatch draw-meshes draw readback cpu copy clear extern))
           (values items (cons (parse-node item-stx) nodes))
           (values (cons (parse-item item-stx) items) nodes))))
 

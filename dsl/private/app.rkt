@@ -36,8 +36,9 @@
                 (vector-t 'float 2) #f)))
 
 ;; stx: the (app Name clause ...) form. structs, functions, constants: the file's, by name (hashes).
-;; graphs: the file's graphs so far, by name.
-(define (parse-app stx parse-type top-level structs functions constants graphs)
+;; cpu-functions: the names of those compiled to C++ (a set). graphs: the file's graphs so far, by
+;; name.
+(define (parse-app stx parse-type top-level structs functions constants cpu-functions graphs)
   (define items (syntax->list stx))
   (unless (and items (>= (length items) 2))
     (zgal-error 'malformed stx "expected (app Name clause ...)"))
@@ -49,8 +50,8 @@
   (define clauses (cddr items))
   (define (clauses-of key) (filter (λ (c) (eq? (head-symbol c) key)) clauses))
   (for ([c (in-list clauses)])
-    (unless (memq (head-symbol c) '(parameter state on run))
-      (zgal-error 'unknown-clause c "an app takes parameter, state, on and run clauses, not ~a" (show c))))
+    (unless (memq (head-symbol c) '(parameter extern state on run))
+      (zgal-error 'unknown-clause c "an app takes parameter, extern, state, on and run clauses, not ~a" (show c))))
   (for ([key (in-list '(state run))])
     (when (> (length (clauses-of key)) 1)
       (zgal-error 'duplicate-clause (second (clauses-of key)) "app ~a has two (~a ...) clauses" name key)))
@@ -68,10 +69,38 @@
     (for/fold ([h (for/hash ([g (in-list host-values)]) (values (global-name g) g))])
               ([p (in-list parameters)])
       (hash-set h (field-name p) (global 'host (field-name p) (format "inputs_.~a" (field-name p)) (field-type p) p))))
+  ;; Functions C++ gives, which bodies call like the file's
+  (define externs
+    (for/list ([c (in-list (clauses-of 'extern))])
+      (match (syntax->list c)
+        [(list _ signature colon result) #:when (and (syntax->list signature) (eq? (syntax-e colon) ':))
+         (match-define (cons n params) (syntax->list signature))
+         (define f-name (parse-name n "an extern function's name"))
+         (names f-name n)
+         (when (hash-ref functions f-name #f)
+           (zgal-error 'duplicate-name n "~a is already a function of the file" f-name))
+         (define param-names (make-namespace (format "as a parameter of ~a" f-name)))
+         (function-decl f-name
+                        (for/list ([p (in-list params)])
+                          (match (syntax->list p)
+                            [(list pn colon2 t) #:when (eq? (syntax-e colon2) ':)
+                             (define p-name (parse-name pn "a parameter's name"))
+                             (param-names p-name pn)
+                             (cons p-name (parse-type t))]
+                            [_ (zgal-error 'malformed p "expected a parameter [name : type]")]))
+                        (if (eq? (syntax-e result) 'void) (void-t) (parse-type result))
+                        #f #t '() (stx->loc c))]
+        [_ (zgal-error 'malformed c "expected (extern (name [parameter : type] ...) : result-type)")])))
+  (define app-functions
+    (let ([h (hash-copy functions)])
+      (for ([f (in-list externs)]) (hash-set! h (function-decl-name f) f))
+      h))
+
   ;; One context for the app's bodies, so their locals' spellings are unique in the class. They run
-  ;; on the CPU, and can only call functions that compile to C++: the others take textures, samplers
-  ;; or images, which apps don't have.
-  (define ctx (make-context structs functions constants globals 'app))
+  ;; on the CPU, so they only call functions that compile to C++ (and their externs).
+  (define ctx (make-context structs app-functions constants globals 'app))
+  (define cpu-callable (for/fold ([s (list->set (set->list cpu-functions))]) ([f (in-list externs)]) (set-add s (function-decl-name f))))
+  (define (cpu-only e) (check-cpu-only e cpu-callable) e)
 
   ;; The state: fields and their initial values, computed from the parameters
   (define-values (state initial)
@@ -87,7 +116,7 @@
             (field-names f-name n)
             (define type (parse-type t))
             (values (field f-name type (stx->loc f))
-                    (coerce (check v ctx (hash)) type v (format "field ~a's initial value" f-name)))]
+                    (cpu-only (coerce (check v ctx (hash)) type v (format "field ~a's initial value" f-name))))]
            [_ (zgal-error 'malformed f "expected a state field (name type initial-value)")]))]))
   (define state-type (struct-t state))
   (define state-spelling (spell! ctx "state"))
@@ -119,15 +148,15 @@
                (t-begin (list body (hash-ref locals "state")) state-type (stx->loc c))
                (coerce body state-type c "a handler's result (the next state)")))
          (handler (struct-copy event e [binding (and (event-binding e) (t-local-name (hash-ref locals (event-binding e))))])
-                  next (stx->loc c))]
+                  (cpu-only next) (stx->loc c))]
         [_ (zgal-error 'malformed c "expected (on event body ...+)")])))
 
   ;; The graph it runs
   (define run
     (match (clauses-of 'run)
       ['() #f]
-      [(list c) (parse-run c ctx state-locals graphs names)]))
-  (app name parameters state initial handlers run (stx->loc stx)))
+      [(list c) (parse-run c ctx state-locals graphs names cpu-only)]))
+  (app name parameters externs state initial handlers run (stx->loc stx)))
 
 (define (parse-event stx claim!)
   (define parts (syntax->list stx))
@@ -167,7 +196,7 @@
         (event kind '() #f (binding-name n) (stx->loc stx))]
        [_ (zgal-error 'malformed stx "expected (~a name), binding the event's value" kind)])]))
 
-(define (parse-run stx ctx state-locals graphs names)
+(define (parse-run stx ctx state-locals graphs names cpu-only)
   (define parts (syntax->list stx))
   (unless (>= (length parts) 2)
     (zgal-error 'malformed stx "expected (run Graph (input expression) ... #:enabled ((node expression) ...))"))
@@ -204,8 +233,8 @@
              [(entry kind _ _)
               (zgal-error 'type-mismatch n "~a is ~a, which C++ gives (through the app's inputs); apps compute parameters and per-frame inputs"
                           input (case kind [(meshes) "a meshes input"] [(cpu) "a cpu input"] [(extern) "an extern input"]
-                                  [(import import-buffer) "an imported resource"] [else "not an input"]))]))
-         (cons input e)]
+                                  [(import import-buffer) "an imported resource"] [(data) "a data input"] [else "not an input"]))]))
+         (cons input (cpu-only e))]
         [_ (zgal-error 'malformed b "expected (input expression)")])))
   ;; What the app doesn't compute, C++ gives: they're the app's inputs too
   (for ([item (in-list (graph-items g))]
@@ -222,7 +251,7 @@
                               (zgal-error 'unknown-name n "graph ~a has no node ~a" (graph-name g) node-name)))
              (when (eq? (g-node-kind node) 'extern)
                (zgal-error 'type-mismatch n "~a is an extern node, whose nodes C++ adds and enables" node-name))
-             (cons node-name (coerce (check v ctx (state-locals p)) (scalar-t 'bool) v (format "whether ~a is enabled" node-name)))]
+             (cons node-name (cpu-only (coerce (check v ctx (state-locals p)) (scalar-t 'bool) v (format "whether ~a is enabled" node-name))))]
             [_ (zgal-error 'malformed p "expected (node expression)")]))
         '()))
   (graph-run g bindings enables (stx->loc stx)))

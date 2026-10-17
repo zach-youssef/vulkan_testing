@@ -31,8 +31,8 @@
 #include "shaders/ShaderLibrary.h"
 
 #include "Meshes.h"
-// Generated from scene.zgal: SceneUniforms, SceneVertex, the Shadow, Lit and Tonemap materials,
-// SceneGraph and SceneApp
+// Generated from scene.zgal, in namespace scene: SceneUniforms, SceneVertex, the Shadow, Lit and
+// Tonemap materials, SceneGraph and SceneApp
 #include "scene.zgal.h"
 #include "zgal/Window.h"
 
@@ -165,7 +165,7 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
     if (headless) {
         graph.setSurfaceExtent(options.size);
     }
-    TRY_ASSIGN(auto scene, SceneApp::create(ctx, graph, SceneApp::Inputs{
+    TRY_ASSIGN(auto sceneApp, scene::SceneApp::create(ctx, graph, scene::SceneApp::Inputs{
         .timestep = options.frames ? zgal::Timestep::fixed(1.0f / 60.0f) : zgal::Timestep::realTime(0.25f),
         .headless = headless,
         .capture = options.capture.has_value(),
@@ -185,10 +185,10 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
                   << std::endl;
     }
     if (!headless && !options.frames) {
-        TRY(zgal::run(app, *scene));
+        TRY(zgal::run(app, *sceneApp));
     } else {
         if (!headless) {
-            zgal::connect(app, *scene);
+            zgal::connect(app, *sceneApp);
             app.addSurfaceResizeListener([](VkExtent2D extent) {
                 std::cout << "Surface resized to " << extent.width << "x" << extent.height << std::endl;
             });
@@ -198,9 +198,9 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
         const uint64_t frames = *options.frames;
         const VkExtent2D smaller{options.size.width * 3 / 4, options.size.height * 3 / 4};
         auto setShadows = [&](bool enabled) {
-            SceneApp::State state = scene->state();
+            scene::SceneApp::State state = sceneApp->state();
             state.shadows = enabled;
-            scene->setState(state);
+            sceneApp->setState(state);
         };
         for (uint64_t frame = 0; frame < frames; ++frame) {
             if (frame == frames / 4) {
@@ -215,17 +215,17 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
             } else if (frame == 3 * frames / 4 && headless) {
                 graph.setSurfaceExtent(options.size);
             }
-            if (!app.pollEvents() || scene->quitRequested()) {
+            if (!app.pollEvents() || sceneApp->quitRequested()) {
                 break;
             }
-            TRY(zgal::drawFrame(app, *scene));
+            TRY(zgal::drawFrame(app, *sceneApp));
         }
     }
     // Everything below the app is destroyed first, so the GPU must be done with it
     VK_TRY(ctx.waitIdleAll(), "Failed to wait for the device");
 
-    if (scene->ids().nodes.readback) {
-        TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(*scene->ids().nodes.readback).pixels());
+    if (sceneApp->ids().nodes.readback) {
+        TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(*sceneApp->ids().nodes.readback).pixels());
         return std::optional(std::move(pixels));
     }
     return std::nullopt;

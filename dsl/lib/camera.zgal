@@ -1,0 +1,35 @@
+;; ZGAL's standard library: cameras. View and projection matrices for Vulkan's conventions, computed
+;; exactly as GLM computes them (right handed, with GLM_FORCE_DEPTH_ZERO_TO_ONE): clip space depth
+;; is [0, 1], and projections flip y, as Vulkan's clip space y points down. They compile to C++ too,
+;; so apps compute the matrices their shaders use. (import camera)
+
+;; A view looking from eye towards center, with up as the screen's up
+(define (lookAt [eye : vec3] [center : vec3] [up : vec3]) : mat4
+  (let* ([f (normalize (- center eye))]
+         [s (normalize (cross f up))]
+         [u (cross s f)])
+    (mat4 (vec4 s.x u.x (- f.x) 0.0)
+          (vec4 s.y u.y (- f.y) 0.0)
+          (vec4 s.z u.z (- f.z) 0.0)
+          (vec4 (- (dot s eye)) (- (dot u eye)) (dot f eye) 1.0))))
+
+;; A perspective projection: a vertical field of view (radians), width / height, and the near and
+;; far planes' distances
+(define (perspective [fovy : float] [aspect : float] [near : float] [far : float]) : mat4
+  (let* ([tanHalfFovy (tan (/ fovy 2.0))])
+    (mat4 (vec4 (/ 1.0 (* aspect tanHalfFovy)) 0.0 0.0 0.0)
+          (vec4 0.0 (- (/ 1.0 tanHalfFovy)) 0.0 0.0)
+          (vec4 0.0 0.0 (/ far (- near far)) -1.0)
+          (vec4 0.0 0.0 (/ (- (* far near)) (- far near)) 0.0))))
+
+;; An orthographic projection of a box in view space
+(define (ortho [left : float] [right : float] [bottom : float] [top : float] [near : float] [far : float]) : mat4
+  (mat4 (vec4 (/ 2.0 (- right left)) 0.0 0.0 0.0)
+        (vec4 0.0 (- (/ 2.0 (- top bottom))) 0.0 0.0)
+        (vec4 0.0 0.0 (/ -1.0 (- far near)) 0.0)
+        (vec4 (/ (- (+ right left)) (- right left)) (/ (- (+ top bottom)) (- top bottom)) (/ (- near) (- far near)) 1.0)))
+
+;; A position orbiting target at a yaw (radians around +Y, from +Z), a pitch (radians above the
+;; horizon) and a radius
+(define (orbit [target : vec3] [yaw : float] [pitch : float] [radius : float]) : vec3
+  (+ target (* radius (vec3 (* (cos pitch) (sin yaw)) (sin pitch) (* (cos pitch) (cos yaw))))))
