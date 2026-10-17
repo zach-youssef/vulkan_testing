@@ -16,6 +16,8 @@
          std430-stride
          std430-problem
          interface-problem
+         push-problem
+         small-integer-kinds-in
          cpp-size
          (struct-out placed)
          place-fields
@@ -25,9 +27,12 @@
 (define (round-up n alignment)
   (* alignment (quotient (+ n alignment -1) alignment)))
 
+(define (scalar-size k)
+  (if (small-integer-kind? k) (quotient (small-integer-bits k) 8) 4))
+
 (define (std430-align t)
   (match t
-    [(scalar-t _) 4]
+    [(scalar-t k) (scalar-size k)]
     [(vector-t _ 2) 8]
     [(vector-t _ _) 16]
     [(matrix-t n) (std430-align (vector-t 'float n))]   ; an array of columns
@@ -36,7 +41,7 @@
 
 (define (std430-size t)
   (match t
-    [(scalar-t _) 4]
+    [(scalar-t k) (scalar-size k)]
     [(vector-t _ n) (* 4 n)]
     [(matrix-t n) (* n (std430-stride (vector-t 'float n)))]
     [(array-t e n) (* n (std430-stride e))]
@@ -46,8 +51,9 @@
 (define (std430-stride t)
   (round-up (std430-size t) (std430-align t)))
 
+;; A struct's alignment is its largest member's: std430, unlike std140, doesn't round it up to 16
 (define (struct-align d)
-  (apply max 4 (for/list ([f (in-list (struct-decl-fields d))]) (std430-align (field-type f)))))
+  (apply max (for/list ([f (in-list (struct-decl-fields d))]) (std430-align (field-type f)))))
 
 ;; A struct's size is its last member's end, rounded up to the struct's alignment
 (define struct-sizes (make-weak-hasheq))
@@ -60,7 +66,7 @@
 ;; The size of the C++ type the generated code uses for t
 (define (cpp-size t)
   (match t
-    [(scalar-t _) 4]
+    [(scalar-t k) (scalar-size k)]
     [(vector-t _ n) (* 4 n)]
     [(matrix-t n) (* 4 n n)]
     [(array-t e n) (* n (cpp-size e))]
@@ -96,3 +102,21 @@
   (match t
     [(or (scalar-t (or 'float 'int 'uint)) (vector-t (or 'float 'int 'uint) _)) #f]
     [_ (format "~a isn't a scalar or vector of float, int or uint" (type-name t))]))
+
+;; The small integer kinds in t, e.g. '(uint8), looking into arrays and structs
+(define (small-integer-kinds-in t)
+  (remove-duplicates
+   (let walk ([t t])
+     (match t
+       [(scalar-t k) (if (small-integer-kind? k) (list k) '())]
+       [(array-t e _) (walk e)]
+       [(runtime-array-t e) (walk e)]
+       [(struct-t d) (append-map (λ (f) (walk (field-type f))) (struct-decl-fields d))]
+       [_ '()]))))
+
+;; Why t can't be a push constant, or #f if it can
+(define (push-problem t)
+  (or (std430-problem t)
+      (and (pair? (small-integer-kinds-in t))
+           (format "8- and 16-bit integers can't be push constants (devices would need storagePushConstant8 and 16); use ~a"
+                   (if (memq (car (small-integer-kinds-in t)) '(int8 int16)) "int" "uint")))))

@@ -14,7 +14,8 @@
   (string-append "\"" (regexp-replace* #px"[\\\\\"]" s "\\\\&") "\""))
 
 (define (scalar-cpp kind)
-  (case kind [(float) "float"] [(int) "int32_t"] [(uint) "uint32_t"] [(bool) "uint32_t"]))
+  (case kind [(float) "float"] [(int) "int32_t"] [(uint) "uint32_t"] [(bool) "uint32_t"]
+    [(uint8) "uint8_t"] [(int8) "int8_t"] [(uint16) "uint16_t"] [(int16) "int16_t"]))
 
 (define (cpp-type t)
   (match t

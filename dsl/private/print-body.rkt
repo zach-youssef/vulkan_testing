@@ -25,6 +25,7 @@
     [((array-t e n) 'cpp) (format "std::array<~a, ~a>" (spell-type e dialect) n)]
     [((void-t) _) "void"]
     [((opaque-t k) 'glsl) (symbol->string k)]
+    [((scalar-t k) 'glsl) #:when (small-integer-kind? k) (format "~a_t" k)]
     [((scalar-t 'bool) 'cpp) "bool"]
     [((vector-t 'bool n) 'cpp) (format "glm::bvec~a" n)]
     [(_ 'cpp) (cpp-type t)]
@@ -38,6 +39,7 @@
      (define decimal (if (regexp-match? #rx"[.e]" text) text (string-append text ".0")))
      (if (eq? dialect 'cpp) (string-append decimal "f") decimal)]
     [(scalar-t 'uint) (format "~au" v)]
+    [(scalar-t k) #:when (small-integer-kind? k) (format "~a(~a)" (spell-type t dialect) v)]
     [_ (format "~a" v)]))
 
 (define glsl-operators
@@ -107,7 +109,8 @@
                  (string-join (for/list ([c (in-string comps)]) (format "~a.~a" (operand b) c)) ", ")))]
     [(t-index b i _ _) (format "~a[~a]" (operand b) (p i))]
     [(t-if c a b _ _) (format "~a ? ~a : ~a" (operand c) (operand a) (operand b))]
-    [(t-store i texel v _) (format "imageStore(~a, ~a, ~a)" (p i) (p texel) (p v))]))
+    [(t-store i texel v _) (format "imageStore(~a, ~a, ~a)" (p i) (p texel) (p v))]
+    [(t-barrier _) "barrier()"]))
 
 (define (declaration name t dialect)
   (match* (t dialect)

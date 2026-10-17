@@ -118,6 +118,37 @@
        (when (> index 0)
          (write! (at sums 0) 0.0))))))
 
+;; 8- and 16-bit integers (read widened, written narrowed), workgroup shared memory and barriers
+(struct Packed
+  (flags uint8)
+  (level int16)                 ; Aligned to 2 bytes
+  (bytes (array uint8 3))
+  (offset int8)
+  (wide uint))                  ; Aligned to 4 bytes, after byte padding
+
+(compute-material Reduce
+  (workgroup 64)
+  (bindings
+   (packed (buffer-array Packed))
+   (total (buffer uint)))
+  (shared
+   (partial (array uint 64))
+   (marks (array uint8 64)))
+  (compute
+   (let* ([x localInvocationId.x]
+          [p (at packed globalInvocationId.x)])
+     (write! (at partial x) (+ p.flags (at p.bytes 2) (uint (+ p.level p.offset)) p.wide))
+     (write! (at marks x) (uint8 (bitand x 255)))
+     (write! (at packed globalInvocationId.x) (with p #:flags (uint8 1) #:level -3))
+     (barrier!)
+     (for ([level (range 0 6)])
+       (let* ([stride (shr 32 (uint level))])
+         (when (< x stride)
+           (write! (at partial x) (+ (at partial x) (at partial (+ x stride)))))
+         (barrier!)))
+     (when (= x 0)
+       (write! total (+ (at partial 0) (at marks 0)))))))
+
 ;; Every graph item, node and option
 (graph Everything
   (parameter enabled bool)
@@ -155,8 +186,12 @@
   (material accumulate Accumulate (lights lightBuffer) (sums sumBuffer) (target maskImage)
             #:invocations ((width colorImage) (max (height maskImage) size)))
   (material plain Plain)
+  (buffer packedCopy Packed 64 #:frames shared)
+  (buffer totalBuffer uint 1 #:frames shared)
+  (material reduce Reduce (packed packedCopy) (total totalBuffer) #:invocations (64))
   (draw-meshes drawSurface scene meshes surface #:enabled enabled)
   (dispatch accumulate accumulate #:when (>= count 2))
   (draw drawPlain screen plain (* 3 size))
   (readback readMask maskImage)
-  (cpu logFrame logger))
+  (cpu logFrame logger)
+  (dispatch reduce reduce))

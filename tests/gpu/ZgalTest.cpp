@@ -10,6 +10,7 @@
 #include "interfaces.zgal.h"
 
 #include <cstring>
+#include <mutex>
 #include <numeric>
 
 namespace {
@@ -326,4 +327,135 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL functions compute the same on the CPU as on the
             }
         }
     }).value();
+}
+
+namespace {
+
+// A context with the device features ZGAL materials ask for, and validation, recording errors
+struct FeatureContext {
+    explicit FeatureContext(const DeviceFeatures& features) {
+        VulkanContextConfig config;
+        config.applicationName = "ZGAL feature tests";
+        config.shaderSearchPaths = {TEST_SHADER_DIR};
+        config.enableValidation = true;
+        config.enableSynchronizationValidation = true;
+        config.features = features;
+        config.onValidationMessage = [this](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
+            if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+                std::lock_guard<std::mutex> lock(mutex);
+                errors.emplace_back(message);
+            }
+        };
+        context = VulkanContext::create(std::move(config)).value();
+    }
+
+    std::mutex mutex;
+    std::vector<std::string> errors;
+    std::unique_ptr<VulkanContext> context;
+};
+
+// A mapped storage buffer
+template<typename T>
+Result<Handle<Buffer<T>>> hostBuffer(VulkanContext& ctx, size_t count) {
+    return Buffer<T>::create(ctx, count, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+}
+
+template<typename T>
+std::vector<T> contents(const Handle<Buffer<T>>& buffer, size_t count) {
+    std::vector<T> values(count);
+    buffer->mapAndExecute(0, count * sizeof(T), [&values](void* data) { memcpy(values.data(), data, values.size() * sizeof(T)); })
+        .value();
+    return values;
+}
+
+class Reducer : public Reduce {
+public:
+    Reducer(VulkanContext& context, const Shaders& shaders, Bindings bindings, uint32_t count)
+    : Reduce(context, shaders, std::move(bindings)), count_(count) {}
+
+    void update(uint32_t, VkExtent2D) override {}
+
+    glm::vec3 getDispatchDimensions() override {
+        return workgroupsFor(count_);
+    }
+
+private:
+    uint32_t count_;
+};
+
+} // namespace
+
+TEST_CASE("ZGAL's 8- and 16-bit integers and shared memory") {
+    const DeviceFeatures features = Reduce::requiredFeatures();
+    CHECK(features.vulkan12.shaderInt8);
+    CHECK(features.vulkan12.storageBuffer8BitAccess);
+    CHECK(features.core.features.shaderInt16);
+    CHECK(features.vulkan11.storageBuffer16BitAccess);
+    FeatureContext feature(features);
+    auto& ctx = *feature.context;
+
+    constexpr uint32_t kCount = 256;
+    constexpr uint32_t kGroups = kCount / 64;
+    std::vector<Bytes> elements(kCount);
+    for (uint32_t i = 0; i < kCount; ++i) {
+        elements[i] = Bytes{.small = uint8_t(250 + i % 7),   // Up to 256: the repacked value wraps
+                            .delta = int16_t(int(i % 200) - 100),
+                            .many = {uint8_t(i), uint8_t(255 - i % 256), 7},
+                            .tiny = int8_t(int(i % 100) - 50),
+                            .wide = 100000 + i,
+                            .level = uint16_t(65000 + i)};   // Wraps when repacked, from 65535
+    }
+    auto packed = hostBuffer<Bytes>(ctx, kCount).value();
+    auto sums = hostBuffer<uint32_t>(ctx, kGroups).value();
+    packed->mapAndExecute(0, kCount * sizeof(Bytes), [&](void* data) { memcpy(data, elements.data(), kCount * sizeof(Bytes)); })
+        .value();
+    {
+        RenderGraph graph(ctx);
+        graph.importBuffer<Bytes>("packed", packed);
+        graph.importBuffer<uint32_t>("sums", sums);
+        auto shaders = Reduce::loadShaders(ctx).value();
+        auto& heap = ctx.descriptors();
+        graph.add<DispatchNode>("reduce", ctx.resources().create<Reducer>(
+            ctx, shaders, Reduce::Bindings{.packed = heap.storageBuffer(packed), .sums = heap.storageBuffer(sums)}, kCount));
+        graph.execute().value();
+        ctx.waitIdleAll();
+    }
+
+    const auto totals = contents(sums, kGroups);
+    for (uint32_t g = 0; g < kGroups; ++g) {
+        uint32_t expected = 0;
+        for (uint32_t i = g * 64; i < (g + 1) * 64; ++i) {
+            const Bytes& b = elements[i];
+            expected += b.small + b.many[0] + b.many[1] + b.many[2] + b.wide + b.level + uint32_t(b.delta + b.tiny + 1000);
+        }
+        CAPTURE(g);
+        CHECK(totals[g] == expected);
+    }
+    const auto repacked = contents(packed, kCount);
+    for (uint32_t i = 0; i < kCount; ++i) {
+        CAPTURE(i);
+        CHECK(repacked[i].small == uint8_t(elements[i].small + 1));
+        CHECK(repacked[i].delta == -elements[i].delta);
+        CHECK(repacked[i].tiny == -elements[i].tiny);
+        CHECK(repacked[i].level == uint16_t(elements[i].level + 1));
+        CHECK(repacked[i].wide == elements[i].wide);
+        CHECK(std::memcmp(repacked[i].many, elements[i].many, 3) == 0);
+    }
+
+    packed.reset();
+    sums.reset();
+    std::lock_guard<std::mutex> lock(feature.mutex);
+    CHECK(feature.errors.empty());
+    for (const auto& error : feature.errors) {
+        MESSAGE(error);
+    }
+}
+
+TEST_CASE_FIXTURE(GpuTest, "A ZGAL material needing device features the context lacks is a contract violation") {
+    // The shared test context doesn't enable 8-bit integers
+    auto& ctx = context();
+    REQUIRE_FALSE(ctx.enabledFeatures().missing(Reduce::requiredFeatures()).empty());
+    CHECK_THROWS_WITH_AS((void)Reduce::loadShaders(ctx), doctest::Contains("Reduce needs device features the context doesn't enable"),
+                         ContractViolation);
 }

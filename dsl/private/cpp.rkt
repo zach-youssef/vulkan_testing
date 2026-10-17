@@ -10,6 +10,7 @@
          "layout.rkt"
          "cpp-common.rkt"
          "cpp-graph.rkt"
+         "features.rkt"
          "print-body.rkt"
          "parse.rkt"
          "writer.rkt")
@@ -68,17 +69,22 @@
   (define (line text #:at [where at]) (emit! w (string-append indent text) #:at where))
   (line (format "struct ~a {" name))
   (define padding-count 0)
-  (define (pad! bytes where)
+  ;; uint32_t padding where it's aligned (as it is unless a struct has 8- or 16-bit members),
+  ;; otherwise bytes
+  (define (pad! cursor bytes where)
     (when (> bytes 0)
-      (line (format "    uint32_t zgalPadding~a_[~a]{};" padding-count (quotient bytes 4)) #:at where)
+      (line (if (and (zero? (remainder cursor 4)) (zero? (remainder bytes 4)))
+                (format "    uint32_t zgalPadding~a_[~a]{};" padding-count (quotient bytes 4))
+                (format "    uint8_t zgalPadding~a_[~a]{};" padding-count bytes))
+            #:at where)
       (set! padding-count (add1 padding-count))))
   (define end
     (for/fold ([cursor base]) ([p (in-list placed-fields)])
       (define f (placed-field p))
-      (pad! (- (placed-offset p) cursor) (field-loc f))
+      (pad! cursor (- (placed-offset p) cursor) (field-loc f))
       (line (format "    ~a;" (cpp-declaration (field-type f) (field-name f))) #:at (field-loc f))
       (+ (placed-offset p) (std430-size (field-type f)))))
-  (pad! (- (+ base size) end) at)
+  (pad! end (- (+ base size) end) at)
   (line "};")
   (line (format "static_assert(sizeof(~a) == ~a, ~a);" qualified size
                 (cpp-string (format "~a must be ~a bytes, as in the shaders (std430). Is GLM_FORCE_DEFAULT_ALIGNED_GENTYPES defined?"
@@ -105,8 +111,16 @@
     (emit! w (format "    ~a;" (cpp-declaration (field-type a) (field-name a))) #:at (field-loc a)))
   (emit! w "};" #:at (vertex-format-loc f)))
 
+(define (feature-flags widths)
+  (append*
+   (for/list ([bits (in-list widths)])
+     (if (= bits 8)
+         '("vulkan12.shaderInt8" "vulkan12.storageBuffer8BitAccess")
+         '("core.features.shaderInt16" "vulkan11.storageBuffer16BitAccess")))))
+
 (define (emit-material! w prog m)
   (define name (material-name m))
+  (define widths (material-integer-widths m prog))
   (define graphics? (eq? (material-kind m) 'graphics))
   (define bindings (material-bindings m))
   (define push (material-push m))
@@ -166,12 +180,27 @@
   (gen "")
   (gen (format "    // Loads ~a from the context's shader library" (string-join (map shader-name shaders) " and ")))
   (gen "    static Result<Shaders> loadShaders(VulkanContext& context) {")
+  (unless (null? widths)
+    (gen "        requireFeatures(context);"))
   (for ([s (in-list shaders)] [member (in-list shader-members)])
     (emit! w (format "        TRY_ASSIGN(auto ~a, context.shaders().get(~a));" member (cpp-string (shader-name s)))
            #:at (shader-loc s)))
   (gen (format "        return Shaders(~a);"
                (string-join (for/list ([member (in-list shader-members)]) (format "std::move(~a)" member)) ", ")))
   (gen "    }")
+  (gen "")
+  (gen "    // The device features the shaders need beyond the wrapper's: add them to the context's")
+  (gen "    // (VulkanContextConfig::features, AppConfig::features) before creating it")
+  (cond
+    [(null? widths)
+     (gen "    static DeviceFeatures requiredFeatures() { return {}; }")]
+    [else
+     (gen "    static DeviceFeatures requiredFeatures() {")
+     (gen "        DeviceFeatures features;")
+     (for ([flag (in-list (feature-flags widths))])
+       (gen (format "        features.~a = VK_TRUE;" flag)))
+     (gen "        return features;")
+     (gen "    }")])
   (gen "")
 
   (cond
@@ -239,6 +268,20 @@
   (gen "    }")
   (gen "")
   (gen "private:")
+  (unless (null? widths)
+    (gen "    // The shaders can't be loaded without the features, so a context lacking them is a mistake")
+    (gen "    static void requireFeatures(VulkanContext& context) {")
+    (gen "        const auto missing = context.enabledFeatures().missing(requiredFeatures());")
+    (gen "        if (!missing.empty()) {")
+    (gen (format "            std::string message = ~a;" (cpp-string (format "~a needs device features the context doesn't enable:" name))))
+    (gen "            for (const auto& feature : missing) {")
+    (gen "                message += \" \" + feature;")
+    (gen "            }")
+    (gen (format "            contractViolation(message + ~a);"
+                 (cpp-string (format ". Add ~a::requiredFeatures() to the context's features." name))))
+    (gen "        }")
+    (gen "    }")
+    (gen ""))
   (unless (null? bindings)
     (gen "    static std::vector<MaterialBinding> materialBindings(Bindings bindings) {")
     (for ([b (in-list bindings)])

@@ -63,7 +63,7 @@
          "(struct Light (direction vec3) (direction vec3))")
    (kind 'unknown-type
          "Unknown type"
-         "Types are `float`, `int`, `uint`, `bool`, their vectors (`vec2`-`vec4`, `ivec2`-`ivec4`, `uvec2`-`uvec4`), `mat2`, `mat3`, `mat4`, `(array type length)` and structs declared earlier in the file. A struct must be declared before it's used."
+         "Types are `float`, `int`, `uint`, `bool`, the 8- and 16-bit integers `uint8`, `int8`, `uint16` and `int16`, the vectors (`vec2`-`vec4`, `ivec2`-`ivec4`, `uvec2`-`uvec4`), `mat2`, `mat3`, `mat4`, `(array type length)` and structs declared earlier in the file. A struct must be declared before it's used."
          "(struct Light (direction float3))")
    (kind 'unknown-name
          "A reference to something that isn't declared"
@@ -71,7 +71,7 @@
          "(vertex-format Vertex (position vec3))\n(graphics-material Flat\n  (shaders \"flat.vert\" \"flat.frag\")\n  (vertex-input Vertex normal)\n  (outputs (color vec4)))")
    (kind 'type-not-allowed
          "The type can't be used here"
-         "Buffers and push constants use the std430 layout, which C++ must match byte for byte: `bool` has no fixed size there (use `uint`), and `mat3` and arrays of 3-component vectors are padded differently by GLM (use `mat4` and 4-component vectors). Vertex attributes, varyings and outputs are scalars or vectors of `float`, `int` or `uint`. Buffer bindings hold a struct, scalar, vector or matrix, not an array (use `buffer-array`)."
+         "Buffers and push constants use the std430 layout, which C++ must match byte for byte: `bool` has no fixed size there (use `uint`), and `mat3` and arrays of 3-component vectors are padded differently by GLM (use `mat4` and 4-component vectors). 8- and 16-bit integers aren't push constants (use `uint` or `int`). Vertex attributes, varyings and outputs are scalars or vectors of `float`, `int` or `uint`. Buffer bindings hold a struct, scalar, vector or matrix, not an array (use `buffer-array`)."
          "(struct Light (enabled bool))")
    (kind 'bad-array-length
          "An array's length isn't a positive integer"
@@ -79,7 +79,7 @@
          "(struct Weights (values (array float 0)))")
    (kind 'unknown-clause
          "Unknown or misplaced material clause"
-         "Graphics materials take `shaders`, `vertex`, `fragment`, `vertex-input`, `bindings`, `push`, `varyings` and `outputs`; compute materials take `shaders`, `compute`, `workgroup`, `bindings` and `push`."
+         "Graphics materials take `shaders`, `vertex`, `fragment`, `vertex-input`, `bindings`, `push`, `varyings` and `outputs`; compute materials take `shaders`, `compute`, `workgroup`, `bindings`, `push` and `shared`."
          "(compute-material Blur\n  (shaders \"blur.comp\")\n  (workgroup 16 16)\n  (outputs (color vec4)))")
    (kind 'missing-clause
          "A required material clause is missing"
@@ -167,12 +167,16 @@
          "(compute-material Fill\n  (workgroup 64)\n  (bindings (unused (buffer float)))\n  (compute))")
    (kind 'bad-write
          "write! writes to something that isn't a buffer"
-         "`write!` writes a buffer binding's value, or a field or element of it, e.g. `(write! (at particles i) p)`. Locals are immutable: bind a new one with `let*` instead. Images are written with `store!`."
+         "`write!` writes a buffer binding's value or a shared variable, or a field or element of one, e.g. `(write! (at particles i) p)`. Locals are immutable: bind a new one with `let*` instead. Images are written with `store!`."
          "(compute-material Fill\n  (workgroup 64)\n  (bindings (result (buffer-array float)))\n  (compute\n   (let* ([x 1.0])\n     (write! x 2.0))))")
    (kind 'bad-results
          "A shader's results are missing, unknown or in the wrong place"
          "A vertex shader's body gives `(results #:position ... #:varying ...)`: its position and every varying. A fragment shader's gives `(results #:output ...)` with every output, or its one output's value. Compute shaders have no results."
          "(graphics-material Flat\n  (varyings (uv vec2))\n  (outputs (color vec4))\n  (vertex\n   (results #:position (vec4 0.0)))\n  (fragment\n   (vec4 1.0)))")
+   (kind 'bad-barrier
+         "A barrier! some invocations might not reach"
+         "`barrier!` waits for every invocation of the workgroup to reach it, so it's only in compute shaders, and every invocation must reach it or none: it can't be under a condition, or in a loop, that could differ between invocations. Conditions and ranges computed from literals, constants, push constants, `workgroupId` and `workgroupCount` are the same for the whole workgroup; move the barrier out of anything else, e.g. `(when (< x stride) (write! ...))` followed by `(barrier!)`."
+         "(compute-material Reduce\n  (workgroup 64)\n  (shared (partial (array float 64)))\n  (bindings (result (buffer float)))\n  (compute\n   (when (< localInvocationId.x 32)\n     (barrier!))\n   (write! result (at partial 0))))")
    (kind 'version-in-body
          "A shader body declares what ZGAL generates"
          "ZGAL writes the start of every shader: `#version`, the extensions it needs and `bindless.glsl`, then the material's interface. Bodies start with their own code, so remove the line."

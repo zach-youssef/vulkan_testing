@@ -135,3 +135,39 @@
    (let* ([i globalInvocationId.x])
      (when (< i count)
        (write! (at evaluated i) (evaluate i))))))
+
+;; 8- and 16-bit integers, with their std430 offsets (ZgalTest checks the GPU agrees)
+(struct Bytes
+  (small uint8)                 ; 0
+  (delta int16)                 ; 2
+  (many (array uint8 3))        ; 4
+  (tiny int8)                   ; 7
+  (wide uint)                   ; 8
+  (level uint16))               ; 12; 14 bytes, aligned to 4: 16
+
+;; Sums each workgroup's elements through shared memory (a reduction, with barriers), and repacks
+;; the elements: reading small integers widens them, and writing them narrows explicitly
+(compute-material Reduce
+  (workgroup 64)
+  (bindings
+   (packed (buffer-array Bytes))
+   (sums (buffer-array uint)))
+  (shared
+   (partial (array uint 64)))
+  (compute
+   (let* ([x localInvocationId.x]
+          [i globalInvocationId.x]
+          [b (at packed i)])
+     (write! (at partial x)
+             (+ b.small (at b.many 0) (at b.many 1) (at b.many 2) b.wide b.level (uint (+ b.delta b.tiny 1000))))
+     (write! (at packed i) (with b #:small (uint8 (+ b.small 1)) #:delta (int16 (- b.delta))
+                                 #:tiny (int8 (- b.tiny)) #:level (uint16 (+ b.level 1))))
+     (barrier!)
+     (for ([level (range 0 6)])
+       (let* ([stride (shr 32 (uint level))])
+         (when (< x stride)
+           (write! (at partial x) (+ (at partial x) (at partial (+ x stride)))))
+         (barrier!)))
+     (when (= x 0)
+       (write! (at sums workgroupId.x) (at partial 0))))))
+

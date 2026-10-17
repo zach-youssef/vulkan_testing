@@ -252,6 +252,11 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   `(results #:position ... #:varying ...)`; a fragment shader its output's value.
 - Storage bindings' accesses and graphics bindings' stages are inferred from the shaders, so the
   graph synchronizes what they actually do; don't declare them unless a shader is GLSL.
+- Compute materials can declare `(shared (name type) ...)` workgroup variables, written with
+  `write!` and synchronized with `(barrier!)`, which the compiler checks every invocation reaches.
+- `uint8`, `int8`, `uint16` and `int16` pack buffers and shared memory. Bodies read them widened to
+  `uint`/`int` and narrow explicitly to write them (`(uint8 x)`). A material using them needs device
+  features: add its (or its graph's) `requiredFeatures()` to the context's features.
 - Top-level `(define (f [x : vec3]) : vec3 ...)` functions and `(define name value)` constants are
   shared by the shaders, and those without textures, images or effects also compile to C++
   (`sunDirection` in the scene example), so the CPU computes the same thing.

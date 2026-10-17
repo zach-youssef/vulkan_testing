@@ -41,6 +41,7 @@
 (struct t-write (place value loc) #:transparent)              ; place: a global binding, field or index of one
 (struct t-results (fields loc) #:transparent)                 ; (cons output-name expression)
 (struct t-with (base fields type loc) #:transparent)          ; fields: (cons name expression)
+(struct t-barrier (loc) #:transparent)                        ; a compute shader's workgroup barrier
 
 ;; The type of a stage's results
 (struct results-t () #:transparent)
@@ -52,7 +53,7 @@
     [(t-field _ _ t _) t] [(t-swizzle _ _ t _) t] [(t-index _ _ t _) t] [(t-if _ _ _ t _) t]
     [(t-let _ _ t _) t] [(t-fold _ _ _ t _) t] [(t-for _ _ _) (void-t)] [(t-values _ t _) t]
     [(t-begin _ t _) t] [(t-store _ _ _ _) (void-t)] [(t-write _ _ _) (void-t)]
-    [(t-results _ _) (results-t)] [(t-with _ _ t _) t]))
+    [(t-results _ _) (results-t)] [(t-with _ _ t _) t] [(t-barrier _) (void-t)]))
 
 (define (texpr-loc e)
   (match e
@@ -60,12 +61,13 @@
     [(t-user-call _ _ _ l) l] [(t-texture _ _ _ l) l] [(t-op _ _ _ l) l] [(t-construct _ _ l) l]
     [(t-field _ _ _ l) l] [(t-swizzle _ _ _ l) l] [(t-index _ _ _ l) l] [(t-if _ _ _ _ l) l]
     [(t-let _ _ _ l) l] [(t-fold _ _ _ _ l) l] [(t-for _ _ l) l] [(t-values _ _ l) l]
-    [(t-begin _ _ l) l] [(t-store _ _ _ l) l] [(t-write _ _ l) l] [(t-results _ l) l] [(t-with _ _ _ l) l]))
+    [(t-begin _ _ l) l] [(t-store _ _ _ l) l] [(t-write _ _ l) l] [(t-results _ l) l] [(t-with _ _ _ l) l]
+    [(t-barrier l) l]))
 
 ;; Applies f to e's subexpressions, returning a list of the results
 (define (texpr-children e)
   (match e
-    [(or (t-lit _ _ _) (t-local _ _ _) (t-global _ _ _ _ _)) '()]
+    [(or (t-lit _ _ _) (t-local _ _ _) (t-global _ _ _ _ _) (t-barrier _)) '()]
     [(t-call _ args _ _) args] [(t-user-call _ args _ _) args] [(t-texture _ args _ _) args]
     [(t-op _ args _ _) args] [(t-construct args _ _) args]
     [(t-field b _ _ _) (list b)] [(t-swizzle b _ _ _) (list b)] [(t-index b i _ _) (list b i)]
@@ -101,7 +103,34 @@
   (cond
     [(equal? et t) e]
     [(and (literal? et) (scalar-t? t) (numeric-kind? (scalar-t-kind t))) (retype e t)]
+    [(and (literal? et) (scalar-t? t) (small-integer-kind? (scalar-t-kind t)))
+     (small-literal e t where)]
     [else (zgal-error 'type-mismatch where "~a is ~a, not ~a" what (a-type t) (a-type et))]))
+
+;; An integer literal as small integer type t: a literal itself (an expression of literals must be
+;; converted explicitly), in t's range
+(define (small-literal e t where)
+  (match e
+    [(t-lit v _ l)
+     (define bits (small-integer-bits (scalar-t-kind t)))
+     (define-values (low high)
+       (if (memq (scalar-t-kind t) '(uint8 uint16))
+           (values 0 (sub1 (expt 2 bits)))
+           (values (- (expt 2 (sub1 bits))) (sub1 (expt 2 (sub1 bits))))))
+     (unless (<= low v high)
+       (zgal-error 'type-mismatch where "~a doesn't fit in a ~a (~a to ~a)" v (type-name t) low high))
+     (t-lit v t l)]
+    [_ (zgal-error 'type-mismatch where "an expression of integer literals isn't a ~a: convert it with (~a expression)"
+                   (type-name t) (type-name t))]))
+
+;; Small integers are storage types: reading one gives its 32-bit kind (uint or int), so arithmetic
+;; and built-ins never see them. Only narrowing to one, (uint8 x), keeps the small type, for
+;; writing it to a buffer, shared variable or struct field.
+(define (widen e)
+  (match (texpr-type e)
+    [(scalar-t k) #:when (small-integer-kind? k)
+     (t-construct (list e) (scalar-t (widened-kind k)) (texpr-loc e))]
+    [_ e]))
 
 ;; Integer literals left alone are ints
 (define (settle e) (if (literal? (texpr-type e)) (retype e (scalar-t 'int)) e))
@@ -161,7 +190,10 @@
     (define t (vector-t kind n))
     (values (string->symbol (type-name t)) t)))
 (define matrix-constructors (hash 'mat2 (matrix-t 2) 'mat3 (matrix-t 3) 'mat4 (matrix-t 4)))
-(define scalar-constructors (hash 'float (scalar-t 'float) 'int (scalar-t 'int) 'uint (scalar-t 'uint) 'bool (scalar-t 'bool)))
+(define scalar-constructors
+  (for/fold ([h (hash 'float (scalar-t 'float) 'int (scalar-t 'int) 'uint (scalar-t 'uint) 'bool (scalar-t 'bool))])
+            ([k (in-list small-integer-kinds)])
+    (hash-set h k (scalar-t k))))
 
 (define (components t)
   (match t
@@ -218,9 +250,14 @@
     [(matrix-t _) (t-construct (list (t-lit 0.0 (scalar-t 'float) where)) t where)]
     [_ (zgal-error 'type-mismatch where "sum adds numbers, vectors and matrices, not ~a" (a-type t))]))
 
-;; Checks expression stx in ctx, with locals (a hash from names to t-locals). expected: the type
-;; the context needs, or #f; it only guides integer literals and stage results.
+;; Checks expression stx in ctx, with locals (a hash from names to t-locals). Small integers read
+;; are widened (see widen), unless the expression narrows to one.
 (define (check stx ctx locals)
+  (define e (check-raw stx ctx locals))
+  (if (memq (head-symbol stx) small-integer-kinds) e (widen e)))
+
+;; check, without widening the value: for places written to
+(define (check-raw stx ctx locals)
   (define (recur s [ls locals]) (check s ctx ls))
   (define here (stx->loc stx))
   (define d (syntax-e stx))
@@ -385,13 +422,19 @@
                  (coerce (recur (third args)) (vector-t 'float 4) (third args) "the stored value") here)]
        [(write!)
         (arity 2 2)
-        (define place (recur (first args)))
+        (define place (check-raw (first args) ctx locals))
         (unless (writable-place? place)
-          (zgal-error 'bad-write (first args) "write! writes to a buffer binding, or a field or element of one; ~a isn't one"
+          (zgal-error 'bad-write (first args) "write! writes to a buffer binding or shared variable, or a field or element of one; ~a isn't one"
                       (show (first args))))
         (t-write place (coerce (recur (second args)) (texpr-type place) (second args) "the written value") here)]
        [(sample sample-lod fetch sample-compare texture-size image-load image-size)
         (check-texture head stx args ctx locals)]
+       [(barrier!)
+        (arity 0 0)
+        (unless (eq? (context-stage ctx) 'compute)
+          (zgal-error 'bad-barrier stx "barrier! synchronizes a compute shader's workgroup, so only compute shaders (not ~a) use it"
+                      (if (eq? (context-stage ctx) 'function) "functions" (format "~a shaders" (context-stage ctx)))))
+        (t-barrier here)]
        [else
         (cond
           [(hash-ref vector-constructors head #f) => (λ (t) (check-vector-constructor t stx args ctx locals))]
@@ -402,7 +445,9 @@
                 (define a (recur (first args)))
                 (unless (or (scalar-t? (texpr-type a)) (literal? (texpr-type a)))
                   (zgal-error 'type-mismatch stx "~a converts a scalar, not ~a" head (a-type (texpr-type a))))
-                (t-construct (list (settle a)) t here))]
+                (if (and (small-integer-kind? (scalar-t-kind t)) (literal? (texpr-type a)))
+                    (small-literal a t (first args))
+                    (t-construct (list (settle a)) t here)))]
           [(hash-ref (context-structs ctx) head-name #f)
            => (λ (decl)
                 (define fields (struct-decl-fields decl))
@@ -443,6 +488,7 @@
 (define (writable-place? e)
   (match e
     [(t-global 'binding _ _ (or (struct-t _) (scalar-t _) (vector-t _ _) (matrix-t _) (runtime-array-t _)) _) #t]
+    [(t-global 'shared _ _ _ _) #t]
     [(t-field b _ _ _) (writable-place? b)]
     [(t-index b _ _ _) (writable-place? b)]
     [(t-swizzle b _ _ _) (writable-place? b)]
@@ -761,7 +807,7 @@
       (list (bind! name (texpr-type from) l) from2 to2)))
   (match e
     [(t-local name t l) (hash-ref mapping name (λ () e))]
-    [(or (t-lit _ _ _) (t-global _ _ _ _ _)) e]
+    [(or (t-lit _ _ _) (t-global _ _ _ _ _) (t-barrier _)) e]
     [(t-call f as t l) (t-call f (map go as) t l)]
     [(t-user-call f as t l) (t-user-call f (map go as) t l)]
     [(t-texture op as t l) (t-texture op (map go as) t l)]
@@ -811,7 +857,7 @@
       [(t-global 'binding name _ _ _) (note! name 'read)]
       [(t-write place value _)
        (define name (root place))
-       (note! name 'write)
+       (when name (note! name 'write))
        ;; Indices inside the place are read
        (let walk-place ([p place])
          (match p
@@ -854,7 +900,55 @@
   (let ok? ([e e])
     (and (not (opaque-t? (texpr-type e)))
          (match e
-           [(or (t-texture _ _ _ _) (t-store _ _ _ _) (t-write _ _ _)) #f]
+           [(or (t-texture _ _ _ _) (t-store _ _ _ _) (t-write _ _ _) (t-barrier _)) #f]
            [(t-global kind name _ _ _) (and (eq? kind 'constant) (set-member? cpu-constants name))]
            [(t-user-call f _ _ _) (and (set-member? cpu-functions f) (andmap ok? (texpr-children e)))]
            [_ (andmap ok? (texpr-children e))]))))
+
+;; ---------------------------------------------------------------------------------------------
+;; Barriers
+
+;; Every invocation of a workgroup must reach a barrier, or none: checks body's barriers aren't
+;; under conditions or in loops that could differ between invocations. Uniform values are
+;; literals, constants, push constants, workgroupId and workgroupCount, and what's computed only
+;; from them (buffers and shared memory can change, so reading them isn't).
+(define (check-barriers body)
+  (define (uniform? e locals)
+    (match e
+      [(t-lit _ _ _) #t]
+      [(t-local name _ _) (set-member? locals name)]
+      [(t-global (or 'constant 'push) _ _ _ _) #t]
+      [(t-global 'stage name _ _ _) (and (member name '("workgroupId" "workgroupCount")) #t)]
+      [(or (t-call _ _ _ _) (t-user-call _ _ _ _) (t-op _ _ _ _) (t-construct _ _ _) (t-field _ _ _ _)
+           (t-swizzle _ _ _ _) (t-index _ _ _ _) (t-if _ _ _ _ _))
+       (andmap (λ (c) (uniform? c locals)) (texpr-children e))]
+      [_ #f]))
+  (define (loops-uniform? loops locals)
+    (for/fold ([ok locals]) ([l (in-list loops)])
+      (match-define (list name from to) l)
+      (and ok (uniform? from ok) (uniform? to ok) (set-add ok name))))
+  (let walk ([e body] [locals (set)] [divergence #f])
+    (define (go c) (walk c locals divergence))
+    (match e
+      [(t-barrier l)
+       (when divergence
+         (zgal-error 'bad-barrier l "barrier! is ~a, so a workgroup's invocations could disagree about reaching it; every invocation must reach it, or none"
+                     divergence))]
+      [(t-if c a b _ _)
+       (go c)
+       (define inner (or divergence (and (not (uniform? c locals)) "under a condition that can differ between invocations")))
+       (walk a locals inner)
+       (when b (walk b locals inner))]
+      [(t-let bindings body _ _)
+       (define inner
+         (for/fold ([ls locals]) ([b (in-list bindings)])
+           (match-define (list names _ value) b)
+           (walk value ls divergence)
+           (if (uniform? value ls) (for/fold ([ls ls]) ([n (in-list names)]) (set-add ls n)) ls)))
+       (walk body inner divergence)]
+      [(or (t-for loops body _) (t-fold _ loops body _ _))
+       (for ([c (in-list (texpr-children e))] #:unless (eq? c body)) (go c))
+       (define uniform-locals (loops-uniform? loops locals))
+       (walk body (or uniform-locals locals)
+             (or divergence (and (not uniform-locals) "in a loop whose range can differ between invocations")))]
+      [_ (for-each go (texpr-children e))])))

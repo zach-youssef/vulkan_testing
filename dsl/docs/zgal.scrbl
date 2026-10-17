@@ -181,6 +181,7 @@ use them (@tt{shadowMap}, not @tt{shadow-map}). A name can't be
   (list @bold{Type} @bold{C++} @bold{Buffers and push constants} @bold{Vertex attributes, varyings, outputs})
   (list @elem{@tt{float}, @tt{int}, @tt{uint}} @elem{@tt{float}, @tt{int32_t}, @tt{uint32_t}} "yes" "yes")
   (list @tt{bool} "" "no: use uint" "no")
+  (list @elem{@tt{uint8}, @tt{int8}, @tt{uint16}, @tt{int16}} @elem{@tt{uint8_t}, ...} "buffers, not push constants" "no")
   (list @elem{@tt{vec2}-@tt{vec4}, @tt{ivec}, @tt{uvec}} @elem{@tt{glm::vec2}, ...} "yes" "yes")
   (list @elem{@tt{mat2}, @tt{mat4}} @elem{@tt{glm::mat2}, @tt{glm::mat4}} "yes" "no")
   (list @tt{mat3} "" "no: use mat4" "no")
@@ -188,7 +189,8 @@ use them (@tt{shadowMap}, not @tt{shadow-map}). A name can't be
   (list "structs" "the generated struct" "yes" "no"))]
 
 Buffers and push constants have the std430 layout, which the generated C++ matches byte for byte.
-Each member is aligned to its type's alignment: 4 bytes for scalars, 8 for 2-component vectors, 16
+Each member is aligned to its type's alignment: 4 bytes for scalars (1 and 2 for 8- and 16-bit
+integers), 8 for 2-component vectors, 16
 for 3- and 4-component vectors, a matrix's column's for matrices, and the largest member's for
 structs, whose size is rounded up to it. Arrays' elements are each aligned to their type's
 alignment, without std140's rounding to 16 bytes. So a scalar packs into the 4 bytes after a
@@ -216,7 +218,14 @@ struct places every member at its std430 offset with explicit padding members
 (@tt{zgalPadding0_}, ...), then checks the layout with @tt{static_assert}s. Those fail if the
 program defines @tt{GLM_FORCE_DEFAULT_ALIGNED_GENTYPES}, which changes GLM's alignment.
 @tt{mat3} and arrays of 3-component vectors are rejected because std430 pads them where GLM's
-types aren't padded.
+types aren't padded. Padding is @tt{uint32_t}s, or bytes where 8- and 16-bit members leave gaps of
+other sizes.
+
+@tt{uint8}, @tt{int8}, @tt{uint16} and @tt{int16} are storage types, for packing buffers (and
+shared memory): shader bodies read them as @tt{uint} or @tt{int} (@secref["small-integers"]).
+Materials using them need device features (8- and 16-bit integers and storage) that the wrapper
+doesn't enable, which their generated classes report (@secref["cpp"]). They can't be push
+constants, which would need more features.
 
 @(generated-file layout-source "example.zgal.h" #:from #rx"^struct Example" #:to #rx"^};")
 
@@ -286,7 +295,7 @@ The scene example's lit material uses most of them:
 @subsection{@racket[compute-material]}
 
 @racketgrammar*[
- #:literals (compute-material compute shaders workgroup bindings push)
+ #:literals (compute-material compute shaders workgroup bindings push shared)
  [compute-material-form (compute-material Name compute-clause ...)]
  [compute-clause (compute body ...)
                  (shaders glsl-path)
@@ -294,14 +303,17 @@ The scene example's lit material uses most of them:
                  (workgroup x y)
                  (workgroup x y z)
                  (bindings binding ...)
-                 (push (name type) ...)]]
+                 (push (name type) ...)
+                 (shared (name type) ...)]]
 
 A material dispatching a compute shader: a @racket[compute] clause (in ZGAL) or a @tt{.comp} in
 @racket[shaders] (in GLSL). @racket[workgroup] is required.
 @racket[workgroup] is the shader's local size (omitted dimensions are 1): the generated shader
 declares it, and the C++ class exposes it, with @tt{workgroupsFor(x, y, z)} giving the
 workgroups covering that many invocations for @tt{getDispatchDimensions}. Bindings and push
-constants are as for graphics materials, without stages.
+constants are as for graphics materials, without stages. @racket[shared] declares workgroup shared
+variables, which a workgroup's invocations share (@secref["shared"]); GLSL bodies use them by name
+too.
 
 @(define compute-source #<<ZGAL
 (struct Particle
@@ -403,6 +415,7 @@ A body names, besides its own locals:
        image an @tt{image2D}, a @tt{buffer} binding its value, and a @tt{buffer-array} binding an
        array of its element type;}
  @item{its push constants, by name;}
+ @item{in a compute shader, its shared variables, by name;}
  @item{in a vertex shader, its @racket[vertex-input]'s attributes, by name;}
  @item{in a fragment shader, the varyings, by name;}
  @item{the file's constants and functions (@secref["functions"]);}
@@ -457,7 +470,9 @@ Fields and swizzles follow names after dots: @tt{scene.lightDirection}, @tt{albe
  @item{@bold{Constructors}: @racket[vec2] to @racket[vec4] (and @tt{ivec}, @tt{uvec}, @tt{bvec})
        from scalars and vectors with as many components (or one scalar for all of them),
        @racket[mat2] to @racket[mat4] from floats, columns, one float (the diagonal) or a matrix,
-       structs from their fields in order, and @racket[(array type element ...)].}
+       structs from their fields in order, @racket[(array type element ...)], and
+       @racket[(uint8 x)], @racket[(int8 x)], @racket[(uint16 x)] and @racket[(int16 x)], which
+       narrow a value to write it (@secref["small-integers"]).}
  @item{@bold{Binding}: @racket[let*] binds in order; @racket[[(a b) e]] binds the values of a
        @racket[fold] with several accumulators (or of @racket[values]).}
  @item{@bold{Loops}: @racket[fold] starts its accumulators at their initial values, and for each
@@ -471,13 +486,88 @@ Fields and swizzles follow names after dots: @tt{scene.lightDirection}, @tt{albe
 @subsection{Effects}
 
 @itemlist[
- @item{@racket[(write! place value)] writes a buffer binding: its value, or a field or element of
-       it, e.g. @racket[(write! (at particles i) p)] or @racket[(write! result.count n)].}
+ @item{@racket[(write! place value)] writes a buffer binding or a shared variable: its value, or a
+       field or element of it, e.g. @racket[(write! (at particles i) p)] or
+       @racket[(write! result.count n)].}
  @item{@racket[(store! image texel value)] stores a @tt{vec4} to a storage image at an @tt{ivec2}
        texel.}
+ @item{@racket[(barrier!)], in compute shaders, waits for the workgroup's invocations to reach it,
+       after which they see each other's writes to shared variables (@secref["shared"]).}
 ]
 Effects have no value. In a sequence (a body, @racket[begin], @racket[when], @racket[let*]'s
 body) every expression but the last is an effect.
+
+@subsection[#:tag "small-integers"]{8- and 16-bit integers}
+
+@tt{uint8}, @tt{int8}, @tt{uint16} and @tt{int16} pack buffers, structs and shared variables. Bodies
+compute with 32-bit integers only: reading a small integer (a field, element, local or result)
+gives it as a @tt{uint} (from @tt{uint8} and @tt{uint16}) or an @tt{int}, so arithmetic,
+comparisons and built-ins are as usual. Writing one takes a small integer, so narrow explicitly,
+@racket[(uint8 (+ b.count 1))], truncating as C++ does; an integer literal is converted for you,
+if it fits.
+
+@(define bytes-source #<<ZGAL
+(struct Sprite
+  (y uint8)
+  (tile uint8)
+  (attributes uint8)
+  (x uint8))
+
+(compute-material MoveSprites
+  (workgroup 64)
+  (bindings
+   (sprites (buffer-array Sprite)))
+  (compute
+   (let* ([i globalInvocationId.x]
+          [s (at sprites i)])
+     (write! (at sprites i) (with s #:x (uint8 (+ s.x 1)) #:attributes 0)))))
+ZGAL
+)
+@(zgal-example bytes-source #:show '("MoveSprites.comp"))
+
+Shaders enable GLSL's @tt{GL_EXT_shader_explicit_arithmetic_types_int8} (and @tt{int16}) extensions
+when the file uses small integers. The material needs the devices' @tt{shaderInt8} and
+@tt{storageBuffer8BitAccess} (@tt{shaderInt16} and @tt{storageBuffer16BitAccess} for 16 bits):
+its class's @tt{requiredFeatures()} lists them, for the application to add to the context's
+features (@secref["cpp"]).
+
+@subsection[#:tag "shared"]{Shared memory and barriers}
+
+A compute material's @racket[shared] variables are shared by the invocations of a workgroup, for
+cooperating on a result, e.g. a reduction. Invocations write them with @racket[write!] and wait
+for each other's writes with @racket[(barrier!)] (GLSL's @tt{barrier()}, which orders shared
+memory):
+
+@(define reduce-source #<<ZGAL
+(compute-material SumGroups
+  (workgroup 64)
+  (bindings
+   (inputs (buffer-array float))
+   (sums (buffer-array float)))
+  (shared
+   (partial (array float 64)))
+  (compute
+   (let* ([x localInvocationId.x])
+     (write! (at partial x) (at inputs globalInvocationId.x))
+     (barrier!)
+     ;; Halve the active invocations, adding pairs, until one holds the sum
+     (for ([level (range 0 6)])
+       (let* ([stride (shr 32 (uint level))])
+         (when (< x stride)
+           (write! (at partial x) (+ (at partial x) (at partial (+ x stride)))))
+         (barrier!)))
+     (when (= x 0)
+       (write! (at sums workgroupId.x) (at partial 0))))))
+ZGAL
+)
+@(zgal-example reduce-source #:show '("SumGroups.comp"))
+
+Every invocation of a workgroup must reach a barrier, or none, so a @racket[barrier!] can't be
+under a condition, or in a loop, that could differ between invocations. Conditions and ranges
+computed from literals, constants, push constants, @tt{workgroupId} and @tt{workgroupCount} (and
+locals and loop variables computed from them) are the same for the whole workgroup; anything read
+from a buffer or shared memory, or computed from an invocation's id, isn't. Shared variables aren't
+bindings, so they don't take part in access inference.
 
 @subsection{Textures and images}
 
@@ -752,6 +842,7 @@ ZGAL
 @(zgal-source graph-source)
 @(generated-file graph-source "example.zgal.h" #:bodies graph-bodies #:from #rx"^struct Amplifier" #:to #rx"^    Nodes nodes;")
 
+@tt{requiredFeatures()} collects the device features its materials need (@secref["cpp"]).
 @tt{build()} returns a @tt{Result}: creating samplers and uniforms, and loading shaders, can fail.
 It creates each material as a @tt{zgal::Instance} or @tt{zgal::PushInstance} of its generated class
 (@tt{include/zgal/Runtime.h}), which writes its uniforms and computes its workgroups and push
@@ -815,6 +906,10 @@ with
        @racket[vertex-input], @tt{static VertexLayout vertexLayout()}.}
  @item{Compute materials: @tt{kWorkgroupSizeX}, @tt{Y} and @tt{Z}, and
        @tt{static glm::vec3 workgroupsFor(x, y = 1, z = 1)}.}
+ @item{@tt{static DeviceFeatures requiredFeatures()}: the device features its shaders need beyond
+       the wrapper's (8- and 16-bit integers), empty for most materials. Add them to the context's,
+       @tt{config.features.add(Name::requiredFeatures())}, before creating it; a graph's
+       @tt{requiredFeatures()} collects its materials'.}
  @item{The constructor: @tt{(context, shaders, bindings, formats, options)} for graphics materials
        and @tt{(context, shaders, bindings)} for compute materials, without @tt{bindings} when
        there are none. A graphics material's @tt{options.vertexLayout} must be left empty: the
@@ -831,6 +926,8 @@ A material without push constants is a concrete class (a compute material still 
 
 The generated code checks what the compiler can't, as contract violations:
 @itemlist[
+ @item{a context without the device features the material needs (in @tt{loadShaders}, before
+       creating shader modules that use them);}
  @item{a binding without an entry (when constructed);}
  @item{a graphics material whose formats have a different number of colour attachments than its
        outputs, or options with a vertex layout (when constructed);}
@@ -867,8 +964,9 @@ document was built.
 What ZGAL doesn't describe yet:
 @itemlist[
  @item{in shader bodies: early returns, loops other than over ranges, recursion, discarding
-       fragments, derivatives, atomics, shared memory and barriers, and functions reading bindings
-       (pass them as arguments). GLSL bodies can do all of these;}
+       fragments, derivatives, atomics, barriers for buffer memory (@racket[barrier!] orders shared
+       memory), arithmetic on 8- and 16-bit integers (they're widened), and functions reading
+       bindings (pass them as arguments). GLSL bodies can do all of these;}
  @item{vertex attributes in other formats than 32-bit ones (e.g. normalized bytes), several vertex
        buffers, or per-instance attributes;}
  @item{images other than 2D ones, and arrays of bindings;}
@@ -904,6 +1002,7 @@ without assuming a backend, so other backends (e.g. WebGL) only add emitters.
   (list @tt{dsl/private/print-body.rkt} "printing lowered bodies and functions as GLSL or C++")
   (list @tt{dsl/private/ast.rkt} "the checked program, independent of any backend")
   (list @tt{dsl/private/layout.rkt} "std430 layouts, and which types each place accepts")
+  (list @tt{dsl/private/features.rkt} "the device features (8- and 16-bit integers) materials need")
   (list @tt{dsl/private/names.rkt} "valid and reserved names")
   (list @tt{dsl/private/errors.rkt} "the error catalog")
   (list @tt{dsl/private/writer.rkt} "writing generated code with #line directives")
@@ -936,14 +1035,15 @@ This document is part of the language: change it in the same commit as the compi
 @itemlist[
  @item{@tt{dsl/tests/layout-test.rkt}: std430 layouts.}
  @item{@tt{dsl/tests/errors-test.rkt}: the error catalog, and the errors' messages and locations.}
- @item{@tt{dsl/tests/body-test.rkt}: shader bodies: typing, scoping, inference, inlining, and which
-       functions compile to C++.}
+ @item{@tt{dsl/tests/body-test.rkt}: shader bodies: typing, scoping, inference, inlining, which
+       functions compile to C++, small integers, shared memory and barriers.}
  @item{@tt{dsl/tests/golden-test.rkt}: the output for @tt{golden/features.zgal}, which uses every
        feature.}
  @item{@tt{dsl/tests/toolchain-test.rkt}: the generated shaders and header through glslc and the C++
        compiler (with the build's flags, from @tt{make test-dsl}), @tt{#line} mapping, and the
        command line.}
  @item{@tt{tests/gpu/ZgalTest.cpp}: generated materials and graphs on the device: the C++ structs
-       and push constants have the layout the shaders write and read, and a function computes the
-       same on the CPU (as C++) as on the GPU.}
+       and push constants have the layout the shaders write and read (8- and 16-bit integers
+       included), a function computes the same on the CPU (as C++) as on the GPU, and a reduction
+       through shared memory.}
 ]

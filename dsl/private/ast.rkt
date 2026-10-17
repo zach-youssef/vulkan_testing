@@ -9,11 +9,19 @@
 (provide (all-defined-out))
 
 ;; Types
-(struct scalar-t (kind) #:transparent)          ; 'float 'int 'uint 'bool
+(struct scalar-t (kind) #:transparent)          ; 'float 'int 'uint 'bool, or a small integer kind
 (struct vector-t (kind size) #:transparent)     ; kind of the components, 2-4 of them
 (struct matrix-t (size) #:transparent)          ; square float matrices, 2-4 columns
 (struct array-t (element length) #:transparent) ; fixed length
 (struct struct-t (decl) #:transparent)          ; a struct-decl
+
+;; Small integers ('uint8 'int8 'uint16 'int16) are storage types: buffers and shared memory hold
+;; them, and shader bodies widen them to 32 bits when they read them (see body.rkt)
+(define small-integer-kinds '(uint8 int8 uint16 int16))
+(define (small-integer-kind? k) (and (memq k small-integer-kinds) #t))
+(define (small-integer-bits k) (case k [(uint8 int8) 8] [(uint16 int16) 16]))
+;; The 32-bit kind a small integer widens to
+(define (widened-kind k) (case k [(uint8 uint16) 'uint] [(int8 int16) 'int] [else k]))
 
 ;; Types only shader bodies have: opaque resources ('texture2D 'sampler 'image2D), the unsized
 ;; array a buffer-array binding holds, nothing ('void, for effects and functions returning
@@ -46,7 +54,8 @@
 
 ;; kind: 'graphics or 'compute. shaders: list of shader. push: fields. vertex-input: or #f.
 ;; varyings, outputs: lists (graphics only). workgroup: (list x y z) for compute, else #f.
-(struct material (kind name shaders bindings push vertex-input varyings outputs workgroup loc)
+;; shared: the compute shader's workgroup shared variables (fields).
+(struct material (kind name shaders bindings push vertex-input varyings outputs workgroup shared loc)
   #:transparent)
 
 ;; A shader whose body is written in ZGAL (shader-path is #f). body: the checked body, a typed

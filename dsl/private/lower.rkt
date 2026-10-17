@@ -38,6 +38,7 @@
   (define here (texpr-loc e))
   (match e
     [(or (t-lit _ _ _) (t-local _ _ _) (t-global _ _ _ _ _)) (values '() e)]
+    [(t-barrier l) (values (list (s-effect e l)) #f)]
     [(t-call f args t l) (let-values ([(s vs) (go* args)]) (values s (t-call f vs t l)))]
     [(t-user-call f args t l)
      (define-values (s vs) (go* args))

@@ -147,3 +147,61 @@
   (check-regexp-match #rx"if [(]i < 4u[)] {" shader)
   (check-regexp-match #rx"for [(]int k = 0; k < 4; [+][+]k[)] {" shader)
   (check-regexp-match #rx"zgalBranch" shader))
+
+;; ---------------------------------------------------------------------------------------------
+;; 8- and 16-bit integers
+
+(define (bytes-material body)
+  (string-append "(struct Bytes (small uint8) (delta int16) (many (array uint8 4)))\n"
+                 "(compute-material Pack (workgroup 1) (bindings (data (buffer-array Bytes)))\n"
+                 "  (compute " body "))"))
+
+(test-case "Small integers are widened where they're read, and narrowed explicitly where they're written"
+  (define shader
+    (generated (bytes-material "(let* ([b (at data 0)]) (write! (at data 1) (with b #:small (uint8 (+ b.small 1)) #:delta (int16 (- b.delta)))))")
+               "Pack.comp"))
+  (check-true (string-contains? shader "uint8_t(uint(b.small) + 1u)"))
+  (check-true (string-contains? shader "int16_t(-int(b.delta))"))
+  (check-true (string-contains? shader "#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require"))
+  ;; Writing a 32-bit value to a small place needs a conversion
+  (check-zgal-error (bytes-material "(write! (.small (at data 0)) (uint 1))") 'type-mismatch "is a uint8, not a uint")
+  ;; Literals take the small type, within its range
+  (check-not-exn (λ () (program-of (bytes-material "(write! (.small (at data 0)) 255)"))))
+  (check-zgal-error (bytes-material "(write! (.small (at data 0)) 256)") 'type-mismatch "256 doesn't fit in a uint8 (0 to 255)")
+  (check-zgal-error (bytes-material "(write! (.delta (at data 0)) (uint16 -1))") 'type-mismatch "-1 doesn't fit in a uint16"))
+
+(test-case "Small integers aren't push constants, and a material using them needs device features"
+  (check-zgal-error "(compute-material P (workgroup 1) (push (x uint8)) (compute))" 'type-not-allowed "storagePushConstant8")
+  (define header (generated (bytes-material "(write! (.small (at data 0)) 1)") ".zgal.h"))
+  (check-true (string-contains? header "features.vulkan12.shaderInt8 = VK_TRUE;"))
+  (check-true (string-contains? header "features.core.features.shaderInt16 = VK_TRUE;"))
+  ;; Checked before loading the shaders, which use them
+  (check-true (string-contains? header "loadShaders(VulkanContext& context) {\n        requireFeatures(context);")))
+
+;; ---------------------------------------------------------------------------------------------
+;; Shared memory and barriers
+
+(define (shared-material body)
+  (string-append "(compute-material Sum (workgroup 64) (shared (partial (array float 64)))\n"
+                 "  (bindings (result (buffer float)) (samples (buffer-array float))) (push (stride uint))\n"
+                 "  (compute (let* ([x localInvocationId.x]) (write! (at partial x) (at samples x)) " body ")))"))
+
+(test-case "Compute shaders write shared variables, and reach barriers together"
+  (define shader (generated (shared-material "(write! (at partial x) (at samples x)) (barrier!) (when (= x 0) (write! result (at partial 63)))")
+                            "Sum.comp"))
+  (check-true (string-contains? shader "shared float partial[64];"))
+  (check-true (string-contains? shader "partial[x] = samples()[x];"))
+  (check-true (string-contains? shader "barrier();"))
+  ;; Shared variables aren't bindings: the accesses are the buffers'
+  (define m (material-named (program-of (shared-material "(write! (at partial x) (at samples x)) (write! result 1.0)")) "Sum"))
+  (check-equal? (binding-access (binding-named m "samples")) 'read))
+
+(test-case "Barriers under conditions or loops that can differ between invocations are rejected"
+  ;; Uniform: literals, push constants, workgroupId, and what's computed from them
+  (check-not-exn (λ () (program-of (shared-material "(for ([i (range 0 stride)]) (barrier!)) (when (> workgroupId.x 2) (barrier!)) (write! result 0.0)"))))
+  (check-zgal-error (shared-material "(when (= x 0) (barrier!)) (write! result 0.0)") 'bad-barrier "under a condition")
+  (check-zgal-error (shared-material "(for ([i (range 0 x)]) (barrier!)) (write! result 0.0)") 'bad-barrier "in a loop")
+  ;; A value read from a buffer can differ
+  (check-zgal-error (shared-material "(let* ([n (at samples 0)]) (when (> n 0.0) (barrier!))) (write! result 0.0)") 'bad-barrier "under a condition")
+  (check-zgal-error "(graphics-material F (outputs (color vec4)) (vertex (results #:position (vec4 0.0))) (fragment (begin (barrier!) (vec4 1.0))))"
+                    'bad-barrier "only compute shaders"))

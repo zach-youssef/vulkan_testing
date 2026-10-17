@@ -55,6 +55,7 @@
 (define builtin-types
   (hash-union*
    (hash "float" (scalar-t 'float) "int" (scalar-t 'int) "uint" (scalar-t 'uint) "bool" (scalar-t 'bool)
+         "uint8" (scalar-t 'uint8) "int8" (scalar-t 'int8) "uint16" (scalar-t 'uint16) "int16" (scalar-t 'int16)
          "mat2" (matrix-t 2) "mat3" (matrix-t 3) "mat4" (matrix-t 4))
    (for*/hash ([kind '(float int uint bool)] [n '(2 3 4)])
      (define t (vector-t kind n))
@@ -170,13 +171,21 @@
        (define push
          (if (clause 'push)
              (let ([fields (parse-fields (cdr (syntax->list (clause 'push))) (format "the push constants of ~a" name)
-                                         std430-problem)])
+                                         push-problem)])
                (for ([f (in-list fields)] [s (in-list (cdr (syntax->list (clause 'push))))])
                  (declare! (field-name f) s))
                (check-push-size (clause 'push) bindings fields)
                fields)
              '()))
        (define varyings (if (clause 'varyings) (parse-varyings (clause 'varyings) declare!) '()))
+       (define shared
+         (if (clause 'shared)
+             (let ([fields (parse-fields (cdr (syntax->list (clause 'shared))) (format "the shared memory of ~a" name)
+                                         (λ (t) #f))])
+               (for ([f (in-list fields)] [s (in-list (cdr (syntax->list (clause 'shared))))])
+                 (declare! (field-name f) s))
+               fields)
+             '()))
        (define outputs
          (if (eq? kind 'graphics)
              (let* ([c (require-clause 'outputs)]
@@ -188,11 +197,11 @@
        (define zgal-shaders
          (for/list ([stage (in-list (if (eq? kind 'graphics) '(vertex fragment) '(compute)))]
                     #:when (clause stage))
-           (parse-stage-body (clause stage) stage name bindings push input varyings outputs)))
+           (parse-stage-body (clause stage) stage name bindings push input varyings outputs shared)))
        (define shaders (append glsl-shaders zgal-shaders))
        (check-stages stx kind name shaders)
        (define m (material kind name shaders (infer-accesses bindings shaders kind) push input varyings outputs
-                           workgroup (stx->loc stx)))
+                           workgroup shared (stx->loc stx)))
        (hash-set! materials name m)
        m]
       [_ (zgal-error 'malformed stx "expected (~a Name clause ...)" form-name)]))
@@ -201,7 +210,7 @@
     (define allowed
       (if (eq? kind 'graphics)
           '(shaders vertex fragment vertex-input bindings push varyings outputs)
-          '(shaders compute workgroup bindings push)))
+          '(shaders compute workgroup bindings push shared)))
     (for/fold ([clauses (hasheq)]) ([stx (in-list stxs)])
       (define key (head-symbol stx))
       (unless key
@@ -350,7 +359,7 @@
       [_ #f]))
 
   ;; A stage's body: checked with the material's names in scope
-  (define (parse-stage-body stx stage material-name bindings push input varyings outputs)
+  (define (parse-stage-body stx stage material-name bindings push input varyings outputs shared)
     (define body-stxs (cdr (syntax->list stx)))
     (define globals (make-hash))
     (define (global! name g where)
@@ -379,6 +388,8 @@
         (global! (varying-name v) (global 'varying (varying-name v) (varying-name v) (varying-type v) v) stx))
       (for ([o (in-list outputs)])
         (global! (field-name o) (global 'output (field-name o) (field-name o) (field-type o) o) stx)))
+    (for ([f (in-list shared)])
+      (global! (field-name f) (global 'shared (field-name f) (field-name f) (field-type f) f) stx))
     (when (eq? stage 'vertex)
       (for ([v (in-list varyings)])
         (global! (varying-name v) (global 'output (varying-name v) (varying-name v) (varying-type v) v) stx)))
@@ -426,6 +437,7 @@
                                 (case stage
                                   [(compute) "nothing (it writes buffers and images)"]
                                   [else (format "(results ~a)" (string-join (map (λ (x) (format "#:~a ..." (car x))) expected) " "))]))])])))
+    (when (eq? stage 'compute) (check-barriers body))
     (define name (format "~a.~a" material-name (case stage [(vertex) "vert"] [(fragment) "frag"] [(compute) "comp"])))
     (claim-shader-name! name material-name stx)
     (zgal-shader #f name stage (stx->loc stx) body (uses-closure (context-uses ctx))))
