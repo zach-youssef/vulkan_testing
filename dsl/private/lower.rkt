@@ -14,6 +14,7 @@
          (struct-out s-if)
          (struct-out s-for)
          (struct-out s-effect)
+         (struct-out s-while)
          lower
          lower-function
          lower-stage)
@@ -22,8 +23,10 @@
 (struct s-declare (name type value loc) #:transparent)     ; value: an expression, or #f
 (struct s-assign (place value loc) #:transparent)          ; place: a t-local, or a global binding's field or element
 (struct s-if (condition then else loc) #:transparent)     ; then, else: statement lists
-(struct s-for (name type from to body loc) #:transparent)  ; for (name = from; name < to; ++name)
+(struct s-for (name type from to step body loc) #:transparent)  ; for (name = from; name < to; name += step)
 (struct s-effect (expression loc) #:transparent)           ; an expression evaluated for its effect
+;; while: the condition's statements, then it; while it holds, body
+(struct s-while (condition-statements condition body loc) #:transparent)
 
 ;; Lowers e: returns statements to run first, then the expression giving its value (a list of
 ;; expressions for several values; #f for no value). fresh: makes a temporary's spelling.
@@ -38,7 +41,15 @@
   (define here (texpr-loc e))
   (match e
     [(or (t-lit _ _ _) (t-local _ _ _) (t-global _ _ _ _ _)) (values '() e)]
-    [(t-barrier l) (values (list (s-effect e l)) #f)]
+    ;; A barrier for buffers makes buffer writes before it visible to the workgroup after it
+    [(t-barrier #t l) (values (list (s-effect (t-call 'memoryBarrierBuffer '() (void-t) l) l) (s-effect (t-barrier #f l) l)) #f)]
+    [(or (t-barrier _ l) (t-exit _ l)) (values (list (s-effect e l)) #f)]
+    [(t-atomic op place args t l)
+     ;; Into a temporary, so it happens once, in order, whether or not its value is used
+     (define-values (ps pv) (go place))
+     (define-values (as avs) (go* args))
+     (define tmp (fresh "atomic"))
+     (values (append ps as (list (s-declare tmp t (t-atomic op pv avs t l) l))) (t-local tmp t l))]
     [(t-effect op args l)
      (let-values ([(s vs) (go* args)]) (values (append s (list (s-effect (t-effect op vs l) l))) #f))]
     [(t-call f args t l) (let-values ([(s vs) (go* args)]) (values s (t-call f vs t l)))]
@@ -96,18 +107,20 @@
        (for/list ([a (in-list accs)] [v (in-list init-v)])
          (s-declare (first a) (second a) v l)))
      (define-values (bs bv) (go body))
-     (define new-values (if (list? bv) bv (list bv)))
-     (define update
-       (if (= (length accs) 1)
-           (list (s-assign (t-local (first (first accs)) (second (first accs)) l) (first new-values) l))
-           ;; Several accumulators update at once: compute every new value before assigning any
-           (let ([tmps (for/list ([a (in-list accs)]) (fresh (format "~aNext" (first a))))])
-             (append (for/list ([a (in-list accs)] [tmp (in-list tmps)] [v (in-list new-values)])
-                       (s-declare tmp (second a) v l))
-                     (for/list ([a (in-list accs)] [tmp (in-list tmps)])
-                       (s-assign (t-local (first a) (second a) l) (t-local tmp (second a) l) l))))))
+     (define update (accumulator-updates accs bv fresh l))
      (define-values (loop-s loop) (nest loops (append bs update) go l))
      (values (append init-s declares loop-s (list loop))
+             (let ([vars (for/list ([a (in-list accs)]) (t-local (first a) (second a) l))])
+               (if (= (length vars) 1) (first vars) vars)))]
+    [(t-while accs c body t l)
+     (define-values (init-s init-v) (go* (map third accs)))
+     (define declares
+       (for/list ([a (in-list accs)] [v (in-list init-v)])
+         (s-declare (first a) (second a) v l)))
+     (define-values (cs cv) (go c))
+     (define-values (bs bv) (go body))
+     (define update (accumulator-updates accs bv fresh l))
+     (values (append init-s declares (list (s-while cs cv (append bs update) l)))
              (let ([vars (for/list ([a (in-list accs)]) (t-local (first a) (second a) l))])
                (if (= (length vars) 1) (first vars) vars)))]
     [(t-for loops body l)
@@ -133,19 +146,30 @@
      (define-values (s vs) (go* (map cdr fields)))
      (values s (for/list ([f (in-list fields)] [v (in-list vs)]) (cons (car f) v)))]))
 
+;; Statements giving accumulators (list name type init) their new values (one expression, or a list)
+(define (accumulator-updates accs new fresh l)
+  (define new-values (if (list? new) new (list new)))
+  (if (= (length accs) 1)
+      (list (s-assign (t-local (first (first accs)) (second (first accs)) l) (first new-values) l))
+      ;; Several accumulators update at once: compute every new value before assigning any
+      (let ([tmps (for/list ([a (in-list accs)]) (fresh (format "~aNext" (first a))))])
+        (append (for/list ([a (in-list accs)] [tmp (in-list tmps)] [v (in-list new-values)])
+                  (s-declare tmp (second a) v l))
+                (for/list ([a (in-list accs)] [tmp (in-list tmps)])
+                  (s-assign (t-local (first a) (second a) l) (t-local tmp (second a) l) l))))))
+
 ;; Loops nested in order around body. The bounds are computed before the loops (an inner loop's
 ;; bounds can use outer variables, so they're computed in the outer loop's body).
 (define (nest loops body go l)
-  (match loops
-    [(list (list name from to))
-     (define-values (fs fv) (go from))
-     (define-values (ts tv) (go to))
-     (values (append fs ts) (s-for name (texpr-type from) fv tv body l))]
-    [(cons (list name from to) more)
-     (define-values (fs fv) (go from))
-     (define-values (ts tv) (go to))
-     (define-values (inner-s inner) (nest more body go l))
-     (values (append fs ts) (s-for name (texpr-type from) fv tv (append inner-s (list inner)) l))]))
+  (match-define (cons (list name from to step) more) loops)
+  (define-values (fs fv) (go from))
+  (define-values (ts tv) (go to))
+  (define-values (ss sv) (go step))
+  (define inner-body
+    (if (null? more)
+        body
+        (let-values ([(inner-s inner) (nest more body go l)]) (append inner-s (list inner)))))
+  (values (append fs ts ss) (s-for name (texpr-type from) fv tv sv inner-body l)))
 
 ;; A function body: statements and the returned expression (#f for void)
 (define (lower-function body fresh)

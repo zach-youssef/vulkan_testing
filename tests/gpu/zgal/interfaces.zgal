@@ -250,3 +250,53 @@
   (on (key-pressed space)
     (record state.value)
     (with state #:value (scale state.value))))
+
+;; For the stage 2 test: atomics on shared and buffer elements (a histogram, and a float sum),
+;; while loops, subgroup operations, strided ranges and early returns
+(compute-material Tally
+  (workgroup 64)
+  (bindings
+   (samples (buffer-array uint))
+   (counts (buffer-array uint))       ; 16 bins
+   (total (buffer-array float))       ; 1 element
+   (steps (buffer-array uint))        ; Per sample
+   (subgroupSums (buffer-array uint)))
+  (push
+   (count uint))
+  (shared
+   (local (array uint 16)))
+  (compute
+   (let* ([i globalInvocationId.x]
+          [lane localInvocationId.x])
+     (when (< lane 16) (write! (at local lane) 0))
+     (barrier!)
+     ;; A grid-stride loop over the samples
+     (for ([k (range i count (* 64 workgroupCount.x))])
+       (atomic-add! (at local (remainder (at samples k) 16)) 1))
+     (barrier!)
+     (when (< lane 16) (atomic-add! (at counts lane) (at local lane)))
+     (unless (< i count) (return!))
+     (atomic-add! (at total 0) (float (at samples i)))
+     ;; Collatz steps, up to 1000
+     (let* ([(n taken) (while ([n (at samples i)] [taken (uint 0)]) (and (> n 1) (< taken 1000))
+                         (values (if (= (remainder n 2) 0) (/ n 2) (+ (* 3 n) 1)) (+ taken 1)))])
+       (write! (at steps i) taken))
+     (write! (at subgroupSums i) (subgroupAdd (uint 1))))))
+
+;; Discards the left half of its target, and outputs how its fragment coordinate changes between
+;; neighbouring fragments (fwidth, 1 a pixel)
+(graphics-material Cut
+  (outputs (color vec4))
+  (vertex
+   (let* ([corner (vec2 (float (bitand vertexIndex 2)) (float (bitand (shl vertexIndex 1) 2)))])
+     (results #:position (vec4 (- (* corner 2.0) 1.0) 0.0 1.0))))
+  (fragment
+   (when (< fragCoord.x 2.0) (discard!))
+   (vec4 (fwidth fragCoord.x) 1.0 0.0 1.0)))
+
+(graph CutGraph
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target canvasTarget (color canvas #:clear (0.0 0.0 0.0 1.0)))
+  (material cut Cut)
+  (draw drawCut canvasTarget cut 3)
+  (readback readCanvas canvas))

@@ -480,6 +480,8 @@
               (t-results (list (cons (car (first expected)) (coerce b (cdr (first expected)) stx (format "output ~a" (car (first expected))))))
                          (stx->loc stx))]
              [('compute (void-t)) b]
+             ;; Ending with an atomic, whose previous value it ignores
+             [('compute _) #:when (discardable? b) b]
              [(_ (void-t)) #:when (null? expected) (t-begin (list b (t-results '() (stx->loc stx))) (results-t) (stx->loc stx))]
              [(_ t) (zgal-error 'bad-results stx "the ~a shader's body is ~a, but should give ~a" stage (a-type t)
                                 (case stage

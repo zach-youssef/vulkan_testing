@@ -458,7 +458,7 @@ Fields and swizzles follow names after dots: @tt{scene.lightDirection}, @tt{albe
 @subsection[#:tag "body-expressions"]{Expressions}
 
 @racketgrammar*[
- #:literals (let* if cond else when unless begin fold sum for range values with at results)
+ #:literals (let* if cond else when unless begin fold sum for while range values with at results)
  [expression literal
              name
              (.field expression)
@@ -469,16 +469,18 @@ Fields and swizzles follow names after dots: @tt{scene.lightDirection}, @tt{albe
              (when condition effect ...+)
              (unless condition effect ...+)
              (begin effect ... expression)
-             (fold ([accumulator initial] ...+) ([name (range from to)] ...+) expression)
-             (sum ([name (range from to)] ...+) expression)
-             (for ([name (range from to)] ...+) effect ...+)
+             (fold ([accumulator initial] ...+) ([name range] ...+) expression)
+             (sum ([name range] ...+) expression)
+             (for ([name range] ...+) effect ...+)
+             (while ([accumulator initial] ...+) condition expression)
              (values expression ...+)
              (with struct #:field value ...)
              (at array-or-vector index)
              (results #:name expression ...)
              (operator expression ...)
              (constructor expression ...)
-             (function expression ...)]]
+             (function expression ...)]
+ [range (range from to) (range from to step)]]
 
 @itemlist[
  @item{@bold{Literals}: numbers and @tt{#t}/@tt{#f}. Integer literals take the type their context
@@ -502,9 +504,14 @@ Fields and swizzles follow names after dots: @tt{scene.lightDirection}, @tt{albe
  @item{@bold{Binding}: @racket[let*] binds in order; @racket[[(a b) e]] binds the values of a
        @racket[fold] with several accumulators (or of @racket[values]).}
  @item{@bold{Loops}: @racket[fold] starts its accumulators at their initial values, and for each
-       value of the ranges (nested, the first outermost; @racket[(range from to)] goes up to, and
-       doesn't include, @tt{to}) computes their new values from the body, a single value or
-       @racket[(values ...)]. @racket[sum] adds its body up. @racket[for] runs effects.}
+       value of the ranges (nested, the first outermost; @racket[(range from to step)] goes from
+       @tt{from} up to, and not including, @tt{to}, by @tt{step}, 1 by default) computes their new
+       values from the body, a single value or @racket[(values ...)]. @racket[sum] adds its body
+       up. @racket[for] runs effects, e.g. a grid-stride loop
+       @racket[(for ([k (range i count (* 64 workgroupCount.x))]) ...)].
+       @racket[while] is for loops whose end isn't a range: while its condition (which sees the
+       accumulators) holds, the accumulators take the body's values, so a loop that breaks puts
+       the reason in its condition. Its value is the accumulators' at the end.}
  @item{@racket[with] is a copy of a struct with some fields replaced:
        @racket[(with p #:velocity v)].}
 ]
@@ -518,10 +525,68 @@ Fields and swizzles follow names after dots: @tt{scene.lightDirection}, @tt{albe
  @item{@racket[(store! image texel value)] stores a @tt{vec4} to a storage image at an @tt{ivec2}
        texel.}
  @item{@racket[(barrier!)], in compute shaders, waits for the workgroup's invocations to reach it,
-       after which they see each other's writes to shared variables (@secref["shared"]).}
+       after which they see each other's writes to shared variables (@secref["shared"]).
+       @racket[(buffer-barrier!)] also makes their writes to buffers visible.}
+ @item{Atomics (@secref["atomics"]) change a place and give its previous value.}
+ @item{@racket[(return!)] ends a compute shader's invocation, e.g.
+       @racket[(unless (< i count) (return!))]; @racket[(discard!)] a fragment shader's, writing
+       nothing.}
 ]
-Effects have no value. In a sequence (a body, @racket[begin], @racket[when], @racket[let*]'s
-body) every expression but the last is an effect.
+Effects have no value (atomics have one, which a sequence may ignore). In a sequence (a body,
+@racket[begin], @racket[when], @racket[let*]'s body) every expression but the last is an effect.
+
+@subsection[#:tag "atomics"]{Atomics}
+
+@racket[(atomic-add! place value)] adds to a place, atomically (every invocation's addition counts,
+however many add at once), and gives the value it had before. A place is an element or field of a
+buffer binding or shared variable, as for @racket[write!]. The others are @racket[atomic-min!],
+@racket[atomic-max!], @racket[atomic-and!], @racket[atomic-or!], @racket[atomic-xor!],
+@racket[atomic-exchange!] (which stores the value) and @racket[(atomic-compare-exchange! place
+comparand value)] (which stores the value if the place holds the comparand). They work on
+@tt{int}s and @tt{uint}s, and @racket[atomic-add!] and @racket[atomic-exchange!] on @tt{float}s
+too, which needs devices' float atomics (the extension @tt{VK_EXT_shader_atomic_float}): the
+material's @tt{requiredFeatures()} reports them. A binding an atomic uses is read and written.
+
+@(define atomics-source #<<ZGAL
+(compute-material Histogram
+  (workgroup 64)
+  (bindings
+   (samples (buffer-array uint))
+   (bins (buffer-array uint)))
+  (push (count uint))
+  (shared (local (array uint 16)))
+  (compute
+   (let* ([i globalInvocationId.x]
+          [lane localInvocationId.x])
+     (when (< lane 16) (write! (at local lane) 0))
+     (barrier!)
+     ;; Each workgroup counts into shared memory, then adds its counts to the buffer's
+     (for ([k (range i count (* 64 workgroupCount.x))])
+       (atomic-add! (at local (remainder (at samples k) 16)) 1))
+     (barrier!)
+     (when (< lane 16) (atomic-add! (at bins lane) (at local lane))))))
+ZGAL
+)
+@(zgal-example atomics-source #:show '("Histogram.comp"))
+
+An atomic's value goes into a temporary, so it happens exactly once, in order, whether or not the
+body uses it.
+
+@subsection[#:tag "subgroups"]{Subgroups and derivatives}
+
+A subgroup is the invocations a device runs together (32 on Apple GPUs); the @tt{subgroup}
+built-ins (@tt{subgroupAdd}, @tt{subgroupExclusiveAdd}, @tt{subgroupElect}, @tt{subgroupBallot},
+@tt{subgroupShuffle}, ...) combine values across it without shared memory, and
+@tt{subgroupSize}, @tt{subgroupInvocationId}, @tt{subgroupId} and @tt{subgroupCount} say where an
+invocation is. Devices support them in some stages, and some kinds of operation: a material using
+them has @tt{kSubgroupStages} and @tt{kSubgroupOperations}, which @tt{loadShaders} checks against
+@tt{context.subgroupProperties()}.
+
+Derivatives (@tt{dFdx}, @tt{dFdy}, @tt{fwidth}, and their @tt{Fine} and @tt{Coarse} variants)
+measure how a value changes between neighbouring fragments, so only fragment shaders (and functions
+they call) use them.
+
+Functions using subgroups or derivatives have no C++ version.
 
 @subsection[#:tag "small-integers"]{8- and 16-bit integers}
 
@@ -1220,10 +1285,9 @@ document was built.
 
 What ZGAL doesn't describe yet:
 @itemlist[
- @item{in shader bodies: early returns, loops other than over ranges, recursion, discarding
-       fragments, derivatives, atomics, barriers for buffer memory (@racket[barrier!] orders shared
-       memory), arithmetic on 8- and 16-bit integers (they're widened), and functions reading
-       bindings (pass them as arguments). GLSL bodies can do all of these;}
+ @item{in shader bodies: recursion, atomics on images and on 64-bit or small integers, arithmetic
+       on 8- and 16-bit integers (they're widened), and functions reading bindings (pass them as
+       arguments). GLSL bodies and functions (@racket[extern-glsl]) can do these;}
  @item{vertex attributes in other formats than 32-bit ones (e.g. normalized bytes), several vertex
        buffers, or per-instance attributes;}
  @item{images other than 2D ones, and arrays of bindings;}

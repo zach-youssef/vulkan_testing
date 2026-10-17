@@ -14,7 +14,10 @@
          builtin-function?
          builtin-names
          stage-variables
-         stage-variable-names)
+         stage-variable-names
+         derivative-function?
+         gpu-only-function?
+         subgroup-category)
 
 ;; Integer literals take the type their context needs, so they have a type of their own until then
 (define literal-type (scalar-t 'literal))
@@ -91,7 +94,46 @@
      (cons 'floatBitsToUint '(((genF) genU)))
      (cons 'floatBitsToInt '(((genF) genI)))
      (cons 'uintBitsToFloat '(((genU) genF)))
-     (cons 'intBitsToFloat '(((genI) genF)))))))
+     (cons 'intBitsToFloat '(((genI) genF))))
+    ;; Derivatives, in fragment shaders
+    (unary '(dFdx dFdy fwidth dFdxFine dFdyFine fwidthFine dFdxCoarse dFdyCoarse fwidthCoarse) '(F))
+    ;; Subgroup operations
+    (for/list ([n (in-list '(subgroupAdd subgroupMul subgroupMin subgroupMax subgroupInclusiveAdd subgroupInclusiveMul
+                             subgroupInclusiveMin subgroupInclusiveMax subgroupExclusiveAdd subgroupExclusiveMul
+                             subgroupExclusiveMin subgroupExclusiveMax))])
+      (cons n '(((genF) genF) ((genI) genI) ((genU) genU))))
+    (for/list ([n (in-list '(subgroupAnd subgroupOr subgroupXor subgroupInclusiveAnd subgroupInclusiveOr
+                             subgroupInclusiveXor subgroupExclusiveAnd subgroupExclusiveOr subgroupExclusiveXor))])
+      (cons n '(((genI) genI) ((genU) genU) ((genB) genB))))
+    (list
+     (cons 'subgroupElect `((() ,bool-t)))
+     (cons 'subgroupAll `(((,bool-t) ,bool-t)))
+     (cons 'subgroupAny `(((,bool-t) ,bool-t)))
+     (cons 'subgroupAllEqual `(((genF) ,bool-t) ((genI) ,bool-t) ((genU) ,bool-t) ((genB) ,bool-t)))
+     (cons 'subgroupBroadcastFirst '(((genF) genF) ((genI) genI) ((genU) genU) ((genB) genB)))
+     (cons 'subgroupBallot `(((,bool-t) ,(vector-t 'uint 4))))
+     (cons 'subgroupBallotBitCount `(((,(vector-t 'uint 4)) ,uint-t)))
+     (cons 'subgroupShuffle `(((genF ,uint-t) genF) ((genI ,uint-t) genI) ((genU ,uint-t) genU) ((genB ,uint-t) genB)))
+     (cons 'subgroupShuffleXor `(((genF ,uint-t) genF) ((genI ,uint-t) genI) ((genU ,uint-t) genU) ((genB ,uint-t) genB)))))))
+
+(define (derivative-function? name)
+  (and (memq name '(dFdx dFdy fwidth dFdxFine dFdyFine fwidthFine dFdxCoarse dFdyCoarse fwidthCoarse)) #t))
+
+;; The subgroup operations a function needs the device to support ('basic 'arithmetic 'vote
+;; 'ballot 'shuffle), or #f if it isn't a subgroup function
+(define (subgroup-category name)
+  (define s (symbol->string name))
+  (cond
+    [(not (regexp-match? #px"^subgroup" s)) #f]
+    [(eq? name 'subgroupElect) 'basic]
+    [(memq name '(subgroupAll subgroupAny subgroupAllEqual)) 'vote]
+    [(memq name '(subgroupBroadcastFirst subgroupBallot subgroupBallotBitCount)) 'ballot]
+    [(memq name '(subgroupShuffle subgroupShuffleXor)) 'shuffle]
+    [else 'arithmetic]))
+
+;; Built-ins with no C++ version: they need a shader's invocations
+(define (gpu-only-function? name)
+  (or (derivative-function? name) (and (subgroup-category name) #t)))
 
 (define (builtin-function? name) (hash-has-key? signatures name))
 
@@ -156,11 +198,17 @@
   (hash 'vertex (hash "vertexIndex" (list "gl_VertexIndex" int-t)
                       "instanceIndex" (list "gl_InstanceIndex" int-t))
         'fragment (hash "fragCoord" (list "gl_FragCoord" (vector-t 'float 4))
-                        "frontFacing" (list "gl_FrontFacing" bool-t))
+                        "frontFacing" (list "gl_FrontFacing" bool-t)
+                        "subgroupSize" (list "gl_SubgroupSize" uint-t)
+                        "subgroupInvocationId" (list "gl_SubgroupInvocationID" uint-t))
         'compute (hash "globalInvocationId" (list "gl_GlobalInvocationID" (vector-t 'uint 3))
                        "localInvocationId" (list "gl_LocalInvocationID" (vector-t 'uint 3))
                        "workgroupId" (list "gl_WorkGroupID" (vector-t 'uint 3))
-                       "workgroupCount" (list "gl_NumWorkGroups" (vector-t 'uint 3)))))
+                       "workgroupCount" (list "gl_NumWorkGroups" (vector-t 'uint 3))
+                       "subgroupSize" (list "gl_SubgroupSize" uint-t)
+                       "subgroupInvocationId" (list "gl_SubgroupInvocationID" uint-t)
+                       "subgroupId" (list "gl_SubgroupID" uint-t)
+                       "subgroupCount" (list "gl_NumSubgroups" uint-t))))
 
 (define stage-variable-names
-  (for*/list ([(stage vars) (in-hash stage-variables)] [name (in-hash-keys vars)]) name))
+  (remove-duplicates (for*/list ([(stage vars) (in-hash stage-variables)] [name (in-hash-keys vars)]) name)))

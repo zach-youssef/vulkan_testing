@@ -228,6 +228,9 @@ public:
 public: // Accessors
     VkInstance instance() { return **instance_; }
     VkPhysicalDevice physicalDevice() { return physicalDevice_; }
+    // What the device's subgroups support: their size, stages and operations (generated ZGAL
+    // materials check their shaders' needs against it)
+    const VkPhysicalDeviceSubgroupProperties& subgroupProperties() const { return subgroupProperties_; }
     // The features the device was created with: the wrapper's and VulkanContextConfig::features
     const DeviceFeatures& enabledFeatures() const { return enabledFeatures_; }
     VkDevice device() { return **device_; }
@@ -830,6 +833,12 @@ private:
                 continue;
             }
             physicalDevice_ = device;
+            subgroupProperties_.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+            VkPhysicalDeviceProperties2 properties2{};
+            properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            properties2.pNext = &subgroupProperties_;
+            vkGetPhysicalDeviceProperties2(device, &properties2);
+            subgroupProperties_.pNext = nullptr;
             graphicsFamily_ = *graphicsFamily;
             presentFamily_.reset();
             if (hasSurface()) {
@@ -896,9 +905,10 @@ private:
         }
 
         // Every feature was checked when picking the physical device
-        const DeviceFeatures& features = enabledFeatures_;
+        DeviceFeatures features = enabledFeatures_;
 
-        std::vector<const char*> extensions;
+        // Those of extensions' features enabled, then the surface's
+        std::vector<const char*> extensions = features.extensions();
         if (hasSurface()) {
             extensions.insert(extensions.end(), deviceExtensions.begin(), deviceExtensions.end());
         }
@@ -971,6 +981,7 @@ private:
     std::unique_ptr<VulkanSurface> surface_;
 
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
+    VkPhysicalDeviceSubgroupProperties subgroupProperties_{};
     uint32_t graphicsFamily_ = 0;
     std::optional<uint32_t> presentFamily_;
     std::unique_ptr<VulkanDevice> device_;

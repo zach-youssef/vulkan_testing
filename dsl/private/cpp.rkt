@@ -112,16 +112,20 @@
     (emit! w (format "    ~a;" (cpp-declaration (field-type a) (field-name a))) #:at (field-loc a)))
   (emit! w "};" #:at (vertex-format-loc f)))
 
-(define (feature-flags widths)
-  (append*
-   (for/list ([bits (in-list widths)])
-     (if (= bits 8)
-         '("vulkan12.shaderInt8" "vulkan12.storageBuffer8BitAccess")
-         '("core.features.shaderInt16" "vulkan11.storageBuffer16BitAccess")))))
+(define (stage-bit stage)
+  (case stage
+    [(vertex) "VK_SHADER_STAGE_VERTEX_BIT"] [(fragment) "VK_SHADER_STAGE_FRAGMENT_BIT"]
+    [(compute) "VK_SHADER_STAGE_COMPUTE_BIT"]))
+
+(define (subgroup-bit category)
+  (format "VK_SUBGROUP_FEATURE_~a_BIT" (string-upcase (symbol->string category))))
 
 (define (emit-material! w prog m)
   (define name (material-name m))
-  (define widths (material-integer-widths m prog))
+  (define flags (material-feature-flags m prog))
+  (define-values (subgroup-stages subgroup-operations) (material-subgroup-needs m prog))
+  ;; Whether loadShaders checks the device first
+  (define checks? (or (pair? flags) (pair? subgroup-stages)))
   (define graphics? (eq? (material-kind m) 'graphics))
   (define bindings (material-bindings m))
   (define push (material-push m))
@@ -181,8 +185,8 @@
   (gen "")
   (gen (format "    // Loads ~a from the context's shader library" (string-join (map shader-name shaders) " and ")))
   (gen "    static Result<Shaders> loadShaders(VulkanContext& context) {")
-  (unless (null? widths)
-    (gen "        requireFeatures(context);"))
+  (when checks?
+    (gen "        requireDevice(context);"))
   (for ([s (in-list shaders)] [member (in-list shader-members)])
     (emit! w (format "        TRY_ASSIGN(auto ~a, context.shaders().get(~a));" member (cpp-string (shader-name s)))
            #:at (shader-loc s)))
@@ -193,16 +197,22 @@
   (gen "    // The device features the shaders need beyond the wrapper's: add them to the context's")
   (gen "    // (VulkanContextConfig::features, AppConfig::features) before creating it")
   (cond
-    [(null? widths)
+    [(null? flags)
      (gen "    static DeviceFeatures requiredFeatures() { return {}; }")]
     [else
      (gen "    static DeviceFeatures requiredFeatures() {")
      (gen "        DeviceFeatures features;")
-     (for ([flag (in-list (feature-flags widths))])
+     (for ([flag (in-list flags)])
        (gen (format "        features.~a = VK_TRUE;" flag)))
      (gen "        return features;")
      (gen "    }")])
   (gen "")
+  (unless (null? subgroup-stages)
+    (gen "    // The stages using subgroup operations, and the operations: devices support them in some stages")
+    (gen (format "    static constexpr VkShaderStageFlags kSubgroupStages = ~a;" (string-join (map stage-bit subgroup-stages) " | ")))
+    (gen (format "    static constexpr VkSubgroupFeatureFlags kSubgroupOperations = ~a;"
+                 (string-join (map subgroup-bit subgroup-operations) " | ")))
+    (gen ""))
 
   (cond
     [graphics?
@@ -269,18 +279,28 @@
   (gen "    }")
   (gen "")
   (gen "private:")
-  (unless (null? widths)
-    (gen "    // The shaders can't be loaded without the features, so a context lacking them is a mistake")
-    (gen "    static void requireFeatures(VulkanContext& context) {")
-    (gen "        const auto missing = context.enabledFeatures().missing(requiredFeatures());")
-    (gen "        if (!missing.empty()) {")
-    (gen (format "            std::string message = ~a;" (cpp-string (format "~a needs device features the context doesn't enable:" name))))
-    (gen "            for (const auto& feature : missing) {")
-    (gen "                message += \" \" + feature;")
-    (gen "            }")
-    (gen (format "            contractViolation(message + ~a);"
-                 (cpp-string (format ". Add ~a::requiredFeatures() to the context's features." name))))
-    (gen "        }")
+  (when checks?
+    (gen "    // The shaders can't be loaded without what they use, so a context lacking it is a mistake")
+    (gen "    static void requireDevice(VulkanContext& context) {")
+    (when (pair? flags)
+      (gen "        const auto missing = context.enabledFeatures().missing(requiredFeatures());")
+      (gen "        if (!missing.empty()) {")
+      (gen (format "            std::string message = ~a;" (cpp-string (format "~a needs device features the context doesn't enable:" name))))
+      (gen "            for (const auto& feature : missing) {")
+      (gen "                message += \" \" + feature;")
+      (gen "            }")
+      (gen (format "            contractViolation(message + ~a);"
+                   (cpp-string (format ". Add ~a::requiredFeatures() to the context's features." name))))
+      (gen "        }"))
+    (when (pair? subgroup-stages)
+      (gen "        const auto& subgroups = context.subgroupProperties();")
+      (gen "        if ((subgroups.supportedStages & kSubgroupStages) != kSubgroupStages ||")
+      (gen "            (subgroups.supportedOperations & kSubgroupOperations) != kSubgroupOperations) {")
+      (gen (format "            contractViolation(~a);"
+                   (cpp-string (format "~a's shaders use subgroup operations (~a) in stages (~a) the device's subgroups don't support"
+                                       name (string-join (map symbol->string subgroup-operations) ", ")
+                                       (string-join (map symbol->string subgroup-stages) ", ")))))
+      (gen "        }"))
     (gen "    }")
     (gen ""))
   (unless (null? bindings)

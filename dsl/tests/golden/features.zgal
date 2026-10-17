@@ -157,6 +157,41 @@
      (when (= x 0)
        (write! total (+ (at partial 0) (at marks 0)))))))
 
+;; Atomics (on shared and buffer elements, ints and floats), subgroups, strided ranges, while
+;; loops and early returns
+(compute-material Histogram
+  (workgroup 64)
+  (bindings
+   (samples (buffer-array uint))
+   (bins (buffer-array uint))
+   (weights (buffer-array float)))
+  (shared
+   (local (array uint 16)))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (unless (< i 4096) (return!))
+     (write! (at local localInvocationId.x) 0)
+     (for ([k (range i 4096 (* 64 workgroupCount.x))])
+       (atomic-add! (at local (remainder (at samples k) 16)) 1))
+     (let* ([(value steps) (while ([n (at samples i)] [steps (uint 0)]) (and (> n 1) (< steps 100))
+                              (values (if (= (remainder n 2) 0) (/ n 2) (+ (* 3 n) 1)) (+ steps 1)))]
+            [total (subgroupAdd steps)])
+       (when (subgroupElect)
+         (atomic-add! (at weights 0) (float total))
+         (atomic-max! (at bins 16) value))
+       (atomic-compare-exchange! (at bins 17) 0 subgroupSize)))))
+
+;; Discards and derivatives in a fragment shader
+(graphics-material Cutout
+  (varyings (coverage vec2))
+  (outputs (color vec4))
+  (vertex
+   (results #:position (vec4 0.0 0.0 0.0 1.0) #:coverage (vec2 0.5)))
+  (fragment
+   (when (< (length (fwidth coverage)) 0.001)
+     (discard!))
+   (vec4 coverage (dFdxFine coverage.x) 1.0)))
+
 ;; Every graph item, node and option
 (graph Everything
   (parameter enabled bool)

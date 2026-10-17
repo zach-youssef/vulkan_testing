@@ -111,7 +111,14 @@
     [(t-index b i _ _) (format "~a[~a]" (operand b) (p i))]
     [(t-if c a b _ _) (format "~a ? ~a : ~a" (operand c) (operand a) (operand b))]
     [(t-store i texel v _) (format "imageStore(~a, ~a, ~a)" (p i) (p texel) (p v))]
-    [(t-barrier _) "barrier()"]
+    [(t-barrier _ _) "barrier()"]
+    [(t-exit op _) (symbol->string op)]
+    [(t-atomic op place as _ _)
+     (format "~a(~a, ~a)"
+             (case op
+               [(add) "atomicAdd"] [(min) "atomicMin"] [(max) "atomicMax"] [(and) "atomicAnd"] [(or) "atomicOr"]
+               [(xor) "atomicXor"] [(exchange) "atomicExchange"] [(compare-exchange) "atomicCompSwap"])
+             (p place) (args as))]
     ;; Apps' effects, in the C++ of a generated app class (cpp-app.rkt), whose members they use
     [(t-effect 'print as _)
      (format "std::cout << ~a << std::endl"
@@ -146,11 +153,28 @@
           (line "} else {" l)
           (emit-statements! w else dialect (string-append indent "    "))
           (line "}" l)])]
-      [(s-for name t from to body l)
-       (line (format "for (~a = ~a; ~a < ~a; ++~a) {" (declaration name t dialect) (p from) name (p to) name) l)
+      [(s-for name t from to step body l)
+       (line (format "for (~a = ~a; ~a < ~a; ~a) {" (declaration name t dialect) (p from) name (p to)
+                     (match step
+                       [(t-lit 1 _ _) (format "++~a" name)]
+                       [_ (format "~a += ~a" name (p step))]))
+             l)
        (emit-statements! w body dialect (string-append indent "    "))
        (line "}" l)]
-      [(s-effect e l) (line (format "~a;" (p e)) l)])))
+      [(s-effect e l) (line (format "~a;" (p e)) l)]
+      [(s-while cs c body l)
+       (define inner (string-append indent "    "))
+       (cond
+         [(null? cs) (line (format "while (~a) {" (p c)) l)]
+         [else
+          ;; The condition needs statements first: test it inside the loop
+          (line "while (true) {" l)
+          (emit-statements! w cs dialect inner)
+          (emit! w (format "~aif (!(~a)) {" inner (p c)) #:at l)
+          (emit! w (format "~a    break;" inner) #:at l)
+          (emit! w (format "~a}" inner) #:at l)])
+       (emit-statements! w body dialect inner)
+       (line "}" l)])))
 
 ;; A counter of temporaries' spellings for one function
 (define (fresh-maker)

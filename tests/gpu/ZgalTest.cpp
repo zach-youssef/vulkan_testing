@@ -579,3 +579,138 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL apps call the extern functions C++ gives") {
     CHECK_THROWS_WITH_AS((void)Echo::create(ctx, graph, Echo::Inputs{.scale = [](float x) { return x; }}),
                          doctest::Contains("Echo's extern function record isn't given"), ContractViolation);
 }
+
+namespace {
+
+class Tallier : public Tally {
+public:
+    Tallier(VulkanContext& context, const Shaders& shaders, Bindings bindings, uint32_t count)
+    : Tally(context, shaders, std::move(bindings)), count_(count) {}
+
+    void update(uint32_t, VkExtent2D) override {}
+
+    // Fewer workgroups than samples: the grid-stride loop covers the rest
+    glm::vec3 getDispatchDimensions() override { return workgroupsFor(count_ / 2); }
+
+protected:
+    void writePush(uint32_t, Push& push) override { push.count = count_; }
+
+private:
+    uint32_t count_;
+};
+
+uint32_t collatzSteps(uint32_t n) {
+    uint32_t taken = 0;
+    while (n > 1 && taken < 1000) {
+        n = n % 2 == 0 ? n / 2 : 3 * n + 1;
+        ++taken;
+    }
+    return taken;
+}
+
+} // namespace
+
+TEST_CASE("ZGAL's atomics, while loops, subgroup operations, strided ranges and early returns") {
+    // Float atomics need a device feature, which the material reports
+    const DeviceFeatures features = Tally::requiredFeatures();
+    CHECK(features.atomicFloat.shaderBufferFloat32AtomicAdd);
+    FeatureContext feature(features);
+    auto& ctx = *feature.context;
+    REQUIRE((ctx.subgroupProperties().supportedOperations & Tally::kSubgroupOperations) == Tally::kSubgroupOperations);
+
+    constexpr uint32_t kCount = 256;
+    std::vector<uint32_t> samples(kCount);
+    for (uint32_t i = 0; i < kCount; ++i) {
+        samples[i] = (i * 37 + 11) % 200 + 1;
+    }
+    auto sampleBuffer = Buffer<uint32_t>::createAndInitialize(ctx, samples, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT).value();
+    auto make = [&](size_t count) {
+        return Buffer<uint32_t>::createAndInitialize(ctx, std::vector<uint32_t>(count, 0u), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+            .value();
+    };
+    auto counts = make(16);
+    auto steps = make(kCount);
+    auto subgroupSums = make(kCount);
+    auto total = Buffer<float>::createAndInitialize(ctx, std::vector<float>{0.0f}, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                     .value();
+    {
+        RenderGraph graph(ctx);
+        for (auto& [name, buffer] : std::vector<std::pair<const char*, Handle<Buffer<uint32_t>>>>{
+                 {"samples", sampleBuffer}, {"counts", counts}, {"steps", steps}, {"subgroupSums", subgroupSums}}) {
+            graph.importBuffer<uint32_t>(name, buffer);
+        }
+        graph.importBuffer<float>("total", total);
+        auto& heap = ctx.descriptors();
+        auto shaders = Tally::loadShaders(ctx).value();
+        auto material = ctx.resources().create<Tallier>(
+            ctx, shaders,
+            Tally::Bindings{.samples = heap.storageBuffer(sampleBuffer), .counts = heap.storageBuffer(counts),
+                            .total = heap.storageBuffer(total), .steps = heap.storageBuffer(steps),
+                            .subgroupSums = heap.storageBuffer(subgroupSums)},
+            kCount);
+        // Atomics read and write their places
+        CHECK(material->bindings()[1].access == Access::StorageBufferReadWrite);
+        graph.add<DispatchNode>("tally", material);
+        graph.execute().value();
+        ctx.waitIdleAll();
+    }
+
+    // The histogram's grid-stride loop covers every sample; the rest is per invocation, of which
+    // there are half as many
+    constexpr uint32_t kInvocations = kCount / 2;
+    std::vector<uint32_t> expectedCounts(16, 0);
+    float expectedTotal = 0.0f;
+    for (uint32_t i = 0; i < kCount; ++i) {
+        ++expectedCounts[samples[i] % 16];
+        if (i < kInvocations) {
+            expectedTotal += float(samples[i]);
+        }
+    }
+    CHECK(contents(counts, 16) == expectedCounts);
+    CHECK(contents(total, 1)[0] == expectedTotal);
+    const auto taken = contents(steps, kCount);
+    const auto sums = contents(subgroupSums, kCount);
+    const uint32_t subgroupSize = ctx.subgroupProperties().subgroupSize;
+    for (uint32_t i = 0; i < kInvocations; ++i) {
+        CAPTURE(i);
+        CHECK(taken[i] == collatzSteps(samples[i]));
+        // Every invocation is below the count, so every subgroup is full
+        CHECK(sums[i] == subgroupSize);
+    }
+
+    sampleBuffer.reset();
+    counts.reset();
+    steps.reset();
+    subgroupSums.reset();
+    total.reset();
+    std::lock_guard<std::mutex> lock(feature.mutex);
+    CHECK(feature.errors.empty());
+    for (const auto& error : feature.errors) {
+        MESSAGE(error);
+    }
+}
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL fragment shaders discard fragments and take derivatives") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    const CutGraph cut = CutGraph::build(ctx, graph, CutGraph::Inputs{}).value();
+    graph.execute().value();
+    const auto pixels = cut.readCanvasPixels(graph).value();
+    for (uint32_t y = 0; y < 4; ++y) {
+        for (uint32_t x = 0; x < 4; ++x) {
+            CAPTURE(x);
+            CAPTURE(y);
+            const uint8_t* p = &pixels[(y * 4 + x) * 4];
+            if (x < 2) {
+                // Discarded: the clear colour
+                CHECK((p[0] == 0 && p[1] == 0));
+            } else {
+                // fwidth(fragCoord.x) is a pixel
+                CHECK((p[0] == 255 && p[1] == 255));
+            }
+        }
+    }
+    ctx.waitIdleAll();
+}

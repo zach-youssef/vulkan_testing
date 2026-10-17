@@ -34,16 +34,21 @@
 (struct t-index (base index type loc) #:transparent)
 (struct t-if (condition then else type loc) #:transparent)   ; else is #f for when
 (struct t-let (bindings body type loc) #:transparent)         ; bindings: (list names types expression)
-(struct t-fold (accumulators loops body type loc) #:transparent) ; accumulators: (list name type init); loops: (list name from to)
+(struct t-fold (accumulators loops body type loc) #:transparent) ; accumulators: (list name type init); loops: (list name from to step)
 (struct t-for (loops body loc) #:transparent)                 ; a loop for effects
+(struct t-while (accumulators condition body type loc) #:transparent) ; accumulators as t-fold's
 (struct t-values (expressions type loc) #:transparent)
 (struct t-begin (expressions type loc) #:transparent)
 (struct t-store (image texel value loc) #:transparent)        ; imageStore
 (struct t-write (place value loc) #:transparent)              ; place: a global binding, field or index of one
 (struct t-results (fields loc) #:transparent)                 ; (cons output-name expression)
 (struct t-with (base fields type loc) #:transparent)          ; fields: (cons name expression)
-(struct t-barrier (loc) #:transparent)                        ; a compute shader's workgroup barrier
+(struct t-barrier (buffers? loc) #:transparent)               ; a compute shader's workgroup barrier (also ordering buffer writes)
 (struct t-effect (op args loc) #:transparent)                 ; an app's effect: 'print 'set-frames-in-flight 'quit
+;; An atomic operation on a place (as t-write's), giving its previous value. op: 'add 'min 'max 'and
+;; 'or 'xor 'exchange 'compare-exchange (whose args are the comparand, then the value).
+(struct t-atomic (op place args type loc) #:transparent)
+(struct t-exit (op loc) #:transparent)                        ; 'return (compute) or 'discard (fragment)
 
 ;; The type of a stage's results
 (struct results-t () #:transparent)
@@ -53,30 +58,33 @@
     [(t-lit _ t _) t] [(t-local _ t _) t] [(t-global _ _ _ t _) t] [(t-call _ _ t _) t]
     [(t-user-call _ _ t _) t] [(t-texture _ _ t _) t] [(t-op _ _ t _) t] [(t-construct _ t _) t]
     [(t-field _ _ t _) t] [(t-swizzle _ _ t _) t] [(t-index _ _ t _) t] [(t-if _ _ _ t _) t]
-    [(t-let _ _ t _) t] [(t-fold _ _ _ t _) t] [(t-for _ _ _) (void-t)] [(t-values _ t _) t]
+    [(t-let _ _ t _) t] [(t-fold _ _ _ t _) t] [(t-while _ _ _ t _) t] [(t-for _ _ _) (void-t)] [(t-values _ t _) t]
     [(t-begin _ t _) t] [(t-store _ _ _ _) (void-t)] [(t-write _ _ _) (void-t)]
-    [(t-results _ _) (results-t)] [(t-with _ _ t _) t] [(t-barrier _) (void-t)] [(t-effect _ _ _) (void-t)]))
+    [(t-results _ _) (results-t)] [(t-with _ _ t _) t] [(t-barrier _ _) (void-t)] [(t-effect _ _ _) (void-t)]
+    [(t-atomic _ _ _ t _) t] [(t-exit _ _) (void-t)]))
 
 (define (texpr-loc e)
   (match e
     [(t-lit _ _ l) l] [(t-local _ _ l) l] [(t-global _ _ _ _ l) l] [(t-call _ _ _ l) l]
     [(t-user-call _ _ _ l) l] [(t-texture _ _ _ l) l] [(t-op _ _ _ l) l] [(t-construct _ _ l) l]
     [(t-field _ _ _ l) l] [(t-swizzle _ _ _ l) l] [(t-index _ _ _ l) l] [(t-if _ _ _ _ l) l]
-    [(t-let _ _ _ l) l] [(t-fold _ _ _ _ l) l] [(t-for _ _ l) l] [(t-values _ _ l) l]
+    [(t-let _ _ _ l) l] [(t-fold _ _ _ _ l) l] [(t-while _ _ _ _ l) l] [(t-for _ _ l) l] [(t-values _ _ l) l]
     [(t-begin _ _ l) l] [(t-store _ _ _ l) l] [(t-write _ _ l) l] [(t-results _ l) l] [(t-with _ _ _ l) l]
-    [(t-barrier l) l] [(t-effect _ _ l) l]))
+    [(t-barrier _ l) l] [(t-effect _ _ l) l] [(t-atomic _ _ _ _ l) l] [(t-exit _ l) l]))
 
 ;; Applies f to e's subexpressions, returning a list of the results
 (define (texpr-children e)
   (match e
-    [(or (t-lit _ _ _) (t-local _ _ _) (t-global _ _ _ _ _) (t-barrier _)) '()]
+    [(or (t-lit _ _ _) (t-local _ _ _) (t-global _ _ _ _ _) (t-barrier _ _) (t-exit _ _)) '()]
+    [(t-atomic _ place args _ _) (cons place args)]
     [(t-call _ args _ _) args] [(t-user-call _ args _ _) args] [(t-texture _ args _ _) args]
     [(t-op _ args _ _) args] [(t-construct args _ _) args]
     [(t-field b _ _ _) (list b)] [(t-swizzle b _ _ _) (list b)] [(t-index b i _ _) (list b i)]
     [(t-if c a b _ _) (filter values (list c a b))]
     [(t-let bindings body _ _) (append (map third bindings) (list body))]
-    [(t-fold accs loops body _ _) (append (map third accs) (append-map (λ (l) (list (second l) (third l))) loops) (list body))]
-    [(t-for loops body _) (append (append-map (λ (l) (list (second l) (third l))) loops) (list body))]
+    [(t-fold accs loops body _ _) (append (map third accs) (append-map cdr loops) (list body))]
+    [(t-for loops body _) (append (append-map cdr loops) (list body))]
+    [(t-while accs c body _ _) (append (map third accs) (list c body))]
     [(t-values es _ _) es] [(t-begin es _ _) es]
     [(t-store i t v _) (list i t v)] [(t-write p v _) (list p v)]
     [(t-results fields _) (map cdr fields)] [(t-with b fields _ _) (cons b (map cdr fields))]
@@ -347,6 +355,7 @@
         (define es (map (λ (a) (settle (recur a))) args))
         (t-values es (values-t (map texpr-type es)) here)]
        [(fold) (check-fold stx args ctx locals #f)]
+       [(while) (check-while stx args ctx locals)]
        [(sum) (check-fold stx args ctx locals #t)]
        [(for) (check-for stx args ctx locals)]
        [(results) (check-results stx args ctx locals)]
@@ -454,12 +463,35 @@
           [(quit!)
            (arity 0 0)
            (t-effect 'quit '() here)])]
-       [(barrier!)
+       [(atomic-add! atomic-min! atomic-max! atomic-and! atomic-or! atomic-xor! atomic-exchange! atomic-compare-exchange!)
+        (define op (string->symbol (regexp-replace #px"^atomic-(.*)!$" (symbol->string head) "\\1")))
+        (define compare? (eq? op 'compare-exchange))
+        (arity (if compare? 3 2) (if compare? 3 2))
+        (define place (check-raw (first args) ctx locals))
+        (unless (and (writable-place? place) (not (t-swizzle? place)))
+          (zgal-error 'bad-write (first args) "~a works on an element or field of a buffer binding or shared variable; ~a isn't one"
+                      head (show (first args))))
+        (define t (texpr-type place))
+        (define kind (and (scalar-t? t) (scalar-t-kind t)))
+        (unless (memq kind '(int uint float))
+          (zgal-error 'type-mismatch (first args) "~a works on an int, uint or float, not ~a" head (a-type t)))
+        (when (and (eq? kind 'float) (not (memq op '(add exchange))))
+          (zgal-error 'type-mismatch (first args) "~a works on an int or uint; floats have atomic-add! and atomic-exchange!" head))
+        (t-atomic op place
+                  (for/list ([a (in-list (rest args))]) (coerce (recur a) t a "an atomic's operand"))
+                  t here)]
+       [(return! discard!)
+        (arity 0 0)
+        (define-values (op stage) (if (eq? head 'return!) (values 'return 'compute) (values 'discard 'fragment)))
+        (unless (eq? (context-stage ctx) stage)
+          (zgal-error 'wrong-stage stx "~a ends a ~a shader's invocation, so only ~a shaders use it" head stage stage))
+        (t-exit op here)]
+       [(barrier! buffer-barrier!)
         (arity 0 0)
         (unless (eq? (context-stage ctx) 'compute)
-          (zgal-error 'bad-barrier stx "barrier! synchronizes a compute shader's workgroup, so only compute shaders (not ~a) use it"
+          (zgal-error 'bad-barrier stx "~a synchronizes a compute shader's workgroup, so only compute shaders (not ~a) use it" head
                       (if (eq? (context-stage ctx) 'function) "functions" (format "~a shaders" (context-stage ctx)))))
-        (t-barrier here)]
+        (t-barrier (eq? head 'buffer-barrier!) here)]
        [else
         (cond
           [(hash-ref vector-constructors head #f) => (λ (t) (check-vector-constructor t stx args ctx locals))]
@@ -495,6 +527,8 @@
                    (set-add! (context-uses ctx) head-name)
                    (t-user-call head-name typed (function-decl-result f) here)]))]
           [(builtin-function? head)
+           (when (and (derivative-function? head) (not (memq (context-stage ctx) '(fragment function))))
+             (zgal-error 'wrong-stage stx "~a is a derivative across a fragment shader's neighbouring invocations, so only fragment shaders use it" head))
            (define typed (map recur args))
            (match (resolve-builtin head (map texpr-type typed))
              [(cons arg-types result)
@@ -533,9 +567,18 @@
 (define (check-sequence stxs where ctx locals)
   (define es (for/list ([s (in-list stxs)]) (check s ctx locals)))
   (for ([e (in-list (drop-right es 1))] [s (in-list stxs)])
-    (unless (void-t? (texpr-type e))
+    (unless (or (void-t? (texpr-type e)) (discardable? e))
       (zgal-error 'type-mismatch s "only the last expression of a sequence has a value; this one is ~a" (a-type (texpr-type e)))))
   (if (= (length es) 1) (first es) (t-begin es (texpr-type (last es)) (stx->loc where))))
+
+;; Whether e is for its effect, whatever its value: an atomic (or ends with one), whose previous
+;; value a sequence may ignore
+(define (discardable? e)
+  (match e
+    [(t-atomic _ _ _ _ _) #t]
+    [(t-begin es _ _) (discardable? (last es))]
+    [(t-let _ body _ _) (discardable? body)]
+    [_ #f]))
 
 (define (check-type-name stx ctx)
   (define d (syntax-e stx))
@@ -603,7 +646,8 @@
        (t-if condition a b t (stx->loc (car clauses)))]
       [_ (zgal-error 'malformed (car clauses) "expected [condition expression]")])))
 
-;; ([name (range from to)] ...): loops nested in order. Returns the loops and the locals inside.
+;; ([name (range from to [step])] ...): loops nested in order, each (list name from to step).
+;; Returns the loops and the locals inside.
 (define (check-loops stx ctx locals)
   (define loop-stxs (or (syntax->list stx) (zgal-error 'malformed stx "expected ([name (range from to)] ...)")))
   (when (null? loop-stxs)
@@ -613,7 +657,8 @@
     (match (syntax->list l)
       [(list n r) #:when (eq? (head-symbol r) 'range)
        (match (syntax->list r)
-         [(list _ from-stx to-stx)
+         [(list _ from-stx to-stx step-stx ...)
+          #:when (<= (length step-stx) 1)
           (define from (check from-stx ctx ls))
           (define to (check to-stx ctx ls))
           (define t (let ([tf (texpr-type from)] [tt (texpr-type to)])
@@ -621,11 +666,19 @@
                             [(literal? tf) tt] [else tf])))
           (unless (member t (list (scalar-t 'int) (scalar-t 'uint)))
             (zgal-error 'type-mismatch r "a range is of ints or uints, not ~a" (a-type t)))
+          (define step
+            (cond
+              [(null? step-stx) (t-lit 1 t (stx->loc r))]
+              [else
+               (define s (coerce (check (first step-stx) ctx ls) t (first step-stx) "a range's step"))
+               (when (and (t-lit? s) (<= (t-lit-value s) 0))
+                 (zgal-error 'malformed (first step-stx) "a range's step is positive, not ~a" (t-lit-value s)))
+               s]))
           (define name (local-name n ctx))
           (define spelling (spell! ctx name))
-          (values (cons (list spelling (coerce from t from-stx "a range's start") (coerce to t to-stx "a range's end")) loops)
+          (values (cons (list spelling (coerce from t from-stx "a range's start") (coerce to t to-stx "a range's end") step) loops)
                   (hash-set ls name (t-local spelling t (stx->loc n))))]
-         [_ (zgal-error 'malformed r "expected (range from to): from up to, not including, to")])]
+         [_ (zgal-error 'malformed r "expected (range from to [step]): from up to, not including, to, by step (1 by default)")])]
       [_ (zgal-error 'malformed l "expected [name (range from to)]")])))
 
 (define (check-fold stx args ctx locals sum?)
@@ -643,50 +696,66 @@
     [else
      (unless (= (length args) 3)
        (zgal-error 'malformed stx "expected (fold ([accumulator initial] ...) ([name (range from to)] ...) expression)"))
-     (define acc-stxs (or (syntax->list (first args)) (zgal-error 'malformed (first args) "expected ([accumulator initial] ...)")))
-     (when (null? acc-stxs)
-       (zgal-error 'malformed (first args) "a fold has at least one accumulator"))
-     (define accs
-       (for/list ([a (in-list acc-stxs)])
-         (match (syntax->list a)
-           [(list n init) (list n (settle (check init ctx locals)))]
-           [_ (zgal-error 'malformed a "expected [accumulator initial]")])))
-     (define-values (acc-locals spelled)
-       (for/fold ([ls locals] [spelled '()] #:result (values ls (reverse spelled)))
-                 ([a (in-list accs)])
-         (define name (local-name (first a) ctx))
-         (define spelling (spell! ctx name))
-         (values (hash-set ls name (t-local spelling (texpr-type (second a)) (stx->loc (first a)))) (cons spelling spelled))))
+     (define-values (accs acc-locals) (check-accumulators (first args) ctx locals))
      (define-values (loops inner) (check-loops (second args) ctx acc-locals))
-     (define body (check (third args) ctx inner))
-     (define types (map (λ (a) (texpr-type (second a))) accs))
-     (define coerced
-       (match* (body types)
-         [((t-values es _ l) _)
-          (unless (= (length es) (length types))
-            (zgal-error 'malformed (third args) "the fold has ~a accumulators, so its body gives ~a values" (length types) (length types)))
-          (t-values (for/list ([e (in-list es)] [t (in-list types)]) (coerce e t (third args) "an accumulator's new value"))
-                    (values-t types) l)]
-         [(_ (list t)) (coerce body t (third args) "the accumulator's new value")]
-         ;; Values from a let* or if: they must already have the accumulators' types
-         [(_ _) #:when (values-t? (texpr-type body))
-          (unless (equal? (values-t-types (texpr-type body)) types)
-            (zgal-error 'type-mismatch (third args) "the fold's accumulators are ~a, but its body gives ~a"
-                        (type-name (values-t types)) (type-name (texpr-type body))))
-          body]
-         [(_ _) (zgal-error 'malformed (third args) "the fold has ~a accumulators, so its body is (values ...)" (length types))]))
-     (t-fold (for/list ([a (in-list accs)] [s (in-list spelled)] [t (in-list types)]) (list s t (second a)))
-             loops coerced (if (= (length types) 1) (first types) (values-t types)) (stx->loc stx))]))
+     (define types (map second accs))
+     (define body (next-values (check (third args) ctx inner) types (third args)))
+     (t-fold accs loops body (if (= (length types) 1) (first types) (values-t types)) (stx->loc stx))]))
 
 (define (check-for stx args ctx locals)
   (unless (>= (length args) 2)
     (zgal-error 'malformed stx "expected (for ([name (range from to)] ...) effect ...)"))
   (define-values (loops inner) (check-loops (first args) ctx locals))
   (define body (check-sequence (rest args) stx ctx inner))
-  (unless (void-t? (texpr-type body))
+  (unless (or (void-t? (texpr-type body)) (discardable? body))
     (zgal-error 'type-mismatch stx "for is for effects (write!, store!), but its body is ~a; use fold or sum for values"
                 (a-type (texpr-type body))))
   (t-for loops body (stx->loc stx)))
+
+(define (check-accumulators stx ctx locals)
+  (define acc-stxs (or (syntax->list stx) (zgal-error 'malformed stx "expected ([accumulator initial] ...)")))
+  (when (null? acc-stxs)
+    (zgal-error 'malformed stx "a loop has at least one accumulator"))
+  (define accs
+    (for/list ([a (in-list acc-stxs)])
+      (match (syntax->list a)
+        [(list n init) (list n (settle (check init ctx locals)))]
+        [_ (zgal-error 'malformed a "expected [accumulator initial]")])))
+  (define-values (acc-locals spelled)
+    (for/fold ([ls locals] [spelled '()] #:result (values ls (reverse spelled)))
+              ([a (in-list accs)])
+      (define name (local-name (first a) ctx))
+      (define spelling (spell! ctx name))
+      (values (hash-set ls name (t-local spelling (texpr-type (second a)) (stx->loc (first a)))) (cons spelling spelled))))
+  (values (for/list ([a (in-list accs)] [s (in-list spelled)]) (list s (texpr-type (second a)) (second a)))
+          acc-locals))
+
+;; The next values of accumulators of types, from body
+(define (next-values body types where)
+  (match* (body types)
+    [((t-values es _ l) _)
+     (unless (= (length es) (length types))
+       (zgal-error 'malformed where "the loop has ~a accumulators, so its body gives ~a values" (length types) (length types)))
+     (t-values (for/list ([e (in-list es)] [t (in-list types)]) (coerce e t where "an accumulator's new value"))
+               (values-t types) l)]
+    [(_ (list t)) (coerce body t where "the accumulator's new value")]
+    [(_ _) #:when (values-t? (texpr-type body))
+     (unless (equal? (values-t-types (texpr-type body)) types)
+       (zgal-error 'type-mismatch where "the loop's accumulators are ~a, but its body gives ~a"
+                   (type-name (values-t types)) (type-name (texpr-type body))))
+     body]
+    [(_ _) (zgal-error 'malformed where "the loop has ~a accumulators, so its body is (values ...)" (length types))]))
+
+;; (while ([accumulator initial] ...) condition next): while the condition holds (it sees the
+;; accumulators), the accumulators take next's values. Its value is theirs at the end.
+(define (check-while stx args ctx locals)
+  (unless (= (length args) 3)
+    (zgal-error 'malformed stx "expected (while ([accumulator initial] ...) condition expression)"))
+  (define-values (accs inner) (check-accumulators (first args) ctx locals))
+  (define condition (coerce (check (second args) ctx inner) (scalar-t 'bool) (second args) "a while's condition"))
+  (define types (map second accs))
+  (define body (next-values (check (third args) ctx inner) types (third args)))
+  (t-while accs condition body (if (= (length types) 1) (first types) (values-t types)) (stx->loc stx)))
 
 (define (check-with stx args ctx locals)
   (when (null? args)
@@ -825,15 +894,18 @@
   (define (go e) (respell e mapping ctx))
   (define (loops! ls l)
     (for/list ([lp (in-list ls)])
-      (match-define (list name from to) lp)
+      (match-define (list name from to step) lp)
       ;; Bounds are in the enclosing scope, so they're renamed before the variable is bound
       (define from2 (go from))
       (define to2 (go to))
-      (list (bind! name (texpr-type from) l) from2 to2)))
+      (define step2 (go step))
+      (list (bind! name (texpr-type from) l) from2 to2 step2)))
   (match e
     [(t-local name t l) (hash-ref mapping name (λ () e))]
-    [(or (t-lit _ _ _) (t-global _ _ _ _ _) (t-barrier _)) e]
+    [(or (t-lit _ _ _) (t-global _ _ _ _ _) (t-barrier _ _)) e]
     [(t-effect op as l) (t-effect op (map go as) l)]
+    [(t-atomic op p as t l) (t-atomic op (go p) (map go as) t l)]
+    [(t-exit _ _) e]
     [(t-call f as t l) (t-call f (map go as) t l)]
     [(t-user-call f as t l) (t-user-call f (map go as) t l)]
     [(t-texture op as t l) (t-texture op (map go as) t l)]
@@ -858,6 +930,10 @@
     [(t-for loops body l)
      (define loops2 (loops! loops l))
      (t-for loops2 (go body) l)]
+    [(t-while accs c body t l)
+     (define inits (map (λ (a) (go (third a))) accs))
+     (define accs2 (for/list ([a (in-list accs)] [init (in-list inits)]) (list (bind! (first a) (second a) l) (second a) init)))
+     (t-while accs2 (go c) (go body) t l)]
     [(t-values es t l) (t-values (map go es) t l)]
     [(t-begin es t l) (t-begin (map go es) t l)]
     [(t-store i tx v l) (t-store (go i) (go tx) (go v) l)]
@@ -891,6 +967,17 @@
            [(or (t-field b _ _ _) (t-swizzle b _ _ _)) (walk-place b)]
            [_ (void)]))
        (walk value)]
+      [(t-atomic _ place args _ _)
+       (define name (root place))
+       (when name
+         (note! name 'read)
+         (note! name 'write))
+       (let walk-place ([p place])
+         (match p
+           [(t-index b i _ _) (walk i) (walk-place b)]
+           [(t-field b _ _ _) (walk-place b)]
+           [_ (void)]))
+       (for-each walk args)]
       [(t-store (t-global 'binding name _ _ _) texel value _)
        (note! name 'write)
        (walk texel)
@@ -926,7 +1013,8 @@
   (let ok? ([e e])
     (and (not (opaque-t? (texpr-type e)))
          (match e
-           [(or (t-texture _ _ _ _) (t-store _ _ _ _) (t-write _ _ _) (t-barrier _) (t-effect _ _ _)) #f]
+           [(or (t-texture _ _ _ _) (t-store _ _ _ _) (t-write _ _ _) (t-barrier _ _) (t-effect _ _ _) (t-atomic _ _ _ _ _) (t-exit _ _)) #f]
+           [(t-call f _ _ _) #:when (gpu-only-function? f) #f]
            [(t-global kind name _ _ _) (and (eq? kind 'constant) (set-member? cpu-constants name))]
            [(t-user-call f _ _ _) (and (set-member? cpu-functions f) (andmap ok? (texpr-children e)))]
            [_ (andmap ok? (texpr-children e))]))))
@@ -951,33 +1039,49 @@
       [_ #f]))
   (define (loops-uniform? loops locals)
     (for/fold ([ok locals]) ([l (in-list loops)])
-      (match-define (list name from to) l)
-      (and ok (uniform? from ok) (uniform? to ok) (set-add ok name))))
-  (let walk ([e body] [locals (set)] [divergence #f])
+      (match-define (list name from to step) l)
+      (and ok (uniform? from ok) (uniform? to ok) (uniform? step ok) (set-add ok name))))
+  ;; Walks e reached with divergence (why only some invocations may reach it, or #f), returning why
+  ;; only some invocations may get past it: a return! only some take
+  (define (walk e locals divergence)
     (define (go c) (walk c locals divergence))
+    (define (sequence es locals divergence)
+      (for/fold ([exited #f]) ([c (in-list es)])
+        (or (walk c locals (or divergence exited)) exited)))
     (match e
-      [(t-barrier l)
+      [(t-barrier _ l)
        (when divergence
          (zgal-error 'bad-barrier l "barrier! is ~a, so a workgroup's invocations could disagree about reaching it; every invocation must reach it, or none"
-                     divergence))]
+                     divergence))
+       #f]
+      [(t-exit 'return _)
+       ;; Every invocation reaching it returns, so only a return some invocations skip matters
+       (and divergence "after a return! only some invocations take")]
+      [(t-begin es _ _) (sequence es locals divergence)]
       [(t-if c a b _ _)
        (go c)
        (define inner (or divergence (and (not (uniform? c locals)) "under a condition that can differ between invocations")))
-       (walk a locals inner)
-       (when b (walk b locals inner))]
+       (or (walk a locals inner) (and b (walk b locals inner)))]
       [(t-let bindings body _ _)
-       (define inner
-         (for/fold ([ls locals]) ([b (in-list bindings)])
+       (define-values (inner exited)
+         (for/fold ([ls locals] [exited #f]) ([b (in-list bindings)])
            (match-define (list names _ value) b)
-           (walk value ls divergence)
-           (if (uniform? value ls) (for/fold ([ls ls]) ([n (in-list names)]) (set-add ls n)) ls)))
-       (walk body inner divergence)]
+           (define value-exited (walk value ls (or divergence exited)))
+           (values (if (uniform? value ls) (for/fold ([ls ls]) ([n (in-list names)]) (set-add ls n)) ls)
+                   (or value-exited exited))))
+       (or (walk body inner (or divergence exited)) exited)]
+      [(t-while accs c body _ _)
+       (for ([a (in-list accs)]) (go (third a)))
+       ;; Whether it continues depends on its accumulators, which can differ between invocations
+       (define inner (or divergence "in a while loop, which can run a different number of times in each invocation"))
+       (or (walk c locals inner) (walk body locals inner))]
       [(or (t-for loops body _) (t-fold _ loops body _ _))
        (for ([c (in-list (texpr-children e))] #:unless (eq? c body)) (go c))
        (define uniform-locals (loops-uniform? loops locals))
        (walk body (or uniform-locals locals)
              (or divergence (and (not uniform-locals) "in a loop whose range can differ between invocations")))]
-      [_ (for-each go (texpr-children e))])))
+      [_ (sequence (texpr-children e) locals divergence)]))
+  (void (walk body (set) #f)))
 
 ;; ---------------------------------------------------------------------------------------------
 ;; App bodies

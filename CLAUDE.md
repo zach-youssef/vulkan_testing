@@ -261,7 +261,13 @@ writing ZGAL: it has the language, what's generated and every error. In short:
 - Storage bindings' accesses and graphics bindings' stages are inferred from the shaders, so the
   graph synchronizes what they actually do; don't declare them unless a shader is GLSL.
 - Compute materials can declare `(shared (name type) ...)` workgroup variables, written with
-  `write!` and synchronized with `(barrier!)`, which the compiler checks every invocation reaches.
+  `write!` and synchronized with `(barrier!)` (`(buffer-barrier!)` for buffer writes too), which the
+  compiler checks every invocation reaches.
+- Also in bodies: atomics giving the previous value (`(atomic-add! (at bins b) 1)`, min, max, and,
+  or, xor, exchange, compare-exchange; float adds need `requiredFeatures()`), strided ranges
+  `(range from to step)`, `(while ([acc init] ...) condition next)` loops, `(return!)` in compute
+  and `(discard!)` in fragment shaders, subgroup built-ins (`subgroupAdd`, `subgroupElect`, ...,
+  checked against the device when shaders load) and derivatives (`fwidth`, fragment only).
 - `uint8`, `int8`, `uint16` and `int16` pack buffers and shared memory. Bodies read them widened to
   `uint`/`int` and narrow explicitly to write them (`(uint8 x)`). A material using them needs device
   features: add its (or its graph's) `requiredFeatures()` to the context's features.

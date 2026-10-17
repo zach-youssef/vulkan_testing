@@ -94,7 +94,7 @@
                                "  (let* ([(total count) (fold ([total 0.0] [count 0]) ([i (range 0 n)]) (values (+ total (float i)) (+ count 1)))])\n"
                                "    (+ total (float count) (sum ([i (range 0 n)] [j (range 0 i)]) 1.0))))")))
   (check-zgal-error "(define (f [n : int]) : float (fold ([a 0.0] [b 0.0]) ([i (range 0 n)]) a))"
-                    'malformed "the fold has 2 accumulators, so its body is (values ...)"))
+                    'malformed "the loop has 2 accumulators, so its body is (values ...)"))
 
 (test-case "write! writes buffers, and results are checked"
   (check-zgal-error "(compute-material C (workgroup 1) (bindings (result (buffer float))) (compute (let* ([x 1.0]) (write! x 2.0))))"
@@ -176,7 +176,7 @@
   (check-true (string-contains? header "features.vulkan12.shaderInt8 = VK_TRUE;"))
   (check-true (string-contains? header "features.core.features.shaderInt16 = VK_TRUE;"))
   ;; Checked before loading the shaders, which use them
-  (check-true (string-contains? header "loadShaders(VulkanContext& context) {\n        requireFeatures(context);")))
+  (check-true (string-contains? header "loadShaders(VulkanContext& context) {\n        requireDevice(context);")))
 
 ;; ---------------------------------------------------------------------------------------------
 ;; Shared memory and barriers
@@ -205,3 +205,62 @@
   (check-zgal-error (shared-material "(let* ([n (at samples 0)]) (when (> n 0.0) (barrier!))) (write! result 0.0)") 'bad-barrier "under a condition")
   (check-zgal-error "(graphics-material F (outputs (color vec4)) (vertex (results #:position (vec4 0.0))) (fragment (begin (barrier!) (vec4 1.0))))"
                     'bad-barrier "only compute shaders"))
+
+;; ---------------------------------------------------------------------------------------------
+;; Atomics, loops, early exits, subgroups and derivatives
+
+(define (counting-material body)
+  (string-append "(compute-material Count (workgroup 64) (shared (bins (array uint 16)))\n"
+                 "  (bindings (counts (buffer-array uint)) (sums (buffer-array float)) (samples (buffer-array uint)))\n"
+                 "  (compute (let* ([i globalInvocationId.x]) " body ")))"))
+
+(test-case "Atomics give the previous value, which sequences may ignore, and read and write their places"
+  (define text (counting-material "(atomic-add! (at bins (remainder i 16)) 1)\n(let* ([old (atomic-max! (at counts 0) (at samples i))]) (write! (at counts 1) old)) (atomic-add! (at sums 0) 1.0)"))
+  (define shader (generated text "Count.comp"))
+  (check-true (string-contains? shader "uint zgalAtomic1 = atomicAdd(bins[i % 16u], 1u);"))
+  (check-true (string-contains? shader "uint zgalAtomic2 = atomicMax(counts()[0], samples()[i]);"))
+  (check-true (string-contains? shader "#extension GL_EXT_shader_atomic_float : require"))
+  (define m (material-named (program-of text) "Count"))
+  (check-equal? (binding-access (binding-named m "counts")) 'read-write)
+  (check-equal? (binding-access (binding-named m "sums")) 'read-write)
+  ;; Float adds need a device feature
+  (check-true (string-contains? (generated text ".zgal.h") "features.atomicFloat.shaderBufferFloat32AtomicAdd = VK_TRUE;"))
+  (check-zgal-error (counting-material "(atomic-min! (at sums 0) 1.0) (write! (at counts 0) 0)") 'type-mismatch "floats have atomic-add!")
+  (check-zgal-error (counting-material "(let* ([x 1]) (atomic-add! x 1)) (write! (at counts 0) (at samples 0)) (write! (at sums 0) 0.0)")
+                    'bad-write "isn't one"))
+
+(test-case "Strided ranges and while loops"
+  (define shader (generated (counting-material "(write! (at counts i) (sum ([k (range i 1024 64)]) (at samples k))) (let* ([(n steps) (while ([n (at samples i)] [steps 0]) (> n 1) (values (if (= (remainder n 2) 0) (/ n 2) (+ (* 3 n) 1)) (+ steps 1)))]) (write! (at sums i) (float steps)))")
+                            "Count.comp"))
+  (check-true (string-contains? shader "for (uint k = i; k < 1024u; k += 64u) {"))
+  (check-true (string-contains? shader "while (n > 1u) {"))
+  (check-zgal-error (counting-material "(write! (at counts 0) (sum ([k (range 0 4 0)]) k)) (write! (at sums 0) (at sums 1)) (write! (at samples 0) 0)")
+                    'malformed "a range's step is positive"))
+
+(test-case "Shaders return and discard early, and barriers after a return only some invocations take are rejected"
+  (check-true (string-contains? (generated (counting-material "(unless (< i 100) (return!)) (write! (at counts i) 1) (write! (at sums i) 1.0) (write! (at samples i) 1)") "Count.comp")
+                                "        return;"))
+  (check-zgal-error (counting-material "(when (> i 100) (return!)) (barrier!) (write! (at counts i) 1) (write! (at sums i) 1.0) (write! (at samples i) 1)")
+                    'bad-barrier "after a return! only some invocations take")
+  ;; A return every invocation takes (or none) is fine
+  (check-not-exn (λ () (program-of (counting-material "(when (> workgroupId.x 100) (return!)) (barrier!) (write! (at counts i) 1) (write! (at sums i) 1.0) (write! (at samples i) 1)"))))
+  (check-zgal-error "(graphics-material F (outputs (color vec4)) (vertex (results #:position (vec4 0.0))) (fragment (return!) (vec4 1.0)))"
+                    'wrong-stage "only compute shaders")
+  (check-true (string-contains? (generated "(graphics-material F (varyings (uv vec2)) (outputs (color vec4)) (vertex (results #:position (vec4 0.0) #:uv (vec2 0.0))) (fragment (when (< (fwidth uv.x) 0.5) (discard!)) (vec4 1.0)))" "F.frag")
+                                "discard;")))
+
+(test-case "Subgroup operations need the device's support in their stages, and derivatives fragment shaders"
+  (define text (counting-material "(let* ([total (subgroupAdd (at samples i))]) (when (subgroupElect) (write! (at counts (/ i subgroupSize)) total)) (write! (at sums i) (float (subgroupBallotBitCount (subgroupBallot (> total 0))))))"))
+  (define header (generated text ".zgal.h"))
+  (check-true (string-contains? header "kSubgroupStages = VK_SHADER_STAGE_COMPUTE_BIT;"))
+  (check-true (string-contains? header "kSubgroupOperations = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT;"))
+  (check-true (string-contains? (generated text "Count.comp") "#extension GL_KHR_shader_subgroup_arithmetic : require"))
+  (check-zgal-error (counting-material "(write! (at sums i) (dFdx 1.0)) (write! (at counts i) 0) (write! (at samples i) 0)") 'wrong-stage "only fragment shaders")
+  ;; Functions using them are for shaders only
+  (check-false (string-contains? (generated "(define (total [x : uint]) : uint (subgroupAdd x))" ".zgal.h") "total")))
+
+(test-case "Buffer barriers make buffer writes visible to the workgroup, under the same rules as barriers"
+  (define shader (generated (counting-material "(write! (at counts i) 1) (buffer-barrier!) (write! (at samples i) (at counts (bitxor i 1))) (write! (at sums i) 0.0)") "Count.comp"))
+  (check-true (string-contains? shader "    memoryBarrierBuffer();\n#line 3 \"test.zgal\"\n    barrier();"))
+  (check-zgal-error (counting-material "(when (> i 3) (buffer-barrier!)) (write! (at counts i) 1) (write! (at samples i) 1) (write! (at sums i) 0.0)")
+                    'bad-barrier "under a condition"))

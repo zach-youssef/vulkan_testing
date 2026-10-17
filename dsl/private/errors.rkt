@@ -167,12 +167,16 @@
          "(compute-material Fill\n  (workgroup 64)\n  (bindings (unused (buffer float)))\n  (compute))")
    (kind 'bad-write
          "write! writes to something that isn't a buffer"
-         "`write!` writes a buffer binding's value or a shared variable, or a field or element of one, e.g. `(write! (at particles i) p)`. Locals are immutable: bind a new one with `let*` instead. Images are written with `store!`."
+         "`write!` writes a buffer binding's value or a shared variable, or a field or element of one, e.g. `(write! (at particles i) p)`, and atomics (`atomic-add!` and the others) work on such a place's element or field. Locals are immutable: bind a new one with `let*` instead. Images are written with `store!`."
          "(compute-material Fill\n  (workgroup 64)\n  (bindings (result (buffer-array float)))\n  (compute\n   (let* ([x 1.0])\n     (write! x 2.0))))")
    (kind 'bad-results
          "A shader's results are missing, unknown or in the wrong place"
          "A vertex shader's body gives `(results #:position ... #:varying ...)`: its position and every varying. A fragment shader's gives `(results #:output ...)` with every output, or its one output's value. Compute shaders have no results."
          "(graphics-material Flat\n  (varyings (uv vec2))\n  (outputs (color vec4))\n  (vertex\n   (results #:position (vec4 0.0)))\n  (fragment\n   (vec4 1.0)))")
+   (kind 'wrong-stage
+         "A form or built-in used in a stage it isn't for"
+         "`(return!)` ends a compute shader's invocation and `(discard!)` a fragment shader's, so each is only in that stage's body (not functions, which return values). Derivatives (`dFdx`, `dFdy`, `fwidth` and their variants) compare neighbouring fragment shader invocations, so only fragment shaders (and functions they call) use them."
+         "(compute-material Fill\n  (workgroup 64)\n  (bindings (result (buffer-array float)))\n  (compute\n   (when (> globalInvocationId.x 100)\n     (discard!))\n   (write! (at result globalInvocationId.x) 1.0)))")
    (kind 'bad-barrier
          "A barrier! some invocations might not reach"
          "`barrier!` waits for every invocation of the workgroup to reach it, so it's only in compute shaders, and every invocation must reach it or none: it can't be under a condition, or in a loop, that could differ between invocations. Conditions and ranges computed from literals, constants, push constants, `workgroupId` and `workgroupCount` are the same for the whole workgroup; move the barrier out of anything else, e.g. `(when (< x stride) (write! ...))` followed by `(barrier!)`."
