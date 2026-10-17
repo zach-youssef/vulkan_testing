@@ -171,3 +171,21 @@
      (when (= x 0)
        (write! (at sums workgroupId.x) (at partial 0))))))
 
+;; The CPU fills a staging buffer the application owns, which is copied to the device, reduced, and
+;; the sums copied back after a placeholder (an offset copy); an extern node copies the repacked
+;; elements back too
+(graph ReduceGraph
+  (parameter count uint)        ; A multiple of 64
+  (input upload cpu)
+  (input copyBack extern)
+  (import-buffer staging Bytes)
+  (import-buffer results uint)
+  (import-buffer repacked Bytes)
+  (buffer packedBuffer Bytes count #:frames shared)
+  (buffer sumsBuffer uint (/ count 64) #:frames shared)
+  (material reduce Reduce (packed packedBuffer) (sums sumsBuffer) #:invocations (count))
+  (cpu fill upload #:writes (staging))
+  (copy toDevice staging packedBuffer)
+  (dispatch reduce reduce)
+  (copy toHost sumsBuffer results #:destination-offset 1)
+  (extern repack copyBack))

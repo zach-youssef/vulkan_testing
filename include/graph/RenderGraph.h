@@ -219,6 +219,10 @@ public: // Resources
             }
             return handle->getBuffer();
         };
+        record.resolveImportedSize = [buffer](uint32_t frame) -> VkDeviceSize {
+            auto handle = buffer.get(frame);
+            return handle ? handle->getSize() : 0;
+        };
         record.makeEntry = [buffer](uint32_t frame, DescriptorHeap& heap) {
             return heap.storageBuffer(buffer.get(frame));
         };
@@ -297,6 +301,16 @@ public: // Resources
             return record.resolveImported(frameIndex);
         }
         return createdBuffer(id, frameIndex)->getBuffer();
+    }
+
+    // The size in bytes of the buffer used in a frame
+    VkDeviceSize bufferSize(BufferId id, uint32_t frameIndex) {
+        auto& record = bufferRecord(id);
+        if (record.kind == BufferKind::Imported) {
+            buffer(id, frameIndex);   // An unbound buffer is a contract violation
+            return record.resolveImportedSize(frameIndex);
+        }
+        return record.size;
     }
 
     VkFormat imageFormat(ImageId id) {
@@ -596,6 +610,7 @@ private:
         BufferKind kind = BufferKind::Created;
         bool perFrame = false;
         std::function<VkBuffer(uint32_t)> resolveImported;
+        std::function<VkDeviceSize(uint32_t)> resolveImportedSize;
         // Creates a storage buffer entry for a frame (imported buffers of a known type)
         std::function<Handle<DescriptorEntry>(uint32_t, DescriptorHeap&)> makeEntry;
         VkDeviceSize size = 0;

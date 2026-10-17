@@ -197,3 +197,31 @@
                                "  (dispatch run fill))")
                 #:bodies (hash "fill.comp" "void main() {}"))))
 
+(test-case "Imported buffers bind like graph buffers, holding the bindings' types"
+  (check-false (zgal-error-of
+                (string-append fill-material
+                               "(graph G\n  (import-buffer b Data)\n"
+                               "  (material fill Fill (data b) #:push ((scale 1.0)) #:invocations (1))\n  (dispatch run fill))")
+                #:bodies (hash "fill.comp" "void main() {}")))
+  (check-zgal-error (string-append fill-material
+                                   "(graph G\n  (import-buffer b float)\n"
+                                   "  (material fill Fill (data b) #:push ((scale 1.0)) #:invocations (1))\n  (dispatch run fill))")
+                    'binding-mismatch "binding data holds Data, but b holds float"))
+
+(test-case "A cpu node's work reads and writes imported buffers, which the CPU can map"
+  (check-false (zgal-error-of "(graph G\n  (input work cpu)\n  (import-buffer b uint)\n  (cpu run work #:reads (b) #:writes (b)))"))
+  (check-zgal-error "(graph G\n  (input work cpu)\n  (buffer b uint 4 #:frames shared)\n  (cpu run work #:writes (b)))"
+                    'type-mismatch "b is a graph buffer, in device-local memory")
+  (check-zgal-error "(graph G\n  (input work cpu)\n  (sampler s)\n  (cpu run work #:reads (s)))"
+                    'type-mismatch "s is a sampler, not an imported buffer"))
+
+(test-case "Copies are between two buffers of one element type"
+  (check-false (zgal-error-of "(graph G\n  (import-buffer a uint)\n  (buffer b uint 4 #:frames shared)\n  (copy c a b #:count 2 #:destination-offset 2))"))
+  (check-zgal-error "(graph G\n  (buffer a uint 4 #:frames shared)\n  (copy c a a))" 'bad-copy "copies a to itself")
+  (check-zgal-error "(graph G\n  (input n (per-frame uint))\n  (buffer a uint 4 #:frames shared)\n  (buffer b uint 4 #:frames shared)\n  (copy c a b #:count n))"
+                    'not-build-time "n is a per-frame input"))
+
+(test-case "Extern nodes take an extern input, and only #:when"
+  (check-false (zgal-error-of "(graph G\n  (parameter on bool)\n  (input more extern)\n  (extern added more #:when on))"))
+  (check-zgal-error "(graph G\n  (input more extern)\n  (extern added more #:enabled #f))" 'bad-option "extern takes no #:enabled option")
+  (check-zgal-error "(graph G\n  (input work cpu)\n  (extern added work))" 'type-mismatch "work is a cpu input, not an extern input"))

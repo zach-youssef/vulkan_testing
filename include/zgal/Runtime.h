@@ -5,6 +5,7 @@
 #include "core/Result.h"
 #include "core/VulkanContext.h"
 #include "descriptors/DescriptorHeap.h"
+#include "graph/RenderGraph.h"
 #include "resources/Buffer.h"
 #include "resources/Image.h"
 
@@ -237,6 +238,34 @@ const T& require(const std::optional<T>& value, const char* graph, const char* n
         contractViolation(std::string("Graph ") + graph + " uses " + name + ", whose #:when condition was false");
     }
     return *value;
+}
+
+// An extern input: adds nodes to the graph (with the ids of the graph's resources, and of the nodes
+// before it), returning their ids
+template<typename Graph>
+using ExternNodes = std::function<std::vector<NodeId>(RenderGraph& graph, const Graph& ids)>;
+
+// Records a copy node's copy of count elements of elementSize bytes, from sourceOffset elements into
+// source to destinationOffset elements into destination. Without a count, it copies the rest of the
+// source. Both buffers must hold the elements (whatever size the application's buffers have).
+inline void copyBuffer(RecordContext& record, BufferId source, BufferId destination, VkDeviceSize elementSize,
+                       VkDeviceSize sourceOffset, VkDeviceSize destinationOffset, std::optional<VkDeviceSize> count,
+                       const char* node) {
+    const VkDeviceSize sourceElements = record.graph.bufferSize(source, record.frameIndex) / elementSize;
+    const VkDeviceSize destinationElements = record.graph.bufferSize(destination, record.frameIndex) / elementSize;
+    const VkDeviceSize elements = count ? *count : (sourceOffset < sourceElements ? sourceElements - sourceOffset : 0);
+    if (sourceOffset + elements > sourceElements || destinationOffset + elements > destinationElements) {
+        contractViolation(std::string("Copy ") + node + " copies " + std::to_string(elements) + " elements from element " +
+                          std::to_string(sourceOffset) + " of a buffer of " + std::to_string(sourceElements) +
+                          " to element " + std::to_string(destinationOffset) + " of a buffer of " +
+                          std::to_string(destinationElements));
+    }
+    if (elements == 0) {
+        return;
+    }
+    const VkBufferCopy region{sourceOffset * elementSize, destinationOffset * elementSize, elements * elementSize};
+    vkCmdCopyBuffer(record.commandBuffer, record.graph.buffer(source, record.frameIndex),
+                    record.graph.buffer(destination, record.frameIndex), 1, &region);
 }
 
 // The extent of an imported image (the current frame's, if it has one per frame)

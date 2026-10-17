@@ -659,15 +659,17 @@ and the C++ building it, which supplies the meshes and reads the application's s
 @(file-excerpt "examples/scene/scene_example.cpp" #:from #rx"TRY_ASSIGN[(]const SceneGraph scene" #:to #rx"^    [}][)][)];")
 
 @racketgrammar*[
- #:literals (graph parameter input per-frame meshes cpu import-image constant sampler uniform image
-             buffer target surface attachments if color depth material dispatch draw-meshes draw
-             readback fixed extent-of)
+ #:literals (graph parameter input per-frame meshes cpu extern import-image import-buffer constant
+             sampler uniform image buffer target surface attachments if color depth material dispatch
+             draw-meshes draw readback copy fixed extent-of)
  [graph-form (graph Name graph-item ...)]
  [graph-item (parameter name type)
              (input name (per-frame type))
              (input name meshes)
              (input name cpu)
+             (input name extern)
              (import-image name #:resting resting-state)
+             (import-buffer name type)
              (constant name expression)
              (sampler name sampler-option ...)
              (uniform name type per-frame-input)
@@ -680,8 +682,13 @@ and the C++ building it, which supplies the meshes and reads the application's s
        (draw-meshes name target meshes-input material node-option ...)
        (draw name target material vertex-count node-option ...)
        (readback name image node-option ...)
-       (cpu name cpu-input node-option ...)]
+       (cpu name cpu-input cpu-option ... node-option ...)
+       (copy name source-buffer destination-buffer copy-option ... node-option ...)
+       (extern name extern-input maybe-when)]
  [node-option (code:line #:when expression) (code:line #:enabled expression)]
+ [cpu-option (code:line #:reads (imported-buffer ...)) (code:line #:writes (imported-buffer ...))]
+ [copy-option (code:line #:count expression) (code:line #:source-offset expression)
+              (code:line #:destination-offset expression)]
  [maybe-when (code:line) (code:line #:when expression)]
  [frames shared per-frame]]
 
@@ -703,7 +710,9 @@ C++ passes them to @tt{build()} in an @tt{Inputs} struct, by name:
   (list @tt{(input n (per-frame T))} @tt{zgal::FrameSource<T>} "a function C++ calls each frame with a zgal::FrameInfo: uniforms' sources and push constants")
   (list @tt{(input n meshes)} @tt{std::vector<Handle<Mesh>>} @elem{the meshes a @racket[draw-meshes] node draws})
   (list @tt{(input n cpu)} @tt{RenderGraph::RunFn} @elem{a @racket[cpu] node's work, each frame})
-  (list @tt{(import-image n #:resting s)} @tt{FrameBinding<Image>} "an image the application owns, returned to its resting state (shader-read-only, general or transfer-src) after each frame"))]
+  (list @tt{(input n extern)} @tt{zgal::ExternNodes<Graph>} @elem{a function adding an @racket[extern] node's nodes (@secref["extern"])})
+  (list @tt{(import-image n #:resting s)} @tt{FrameBinding<Image>} "an image the application owns, returned to its resting state (shader-read-only, general or transfer-src) after each frame")
+  (list @tt{(import-buffer n T)} @tt{FrameBinding<Buffer<T>>} "a buffer the application owns (and fills, maps or reads), with the usage its uses need, one or one per frame"))]
 
 @tt{zgal::FrameInfo} (@tt{include/zgal/Runtime.h}) gives the frame's index (into per-frame
 collections), its number, and the graph's surface extent. Missing functions and images are a
@@ -753,7 +762,10 @@ when the surface resizes).
        resizes) or @tt{(extent-of imported-image)}. @tt{#:frames} is required: @tt{per-frame} images
        let frames overlap, @tt{shared} ones save memory.}
  @item{@racket[buffer]: @tt{count} elements of a type, for @tt{buffer} and @tt{buffer-array}
-       bindings.}
+       bindings, in device-local memory.}
+ @item{@racket[import-buffer]: a buffer the application owns, of elements of a type, which it
+       creates with the usage its uses need (e.g. @tt{TRANSFER_SRC} to be copied from). Bindings
+       and copies use it like a graph buffer, and @racket[cpu] nodes' work can map it.}
  @item{@racket[target]: colour attachments @tt{(color image #:clear (r g b a) #:load clear|load|dont-care
        #:store store|dont-care)} and a depth attachment @tt{(depth image #:clear d ...)}; or the
        swapchain image, @tt{(surface #:clear (r g b a) #:depth format|none)}; or
@@ -774,7 +786,8 @@ doesn't cover) is a contract violation when the graph is built.
 A graph's @racket[material] instantiates a material of the file, giving a resource for each of its
 bindings, either @tt{(binding resource)} or just @tt{binding} for a resource of the same name. A
 texture or storage image binding takes an image, a sampler binding a sampler, a @tt{buffer} binding
-a uniform or buffer of its type, and a @tt{buffer-array} binding a buffer of its element type. Its
+a uniform or (graph or imported) buffer of its type, and a @tt{buffer-array} binding a buffer of its
+element type. Its
 options are
 @itemlist[
  @item{@tt{#:push ((field expression) ...)}: a value for every push constant;}
@@ -799,11 +812,31 @@ Nodes:
        triangle or particles pulled from a buffer.}
  @item{@racket[readback]: copies an image to the CPU each frame (a @tt{ReadbackNode}): C++ reads
        it with @tt{graph.nodeAs<ReadbackNode>(*nodes.name).pixels()}.}
- @item{@racket[cpu]: runs a cpu input each frame, in graph order.}
+ @item{@racket[cpu]: runs a cpu input each frame, in graph order. @tt{#:reads} and @tt{#:writes} list
+       the imported buffers its work reads and writes (the CPU can't map the graph's own buffers,
+       which are device local), so the graph orders it with the GPU's uses: e.g. filling a staging
+       buffer before a copy reads it. Give such a buffer a copy per frame (a
+       @tt{PerFrameHandles}), so the CPU never writes one an earlier frame is still reading.}
+ @item{@racket[copy]: copies elements between two buffers (graph or imported) of the same element
+       type: @tt{#:count} elements (by default, the rest of the source), from @tt{#:source-offset}
+       to @tt{#:destination-offset} (in elements, by default 0), computed when the graph is
+       built. A range outside either buffer is a contract violation when it's recorded.}
+ @item{@racket[extern]: nodes C++ adds (@secref["extern"]).}
 ]
 @tt{#:when} leaves a node out when the condition is false (C++ gets a @tt{std::optional} id), and
 @tt{#:enabled} adds it disabled: disabled nodes still count when the graph allocates resources, and
 C++ can enable them later with @tt{graph.setEnabled}.
+
+@subsection[#:tag "extern"]{Extern nodes}
+
+Some graphs depend on data only C++ has, e.g. a node per batch of work the application computes. An
+@racket[extern] node is where C++ adds such nodes itself: its extern input is a function
+@tt{zgal::ExternNodes<Graph>}, called by @tt{build()} at the node's place in the graph, with the
+@tt{RenderGraph} and the ids so far (every image and buffer, and the nodes before it). It adds nodes
+declaring their uses as usual, and returns their ids, which C++ then finds in
+@tt{nodes.name} (a @tt{std::vector<NodeId>}, empty when a @tt{#:when} condition was false). Its
+nodes can use the file's materials, constructed from their generated classes. The graph orders them
+by their uses with the others, so it needs no edges.
 
 @subsection{The generated struct}
 
@@ -974,9 +1007,10 @@ What ZGAL doesn't describe yet:
  @item{a shader used by more than one material.}
 ]
 
-Graphs can't yet import buffers, use storage images other than 2D ones, run a node on a chosen
-queue, dispatch indirectly (a size an earlier pass writes on the GPU), or compute anything per
-frame but push constants, dispatch sizes and uniforms.
+Graphs can't yet use storage images other than 2D ones, run a node on a chosen queue, dispatch
+indirectly (a size an earlier pass writes on the GPU), compute anything per frame but push
+constants, dispatch sizes and uniforms, or describe nodes that depend on the application's data
+except through @racket[extern] nodes (build-time loops over list inputs could cover some of them).
 
 ZGAL has grown in stages: interfaces, graphs, then shader bodies, with functions shared by the GLSL
 and C++ backends and bindings' accesses inferred. Application state is planned next. The compiler's checked program (@tt{dsl/private/ast.rkt}) describes interfaces
@@ -1044,6 +1078,6 @@ This document is part of the language: change it in the same commit as the compi
        command line.}
  @item{@tt{tests/gpu/ZgalTest.cpp}: generated materials and graphs on the device: the C++ structs
        and push constants have the layout the shaders write and read (8- and 16-bit integers
-       included), a function computes the same on the CPU (as C++) as on the GPU, and a reduction
-       through shared memory.}
+       included), a function computes the same on the CPU (as C++) as on the GPU, a reduction
+       through shared memory, and imported buffers, copies, cpu and extern nodes in a graph.}
 ]

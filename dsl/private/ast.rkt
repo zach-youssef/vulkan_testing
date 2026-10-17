@@ -107,10 +107,12 @@
 
 ;; type: a scalar-t (bool, int, uint or float)
 (struct g-parameter (name type loc) #:transparent)
-;; kind: 'per-frame (with a type), 'meshes or 'cpu
+;; kind: 'per-frame (with a type), 'meshes, 'cpu or 'extern
 (struct g-input (name kind type loc) #:transparent)
 ;; resting: 'shader-read-only, 'general or 'transfer-src
 (struct g-import (name resting loc) #:transparent)
+;; A buffer the application owns, holding elements of type
+(struct g-import-buffer (name type loc) #:transparent)
 ;; Build-time values. type: the expression's type
 (struct g-constant (name expr type loc) #:transparent)
 ;; options: an association list of option symbols (e.g. 'filter) to values (symbols, booleans, numbers)
@@ -131,13 +133,16 @@
 ;; material's order. push: (cons field expression) in the material's order. options: an
 ;; association list of pipeline options. invocations: expressions (compute) or #f.
 (struct g-material (name material bindings push options invocations loc) #:transparent)
-;; kind: 'dispatch 'draw-meshes 'draw 'readback 'cpu. target, material, subject (the meshes,
-;; image or cpu input): names or #f. count: an expression or #f. when, enabled: expressions or #f.
-(struct g-node (kind name target material subject count when enabled loc) #:transparent)
+;; kind: 'dispatch 'draw-meshes 'draw 'readback 'cpu 'copy 'extern. target, material, subject (the
+;; meshes, image or cpu input): names or #f. count: an expression or #f (a draw's vertices, a copy's
+;; elements). reads, writes: the buffers a cpu node's work or a copy reads and writes (names).
+;; offsets: a copy's (cons source-offset destination-offset) expressions, else #f. when, enabled:
+;; expressions or #f.
+(struct g-node (kind name target material subject count reads writes offsets when enabled loc) #:transparent)
 
 ;; The declaration of a graph-level name
 (define (graph-item-name item)
   (match item
-    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-constant n _ _ _) n]
+    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-import-buffer n _ _) n] [(g-constant n _ _ _) n]
     [(g-sampler n _ _) n] [(g-uniform n _ _ _) n] [(g-image n _ _ _ _ _) n] [(g-buffer n _ _ _ _ _) n]
     [(g-target n _ _) n] [(g-material n _ _ _ _ _ _) n]))

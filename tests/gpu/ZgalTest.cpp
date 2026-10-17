@@ -354,10 +354,10 @@ struct FeatureContext {
     std::unique_ptr<VulkanContext> context;
 };
 
-// A mapped storage buffer
+// A mapped buffer that copies can read and write
 template<typename T>
 Result<Handle<Buffer<T>>> hostBuffer(VulkanContext& ctx, size_t count) {
-    return Buffer<T>::create(ctx, count, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+    return Buffer<T>::create(ctx, count, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 }
 
@@ -369,25 +369,11 @@ std::vector<T> contents(const Handle<Buffer<T>>& buffer, size_t count) {
     return values;
 }
 
-class Reducer : public Reduce {
-public:
-    Reducer(VulkanContext& context, const Shaders& shaders, Bindings bindings, uint32_t count)
-    : Reduce(context, shaders, std::move(bindings)), count_(count) {}
-
-    void update(uint32_t, VkExtent2D) override {}
-
-    glm::vec3 getDispatchDimensions() override {
-        return workgroupsFor(count_);
-    }
-
-private:
-    uint32_t count_;
-};
-
 } // namespace
 
-TEST_CASE("ZGAL's 8- and 16-bit integers and shared memory") {
-    const DeviceFeatures features = Reduce::requiredFeatures();
+TEST_CASE("ZGAL's 8- and 16-bit integers, shared memory, imported buffers, copies, cpu and extern nodes") {
+    // The materials' features, which the graph collects
+    const DeviceFeatures features = ReduceGraph::requiredFeatures();
     CHECK(features.vulkan12.shaderInt8);
     CHECK(features.vulkan12.storageBuffer8BitAccess);
     CHECK(features.core.features.shaderInt16);
@@ -406,23 +392,56 @@ TEST_CASE("ZGAL's 8- and 16-bit integers and shared memory") {
                             .wide = 100000 + i,
                             .level = uint16_t(65000 + i)};   // Wraps when repacked, from 65535
     }
-    auto packed = hostBuffer<Bytes>(ctx, kCount).value();
-    auto sums = hostBuffer<uint32_t>(ctx, kGroups).value();
-    packed->mapAndExecute(0, kCount * sizeof(Bytes), [&](void* data) { memcpy(data, elements.data(), kCount * sizeof(Bytes)); })
-        .value();
+    // One per frame, so the CPU never writes one a frame in flight is still copying from
+    auto staging = PerFrameHandles<Buffer<Bytes>>::createManaged(ctx, [&ctx](uint32_t) { return hostBuffer<Bytes>(ctx, kCount); })
+                       .value();
+    auto results = hostBuffer<uint32_t>(ctx, kGroups + 1).value();
+    auto repacked = hostBuffer<Bytes>(ctx, kCount).value();
+    // A placeholder before the copied sums (copied with a destination offset)
+    results->mapAndExecute(0, sizeof(uint32_t), [](void* data) { *static_cast<uint32_t*>(data) = 0xFEEDu; }).value();
+
+    int filled = 0;
     {
         RenderGraph graph(ctx);
-        graph.importBuffer<Bytes>("packed", packed);
-        graph.importBuffer<uint32_t>("sums", sums);
-        auto shaders = Reduce::loadShaders(ctx).value();
-        auto& heap = ctx.descriptors();
-        graph.add<DispatchNode>("reduce", ctx.resources().create<Reducer>(
-            ctx, shaders, Reduce::Bindings{.packed = heap.storageBuffer(packed), .sums = heap.storageBuffer(sums)}, kCount));
-        graph.execute().value();
+        const ReduceGraph reduce = ReduceGraph::build(ctx, graph, ReduceGraph::Inputs{
+            .count = kCount,
+            // The cpu node writes the staging buffer, before the copy reads it
+            .upload = [&](FrameContext& frame) {
+                ++filled;
+                (*staging)[frame.frameIndex]->mapAndExecute(0, kCount * sizeof(Bytes), [&](void* data) {
+                    memcpy(data, elements.data(), kCount * sizeof(Bytes));
+                }).value();
+            },
+            // C++'s own node, using the graph's buffers by their ids
+            .copyBack = [](RenderGraph& g, const ReduceGraph& ids) {
+                const BufferId from = ids.buffers.packedBuffer;
+                const BufferId to = ids.buffers.repacked;
+                return std::vector<NodeId>{g.addTransfer(
+                    "copy back", [from, to](NodeBuilder& builder) { builder.read(from, Access::TransferSrc).write(to, Access::TransferDst); },
+                    [from, to](RecordContext& record) {
+                        const VkBufferCopy region{0, 0, kCount * sizeof(Bytes)};
+                        vkCmdCopyBuffer(record.commandBuffer, record.graph.buffer(from, record.frameIndex),
+                                        record.graph.buffer(to, record.frameIndex), 1, &region);
+                    })};
+            },
+            .staging = staging,
+            .results = results,
+            .repacked = repacked,
+        }).value();
+        CHECK(reduce.nodes.repack.size() == 1);
+        // Frames in flight overlap, each with its own staging buffer
+        for (int frame = 0; frame < 3; ++frame) {
+            graph.execute().value();
+        }
         ctx.waitIdleAll();
+        // Copies check their ranges against the buffers' sizes, imported or not
+        CHECK(graph.bufferSize(reduce.buffers.results, 0) == (kGroups + 1) * sizeof(uint32_t));
+        CHECK(graph.bufferSize(reduce.buffers.packedBuffer, 0) == kCount * sizeof(Bytes));
     }
+    CHECK(filled == 3);
 
-    const auto totals = contents(sums, kGroups);
+    const auto sums = contents(results, kGroups + 1);
+    CHECK(sums[0] == 0xFEEDu);
     for (uint32_t g = 0; g < kGroups; ++g) {
         uint32_t expected = 0;
         for (uint32_t i = g * 64; i < (g + 1) * 64; ++i) {
@@ -430,21 +449,22 @@ TEST_CASE("ZGAL's 8- and 16-bit integers and shared memory") {
             expected += b.small + b.many[0] + b.many[1] + b.many[2] + b.wide + b.level + uint32_t(b.delta + b.tiny + 1000);
         }
         CAPTURE(g);
-        CHECK(totals[g] == expected);
+        CHECK(sums[g + 1] == expected);
     }
-    const auto repacked = contents(packed, kCount);
+    const auto packed = contents(repacked, kCount);
     for (uint32_t i = 0; i < kCount; ++i) {
         CAPTURE(i);
-        CHECK(repacked[i].small == uint8_t(elements[i].small + 1));
-        CHECK(repacked[i].delta == -elements[i].delta);
-        CHECK(repacked[i].tiny == -elements[i].tiny);
-        CHECK(repacked[i].level == uint16_t(elements[i].level + 1));
-        CHECK(repacked[i].wide == elements[i].wide);
-        CHECK(std::memcmp(repacked[i].many, elements[i].many, 3) == 0);
+        CHECK(packed[i].small == uint8_t(elements[i].small + 1));
+        CHECK(packed[i].delta == -elements[i].delta);
+        CHECK(packed[i].tiny == -elements[i].tiny);
+        CHECK(packed[i].level == uint16_t(elements[i].level + 1));
+        CHECK(packed[i].wide == elements[i].wide);
+        CHECK(std::memcmp(packed[i].many, elements[i].many, 3) == 0);
     }
 
-    packed.reset();
-    sums.reset();
+    staging.reset();
+    results.reset();
+    repacked.reset();
     std::lock_guard<std::mutex> lock(feature.mutex);
     CHECK(feature.errors.empty());
     for (const auto& error : feature.errors) {

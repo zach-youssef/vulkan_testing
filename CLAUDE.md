@@ -263,12 +263,15 @@ writing ZGAL: it has the language, what's generated and every error. In short:
 - GLSL bodies (a `(shaders "x.frag" ...)` clause) still work: they use bindings and push constants
   through accessors, `name()`, and vertex inputs as `inName`. Prefer ZGAL bodies.
 - A `(graph Name ...)` declares parameters and inputs, samplers, uniforms (per-frame buffers the
-  graph writes from a C++ function, only when the value changes), images, buffers, targets,
-  material instances and nodes. Push constants and dispatch sizes (`#:invocations`) are computed
-  each frame, so they can follow per-frame inputs and images' current sizes.
-  `Name::build(ctx, graph, Name::Inputs{...})` adds them to a `RenderGraph` and returns their ids
-  (`nodes.x` for `setEnabled` and readbacks). C++ supplies parameters, meshes, imported images and
-  per-frame functions (`zgal::FrameSource<T>`), which must outlive the graph.
+  graph writes from a C++ function, only when the value changes), images, buffers, imported images
+  and buffers, targets, material instances and nodes: dispatches, draws, readbacks, `cpu` nodes
+  (with `#:reads`/`#:writes` of imported buffers they map), `copy` nodes between buffers, and
+  `extern` nodes, where a C++ function adds nodes that depend on the application's data. Push
+  constants and dispatch sizes (`#:invocations`) are computed each frame, so they can follow
+  per-frame inputs and images' current sizes. `Name::build(ctx, graph, Name::Inputs{...})` adds
+  them to a `RenderGraph` and returns their ids (`nodes.x` for `setEnabled` and readbacks). C++
+  supplies parameters, meshes, imported images and buffers, and functions (per-frame values,
+  `zgal::FrameSource<T>`; cpu work; extern nodes), which must outlive the graph.
 - Outside a graph, C++ builds a generated material from `Name::loadShaders(ctx)` and
   `Name::Bindings{.binding = entry, ...}`, and fills push constants by overriding
   `writePush(frameIndex, Push&)`.

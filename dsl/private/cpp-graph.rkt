@@ -158,6 +158,7 @@
   (define parameters (of-type g-parameter?))
   (define inputs (of-type g-input?))
   (define imports (of-type g-import?))
+  (define buffer-imports (of-type g-import-buffer?))
   (define images (of-type g-image?))
   (define buffers (of-type g-buffer?))
   (define materials (of-type g-material?))
@@ -175,11 +176,14 @@
                   (match (g-input-kind i)
                     ['per-frame (format "zgal::FrameSource<~a>" (value-cpp-type (g-input-type i)))]
                     ['meshes "std::vector<Handle<Mesh>>"]
-                    ['cpu "RenderGraph::RunFn"])
+                    ['cpu "RenderGraph::RunFn"]
+                    ['extern (format "zgal::ExternNodes<~a>" name)])
                   (g-input-name i))))
   (for ([i (in-list imports)])
     (at i (format "        FrameBinding<Image> ~a;   // Imported, resting ~a" (g-import-name i)
                   (symbol->string (g-import-resting i)))))
+  (for ([i (in-list buffer-imports)])
+    (at i (format "        FrameBinding<Buffer<~a>> ~a;   // Imported" (cpp-type (g-import-buffer-type i)) (g-import-buffer-name i))))
   (gen "    };")
   (gen "")
   ;; Ids
@@ -195,11 +199,15 @@
              (append (for/list ([i (in-list imports)]) (list "ImageId" (g-import-name i) i))
                      (for/list ([i (in-list images)]) (list (id-type "ImageId" (g-image-when i)) (g-image-name i) i))))
   (id-struct "Buffers"
-             (for/list ([b (in-list buffers)]) (list (id-type "BufferId" (g-buffer-when b)) (g-buffer-name b) b)))
+             (append (for/list ([b (in-list buffer-imports)]) (list "BufferId" (g-import-buffer-name b) b))
+                     (for/list ([b (in-list buffers)]) (list (id-type "BufferId" (g-buffer-when b)) (g-buffer-name b) b))))
   (id-struct "Nodes"
-             (for/list ([n (in-list nodes)]) (list (id-type "NodeId" (g-node-when n)) (g-node-name n) n)))
+             (for/list ([n (in-list nodes)])
+               ;; An extern node is the nodes C++ adds (none when its condition is false)
+               (list (if (eq? (g-node-kind n) 'extern) "std::vector<NodeId>" (id-type "NodeId" (g-node-when n)))
+                     (g-node-name n) n)))
   (unless (and (null? imports) (null? images)) (gen "    Images images;"))
-  (unless (null? buffers) (gen "    Buffers buffers;"))
+  (unless (and (null? buffer-imports) (null? buffers)) (gen "    Buffers buffers;"))
   (unless (null? nodes) (gen "    Nodes nodes;"))
   (gen "")
   (gen "    // The device features the graph's materials need beyond the wrapper's: add them to the")
@@ -219,9 +227,10 @@
     (at i (format "        if (!in->~a) {" (g-input-name i)))
     (at i (format "            contractViolation(~a);" (cpp-string (format "~a's input ~a isn't given" name (g-input-name i)))))
     (at i "        }"))
-  (for ([i (in-list imports)])
-    (at i (format "        if (!in->~a.isPerFrame() && !in->~a.shared()) {" (g-import-name i) (g-import-name i)))
-    (at i (format "            contractViolation(~a);" (cpp-string (format "~a's imported image ~a isn't given" name (g-import-name i)))))
+  (for ([i (in-list (append imports buffer-imports))])
+    (define-values (n what) (if (g-import? i) (values (g-import-name i) "image") (values (g-import-buffer-name i) "buffer")))
+    (at i (format "        if (!in->~a.isPerFrame() && !in->~a.shared()) {" n n))
+    (at i (format "            contractViolation(~a);" (cpp-string (format "~a's imported ~a ~a isn't given" name what n))))
     (at i "        }"))
   (gen (format "        ~a result;" name))
 
@@ -230,6 +239,12 @@
     (at i (format "        const ImageId image_~a = graph.importImage(~a, in->~a, ~a);" (g-import-name i)
                   (cpp-string (g-import-name i)) (g-import-name i) (resting-state (g-import-resting i))))
     (gen (format "        result.images.~a = image_~a;" (g-import-name i) (g-import-name i))))
+  ;; Imported buffers
+  (for ([i (in-list buffer-imports)])
+    (define n (g-import-buffer-name i))
+    (at i (format "        const BufferId buffer_~a = graph.importBuffer<~a>(~a, in->~a);" n
+                  (cpp-type (g-import-buffer-type i)) (cpp-string n) n))
+    (gen (format "        result.buffers.~a = buffer_~a;" n n)))
   ;; Constants
   (for ([c (in-list (of-type g-constant?))])
     (at c (format "        const ~a constant_~a = ~a;" (value-cpp-type (g-constant-type c)) (g-constant-name c)
@@ -324,7 +339,7 @@
                   [('storage-image _) (format "graph.storageEntry(~a)" (resource-ref resource))]
                   [('sampler _) (format "context.descriptors().sampler(sampler_~a)" resource)]
                   [(_ 'uniform) (format "uniform_~a->entries()" resource)]
-                  [(_ 'buffer) (format "graph.storageBufferEntry(~a)" (resource-ref resource))]))))
+                  [(_ (or 'buffer 'import-buffer)) (format "graph.storageBufferEntry(~a)" (resource-ref resource))]))))
     (define target
       (for/first ([n (in-list nodes)] #:when (and (equal? (g-node-material n) instance) (g-node-target n)))
         (g-node-target n)))
@@ -375,7 +390,29 @@
                  (cpp-string node-name) (g-node-target n) (g-node-material n) (g-node-material n)
                  (build-expr (g-node-count n) (scalar-t 'uint)))]
         ['readback (format "graph.add<ReadbackNode>(~a, ~a)" (cpp-string node-name) (resource-ref (g-node-subject n)))]
-        ['cpu (format "graph.addCpu(~a, nullptr, in->~a)" (cpp-string node-name) (g-node-subject n))]))
+        ['cpu
+         (define uses
+           (append (for/list ([b (in-list (g-node-reads n))]) (format ".read(~a, Access::HostRead)" (resource-ref b)))
+                   (for/list ([b (in-list (g-node-writes n))]) (format ".write(~a, Access::HostWrite)" (resource-ref b)))))
+         (format "graph.addCpu(~a, ~a, in->~a)" (cpp-string node-name)
+                 (if (null? uses)
+                     "nullptr"
+                     (format "[~a](NodeBuilder& builder) { builder~a; }"
+                             (string-join (for/list ([b (in-list (remove-duplicates (append (g-node-reads n) (g-node-writes n))))])
+                                            (format "buffer_~a" b))
+                                          ", ")
+                             (string-join uses "")))
+                 (g-node-subject n))]
+        ['copy
+         (define source (first (g-node-reads n)))
+         (define destination (first (g-node-writes n)))
+         (define element (cpp-type (entry-type (hash-ref env source))))
+         (format "graph.addTransfer(~a, [source = ~a, destination = ~a](NodeBuilder& builder) { builder.read(source, Access::TransferSrc).write(destination, Access::TransferDst); }, [source = ~a, destination = ~a, sourceOffset = VkDeviceSize(~a), destinationOffset = VkDeviceSize(~a), count = ~a](RecordContext& record) { zgal::copyBuffer(record, source, destination, sizeof(~a), sourceOffset, destinationOffset, count, ~a); })"
+                 (cpp-string node-name) (resource-ref source) (resource-ref destination) (resource-ref source) (resource-ref destination)
+                 (build-expr (car (g-node-offsets n)) (scalar-t 'uint)) (build-expr (cdr (g-node-offsets n)) (scalar-t 'uint))
+                 (if (g-node-count n) (format "std::optional<VkDeviceSize>(~a)" (build-expr (g-node-count n) (scalar-t 'uint))) "std::optional<VkDeviceSize>()")
+                 element (cpp-string node-name))]
+        ['extern #f]))
     (line (if (g-node-when n)
               (format "        if (~a) {" (build-expr (g-node-when n) (scalar-t 'bool)))
               "        {"))
@@ -384,10 +421,15 @@
       (line (format "            for (const auto& mesh : in->~a) {" (g-node-subject n)))
       (line (format "                renderables.push_back(context.resources().create<MeshRenderable>(mesh, material_~a));" (g-node-material n)))
       (line "            }"))
-    (line (format "            const NodeId node = ~a;" create))
-    (when (g-node-enabled n)
-      (line (format "            graph.setEnabled(node, ~a);" (build-expr (g-node-enabled n) (scalar-t 'bool)))))
-    (line (format "            result.nodes.~a = node;" node-name))
+    (cond
+      [(eq? (g-node-kind n) 'extern)
+       ;; C++ adds the nodes, with the ids so far (its nodes may use the graph's resources)
+       (line (format "            result.nodes.~a = in->~a(graph, result);" node-name (g-node-subject n)))]
+      [else
+       (line (format "            const NodeId node = ~a;" create))
+       (when (g-node-enabled n)
+         (line (format "            graph.setEnabled(node, ~a);" (build-expr (g-node-enabled n) (scalar-t 'bool)))))
+       (line (format "            result.nodes.~a = node;" node-name))])
     (line "        }"))
   (gen "        return result;")
   (gen "    }")
@@ -395,6 +437,6 @@
 
 (define (item-loc item)
   (match item
-    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-constant _ _ _ l) l]
+    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-import-buffer _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
-    [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ l) l]))
+    [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ l) l]))

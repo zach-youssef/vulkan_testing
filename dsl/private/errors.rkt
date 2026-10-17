@@ -131,7 +131,7 @@
          "(graph G\n  (input size (per-frame uint))\n  (image i rgba8 (fixed size size) #:frames shared))")
    (kind 'binding-mismatch
          "A material binding is given the wrong kind of resource"
-         "Textures and storage images take images, samplers take samplers, `buffer` bindings take a uniform or a buffer of their type, and `buffer-array` bindings take a buffer of their element type. Uniforms are written by the CPU, so a binding writing one is an error."
+         "Textures and storage images take images, samplers take samplers, `buffer` bindings take a uniform or a buffer (or imported buffer) of their type, and `buffer-array` bindings take a buffer (or imported buffer) of their element type. Uniforms are written by the CPU, so a binding writing one is an error."
          "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64)\n  (bindings (target (storage-image write))))\n(graph G\n  (sampler s)\n  (material fill Fill (target s) #:invocations (64))\n  (dispatch fill fill))")
    (kind 'incomplete-material
          "A material in a graph doesn't give a binding or push constant"
@@ -177,6 +177,10 @@
          "A barrier! some invocations might not reach"
          "`barrier!` waits for every invocation of the workgroup to reach it, so it's only in compute shaders, and every invocation must reach it or none: it can't be under a condition, or in a loop, that could differ between invocations. Conditions and ranges computed from literals, constants, push constants, `workgroupId` and `workgroupCount` are the same for the whole workgroup; move the barrier out of anything else, e.g. `(when (< x stride) (write! ...))` followed by `(barrier!)`."
          "(compute-material Reduce\n  (workgroup 64)\n  (shared (partial (array float 64)))\n  (bindings (result (buffer float)))\n  (compute\n   (when (< localInvocationId.x 32)\n     (barrier!))\n   (write! result (at partial 0))))")
+   (kind 'bad-copy
+         "A copy node's buffers don't fit"
+         "A `copy` node copies elements between two different buffers (graph or imported) holding the same element type; its `#:count` and offsets count elements."
+         "(graph G\n  (buffer a float 16 #:frames shared)\n  (buffer b uint 16 #:frames shared)\n  (copy c a b))")
    (kind 'version-in-body
          "A shader body declares what ZGAL generates"
          "ZGAL writes the start of every shader: `#version`, the extensions it needs and `bindless.glsl`, then the material's interface. Bodies start with their own code, so remove the line."
