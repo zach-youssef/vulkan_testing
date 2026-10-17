@@ -36,6 +36,24 @@
   (color vec3)
   (id uint))
 
+;; Attributes stored in fewer bits than they're read as
+(vertex-format PackedVertex
+  (position vec2 #:as snorm16)
+  (color vec4 #:as unorm8)
+  (id uint #:as uint8)
+  (shade float #:as float16))
+
+;; Draws vertices in their colour times their shade, if their id is 7
+(graphics-material Packed
+  (vertex-input PackedVertex)
+  (varyings
+   (tinted vec4)
+   (match uint flat))
+  (outputs
+   (packedColor vec4))
+  (vertex (results #:position (vec4 position 0.0 1.0) #:tinted (* color shade) #:match (if (= id 7) 1 0)))
+  (fragment (if (= match 1) tinted (vec4 0.0))))
+
 ;; Draws vertices in their colour times a tint, if their id (passed flat) is 7
 (graphics-material Tinted
   (shaders "shaders/tinted.vert" "shaders/tinted.frag")

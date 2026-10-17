@@ -18,7 +18,7 @@
   (position vec3)
   (normal vec3)
   (uv vec2)
-  (material uint))
+  (material uint) (tangent vec4 #:as snorm8) (joints uvec4 #:as uint16))   ; The last two stored packed
 
 ;; Every kind of binding, stages, push constants and every kind of varying
 (graphics-material Surface

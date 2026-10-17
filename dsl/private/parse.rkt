@@ -154,10 +154,36 @@
        (top-level name name-stx)
        (when (null? attributes)
          (zgal-error 'malformed stx "vertex format ~a has no attributes" name))
-       (define decl (vertex-format name (parse-fields attributes name interface-problem) (stx->loc stx)))
+       (define names (make-namespace (format "in ~a" name)))
+       (define decl (vertex-format name (for/list ([a (in-list attributes)]) (parse-attribute a name names)) (stx->loc stx)))
        (hash-set! formats name decl)
        decl]
-      [_ (zgal-error 'malformed stx "expected (vertex-format Name (attribute type) ...)")]))
+      [_ (zgal-error 'malformed stx "expected (vertex-format Name (attribute type [#:as storage]) ...)")]))
+
+  ;; (name type [#:as storage])
+  (define (parse-attribute stx format-name names)
+    (match (expect-list stx "an attribute (name type [#:as storage])")
+      [(list* name-stx type-stx option-stxs)
+       (define name (parse-name name-stx "an attribute name"))
+       (names name name-stx)
+       (define t (parse-type type-stx))
+       (define problem (interface-problem t))
+       (when problem
+         (zgal-error 'type-not-allowed type-stx "~a in ~a: ~a" name format-name problem))
+       (define-values (positional options) (split-options option-stxs (format "attribute ~a" name)))
+       (unless (null? positional)
+         (zgal-error 'malformed (car positional) "expected an attribute (name type [#:as storage]), found ~a" (show stx)))
+       (check-known-options options '(#:as) (format "attribute ~a" name))
+       (define kind (if (vector-t? t) (vector-t-kind t) (scalar-t-kind t)))
+       (define storage
+         (choice-option options '#:as all-attribute-storages (format "attribute ~a" name)))
+       (when (and storage (not (memq storage (hash-ref attribute-storages kind))))
+         (zgal-error 'type-not-allowed (hash-ref options '#:as)
+                     "~a in ~a is read as ~a, so it's stored as ~a, not ~a"
+                     name format-name (type-name t)
+                     (string-join (map symbol->string (hash-ref attribute-storages kind)) ", ") storage))
+       (attribute name t (stx->loc stx) storage)]
+      [_ (zgal-error 'malformed stx "expected an attribute (name type [#:as storage]), found ~a" (show stx))]))
 
   (define (parse-material stx items kind)
     (define form-name (if (eq? kind 'graphics) "graphics-material" "compute-material"))

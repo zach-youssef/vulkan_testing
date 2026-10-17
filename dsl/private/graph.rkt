@@ -216,45 +216,6 @@
 (define (infinite? x) (and (= x (* 2 x)) (not (zero? x))))
 
 ;; ---------------------------------------------------------------------------------------------
-;; Options: keyword arguments after a form's positional ones
-
-;; Splits a form's arguments into positional ones and a hash of keyword -> syntax
-(define (split-options stxs form)
-  (let loop ([stxs stxs] [positional '()] [options (hasheq)])
-    (match stxs
-      ['() (values (reverse positional) options)]
-      [(cons k rest) #:when (keyword? (syntax-e k))
-       (when (null? rest)
-         (zgal-error 'bad-option k "~a needs a value" (syntax-e k)))
-       (when (hash-ref options (syntax-e k) #f)
-         (zgal-error 'bad-option k "~a is given twice" (syntax-e k)))
-       (loop (cdr rest) positional (hash-set options (syntax-e k) (car rest)))]
-      [(cons s rest)
-       (unless (hash-empty? options)
-         (zgal-error 'malformed s "~a: positional arguments come before keyword options" form))
-       (loop rest (cons s positional) options)])))
-
-(define (check-known-options options allowed form)
-  (for ([(k stx) (in-hash options)])
-    (unless (memq k allowed)
-      (zgal-error 'bad-option stx "~a takes no ~a option~a" form k
-                  (if (null? allowed) ""
-                      (format "; it takes ~a" (string-join (map (λ (k) (format "~a" k)) allowed) ", ")))))))
-
-;; An option whose value is one of `choices` (symbols): returns the symbol, or `default`
-(define (choice-option options key choices form #:default [default #f] #:required? [required? #f] #:where [where #f])
-  (define stx (hash-ref options key #f))
-  (cond
-    [stx
-     (define v (syntax-e stx))
-     (unless (memq v choices)
-       (zgal-error 'bad-option stx "~a's ~a is one of ~a, not ~a" form key
-                   (string-join (map symbol->string choices) ", ") (show stx)))
-     v]
-    [required? (zgal-error 'bad-option where "~a needs ~a (~a)" form key (string-join (map symbol->string choices) ", "))]
-    [else default]))
-
-;; ---------------------------------------------------------------------------------------------
 ;; Formats and other choices
 
 (define image-formats

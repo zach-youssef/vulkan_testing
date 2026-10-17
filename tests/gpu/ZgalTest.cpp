@@ -130,6 +130,38 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL graphics materials read their vertex format and
     CHECK(std::vector<uint8_t>(pixels.begin(), pixels.begin() + 4) == std::vector<uint8_t>{128, 32, 128, 255});
 }
 
+TEST_CASE_FIXTURE(GpuTest, "ZGAL vertex attributes can be stored in fewer bits than shaders read") {
+    auto& ctx = context();
+    // Normalized, half and small integer attributes, converted as the generated struct's comments say
+    static_assert(sizeof(PackedVertex) % 4 == 0, "packed attributes start at 4-byte boundaries");
+    const auto vertex = [](glm::vec2 position) {
+        return PackedVertex{.position = glm::packSnorm<int16_t>(position),
+                            .color = glm::packUnorm<uint8_t>(glm::vec4(1.0f, 0.5f, 0.25f, 1.0f)),
+                            .id = 7,
+                            .shade = glm::packHalf1x16(0.5f)};
+    };
+    const std::vector<PackedVertex> vertices{vertex({-1.0f, -1.0f}), vertex({1.0f, -1.0f}), vertex({1.0f, 1.0f}),
+                                             vertex({-1.0f, 1.0f})};
+    const std::vector<uint16_t> indices{0, 1, 2, 2, 3, 0};
+    auto mesh = Mesh::create(ctx, vertices, indices).value();
+
+    RenderGraph graph(ctx);
+    ImageId image = graph.createImage("color", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{{4, 4}});
+    RenderTarget target;
+    target.color.push_back({image, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, {0.0f, 0.0f, 0.0f, 1.0f}});
+    auto material = ctx.resources().create<Packed>(ctx, Packed::loadShaders(ctx).value(), graph.formats(target),
+                                                   GraphicsPipelineOptions{.cullMode = VK_CULL_MODE_NONE});
+    graph.add<RenderablesNode>("draw", std::vector<Handle<Renderable>>{ctx.resources().create<MeshRenderable>(mesh, material)},
+                               target);
+    NodeId readback = graph.add<ReadbackNode>("readback", image);
+    graph.execute().value();
+    auto pixels = graph.nodeAs<ReadbackNode>(readback).pixels().value();
+    // (1, 0.5, 0.25, 1) * 0.5, every pixel covered
+    for (size_t i = 0; i < pixels.size(); i += 4) {
+        CHECK(std::vector<uint8_t>(pixels.begin() + i, pixels.begin() + i + 4) == std::vector<uint8_t>{128, 64, 32, 128});
+    }
+}
+
 TEST_CASE_FIXTURE(GpuTest, "ZGAL materials check their bindings, formats and options") {
     auto& ctx = context();
     auto& heap = ctx.descriptors();

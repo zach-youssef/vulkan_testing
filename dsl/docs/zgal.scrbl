@@ -156,7 +156,7 @@ line. The reader only reads data: @tt{#lang} and @tt{#reader}, which would run c
        (import "file.zgal")
        (extern-glsl "file.glsl" ((name [parameter : type] ...) : type) ...+)
        (struct Name field ...+)
-       (vertex-format Name field ...+)
+       (vertex-format Name attribute ...+)
        (define (name [parameter : type] ...) : type body ...+)
        (define name expression)
        (graphics-material Name graphics-clause ...)
@@ -222,6 +222,15 @@ structs, whose size is rounded up to it. Arrays' elements are each aligned to th
 alignment, without std140's rounding to 16 bytes. So a scalar packs into the 4 bytes after a
 @tt{vec3}, and a @tt{vec3} followed by a @tt{vec3} leaves a gap:
 
+@(define packed-source #<<ZGAL
+(vertex-format Vertex
+  (position vec3)
+  (normal vec3 #:as snorm16)
+  (uv vec2 #:as float16)
+  (color vec4 #:as unorm8))
+ZGAL
+   )
+
 @(define layout-source #<<ZGAL
 (struct Inner
   (a vec2)
@@ -268,12 +277,32 @@ them; the header declares it as a C++ struct with that layout.
 
 @subsection{@racket[vertex-format]}
 
-@racketgrammar[#:literals (vertex-format) vertex-format-form (vertex-format Name (attribute type) ...+)]
+@racketgrammar*[#:literals (vertex-format)
+ [vertex-format-form (vertex-format Name attribute ...+)]
+ [attribute (name type) (name type #:as storage)]]
 
 Declares the vertices of a vertex buffer: a C++ struct, laid out as C++ lays it out, which materials
 read through @racket[vertex-input]. Attributes are scalars or vectors of @tt{float}, @tt{int} or
-@tt{uint}, read as 32-bit formats (e.g. @tt{VK_FORMAT_R32G32B32_SFLOAT} for a @tt{vec3}). An
-attribute's location is its position in the format, whichever attributes a material reads.
+@tt{uint}, which is what shaders read. By default vertex buffers hold them in 32-bit formats
+(e.g. @tt{VK_FORMAT_R32G32B32_SFLOAT} for a @tt{vec3}). An attribute's location is its position in
+the format, whichever attributes a material reads.
+
+@racket[#:as] stores an attribute in fewer bits, which the device converts as it reads them, so
+shaders are unchanged:
+@itemlist[
+ @item{@tt{float} attributes: @tt{float16} (halves), @tt{unorm8} and @tt{unorm16} (unsigned
+       integers read as [0, 1]), @tt{snorm8} and @tt{snorm16} (signed integers read as [-1, 1]);}
+ @item{@tt{uint} attributes: @tt{uint8} and @tt{uint16}; @tt{int} attributes: @tt{int8} and
+       @tt{int16}.}]
+
+In C++ such an attribute is GLM's sized vector (@tt{glm::u8vec4}, @tt{glm::i16vec2}, ...) or a sized
+integer, aligned to 4 bytes (as Metal requires; so the struct's size is a multiple of 4 too). GLM's
+@tt{gtc/packing.hpp} converts floats to it, as the generated comment says. Not every device reads
+every format from vertex buffers (3-component 8-bit formats are the usual gap): building a pipeline
+reading one it can't fails with @tt{ErrorCode::Unsupported}.
+
+@(zgal-example packed-source #:show '())
+@(generated-file packed-source "example.zgal.h" #:from #rx"^struct Vertex" #:to #rx"^};")
 
 @subsection{@racket[graphics-material]}
 

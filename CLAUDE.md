@@ -282,6 +282,9 @@ writing ZGAL: it has the language, what's generated and every error. In short:
 - `uint8`, `int8`, `uint16` and `int16` pack buffers and shared memory. Bodies read them widened to
   `uint`/`int` and narrow explicitly to write them (`(uint8 x)`). A material using them needs device
   features: add its (or its graph's) `requiredFeatures()` to the context's features.
+- Vertex attributes can be stored packed, `(color vec4 #:as unorm8)` (`float16`, `unorm8/16`,
+  `snorm8/16`, `uint8/16`, `int8/16`): shaders read the declared type, and the C++ struct holds
+  GLM's sized types (fill them with `glm::packUnorm` etc., as the generated comments say).
 - Top-level `(define (f [x : vec3]) : vec3 ...)` functions and `(define name value)` constants are
   shared by the shaders, and those without textures, images or effects also compile to C++
   (`sunDirection` in the scene example), so the CPU computes the same thing.

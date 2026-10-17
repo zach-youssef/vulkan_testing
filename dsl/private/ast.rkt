@@ -41,7 +41,21 @@
 ;; Declarations. Every `loc` is where the declaration is in the .zgal file.
 (struct field (name type loc) #:transparent)
 (struct struct-decl (name fields loc) #:transparent)
-(struct vertex-format (name attributes loc) #:transparent)   ; attributes: fields
+(struct vertex-format (name attributes loc) #:transparent)   ; attributes: attributes
+
+;; A vertex-format attribute: a field (its type is what shaders read), and how vertex buffers store
+;; its components: #f for 32 bits, else a storage kind (below) converting to the field's kind
+(struct attribute field (storage) #:transparent)
+;; Storage kinds, by the kind of the attribute they're read as: normalized integers and halves read
+;; as floats, small integers as uints and ints
+(define attribute-storages
+  (hash 'float '(float16 unorm8 snorm8 unorm16 snorm16) 'uint '(uint8 uint16) 'int '(int8 int16)))
+(define all-attribute-storages '(float16 unorm8 snorm8 unorm16 snorm16 uint8 uint16 int8 int16))
+(define (storage-bits s)
+  (case s [(unorm8 snorm8 uint8 int8) 8] [(float16 unorm16 snorm16 uint16 int16) 16]))
+;; Whether a format has attributes stored in fewer than 32 bits
+(define (vertex-format-packed? f)
+  (for/or ([a (in-list (vertex-format-attributes f))]) (and (attribute-storage a) #t)))
 
 ;; path: the shader body's path (relative to the working directory if the .zgal path was).
 ;; name: its file name, which the shader library finds it by. stage: 'vertex 'fragment 'compute.

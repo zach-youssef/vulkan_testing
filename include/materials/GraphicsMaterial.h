@@ -143,6 +143,16 @@ protected:
         vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
         if (options_.vertexLayout) {
             const auto& layout = *options_.vertexLayout;
+            // Packed formats (e.g. 3-component 8-bit ones) aren't all readable from vertex buffers
+            for (const auto& attribute : layout.attributes) {
+                VkFormatProperties properties;
+                vkGetPhysicalDeviceFormatProperties(context_->physicalDevice(), attribute.format, &properties);
+                if (!(properties.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) {
+                    return Error(ErrorCode::Unsupported, "Vertex attribute " + std::to_string(attribute.location)
+                                 + "'s format " + string_VkFormat(attribute.format)
+                                 + " can't be read from vertex buffers on this device");
+                }
+            }
             vertexInput.vertexBindingDescriptionCount = static_cast<uint32_t>(layout.bindings.size());
             vertexInput.pVertexBindingDescriptions = layout.bindings.data();
             vertexInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(layout.attributes.size());

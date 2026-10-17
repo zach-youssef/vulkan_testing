@@ -18,12 +18,30 @@
 
 (provide emit-header)
 
-(define (vertex-format-enum t)
+(define (vertex-format-enum a)
+  (define t (field-type a))
+  (define storage (attribute-storage a))
   (define components (if (vector-t? t) (vector-t-size t) 1))
   (define kind (if (vector-t? t) (vector-t-kind t) (scalar-t-kind t)))
+  (define bits (if storage (storage-bits storage) 32))
   (format "VK_FORMAT_~a_~a"
-          (string-join (for/list ([c (in-list '("R32" "G32" "B32" "A32"))] [_ (in-range components)]) c) "")
-          (case kind [(float) "SFLOAT"] [(int) "SINT"] [(uint) "UINT"])))
+          (string-join (for/list ([c (in-list '("R" "G" "B" "A"))] [_ (in-range components)]) (format "~a~a" c bits)) "")
+          (case (or storage kind)
+            [(float float16) "SFLOAT"] [(int int8 int16) "SINT"] [(uint uint8 uint16) "UINT"]
+            [(unorm8 unorm16) "UNORM"] [(snorm8 snorm16) "SNORM"])))
+
+;; The C++ type of an attribute in vertex buffers: its type, or the integers it's stored as
+(define (attribute-cpp-type a)
+  (define t (field-type a))
+  (define storage (attribute-storage a))
+  (cond
+    [(not storage) (cpp-type t)]
+    [else
+     (define signed? (memq storage '(snorm8 snorm16 int8 int16)))
+     (define bits (storage-bits storage))
+     (if (vector-t? t)
+         (format "glm::~a~avec~a" (if signed? "i" "u") bits (vector-t-size t))
+         (format "~aint~a_t" (if signed? "" "u") bits))]))
 
 (define (stage-flags stages)
   (if (null? stages)
@@ -112,8 +130,29 @@
   (emit! w (format "// vertex-format ~a: read from vertex buffers as C++ lays it out" (vertex-format-name f)))
   (emit! w (format "struct ~a {" (vertex-format-name f)) #:at (vertex-format-loc f))
   (for ([a (in-list (vertex-format-attributes f))])
-    (emit! w (format "    ~a;" (cpp-declaration (field-type a) (field-name a))) #:at (field-loc a)))
+    (define storage (attribute-storage a))
+    (emit! w (if storage
+                 ;; Packed attributes start at 4-byte boundaries, as Metal requires (so strides are
+                 ;; multiples of 4 too)
+                 (format "    alignas(4) ~a ~a;   // ~a, read as ~a~a" (attribute-cpp-type a) (field-name a)
+                         storage (type-name (field-type a)) (packing-hint a))
+                 (format "    ~a;" (cpp-declaration (field-type a) (field-name a))))
+           #:at (field-loc a)))
   (emit! w "};" #:at (vertex-format-loc f)))
+
+;; How C++ converts floats to an attribute's storage (GLM's gtc/packing.hpp), for its comment
+(define (packing-hint a)
+  (define vector? (vector-t? (field-type a)))
+  (define storage (attribute-storage a))
+  (define (pack what type bits)
+    (if vector? (format "glm::pack~a<~a>" what type) (format "glm::pack~a1x~a" what bits)))
+  (case storage
+    [(float16) (format "; convert with ~a" (if vector? "glm::packHalf" "glm::packHalf1x16"))]
+    [(unorm8) (format "; convert with ~a" (pack "Unorm" "uint8_t" 8))]
+    [(snorm8) (format "; convert with ~a" (pack "Snorm" "int8_t" 8))]
+    [(unorm16) (format "; convert with ~a" (pack "Unorm" "uint16_t" 16))]
+    [(snorm16) (format "; convert with ~a" (pack "Snorm" "int16_t" 16))]
+    [else ""]))
 
 (define (stage-bit stage)
   (case stage
@@ -233,7 +272,7 @@
        (gen (format "        return VertexLayout::interleaved(sizeof(~a), {" (vertex-format-name f)))
        (for ([entry (in-list (vertex-input-attributes input))])
          (match-define (cons index a) entry)
-         (emit! w (format "            {~a, 0, ~a, offsetof(~a, ~a)}," index (vertex-format-enum (field-type a))
+         (emit! w (format "            {~a, 0, ~a, offsetof(~a, ~a)}," index (vertex-format-enum a)
                           (vertex-format-name f) (field-name a))
                 #:at (field-loc a)))
        (gen "        });")
@@ -407,6 +446,9 @@
     (gen "#include \"zgal/App.h\""))
   (gen "")
   (gen "#include <glm/glm.hpp>")
+  (when (ormap vertex-format-packed? (program-vertex-formats prog))
+    (gen "#include <glm/gtc/packing.hpp>")
+    (gen "#include <glm/gtc/type_precision.hpp>"))
   (gen "")
   (gen "#include <array>")
   (gen "#include <cstddef>")

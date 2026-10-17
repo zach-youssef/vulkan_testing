@@ -71,7 +71,7 @@
          "(vertex-format Vertex (position vec3))\n(graphics-material Flat\n  (shaders \"flat.vert\" \"flat.frag\")\n  (vertex-input Vertex normal)\n  (outputs (color vec4)))")
    (kind 'type-not-allowed
          "The type can't be used here"
-         "Buffers and push constants use the std430 layout, which C++ must match byte for byte: `bool` has no fixed size there (use `uint`), and `mat3` and arrays of 3-component vectors are padded differently by GLM (use `mat4` and 4-component vectors). 8- and 16-bit integers aren't push constants (use `uint` or `int`). Vertex attributes, varyings and outputs are scalars or vectors of `float`, `int` or `uint`. Buffer bindings hold a struct, scalar, vector or matrix, not an array (use `buffer-array`)."
+         "Buffers and push constants use the std430 layout, which C++ must match byte for byte: `bool` has no fixed size there (use `uint`), and `mat3` and arrays of 3-component vectors are padded differently by GLM (use `mat4` and 4-component vectors). 8- and 16-bit integers aren't push constants (use `uint` or `int`). Vertex attributes, varyings and outputs are scalars or vectors of `float`, `int` or `uint`; an attribute's `#:as` storage converts to its kind (`float16`, `unorm8`, `snorm16`, ... for `float`, `uint8`/`uint16` for `uint`, `int8`/`int16` for `int`). Buffer bindings hold a struct, scalar, vector or matrix, not an array (use `buffer-array`)."
          "(struct Light (enabled bool))")
    (kind 'bad-array-length
          "An array's length isn't a positive integer"
