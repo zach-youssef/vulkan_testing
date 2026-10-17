@@ -40,24 +40,39 @@
   (emit! w (format "        return ~a;" (print-expression value 'cpp)) #:at (texpr-loc e))
   (emit! w "    }" #:at where))
 
+(define (lower-first s) (string-append (string-downcase (substring s 0 1)) (substring s 1)))
+
 (define (emit-app! w prog a)
   (define name (app-name a))
   (define (gen text) (emit! w text))
   (define state (app-state a))
-  (define run (app-run a))
-  (define g (and run (graph-run-graph run)))
+  (define runs (app-runs a))
+  (define single? (= (length runs) 1))
   (define frame-handler (for/first ([h (in-list (app-handlers a))] #:when (eq? (event-kind (handler-event h)) 'frame)) h))
-  (define passthrough
-    (if run
-        (for/list ([m (in-list (graph-input-members g))]
-                   #:unless (assoc (graph-item-name (car m)) (graph-run-bindings run)))
-          m)
-        '()))
+  (define read-handlers (filter (λ (h) (eq? (event-kind (handler-event h)) 'read)) (app-handlers a)))
+  ;; Per run: its graph, the members naming it, and what C++ passes through to it
+  (define (run-graph r) (graph-run-graph r))
+  (define (run-index r) (index-of runs r))
+  (define (graph-member r) (format "graph~a_" (run-index r)))
+  (define (ids-member r) (format "ids~a_" (run-index r)))
+  ;; A function computing something of a run: one run keeps the plain names
+  (define (run-name r base) (if single? base (format "~a_~a" base (graph-name (run-graph r)))))
+  (define (passthrough r)
+    (for/list ([m (in-list (graph-input-members (run-graph r)))]
+               #:unless (assoc (graph-item-name (car m)) (graph-run-bindings r)))
+      m))
+  (define (run-of-graph g-name) (findf (λ (r) (equal? (graph-name (run-graph r)) g-name)) runs))
+  (define (node-of r node-name) (findf (λ (n) (equal? (g-node-name n) node-name)) (graph-nodes (run-graph r))))
   (define (handler-name i) (format "on~a" i))
+  (define indexed (for/list ([h (in-list (app-handlers a))] [i (in-naturals)]) (cons h i)))
+  (define (index-of-handler h) (cdr (assq h indexed)))
 
   (gen "")
   (gen (format "// app ~a: its state, the handlers computing the next one, and ~a" name
-               (if run (format "graph ~a" (graph-name g)) "no graph")))
+               (match runs
+                 ['() "no graph"]
+                 [(list r) (format "graph ~a" (graph-name (run-graph r)))]
+                 [_ (format "graphs ~a, one active each frame" (string-join (map (λ (r) (graph-name (run-graph r))) runs) ", "))])))
   (emit! w (format "class ~a {" name) #:at (app-loc a))
   (gen "public:")
   (gen "    // What the handlers compute the next of")
@@ -74,19 +89,29 @@
     (gen "        zgal::Timestep timestep;   // How far the frame handler's clock advances a frame"))
   (for ([f (in-list (app-externs a))])
     (emit! w (format "        std::function<~a(~a)> ~a;" (spell-type (function-decl-result f) 'cpp)
-                     (string-join (for/list ([p (in-list (function-decl-params f))]) (spell-type (cdr p) 'cpp)) ", ")
+                     (string-join (for/list ([p (in-list (function-decl-params f))]) (extern-parameter-type (cdr p))) ", ")
                      (function-decl-name f))
            #:at (function-decl-loc f)))
-  (for ([m (in-list passthrough)])
+  (for* ([r (in-list runs)] [m (in-list (passthrough r))])
     (emit! w (string-append "        " (cdr m)) #:at (item-loc (car m))))
   (gen "    };")
   (gen "")
+  (unless single?
+    (unless (null? runs)
+      (gen "    // The render graphs it adds its graphs to (e.g. VulkanApp::createGraph), one per graph")
+      (gen "    struct Graphs {")
+      (for ([r (in-list runs)])
+        (emit! w (format "        RenderGraph* ~a = nullptr;" (lower-first (graph-name (run-graph r)))) #:at (graph-run-loc r)))
+      (gen "    };")
+      (gen "")))
 
   ;; create
-  (gen (format "    // The app, with its initial state~a. The graph's callbacks"
-               (if run ", adding its graph to `graph`" "")))
-  (gen "    // use the app, so it must outlive the graph's use.")
-  (gen (format "    static Result<std::unique_ptr<~a>> create(VulkanContext& context, RenderGraph& graph, Inputs inputs) {" name))
+  (define graphs-parameter
+    (if (or single? (null? runs)) "RenderGraph& graph" "Graphs graphs"))
+  (gen (format "    // The app, with its initial state~a. The graphs' callbacks"
+               (cond [(null? runs) ""] [single? ", adding its graph to `graph`"] [else ", adding each graph to its render graph"])))
+  (gen "    // use the app, so it must outlive their use.")
+  (gen (format "    static Result<std::unique_ptr<~a>> create(VulkanContext& context, ~a, Inputs inputs) {" name graphs-parameter))
   (when frame-handler
     (gen "        if (!inputs.timestep.given()) {")
     (gen (format "            contractViolation(~a);" (cpp-string (format "~a's timestep isn't given: zgal::Timestep::realTime or fixed" name))))
@@ -95,36 +120,48 @@
     (emit! w (format "        if (!inputs.~a) {" (function-decl-name f)) #:at (function-decl-loc f))
     (gen (format "            contractViolation(~a);" (cpp-string (format "~a's extern function ~a isn't given" name (function-decl-name f)))))
     (gen "        }"))
-  (gen (format "        std::unique_ptr<~a> app(new ~a(context, graph, std::move(inputs)));" name name))
-  (when run
+  (unless (or single? (null? runs))
+    (for ([r (in-list runs)])
+      (define member (lower-first (graph-name (run-graph r))))
+      (gen (format "        if (!graphs.~a) {" member))
+      (gen (format "            contractViolation(~a);" (cpp-string (format "~a's render graph for ~a isn't given" name (graph-name (run-graph r))))))
+      (gen "        }")))
+  (gen (format "        std::unique_ptr<~a> app(new ~a(context, ~a, std::move(inputs)));" name name
+               (if (or single? (null? runs)) "graph" "graphs")))
+  (for ([r (in-list runs)])
+    (define g (run-graph r))
     (define gname (graph-name g))
     (define members
       (append
-       (for/list ([b (in-list (graph-run-bindings run))])
+       (for/list ([b (in-list (graph-run-bindings r))])
          (match-define (cons input e) b)
          (if (g-parameter? (findf (λ (i) (equal? (graph-item-name i) input)) (graph-items g)))
-             (format ".~a = app->parameter_~a()" input input)
-             (format ".~a = [self = app.get()](const zgal::FrameInfo&) { return self->input_~a(); }" input input)))
-       (for/list ([m (in-list passthrough)])
+             (format ".~a = app->~a()" input (run-name r (format "parameter_~a" input)))
+             (format ".~a = [self = app.get()](const zgal::FrameInfo&) { return self->~a(); }" input (run-name r (format "input_~a" input)))))
+       (for/list ([m (in-list (passthrough r))])
          (define n (graph-item-name (car m)))
          (format ".~a = std::move(app->inputs_.~a)" n n))))
-    (emit! w (format "        TRY_ASSIGN(auto ids, ~a::build(context, graph, ~a::Inputs{" gname gname) #:at (graph-run-loc run))
+    (emit! w (format "        TRY_ASSIGN(auto ids~a, ~a::build(context, *app->~a, ~a::Inputs{" (run-index r) gname (graph-member r) gname)
+           #:at (graph-run-loc r))
     ;; Designated initializers in the graph's declaration order
     (define order (map (λ (m) (graph-item-name (car m))) (graph-input-members g)))
     (for ([member (in-list (sort members < #:key (λ (m) (index-of order (cadr (regexp-match #px"^\\.([A-Za-z0-9_]+)" m))))))])
-      (emit! w (format "            ~a," member) #:at (graph-run-loc run)))
-    (emit! w "        }));" #:at (graph-run-loc run))
-    (gen "        app->ids_.emplace(std::move(ids));"))
+      (emit! w (format "            ~a," member) #:at (graph-run-loc r)))
+    (emit! w "        }));" #:at (graph-run-loc r))
+    (gen (format "        app->~a.emplace(std::move(ids~a));" (ids-member r) (run-index r))))
   (gen "        return app;")
   (gen "    }")
   (gen "")
   (gen "    const State& state() const { return state_; }")
   (gen "    // Replaces the state, e.g. for tests driving the app")
   (gen "    void setState(State state) { state_ = std::move(state); }")
-  (when run
-    (gen (format "    // The graph's ids: its images, buffers and nodes"))
-    (gen (format "    const ~a& ids() const { return *ids_; }" (graph-name g))))
-  (gen "    RenderGraph& renderGraph() { return *graph_; }")
+  (for ([r (in-list runs)])
+    (define gname (graph-name (run-graph r)))
+    (gen (format "    // Graph ~a's ids: its images, buffers and nodes" gname))
+    (gen (format "    const ~a& ~a() const { return *~a; }" gname (if single? "ids" (format "~aIds" (lower-first gname))) (ids-member r))))
+  (gen (if (or single? (null? runs))
+           "    RenderGraph& renderGraph() { return *active_; }"
+           "    // The graph to draw this frame (chosen by beginFrame)\n    RenderGraph& renderGraph() { return *active_; }"))
   (gen "    VulkanContext& context() { return *context_; }")
   (gen "    // Whether a handler asked to quit (quit!)")
   (gen "    bool quitRequested() const { return quit_; }")
@@ -134,9 +171,7 @@
   (gen "    // Runs the handler for event, if the app has one")
   (gen "    void handle(const zgal::Event& event) {")
   (define by-kind (group-by (λ (h) (event-kind (handler-event h)))
-                            (filter (λ (h) (not (eq? (event-kind (handler-event h)) 'frame))) (app-handlers a))))
-  (define indexed (for/list ([h (in-list (app-handlers a))] [i (in-naturals)]) (cons h i)))
-  (define (index-of-handler h) (cdr (assq h indexed)))
+                            (filter (λ (h) (not (memq (event-kind (handler-event h)) '(frame read)))) (app-handlers a))))
   (for ([group (in-list by-kind)])
     (define kind (event-kind (handler-event (first group))))
     (gen (format "        if (const auto* e = std::get_if<zgal::~a>(&event)) {" (event-struct kind)))
@@ -167,61 +202,126 @@
   (gen "")
 
   ;; beginFrame
-  (gen "    // Each frame, before drawing: the frame handler, then whether nodes are enabled")
-  (gen "    void beginFrame() {")
+  (gen (format "    // Each frame, before drawing: ~athe frame handler, then which graph is drawn and which of its nodes are enabled"
+               (if (null? read-handlers) "" "the handlers of readbacks' finished copies, ")))
+  (gen "    Result<void> beginFrame() {")
+  (for ([h (in-list read-handlers)])
+    (match-define (list g-name node-name element) (event-readback (handler-event h)))
+    (define r (run-of-graph g-name))
+    (define conditional? (g-node-when (node-of r node-name)))
+    (define id (format "~a->nodes.~a" (ids-member r) node-name))
+    (define t (spell-type element 'cpp))
+    (define indent (if conditional? "            " "        "))
+    (when conditional?
+      (emit! w (format "        if (~a) {" id) #:at (handler-loc h)))
+    (emit! w (format "~a{" indent) #:at (handler-loc h))
+    (emit! w (format "~a    TRY_ASSIGN(auto copied, ~a->nodeAs<BufferReadbackNode>(~a).takeFinished<~a>().withContext(~a));" indent
+                     (graph-member r) (if conditional? (string-append "*" id) id) t (cpp-string (format "reading back ~a" node-name)))
+           #:at (handler-loc h))
+    (emit! w (format "~a    if (copied) {" indent) #:at (handler-loc h))
+    (emit! w (format "~a        state_ = ~a(state_, zgal::Data<~a>(std::move(*copied)));" indent (handler-name (index-of-handler h)) t)
+           #:at (handler-loc h))
+    (emit! w (format "~a    }" indent) #:at (handler-loc h))
+    (emit! w (format "~a}" indent) #:at (handler-loc h))
+    (when conditional?
+      (emit! w "        }" #:at (handler-loc h))))
   (when frame-handler
     (emit! w (format "        state_ = ~a(state_, inputs_.timestep.next());" (handler-name (index-of-handler frame-handler)))
            #:at (handler-loc frame-handler)))
-  (when run
-    (for ([en (in-list (graph-run-enables run))])
-      (define node (for/first ([n (in-list (graph-nodes g))] #:when (equal? (g-node-name n) (car en))) n))
-      (emit! w (if (g-node-when node)
-                   (format "        if (ids_->nodes.~a) { graph_->setEnabled(*ids_->nodes.~a, enabled_~a()); }" (car en) (car en) (car en))
-                   (format "        graph_->setEnabled(ids_->nodes.~a, enabled_~a());" (car en) (car en)))
-             #:at (texpr-loc (cdr en)))))
+  ;; The active graph: the first whose condition holds
+  (unless (or single? (null? runs))
+    (for ([r (in-list runs)] [i (in-naturals)])
+      (define keyword (if (zero? i) "if" "} else if"))
+      (cond
+        [(graph-run-when r)
+         (emit! w (format "        ~a (~a()) {" keyword (run-name r "active")) #:at (graph-run-loc r))]
+        [else (emit! w "        } else {" #:at (graph-run-loc r))])
+      (emit! w (format "            active_ = ~a;" (graph-member r)) #:at (graph-run-loc r)))
+    (gen "        }"))
+  (for ([r (in-list runs)])
+    (define enables (graph-run-enables r))
+    (unless (null? enables)
+      (define indent (if single? "        " "            "))
+      (unless single?
+        (emit! w (format "        if (active_ == ~a) {" (graph-member r)) #:at (graph-run-loc r)))
+      (for ([en (in-list enables)])
+        (define node (node-of r (car en)))
+        (define ids (ids-member r))
+        (emit! w (if (g-node-when node)
+                     (format "~aif (~a->nodes.~a) { ~a->setEnabled(*~a->nodes.~a, ~a()); }" indent ids (car en) (graph-member r) ids (car en) (run-name r (format "enabled_~a" (car en))))
+                     (format "~a~a->setEnabled(~a->nodes.~a, ~a());" indent (graph-member r) ids (car en) (run-name r (format "enabled_~a" (car en)))))
+               #:at (texpr-loc (cdr en))))
+      (unless single?
+        (gen "        }"))))
+  (gen "        return {};")
   (gen "    }")
   (gen "")
 
   ;; The bodies
   (gen "private:")
-  (gen (format "    ~a(VulkanContext& context, RenderGraph& graph, Inputs inputs)" name))
-  (gen "    : context_(&context), graph_(&graph), inputs_(std::move(inputs)), state_(initialState()) {}")
+  (cond
+    [(or single? (null? runs))
+     (gen (format "    ~a(VulkanContext& context, RenderGraph& graph, Inputs inputs)" name))
+     (gen (format "    : context_(&context), ~aactive_(&graph), inputs_(std::move(inputs)), state_(initialState()) {}"
+                  (if single? "graph0_(&graph), " "")))]
+    [else
+     (gen (format "    ~a(VulkanContext& context, Graphs graphs, Inputs inputs)" name))
+     (gen (format "    : context_(&context), ~a, active_(graphs.~a), inputs_(std::move(inputs)), state_(initialState()) {}"
+                  (string-join (for/list ([r (in-list runs)])
+                                 (format "~a(graphs.~a)" (graph-member r) (lower-first (graph-name (run-graph r)))))
+                               ", ")
+                  ;; Until beginFrame chooses: the last, which runs when no other's condition holds
+                  (lower-first (graph-name (run-graph (last runs))))))])
   (gen "")
   (emit-initial-state! w a)
   ;; The extern functions, as bodies call them
   (for ([f (in-list (app-externs a))])
     (define params (function-decl-params f))
     (emit! w (format "    ~a ~a(~a) { ~ainputs_.~a(~a); }" (spell-type (function-decl-result f) 'cpp) (function-decl-name f)
-                     (string-join (for/list ([p (in-list params)]) (format "~a ~a" (spell-type (cdr p) 'cpp) (car p))) ", ")
+                     (string-join (for/list ([p (in-list params)]) (format "~a ~a" (extern-parameter-type (cdr p)) (car p))) ", ")
                      (if (void-t? (function-decl-result f)) "" "return ")
                      (function-decl-name f)
                      (string-join (map car params) ", "))
            #:at (function-decl-loc f)))
   (for ([h (in-list (app-handlers a))])
     (define binding (event-binding (handler-event h)))
-    (define binding-type (if (eq? (event-kind (handler-event h)) 'frame) "float" "glm::vec2"))
+    (define binding-type
+      (case (event-kind (handler-event h))
+        [(frame) "float"]
+        [(read) (format "const ~a&" (spell-type (data-t (third (event-readback (handler-event h)))) 'cpp))]
+        [else "glm::vec2"]))
     (emit-body-function! w (format "State ~a([[maybe_unused]] const State& state~a)" (handler-name (index-of-handler h))
                                    (if binding (format ", [[maybe_unused]] ~a ~a" binding-type binding) ""))
                          (handler-body h) (handler-loc h)))
-  (when run
-    (for ([b (in-list (graph-run-bindings run))])
+  (for ([r (in-list runs)])
+    (define g (run-graph r))
+    (for ([b (in-list (graph-run-bindings r))])
       (match-define (cons input e) b)
       (define item (findf (λ (i) (equal? (graph-item-name i) input)) (graph-items g)))
       (if (g-parameter? item)
-          (emit-body-function! w (format "~a parameter_~a()" (value-type-cpp (texpr-type e)) input) e (texpr-loc e))
-          (emit-body-function! w (format "~a input_~a()" (value-type-cpp (texpr-type e)) input) e (texpr-loc e)
+          (emit-body-function! w (format "~a ~a()" (value-type-cpp (texpr-type e)) (run-name r (format "parameter_~a" input))) e (texpr-loc e))
+          (emit-body-function! w (format "~a ~a()" (value-type-cpp (texpr-type e)) (run-name r (format "input_~a" input))) e (texpr-loc e)
                                #:state "[[maybe_unused]] const State& state = state_;")))
-    (for ([en (in-list (graph-run-enables run))])
-      (emit-body-function! w (format "bool enabled_~a()" (car en)) (cdr en) (texpr-loc (cdr en))
+    (for ([en (in-list (graph-run-enables r))])
+      (emit-body-function! w (format "bool ~a()" (run-name r (format "enabled_~a" (car en)))) (cdr en) (texpr-loc (cdr en))
+                           #:state "[[maybe_unused]] const State& state = state_;"))
+    (when (graph-run-when r)
+      (emit-body-function! w (format "bool ~a()" (run-name r "active")) (graph-run-when r) (texpr-loc (graph-run-when r))
                            #:state "[[maybe_unused]] const State& state = state_;")))
   (gen "    VulkanContext* context_;")
-  (gen "    RenderGraph* graph_;")
+  (for ([r (in-list runs)])
+    (gen (format "    RenderGraph* ~a;" (graph-member r))))
+  (gen "    RenderGraph* active_;")
   (gen "    Inputs inputs_;")
   (gen "    State state_;")
   (gen "    bool quit_ = false;")
-  (when run
-    (gen (format "    std::optional<~a> ids_;" (graph-name g))))
+  (for ([r (in-list runs)])
+    (gen (format "    std::optional<~a> ~a;" (graph-name (run-graph r)) (ids-member r))))
   (emit! w "};" #:at (app-loc a)))
+
+;; How extern functions take a parameter: data by reference, as it's shared anyway
+(define (extern-parameter-type t)
+  (if (data-t? t) (format "const ~a&" (spell-type t 'cpp)) (spell-type t 'cpp)))
 
 ;; initialState(): the state's fields' initial values, from the parameters
 (define (emit-initial-state! w a)

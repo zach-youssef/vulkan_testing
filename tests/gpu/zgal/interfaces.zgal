@@ -356,3 +356,43 @@
   (readback readGathered gathered)
   (readback readEvens evens)
   (readback readOdds odds))
+
+;; Phases: a graph computes seeds once and reads them back; the app keeps them in its state, then
+;; runs a graph uploading them whenever they change (and an extern function grows them)
+(compute-material Seed
+  (workgroup 64)
+  (bindings (seeds (buffer-array uint)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count) (write! (at seeds i) (+ (* i 10) 1))))))
+
+(graph SeedGraph
+  (buffer seeds uint 4 #:frames shared)
+  (material seeding Seed seeds #:push ((count 4)) #:invocations (4))
+  (dispatch seed seeding #:once #t)
+  (readback readSeeds seeds #:once #t))
+
+(graph UseGraph
+  (input seeds (per-frame (data uint)))
+  (upload seedBuffer seeds)
+  (buffer doubled uint (count seeds) #:frames per-frame)
+  (material doubling Double (source seedBuffer) (target doubled)
+            #:push ((count (count seeds))) #:invocations ((count seeds)))
+  (dispatch run doubling)
+  (readback readDoubled doubled))
+
+(app Phases
+  (extern (extend [d : (data uint)]) : (data uint))
+  (state
+   (seeds (data uint) (empty-data uint))
+   (ready bool #f)
+   (reads uint 0)
+   (lastTotal uint 0))
+  (on (read readSeeds copied) (with state #:seeds copied #:ready #t))
+  (on (read readDoubled copied)
+    (with state #:reads (+ state.reads 1)
+                #:lastTotal (sum ([i (range 0 (count copied))]) (at copied i))))
+  (on (key-pressed space) (with state #:seeds (extend state.seeds)))
+  (run SeedGraph #:when (not state.ready))
+  (run UseGraph (seeds state.seeds)))

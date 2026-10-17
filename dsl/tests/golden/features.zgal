@@ -275,7 +275,7 @@
   (clear clearTotal totalBuffer #:value (count seeds))
   (copy toSeedImage seedBuffer seedImage)
   (copy seedCorner seedBuffer seedImage #:source-offset 1 #:destination-offset (1 (uint count)) #:extent (1 1))
-  (readback readSeeds seedBuffer)
+  (readback readSeeds seedBuffer #:once #t)
   (readback readTotal totalBuffer #:when enabled)
   (readback readSamples samples))
 
@@ -316,3 +316,23 @@
     (sampleCount state.frames)
     #:enabled ((accumulate state.dragging)
                (drawPlain (not state.dragging)))))
+
+;; Phases: a graph uploading per-frame data and reading it back once, whose copy an app's read event
+;; keeps in the state until it switches to another graph
+(graph Warmup
+  (input lights (per-frame (data Light)))
+  (upload lightList lights)
+  (buffer lightCopy Light (count lights) #:frames per-frame)
+  (copy copyLights lightList lightCopy)
+  (readback readLights lightCopy #:once #t))
+
+(app Stages
+  (extern (brighten [l : (data Light)]) : (data Light))
+  (state
+   (lights (data Light) (empty-data Light))
+   (warm bool #f)
+   (seen uint 0))
+  (on (read readLights copied)
+    (with state #:warm #t #:lights (brighten copied) #:seen (+ (count copied) (uint (.intensity (at copied 0))))))
+  (run Warmup (lights state.lights) #:when (not state.warm))
+  (run Everything (enabled #t)))

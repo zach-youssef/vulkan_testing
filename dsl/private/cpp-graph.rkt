@@ -82,7 +82,11 @@
             (format "(-~a)" (cpp-expr (first args) env t))
             (format "(~a)" (string-join (map (λ (a) (cpp-expr a env t)) args) (format " ~a " op))))]
        [(min max) (format "std::~a(~a, ~a)" op (cpp-expr (first args) env t) (cpp-expr (second args) env t))]
-       [(count) (format "static_cast<uint32_t>(in->~a.size())" (e-ref-name (first args)))]
+       [(count)
+        (define input (e-ref-name (first args)))
+        (if (eq? (entry-kind (hash-ref env input)) 'per-frame-data)
+            (format "data_~a->get(frame).size()" input)
+            (format "static_cast<uint32_t>(in->~a.size())" input))]
        [(float int uint)
         (format "static_cast<~a>(~a)" (value-cpp-type (scalar-t op)) (cpp-expr (first args) env #f))]
        [(width height)
@@ -147,6 +151,7 @@
                      (match kind
                        ['per-frame (format "zgal::FrameSource<~a>" (value-cpp-type t))]
                        ['data (format "std::vector<~a>" (cpp-type t))]
+                       ['per-frame-data (format "zgal::FrameSource<zgal::Data<~a>>" (cpp-type t))]
                        ['meshes "std::vector<Handle<Mesh>>"]
                        ['cpu "RenderGraph::RunFn"]
                        ['extern (format "zgal::ExternNodes<~a>" name)])
@@ -269,6 +274,10 @@
     (at i (format "            contractViolation(~a);" (cpp-string (format "~a's imported ~a ~a isn't given" name what n))))
     (at i "        }"))
   (gen (format "        ~a result;" name))
+  ;; Per-frame data, computed once a frame however many use it
+  (for ([i (in-list inputs)] #:when (eq? (g-input-kind i) 'per-frame-data))
+    (at i (format "        const auto data_~a = std::make_shared<zgal::FrameCache<zgal::Data<~a>>>(in->~a);"
+                  (g-input-name i) (cpp-type (g-input-type i)) (g-input-name i))))
 
   ;; Imported images
   (for ([i (in-list imports)])
@@ -294,8 +303,16 @@
     (at i (format "        const BufferId buffer_~a = graph.importBuffer<~a>(~a, in->~a);" n
                   (cpp-type (g-import-buffer-type i)) (cpp-string n) n))
     (gen (format "        result.buffers.~a = buffer_~a;" n n)))
-  ;; Uploaded buffers: created from their data inputs, then imported
-  (for ([u (in-list uploads)])
+  ;; Uploaded buffers: created from their data inputs, then imported; or for per-frame data, a buffer
+  ;; per frame in flight sized from the data, which a node fills when it changes
+  (for ([u (in-list uploads)] #:when (eq? (entry-kind (hash-ref env (g-upload-source u))) 'per-frame-data))
+    (define n (g-upload-name u))
+    (define t (cpp-type (g-upload-type u)))
+    (at u (format "        const BufferId buffer_~a = graph.createBuffer(~a, FrameMode::PerFrame, [data = data_~a](const FrameContext& frameContext) { return VkDeviceSize(data->get(zgal::frameInfo(frameContext)).size()) * sizeof(~a); });"
+                  n (cpp-string n) (g-upload-source u) t))
+    (at u (format "        graph.add<zgal::DataUploadNode<~a>>(~a, buffer_~a, data_~a);" t (cpp-string (format "upload ~a" n)) n (g-upload-source u)))
+    (gen (format "        result.buffers.~a = buffer_~a;" n n)))
+  (for ([u (in-list uploads)] #:unless (eq? (entry-kind (hash-ref env (g-upload-source u))) 'per-frame-data))
     (define n (g-upload-name u))
     (at u (format "        TRY_ASSIGN(auto upload_~a, zgal::upload(context, in->~a, ~a));" n (g-upload-source u)
                   (cpp-string (format "~a's upload ~a" name n))))
@@ -535,6 +552,8 @@
        (line (format "            const NodeId node = ~a;" create))
        (when (g-node-enabled n)
          (line (format "            graph.setEnabled(node, ~a);" (build-expr (g-node-enabled n) (scalar-t 'bool)))))
+       (when (g-node-once? n)
+         (line "            graph.runOnce(node);"))
        (line (format "            result.nodes.~a = node;" node-name))])
     (line "        }"))
   (gen "        return result;")
@@ -545,4 +564,4 @@
   (match item
     [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
-    [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ l) l]))
+    [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ l) l]))

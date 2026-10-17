@@ -95,16 +95,17 @@ void connect(VulkanApp& vulkanApp, App& app) {
     });
 }
 
-// One frame: the app's frame handler, then the VulkanApp draws its active graph. For headless apps
-// and loops of their own; run() is the loop for windows.
+// One frame: the app's frame handler, then the VulkanApp draws the graph the app chose. For headless
+// apps and loops of their own; run() is the loop for windows.
 template<typename App>
 Result<void> drawFrame(VulkanApp& vulkanApp, App& app) {
-    app.beginFrame();
+    TRY(app.beginFrame());
+    vulkanApp.setActiveGraph(app.renderGraph());
     return vulkanApp.drawFrame();
 }
 
-// Makes the app's graph the VulkanApp's active one, connects its input, and draws frames until the
-// window closes or the app quits (quit!), or a frame fails. Requires a window.
+// Connects the app's input, and draws frames (the graph the app chooses each frame) until the window
+// closes or the app quits (quit!), or a frame fails. Requires a window.
 template<typename App>
 Result<void> run(VulkanApp& vulkanApp, App& app) {
     vulkanApp.setActiveGraph(app.renderGraph());

@@ -234,8 +234,10 @@ int main() { return exitStatus(runApp()); }            // prints the error
 - Headless graphs can still have `SurfaceRelative` images: `graph.setSurfaceExtent(extent)` gives
   them (and materials' `update()`) an extent, and changing it recreates them like a window resize,
   so resize handling can be tested without a window.
-- `setEnabled(node, bool)` toggles nodes. Plans are cached per set of enabled nodes. CPU nodes
-  replace per-frame callbacks.
+- `setEnabled(node, bool)` toggles nodes; `runOnce(node)` runs one in the next frame only. Plans
+  are cached per set of enabled nodes. CPU nodes replace per-frame callbacks.
+- `BufferReadbackNode::contents<T>()` waits for the latest copy; `takeFinished<T>()` returns the newest
+  finished copy without waiting, for polling between frames.
 - `VulkanApp` owns graphs: `createGraph()`, `setActiveGraph()`, `destroyGraph()`. Headless code can
   construct `RenderGraph(ctx)` directly and call `execute()`.
 - Input: `app.setInputHandlers({.key = ..., .mouseButton = ..., .cursorPos = ..., .scroll = ...})`
@@ -306,14 +308,20 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   `(on event body)` handlers whose value is the next state (usually `(with state #:field v)`):
   events are `key-pressed`/`key-released` (key names like `space`, `a`, `1`), `mouse-pressed`/
   `mouse-released`, `cursor-moved` (positions in [-1, 1]), `scrolled` and `(frame dt)`. Handlers'
-  effects are `print!`, `set-frames-in-flight!` and `quit!`. `(run Graph (input expr) ...
+  effects are `print!`, `set-frames-in-flight!` and `quit!`. `(on (read readback xs) ...)`
+  receives a buffer readback's finished copy as `(data T)` (immutable shared elements,
+  `zgal::Data<T>`; `count`, `at`, `empty-data`), which state fields, externs and graphs'
+  `(input d (per-frame (data T)))` (uploaded again when it changes) take. `(run Graph (input expr) ...
   #:enabled ((node expr) ...))` computes the graph's parameters once and per-frame inputs and node
   enables each frame from the state; C++ gives the graph's other inputs through the app's
-  `Inputs`. `(extern (f [x : T]) : R)` declares a function C++ gives (a `std::function` in
+  `Inputs`. Several `(run G ... #:when condition)` clauses are phases: each frame the first whose
+  condition holds (else the last) is `renderGraph()`, and `create` takes `Name::Graphs` (a
+  `RenderGraph*` per graph); nodes with `#:once #t` run in their graph's first frame.
+  `(extern (f [x : T]) : R)` declares a function C++ gives (a `std::function` in
   `Inputs`) that bodies call, for what ZGAL can't do (reading datasets, saving files). C++ creates
   it with `Name::create(ctx, graph, Name::Inputs{..., .timestep =
   zgal::Timestep::realTime(max) or fixed(step)})` and runs it with `zgal::run(vulkanApp, *app)`
-  (`include/zgal/Window.h`), or headless calls `app->beginFrame()` before each frame. Tests drive
+  (`include/zgal/Window.h`), or headless calls `app->beginFrame()` (a `Result`) and executes `app->renderGraph()` each frame. Tests drive
   it with `handle(zgal::Event{...})`, `state()` and `setState()`.
 - Never edit generated files (under `build/`): change the `.zgal` file (or a GLSL body).
 

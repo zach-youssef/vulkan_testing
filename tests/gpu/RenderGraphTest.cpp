@@ -493,6 +493,65 @@ TEST_CASE_FIXTURE(GpuTest, "Materials bind arrays of entries, whose elements a n
     CHECK_THROWS_AS((void)MaterialBinding::array(nullptr, Access::SampledRead), ContractViolation);
 }
 
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph runs a node once, and buffer readbacks give finished copies without waiting") {
+    auto& ctx = context();
+    {
+        RenderGraph graph(ctx);
+        BufferId buffer = graph.createBuffer("values", FrameMode::Shared, 2 * sizeof(uint32_t));
+        uint32_t value = 1;
+        NodeId fill = graph.addTransfer("fill", [buffer](NodeBuilder& builder) { builder.write(buffer, Access::TransferDst); },
+                                        [buffer, &value](RecordContext& record) {
+                                            vkCmdFillBuffer(record.commandBuffer, record.graph.buffer(buffer, record.frameIndex), 0,
+                                                            VK_WHOLE_SIZE, value);
+                                        });
+        int runs = 0;
+        NodeId count = graph.addCpu("count", nullptr, [&runs](FrameContext&) { ++runs; });
+        NodeId readback = graph.add<BufferReadbackNode>("readback", buffer);
+        auto& node = graph.nodeAs<BufferReadbackNode>(readback);
+
+        // Nothing has run, so nothing has finished
+        CHECK_FALSE(node.takeFinished<uint32_t>().value());
+
+        graph.runOnce(count);
+        CHECK(graph.isPendingOnce(count));
+        graph.execute().value();
+        CHECK(runs == 1);
+        CHECK_FALSE(graph.isEnabled(count));
+        CHECK_FALSE(graph.isPendingOnce(count));
+        graph.execute().value();
+        CHECK(runs == 1);
+        // Again, and cancelled by setEnabled
+        graph.runOnce(count);
+        graph.execute().value();
+        CHECK(runs == 2);
+        graph.runOnce(count);
+        graph.setEnabled(count, true);
+        graph.execute().value();
+        graph.execute().value();
+        CHECK(runs == 4);
+
+        // The newest finished copy, once
+        ctx.waitIdleAll();
+        auto finished = node.takeFinished<uint32_t>().value();
+        REQUIRE(finished);
+        CHECK(*finished == std::vector<uint32_t>{1, 1});
+        CHECK_FALSE(node.takeFinished<uint32_t>().value());
+
+        // Copies arrive as their frames finish, the newest superseding older ones
+        value = 2;
+        graph.execute().value();
+        value = 3;
+        graph.execute().value();
+        graph.waitIdle().value();
+        auto latest = node.takeFinished<uint32_t>().value();
+        REQUIRE(latest);
+        CHECK(*latest == std::vector<uint32_t>{3, 3});
+        CHECK_FALSE(node.takeFinished<uint32_t>().value());
+        graph.setEnabled(fill, false);
+        ctx.waitIdleAll();
+    }
+}
+
 TEST_CASE_FIXTURE(GpuTest, "Materials update after the CPU nodes ordered before their nodes") {
     auto& ctx = context();
     RenderGraph graph(ctx);

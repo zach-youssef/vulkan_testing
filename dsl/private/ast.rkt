@@ -30,6 +30,8 @@
 ;; nothing), and several values (from a fold with several accumulators)
 (struct opaque-t (kind) #:transparent)
 (struct runtime-array-t (element) #:transparent)
+;; Elements apps hold (zgal::Data in C++): from readbacks, C++ and graphs' per-frame data inputs
+(struct data-t (element) #:transparent)
 ;; An array binding: its elements' type (a texture, storage image, buffer's value or buffer-array's
 ;; array), chosen with `at`
 (struct binding-array-t (element) #:transparent)
@@ -87,16 +89,19 @@
 
 ;; parameters: fields C++ gives. externs: function-decls (without bodies) of the functions C++ gives,
 ;; which bodies call. state: a struct-decl (named State) and the fields' initial values, in order.
-;; handlers: list of handler. run: a graph-run, or #f.
-(struct app (name parameters externs state initial handlers run loc) #:transparent)
+;; handlers: list of handler. runs: the graphs it runs (graph-runs), the active one the first whose
+;; condition holds (the last has none); empty for none.
+(struct app (name parameters externs state initial handlers runs loc) #:transparent)
 ;; event: kind 'key-pressed 'key-released (keys: key name symbols), 'mouse-pressed 'mouse-released
-;; (button: 'left 'right 'middle), 'cursor-moved 'scrolled 'frame. binding: the name the event's
-;; value is bound to (a cursor position, scroll offset or time step), or #f. body: the next state.
-(struct event (kind keys button binding loc) #:transparent)
+;; (button: 'left 'right 'middle), 'cursor-moved 'scrolled 'frame, or 'read: a buffer readback's
+;; copy has finished (readback: (list graph node element-type)). binding: the name the event's
+;; value is bound to (a cursor position, scroll offset, time step or the copied data), or #f.
+(struct event (kind keys button binding readback loc) #:transparent)
 (struct handler (event body loc) #:transparent)
 ;; bindings: (cons graph-item-name expression) for the graph's parameters (computed once) and
-;; per-frame inputs (each frame). enables: (cons node-name expression), computed each frame.
-(struct graph-run (graph bindings enables loc) #:transparent)
+;; per-frame inputs (each frame). enables: (cons node-name expression), computed each frame. when:
+;; whether it's the active graph (an expression computed each frame), or #f for otherwise.
+(struct graph-run (graph bindings enables when loc) #:transparent)
 
 
 ;; The C++ namespace of prog's generated code: its file's name without .zgal (scene.zgal: scene)
@@ -121,6 +126,7 @@
     [(opaque-t k) (symbol->string k)]
     [(runtime-array-t e) (format "(array ~a)" (type-name e))]
     [(binding-array-t e) (format "an array of ~a" (type-name e))]
+    [(data-t e) (format "(data ~a)" (type-name e))]
     [(void-t) "void"]
     [(values-t ts) (format "(values ~a)" (string-join (map type-name ts) " "))]))
 
@@ -195,7 +201,8 @@
 ;; (width height) expressions or #f. reads, writes: the resources a cpu node's work, a copy or a
 ;; clear reads and writes (names). offsets: a copy's (cons source-offset destination-offset), the
 ;; destination offset an image's (x y) for a copy into one; else #f. when, enabled: expressions or #f.
-(struct g-node (kind name target material subject count reads writes offsets when enabled loc) #:transparent)
+;; once?: whether it runs in the graph's first frame only (RenderGraph::runOnce).
+(struct g-node (kind name target material subject count reads writes offsets when enabled once? loc) #:transparent)
 
 ;; The declaration of a graph-level name
 (define (graph-item-name item)

@@ -133,6 +133,129 @@ private:
     uint64_t writes_ = 0;
 };
 
+/*
+ Elements apps and C++ pass around: immutable and shared, so copying one (e.g. with an app's state)
+ is cheap, and data that hasn't changed is the same data (sameAs), which is how graphs know not to
+ upload it again. An app's (data T) values, its readbacks' results, and graphs' per-frame data
+ inputs are Data. Convert from a std::vector to make one.
+ */
+template<typename T>
+class Data {
+public:
+    Data() = default;
+    Data(std::vector<T> elements) : elements_(std::make_shared<const std::vector<T>>(std::move(elements))) {}
+
+    uint32_t size() const { return elements_ ? static_cast<uint32_t>(elements_->size()) : 0; }
+    bool empty() const { return size() == 0; }
+
+    const T& operator[](size_t i) const {
+        if (i >= size()) {
+            contractViolation("Data index " + std::to_string(i) + " is past its " + std::to_string(size()) + " elements");
+        }
+        return (*elements_)[i];
+    }
+
+    const std::vector<T>& elements() const {
+        static const std::vector<T> none;
+        return elements_ ? *elements_ : none;
+    }
+
+    auto begin() const { return elements().begin(); }
+    auto end() const { return elements().end(); }
+
+    // Whether both are the same elements (not merely equal ones)
+    bool sameAs(const Data& other) const { return elements_ == other.elements_; }
+
+private:
+    std::shared_ptr<const std::vector<T>> elements_;
+};
+
+// A per-frame value computed at most once a frame, however many of a graph's functions use it
+// (e.g. a per-frame data input's size and its upload)
+template<typename T>
+class FrameCache {
+public:
+    explicit FrameCache(FrameSource<T> source) : source_(std::move(source)) {}
+
+    const T& get(const FrameInfo& frame) {
+        if (!frameNumber_ || *frameNumber_ != frame.frameNumber) {
+            value_ = source_(frame);
+            frameNumber_ = frame.frameNumber;
+        }
+        return value_;
+    }
+
+private:
+    FrameSource<T> source_;
+    T value_{};
+    std::optional<uint64_t> frameNumber_;
+};
+
+/*
+ Uploads a per-frame data input into a graph buffer with a copy per frame in flight (sized from the
+ data, see RenderGraph::createBuffer's size source): before a frame's work, when the frame's buffer
+ doesn't hold the frame's data (it changed, or the buffer was recreated), it's copied through a
+ staging buffer. Data that doesn't change isn't copied again, and frames never wait for each other,
+ as each writes its own copy.
+ */
+template<typename T>
+class DataUploadNode : public TransferNode {
+public:
+    DataUploadNode(BufferId buffer, std::shared_ptr<FrameCache<Data<T>>> data) : buffer_(buffer), data_(std::move(data)) {}
+
+    void setup(NodeBuilder& builder) override {
+        graph_ = &builder.graph();
+        builder.write(buffer_, Access::TransferDst);
+        slots_ = PerFrame<Slot>(graph_->context(), [](uint32_t) { return Slot{}; });
+    }
+
+    Result<void> prepareFrame(FrameContext& context) override {
+        const Data<T>& data = data_->get(frameInfo(context));
+        Slot& slot = slots_[context.frameIndex];
+        const VkBuffer target = graph_->buffer(buffer_, context.frameIndex);
+        slot.copy = !(slot.target == target && slot.uploaded.sameAs(data)) && !data.empty();
+        if (slot.copy) {
+            // The slot's previous staging buffer has finished (the slot was waited for)
+            TRY_ASSIGN(slot.staging, Buffer<T>::create(context.context, data.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+            TRY(slot.staging->mapAndExecute(0, sizeof(T) * data.size(), [&data](void* mapped) {
+                std::memcpy(mapped, data.elements().data(), sizeof(T) * data.size());
+            }));
+        }
+        slot.target = target;
+        slot.uploaded = data;
+        return {};
+    }
+
+    void record(RecordContext& context) override {
+        Slot& slot = slots_[context.frameIndex];
+        if (!slot.copy) {
+            return;
+        }
+        const VkBufferCopy region{0, 0, slot.staging->getSize()};
+        vkCmdCopyBuffer(context.commandBuffer, slot.staging->getBuffer(), slot.target, 1, &region);
+        ++copies_;
+    }
+
+    // How many copies it has recorded: for tests
+    uint64_t copies() const { return copies_; }
+
+private:
+    // A frame slot's buffer, the data it holds, and whether this frame copies
+    struct Slot {
+        VkBuffer target = VK_NULL_HANDLE;
+        Data<T> uploaded;
+        bool copy = false;
+        Handle<Buffer<T>> staging;
+    };
+
+    BufferId buffer_;
+    std::shared_ptr<FrameCache<Data<T>>> data_;
+    RenderGraph* graph_ = nullptr;
+    PerFrame<Slot> slots_;
+    uint64_t copies_ = 0;
+};
+
 // What a graph's material does each frame before recording: e.g. writing its uniforms
 using Updates = std::vector<std::function<void(const FrameInfo&)>>;
 

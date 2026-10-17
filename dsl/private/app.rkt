@@ -11,6 +11,7 @@
          "body.rkt"
          "errors.rkt"
          "graph.rkt"
+         "layout.rkt"
          "syntax.rkt")
 
 (provide parse-app
@@ -27,18 +28,27 @@
      (keypad-add . "KeypadAdd") (keypad-subtract . "KeypadSubtract"))
    (for/list ([n (in-range 1 13)]) (cons (string->symbol (format "f~a" n)) (format "F~a" n)))))
 
-(define event-kinds '(key-pressed key-released mouse-pressed mouse-released cursor-moved scrolled frame))
+(define event-kinds '(key-pressed key-released mouse-pressed mouse-released cursor-moved scrolled frame read))
 
 ;; The C++ app class's values bodies can read besides their parameters (see cpp-app.rkt)
 (define host-values
   (list (global 'host "framesInFlight" "context_->framesInFlight()" (scalar-t 'uint) #f)
-        (global 'host "surfaceSize" "glm::vec2(float(graph_->surfaceExtent().width), float(graph_->surfaceExtent().height))"
+        (global 'host "surfaceSize" "glm::vec2(float(active_->surfaceExtent().width), float(active_->surfaceExtent().height))"
                 (vector-t 'float 2) #f)))
 
 ;; stx: the (app Name clause ...) form. structs, functions, constants: the file's, by name (hashes).
 ;; cpu-functions: the names of those compiled to C++ (a set). graphs: the file's graphs so far, by
 ;; name.
-(define (parse-app stx parse-type top-level structs functions constants cpu-functions graphs)
+(define (parse-app stx parse-file-type top-level structs functions constants cpu-functions graphs)
+  ;; Apps' values can also be data: (data T)
+  (define (parse-type stx)
+    (match (syntax->list stx)
+      [(list d t) #:when (eq? (syntax-e d) 'data)
+       (define element (parse-file-type t))
+       (when (or (array-t? element) (std430-problem (array-t element 1)))
+         (zgal-error 'type-not-allowed t "data holds elements laid out like a buffer's: ~a" (or (std430-problem (array-t element 1)) "not arrays")))
+       (data-t element)]
+      [_ (parse-file-type stx)]))
   (define items (syntax->list stx))
   (unless (and items (>= (length items) 2))
     (zgal-error 'malformed stx "expected (app Name clause ...)"))
@@ -52,7 +62,7 @@
   (for ([c (in-list clauses)])
     (unless (memq (head-symbol c) '(parameter extern state on run))
       (zgal-error 'unknown-clause c "an app takes parameter, extern, state, on and run clauses, not ~a" (show c))))
-  (for ([key (in-list '(state run))])
+  (for ([key (in-list '(state))])
     (when (> (length (clauses-of key)) 1)
       (zgal-error 'duplicate-clause (second (clauses-of key)) "app ~a has two (~a ...) clauses" name key)))
 
@@ -122,6 +132,27 @@
   (define state-spelling (spell! ctx "state"))
   (define (state-locals where) (hash "state" (t-local state-spelling state-type (stx->loc where))))
 
+  ;; A readback node of a graph the app runs, for read events: (list graph node element-type)
+  (define (find-readback node-stx)
+    (define node-name (format "~a" (syntax-e node-stx)))
+    (define found
+      (for*/list ([c (in-list (clauses-of 'run))]
+                  [g (in-value (let ([g-stx (and (pair? (cdr (syntax->list c))) (second (syntax->list c)))])
+                                 (and g-stx (symbol? (syntax-e g-stx)) (hash-ref graphs (symbol->string (syntax-e g-stx)) #f))))]
+                  #:when g
+                  [n (in-list (graph-nodes g))]
+                  #:when (equal? (g-node-name n) node-name))
+        (cons g n)))
+    (match found
+      ['() (zgal-error 'unknown-name node-stx "no graph app ~a runs has a node ~a" name node-name)]
+      [(list (cons g n) _ ...)
+       (unless (eq? (g-node-kind n) 'readback)
+         (zgal-error 'type-mismatch node-stx "~a is a ~a node, not a readback" node-name (g-node-kind n)))
+       (define subject (hash-ref (graph-environment g) (g-node-subject n)))
+       (unless (memq (entry-kind subject) '(buffer import-buffer upload))
+         (zgal-error 'type-mismatch node-stx "readback ~a reads an image; read events give buffers' elements" node-name))
+       (list (graph-name g) node-name (entry-type subject))]))
+
   ;; Handlers
   (define handled (make-hash))   ; (list kind key-or-button) -> loc
   (define (claim! key where)
@@ -133,12 +164,15 @@
     (for/list ([c (in-list (clauses-of 'on))])
       (match (syntax->list c)
         [(list* _ event-stx body-stxs) #:when (pair? body-stxs)
-         (define e (parse-event event-stx claim!))
+         (define e (parse-event event-stx claim! (λ (node-stx) (find-readback node-stx))))
          (define locals
            (if (event-binding e)
                (hash-set (state-locals c) (event-binding e)
                          (t-local (spell! ctx (event-binding e))
-                                  (if (eq? (event-kind e) 'frame) (scalar-t 'float) (vector-t 'float 2))
+                                  (case (event-kind e)
+                                    [(frame) (scalar-t 'float)]
+                                    [(read) (data-t (third (event-readback e)))]
+                                    [else (vector-t 'float 2)])
                                   (stx->loc event-stx)))
                (state-locals c)))
          (define body (check-sequence body-stxs c ctx locals))
@@ -151,14 +185,27 @@
                   (cpu-only next) (stx->loc c))]
         [_ (zgal-error 'malformed c "expected (on event body ...+)")])))
 
-  ;; The graph it runs
-  (define run
-    (match (clauses-of 'run)
-      ['() #f]
-      [(list c) (parse-run c ctx state-locals graphs names cpu-only)]))
-  (app name parameters externs state initial handlers run (stx->loc stx)))
+  ;; The graphs it runs: the active one is the first whose condition holds, so only the last has
+  ;; none (and an app running one graph always runs it)
+  (define runs
+    (for/list ([c (in-list (clauses-of 'run))])
+      (parse-run c ctx state-locals graphs names cpu-only)))
+  (for ([r (in-list runs)] [i (in-naturals)])
+    (define last? (= i (sub1 (length runs))))
+    (cond
+      [(and last? (graph-run-when r))
+       (zgal-error 'bad-option (graph-run-loc r) "the last graph an app runs has no #:when: it runs when no other's condition holds")]
+      [(and (not last?) (not (graph-run-when r)))
+       (zgal-error 'bad-option (graph-run-loc r) "an app running several graphs gives every graph but the last a #:when condition, so one is chosen each frame")]))
+  (let ([seen (make-hash)])
+    (for ([r (in-list runs)])
+      (define g-name (graph-name (graph-run-graph r)))
+      (when (hash-ref seen g-name #f)
+        (zgal-error 'duplicate-name (graph-run-loc r) "app ~a runs graph ~a twice" name g-name))
+      (hash-set! seen g-name #t)))
+  (app name parameters externs state initial handlers runs (stx->loc stx)))
 
-(define (parse-event stx claim!)
+(define (parse-event stx claim! find-readback)
   (define parts (syntax->list stx))
   (define kind (head-symbol stx))
   (unless (memq kind event-kinds)
@@ -179,7 +226,7 @@
                                     ", ")))
          (claim! (list kind key) k)
          key))
-     (event kind keys #f #f (stx->loc stx))]
+     (event kind keys #f #f #f (stx->loc stx))]
     [(or 'mouse-pressed 'mouse-released)
      (match args
        [(list b n)
@@ -187,33 +234,45 @@
         (unless (memq button '(left right middle))
           (zgal-error 'malformed b "a mouse button is left, right or middle, not ~a" (show b)))
         (claim! (list kind button) stx)
-        (event kind '() button (binding-name n) (stx->loc stx))]
+        (event kind '() button (binding-name n) #f (stx->loc stx))]
        [_ (zgal-error 'malformed stx "expected (~a button cursor), binding the cursor's position" kind)])]
+    ['read
+     (match args
+       [(list node n)
+        (define readback (find-readback node))
+        (claim! (list kind (second readback)) stx)
+        (event kind '() #f (binding-name n) readback (stx->loc stx))]
+       [_ (zgal-error 'malformed stx "expected (read readback values), binding the elements the readback copied")])]
     [_
      (match args
        [(list n)
         (claim! (list kind #f) stx)
-        (event kind '() #f (binding-name n) (stx->loc stx))]
+        (event kind '() #f (binding-name n) #f (stx->loc stx))]
        [_ (zgal-error 'malformed stx "expected (~a name), binding the event's value" kind)])]))
 
 (define (parse-run stx ctx state-locals graphs names cpu-only)
   (define parts (syntax->list stx))
   (unless (>= (length parts) 2)
-    (zgal-error 'malformed stx "expected (run Graph (input expression) ... #:enabled ((node expression) ...))"))
+    (zgal-error 'malformed stx "expected (run Graph (input expression) ... #:enabled ((node expression) ...) #:when condition)"))
   (define g-stx (second parts))
   (define g (or (and (symbol? (syntax-e g-stx)) (hash-ref graphs (symbol->string (syntax-e g-stx)) #f))
                 (zgal-error 'unknown-name g-stx "~a isn't a graph declared earlier in the file" (show g-stx))))
   (define env (graph-environment g))
-  (define-values (binding-stxs enabled-stx)
-    (let loop ([rest (cddr parts)] [bindings '()] [enabled #f])
+  (define-values (binding-stxs options)
+    (let loop ([rest (cddr parts)] [bindings '()] [options (hasheq)])
       (match rest
-        ['() (values (reverse bindings) enabled)]
-        [(list* k v more) #:when (eq? (syntax-e k) '#:enabled)
-         (when enabled (zgal-error 'bad-option k "#:enabled is given twice"))
-         (loop more bindings v)]
+        ['() (values (reverse bindings) options)]
+        [(list* k v more) #:when (memq (syntax-e k) '(#:enabled #:when))
+         (when (hash-ref options (syntax-e k) #f) (zgal-error 'bad-option k "~a is given twice" (syntax-e k)))
+         (loop more bindings (hash-set options (syntax-e k) v))]
         [(cons k _) #:when (keyword? (syntax-e k))
-         (zgal-error 'bad-option k "run takes no ~a option; it takes #:enabled" (syntax-e k))]
-        [(cons b more) (loop more (cons b bindings) enabled)])))
+         (zgal-error 'bad-option k "run takes no ~a option; it takes #:enabled and #:when" (syntax-e k))]
+        [(cons b more) (loop more (cons b bindings) options)])))
+  (define enabled-stx (hash-ref options '#:enabled #f))
+  ;; Whether this is the active graph, computed each frame from the state
+  (define active
+    (let ([c (hash-ref options '#:when #f)])
+      (and c (cpu-only (coerce (check c ctx (state-locals c)) (scalar-t 'bool) c "whether the graph runs")))))
   (define bound (make-hash))
   (define bindings
     (for/list ([b (in-list binding-stxs)])
@@ -229,6 +288,7 @@
              [(entry 'parameter t _) (coerce (check v ctx (hash)) t v (format "parameter ~a" input))]
              ;; Computed each frame, from the state too
              [(entry 'per-frame t _) (coerce (check v ctx (state-locals b)) t v (format "input ~a" input))]
+             [(entry 'per-frame-data t _) (coerce (check v ctx (state-locals b)) (data-t t) v (format "input ~a" input))]
              [#f (zgal-error 'unknown-name n "graph ~a has no parameter or input ~a" (graph-name g) input)]
              [(entry kind _ _)
               (zgal-error 'type-mismatch n "~a is ~a, which C++ gives (through the app's inputs); apps compute parameters and per-frame inputs"
@@ -251,7 +311,9 @@
                               (zgal-error 'unknown-name n "graph ~a has no node ~a" (graph-name g) node-name)))
              (when (eq? (g-node-kind node) 'extern)
                (zgal-error 'type-mismatch n "~a is an extern node, whose nodes C++ adds and enables" node-name))
+             (when (g-node-once? node)
+               (zgal-error 'type-mismatch n "~a runs once (#:once), so the app doesn't enable it" node-name))
              (cons node-name (cpu-only (coerce (check v ctx (state-locals p)) (scalar-t 'bool) v (format "whether ~a is enabled" node-name))))]
             [_ (zgal-error 'malformed p "expected (node expression)")]))
         '()))
-  (graph-run g bindings enables (stx->loc stx)))
+  (graph-run g bindings enables active (stx->loc stx)))

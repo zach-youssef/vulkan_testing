@@ -13,6 +13,10 @@
  Copies a buffer into host-visible memory every frame, e.g. to save results or check them in tests.
  contents<T>() returns the copy made by the most recent frame, waiting for it to finish. The buffer
  is copied whole, whatever its size that frame (which may be 0, giving no elements).
+
+ takeFinished<T>() doesn't wait: it returns the newest copy that has finished since the last one it
+ returned, if any, for code polling between frames (e.g. an app reacting to results as they arrive
+ while frames keep going).
  */
 class BufferReadbackNode : public TransferNode {
 public:
@@ -40,6 +44,9 @@ public:
     void record(RecordContext& context) override {
         auto& copy = copies_[context.frameIndex];
         lastFrame_ = context.frameIndex;
+        // This frame slot's previous copy is overwritten
+        std::erase_if(pending_, [&context](const Pending& p) { return p.frameIndex == context.frameIndex; });
+        pending_.push_back({context.frameIndex, std::nullopt});
         if (copy.size == 0) {
             return;
         }
@@ -60,7 +67,50 @@ public:
             contractViolation("BufferReadbackNode hasn't run yet");
         }
         TRY(graph_->waitIdle());
-        auto& copy = copies_[*lastFrame_];
+        return read<T>(copies_[*lastFrame_]);
+    }
+
+    // The newest copy that has finished and that this hasn't returned, without waiting; empty if
+    // none has. Call it between frames.
+    template<typename T>
+    Result<std::optional<std::vector<T>>> takeFinished() {
+        VulkanContext& context = graph_->context();
+        // Frame slots removed when the number of frames in flight shrank
+        std::erase_if(pending_, [this](const Pending& p) { return p.frameIndex >= copies_.size(); });
+        std::optional<uint32_t> newest;
+        for (auto& p : pending_) {
+            // Copies recorded before now have been submitted, so the work submitted so far includes them
+            if (!p.points) {
+                p.points = context.submittedPoints();
+            }
+            if (context.isComplete(*p.points)) {
+                newest = p.frameIndex;
+            }
+        }
+        if (!newest) {
+            return std::optional<std::vector<T>>();
+        }
+        // Older ones are superseded. Pending copies are in recording order.
+        while (!pending_.empty()) {
+            const bool found = pending_.front().frameIndex == *newest;
+            pending_.erase(pending_.begin());
+            if (found) {
+                break;
+            }
+        }
+        TRY_ASSIGN(auto elements, read<T>(copies_[*newest]));
+        return std::optional<std::vector<T>>(std::move(elements));
+    }
+
+private:
+    // A frame's copy: the buffer's size that frame, and host memory holding it (none for size 0)
+    struct Copy {
+        VkDeviceSize size = 0;
+        Handle<Buffer<uint8_t>> buffer;
+    };
+
+    template<typename T>
+    static Result<std::vector<T>> read(Copy& copy) {
         std::vector<T> elements(copy.size / sizeof(T));
         if (elements.empty()) {
             return elements;
@@ -71,15 +121,16 @@ public:
         return elements;
     }
 
-private:
-    BufferId buffer_;
-    RenderGraph* graph_ = nullptr;
-    // A frame's copy: the buffer's size that frame, and host memory holding it (none for size 0)
-    struct Copy {
-        VkDeviceSize size = 0;
-        Handle<Buffer<uint8_t>> buffer;
+    // A copy recorded and not yet returned by takeFinished: its frame slot, and the work it was
+    // submitted with (captured once it has been submitted)
+    struct Pending {
+        uint32_t frameIndex;
+        std::optional<VulkanContext::TimelinePoints> points;
     };
 
+    BufferId buffer_;
+    RenderGraph* graph_ = nullptr;
     PerFrame<Copy> copies_;
+    std::vector<Pending> pending_;
     std::optional<uint32_t> lastFrame_;
 };

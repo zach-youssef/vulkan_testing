@@ -50,7 +50,7 @@
 
 (define kind-names
   (hash 'parameter "a parameter" 'constant "a constant" 'per-frame "a per-frame input" 'meshes "a meshes input"
-        'cpu "a cpu input" 'extern "an extern input" 'import "an imported image" 'import-images "imported images" 'import-buffer "an imported buffer" 'data "a data input" 'upload "an uploaded buffer" 'sampler "a sampler" 'uniform "a uniform"
+        'cpu "a cpu input" 'extern "an extern input" 'per-frame-data "a per-frame data input" 'import "an imported image" 'import-images "imported images" 'import-buffer "an imported buffer" 'data "a data input" 'upload "an uploaded buffer" 'sampler "a sampler" 'uniform "a uniform"
         'image "an image" 'buffer "a buffer" 'target "a target" 'material "a material"))
 
 ;; ---------------------------------------------------------------------------------------------
@@ -151,6 +151,11 @@
           [(e-ref name ref-where)
            (match (hash-ref env name #f)
              [(entry 'data _ _) (scalar-t 'uint)]
+             [(entry 'per-frame-data _ _)
+              (unless per-frame-ok?
+                (zgal-error 'not-build-time where
+                            "~a is a per-frame data input, whose count is only known each frame, but this value is computed once, when the graph is built" name))
+              (scalar-t 'uint)]
              [_ (zgal-error 'type-mismatch ref-where "(count input) takes a data input, and ~a isn't one" name)])]
           [other (zgal-error 'malformed (e-loc other) "(count input) takes a data input's name")])]
        [(width height)
@@ -186,6 +191,7 @@
   (match e
     [(e-ref name _) (match (hash-ref env name #f) [(entry 'per-frame _ _) #t] [_ #f])]
     [(e-op (or 'width 'height) (list (e-ref name _)) _) (match (hash-ref env name #f) [(entry 'image _ _) #t] [_ #f])]
+    [(e-op 'count (list (e-ref name _)) _) (match (hash-ref env name #f) [(entry 'per-frame-data _ _) #t] [_ #f])]
     [(e-op _ args _) (ormap (λ (a) (per-frame-expression? a env)) args)]
     [_ #f]))
 
@@ -327,7 +333,7 @@
          (zgal-error 'type-not-allowed (second args) "a parameter is a bool, int, uint or float, not ~a" (type-name t)))
        (declare! (g-parameter (item-name) t (stx->loc stx)) stx)]
       ['input
-       (args! 2 "(input name (per-frame type)), (input name (data type)), (input name meshes), (input name cpu) or (input name extern)")
+       (args! 2 "(input name (per-frame type)), (input name (data type)), (input name (per-frame (data type))), (input name meshes), (input name cpu) or (input name extern)")
        (check-known-options options '() form)
        (define kind-stx (second args))
        (define item
@@ -337,6 +343,11 @@
            ['extern (g-input (item-name) 'extern #f (stx->loc stx))]
            [_
             (match (syntax->list kind-stx)
+              ;; Elements each frame: re-uploaded when they change
+              [(list k data-stx) #:when (and (eq? (syntax-e k) 'per-frame) (eq? (head-symbol data-stx) 'data))
+               (match (syntax->list data-stx)
+                 [(list _ t-stx) (g-input (item-name) 'per-frame-data (buffer-element-type t-stx "a data input") (stx->loc stx))]
+                 [_ (zgal-error 'malformed data-stx "expected (data type)")])]
               [(list k t-stx) #:when (eq? (syntax-e k) 'per-frame)
                (define t (parse-type t-stx))
                (when (array-t? t)
@@ -344,7 +355,7 @@
                (g-input (item-name) 'per-frame t (stx->loc stx))]
               [(list k t-stx) #:when (eq? (syntax-e k) 'data)
                (g-input (item-name) 'data (buffer-element-type t-stx "a data input") (stx->loc stx))]
-              [_ (zgal-error 'malformed kind-stx "an input is (per-frame type), (data type), meshes, cpu or extern, not ~a" (show kind-stx))])]))
+              [_ (zgal-error 'malformed kind-stx "an input is (per-frame type), (data type), (per-frame (data type)), meshes, cpu or extern, not ~a" (show kind-stx))])]))
        (declare! item stx)]
       ['import-image
        (args! 1 "(import-image name #:resting state)")
@@ -365,7 +376,7 @@
       ['upload
        (args! 2 "(upload name data-input)")
        (check-known-options options '() form)
-       (define source (lookup (second args) '(data) "a data input"))
+       (define source (lookup (second args) '(data per-frame-data) "a data input"))
        (declare! (g-upload (item-name) source (entry-type (hash-ref env source)) (stx->loc stx)) stx)]
       ['constant
        (args! 2 "(constant name expression)")
@@ -655,12 +666,12 @@
     (define-values (args options) (split-options (cdr parts) form))
     (check-known-options options
                          (case head
-                           [(cpu) '(#:when #:enabled #:reads #:writes)]
-                           [(copy) '(#:when #:enabled #:count #:source-offset #:destination-offset #:extent)]
-                           [(clear) '(#:when #:enabled #:value)]
+                           [(cpu) '(#:when #:enabled #:once #:reads #:writes)]
+                           [(copy) '(#:when #:enabled #:once #:count #:source-offset #:destination-offset #:extent)]
+                           [(clear) '(#:when #:enabled #:once #:value)]
                            ;; C++ adds and enables the nodes
                            [(extern) '(#:when)]
-                           [else '(#:when #:enabled)])
+                           [else '(#:when #:enabled #:once)])
                          form)
     (define (shape n text)
       (unless (= (length args) n) (zgal-error 'malformed stx "expected ~a" text)))
@@ -679,7 +690,16 @@
     (define (node kind #:target [target #f] #:material [m #f] #:subject [subject #f] #:count [count #f]
                   #:reads [reads '()] #:writes [writes '()] #:offsets [offsets #f])
       (g-node kind node-name target m subject count reads writes offsets
-              (condition options '#:when) (condition options '#:enabled) (stx->loc stx)))
+              (condition options '#:when) (condition options '#:enabled) (once?) (stx->loc stx)))
+    ;; #:once #t: the node runs in the graph's first frame, then is disabled
+    (define (once?)
+      (define stx (hash-ref options '#:once #f))
+      (cond
+        [(not stx) #f]
+        [(not (boolean? (syntax-e stx))) (zgal-error 'bad-option stx "#:once is #t or #f")]
+        [(and (syntax-e stx) (hash-ref options '#:enabled #f))
+         (zgal-error 'bad-option stx "node ~a runs once, so it has no #:enabled condition" node-name)]
+        [else (syntax-e stx)]))
     ;; The imported buffers a cpu node's work reads or writes: the CPU maps buffers the application
     ;; owns (the graph's own are in device-local memory)
     (define (host-buffers key)

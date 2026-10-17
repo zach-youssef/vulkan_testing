@@ -24,6 +24,7 @@
     [((array-t e n) 'glsl) (format "~a[~a]" (spell-type e dialect) n)]
     [((array-t e n) 'cpp) (format "std::array<~a, ~a>" (spell-type e dialect) n)]
     [((void-t) _) "void"]
+    [((data-t e) 'cpp) (format "zgal::Data<~a>" (spell-type e dialect))]
     [((opaque-t k) 'glsl) (symbol->string k)]
     [((scalar-t k) 'glsl) #:when (small-integer-kind? k) (format "~a_t" k)]
     [((scalar-t 'bool) 'cpp) "bool"]
@@ -85,6 +86,7 @@
     [(t-op 'not (list a) _ _) (format "!~a" (operand a))]
     [(t-op 'bitnot (list a) _ _) (format "~~~a" (operand a))]
     [(t-op 'array-length (list (t-global _ name _ _ _)) _ _) (format "zgalLength_~a()" name)]
+    [(t-op 'data-count (list d) _ _) (format "~a.size()" (operand d))]
     [(t-op op as _ _) (string-join (map operand as) (format " ~a " (hash-ref glsl-operators op)))]
     [(t-construct as (struct-t d) _)
      (if (eq? dialect 'glsl)

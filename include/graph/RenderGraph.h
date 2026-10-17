@@ -185,7 +185,23 @@ public: // Nodes
 
     // Disabled nodes drop out of the plan. Plans are cached per set of enabled nodes.
     void setEnabled(NodeId id, bool enabled) {
-        nodeRecord(id).enabled = enabled;
+        auto& record = nodeRecord(id);
+        record.enabled = enabled;
+        record.once = false;
+    }
+
+    // Enables a node for the next frame the graph runs, then disables it: one-time work such as
+    // precomputing a table, or reading a result back once. Calling it again runs it once more;
+    // setEnabled cancels it. A frame skipped before submitting (an out-of-date surface) doesn't count.
+    void runOnce(NodeId id) {
+        auto& record = nodeRecord(id);
+        record.enabled = true;
+        record.once = true;
+    }
+
+    // Whether the node runs once and hasn't yet
+    bool isPendingOnce(NodeId id) {
+        return nodeRecord(id).once;
     }
 
     bool isEnabled(NodeId id) {
@@ -548,6 +564,15 @@ public: // Compiling and running
             }
         }
 
+        // Nodes that ran once are done
+        for (uint32_t node : plan->order) {
+            auto& record = nodes_[node];
+            if (record.once) {
+                record.once = false;
+                record.enabled = false;
+            }
+        }
+
         lastFrameNumber_ = context_->frameNumber();
         TRY(context_->advanceFrame());
         return result;
@@ -600,6 +625,7 @@ private:
         std::string name;
         std::unique_ptr<Node> node;
         bool enabled = true;
+        bool once = false;   // Disabled after the next frame it runs in (runOnce)
         bool pinToPrimaryQueue = false;
         std::vector<NodeUse> uses;
         std::optional<RenderTarget> target;

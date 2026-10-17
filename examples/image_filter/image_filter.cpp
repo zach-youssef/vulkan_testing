@@ -160,7 +160,7 @@ Result<FilteredImage> filterImage(VulkanContext& context, const Options& options
         .source = source,
     }));
     // Without a VulkanApp, the frame begins here: the app enables the passes its state asks for
-    filter->beginFrame();
+    TRY(filter->beginFrame());
 
     // execute() would compile on demand; compiling first reports graph errors before any GPU work
     TRY(graph.compile().withContext("compiling the filter graph"));

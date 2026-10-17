@@ -69,7 +69,7 @@
   (check-true (string-contains? h ".tint = [self = app.get()](const zgal::FrameInfo&) { return self->input_tint(); },"))
   (check-true (string-contains? h ".work = std::move(app->inputs_.work),"))
   (check-true (string-contains? h "RenderGraph::RunFn work;"))
-  (check-true (string-contains? h "graph_->setEnabled(ids_->nodes.drawFlat, enabled_drawFlat());"))
+  (check-true (string-contains? h "graph0_->setEnabled(ids0_->nodes.drawFlat, enabled_drawFlat());"))
   ;; Parameters are computed when the app is created, before there's a state
   (check-zgal-error (string-append graph "(app A (state (s float 1.0)) (run G (scale state.s)))") 'unknown-name "state isn't declared")
   (check-zgal-error (string-append graph "(app A (run G (work 1)))") 'type-mismatch "work is a cpu input, which C++ gives")

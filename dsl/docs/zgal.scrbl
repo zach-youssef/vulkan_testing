@@ -822,6 +822,7 @@ and C++ supplies the meshes.
              (input name cpu)
              (input name extern)
              (input name (data type))
+             (input name (per-frame (data type)))
              (import-image name #:resting resting-state)
              (import-images name #:resting resting-state)
              (import-buffer name type)
@@ -846,7 +847,7 @@ and C++ supplies the meshes.
  [maybe-value (code:line) (code:line #:value expression)]
  [region-option (code:line #:source-offset expression) (code:line #:destination-offset (x y))
                 (code:line #:extent (width height))]
- [node-option (code:line #:when expression) (code:line #:enabled expression)]
+ [node-option (code:line #:when expression) (code:line #:enabled expression) (code:line #:once boolean)]
  [cpu-option (code:line #:reads (imported-buffer ...)) (code:line #:writes (imported-buffer ...))]
  [copy-option (code:line #:count expression) (code:line #:source-offset expression)
               (code:line #:destination-offset expression)]
@@ -873,6 +874,7 @@ C++ passes them to @tt{build()} in an @tt{Inputs} struct, by name:
   (list @tt{(input n cpu)} @tt{RenderGraph::RunFn} @elem{a @racket[cpu] node's work, each frame})
   (list @tt{(input n extern)} @tt{zgal::ExternNodes<Graph>} @elem{a function adding an @racket[extern] node's nodes (@secref["extern"])})
   (list @tt{(input n (data T))} @tt{std::vector<T>} @elem{elements an @racket[upload] puts in a buffer when the graph is built, e.g. a model or a data structure the CPU computed})
+  (list @tt{(input n (per-frame (data T)))} @tt{zgal::FrameSource<zgal::Data<T>>} @elem{elements each frame, e.g. an app's @racket[(data T)] state: an @racket[upload] of them is a buffer per frame in flight, sized to them and filled again when they change})
   (list @tt{(import-image n #:resting s)} @tt{FrameBinding<Image>} "an image the application owns, returned to its resting state (shader-read-only, general or transfer-src) after each frame")
   (list @tt{(import-images n #:resting s)} @tt{std::vector<FrameBinding<Image>>} @elem{images the application owns, as many as it gives, imported one by one, for an @racket[array] binding (@secref["arrays"]): e.g. textures loaded from files})
   (list @tt{(import-buffer n T)} @tt{FrameBinding<Buffer<T>>} "a buffer the application owns (and fills, maps or reads), with the usage its uses need, one or one per frame"))]
@@ -933,7 +935,10 @@ surface-relative ones, when the surface resizes).
        count of 0 is a buffer holding nothing. Give the count to the shaders too (a push
        constant), and dispatch as many invocations.}
  @item{@racket[upload]: a device-local buffer holding a data input's elements, created and
-       uploaded when the graph is built. It binds and copies like a graph buffer. An upload given
+       uploaded when the graph is built. Of a per-frame data input, a buffer per frame in flight,
+       sized to the elements each frame (recreated when the count changes, like a @racket[buffer]
+       with a per-frame count) and filled through a staging buffer when they change, so data that
+       doesn't change isn't copied and frames don't wait for each other. It binds and copies like a graph buffer. An upload given
        no elements is a contract violation (a buffer can't be empty).}
  @item{@racket[import-buffer]: a buffer the application owns, of elements of a type, which it
        creates with the usage its uses need (e.g. @tt{TRANSFER_SRC} to be copied from). Bindings
@@ -1011,7 +1016,9 @@ Nodes:
 ]
 @tt{#:when} leaves a node out when the condition is false (C++ gets a @tt{std::optional} id), and
 @tt{#:enabled} adds it disabled: disabled nodes still count when the graph allocates resources, and
-C++ can enable them later with @tt{graph.setEnabled}.
+C++ can enable them later with @tt{graph.setEnabled}. @tt{#:once #t} runs a node in the graph's
+first frame only (@tt{RenderGraph::runOnce}), e.g. one-time setup, or a readback of its result;
+C++ can run it once more with @tt{graph.runOnce}.
 
 @subsection[#:tag "extern"]{Extern nodes}
 
@@ -1086,22 +1093,24 @@ The particles example's app:
 
 @racketgrammar*[
  #:literals (app parameter state on run key-pressed key-released mouse-pressed mouse-released
-             cursor-moved scrolled frame left right middle)
+             cursor-moved scrolled frame read left right middle data)
  [app-form (app Name app-clause ...)]
  [app-clause (parameter name type)
              (extern (name [parameter : type] ...) : result-type)
              (state (field type initial-value) ...)
              (on event body ...+)
-             (run Graph (input expression) ... maybe-enabled)]
+             (run Graph (input expression) ... maybe-enabled maybe-when)]
  [event (key-pressed key ...+)
         (key-released key ...+)
         (mouse-pressed button cursor)
         (mouse-released button cursor)
         (cursor-moved cursor)
         (scrolled offset)
-        (frame dt)]
+        (frame dt)
+        (read readback elements)]
  [button left right middle]
- [maybe-enabled (code:line) (code:line #:enabled ((node expression) ...))]]
+ [maybe-enabled (code:line) (code:line #:enabled ((node expression) ...))]
+ [maybe-when (code:line) (code:line #:when condition)]]
 
 @subsection{State and handlers}
 
@@ -1112,6 +1121,8 @@ The particles example's app:
        e.g. reading a dataset or saving results. Its result may be @tt{void}, for effects.}
  @item{@racket[state] declares the state's fields, any type (@tt{bool} too: the state stays on the
        CPU), and their initial values, computed from the parameters.}
+ @item{Apps' values can also be @racket[(data T)]: any number of elements of a type laid out like
+       a buffer's (@secref["app-data"]).}
  @item{@racket[on] handles an event. Its body names @tt{state}, the event's value (bound to the
        name in the event), the parameters, the file's constants and functions, and the app's
        values @tt{framesInFlight} (a @tt{uint}) and @tt{surfaceSize} (the graph's surface extent,
@@ -1132,7 +1143,8 @@ Events:
   (list @tt{(mouse-released button cursor)} @elem{the cursor, a @tt{vec2}} "the button is released")
   (list @tt{(cursor-moved cursor)} @elem{the cursor, a @tt{vec2}} "the cursor moves")
   (list @tt{(scrolled offset)} @elem{the offset, a @tt{vec2} in scroll steps, y up} "the user scrolls")
-  (list @tt{(frame dt)} @elem{the time since the last frame, a @tt{float} in seconds} "each frame, before drawing"))]
+  (list @tt{(frame dt)} @elem{the time since the last frame, a @tt{float} in seconds} "each frame, before drawing")
+  (list @tt{(read readback elements)} @elem{the elements a buffer readback copied, @racket[(data T)]} "a readback's copy has finished (polled before each frame, without waiting)"))]
 Cursor positions are in [-1, 1] across the window, y down, like Vulkan's clip space. Keys are
 @tt{a}-@tt{z}, @tt{0}-@tt{9}, @tt{space}, @tt{escape}, @tt{enter}, @tt{tab}, @tt{backspace},
 @tt{left}, @tt{right}, @tt{up}, @tt{down}, @tt{minus}, @tt{equal}, @tt{keypad-add},
@@ -1146,6 +1158,16 @@ Effects, which only handlers have:
  @item{@racket[(quit!)] asks the app to stop: @tt{zgal::run} returns.}
 ]
 
+@subsection[#:tag "app-data"]{Data}
+
+@racket[(data T)] values are elements an app holds without a size known in advance: a
+readback's results, what an extern function computes, what a graph uploads. They're immutable and
+shared (@tt{zgal::Data<T>} in C++), so copying one with the state costs nothing, and data that hasn't
+changed is the same data, which graphs don't upload again. Bodies count them with
+@racket[(count d)], read an element with @racket[(at d i)], and start with none,
+@racket[(empty-data T)]; extern functions take and give them (by reference), e.g. to sort or
+filter results. A graph's @tt{(input name (per-frame (data T)))} takes them each frame.
+
 @subsection{The graph}
 
 @racket[run] names a graph of the file and computes its inputs: a parameter's expression once, when
@@ -1153,6 +1175,57 @@ the app is created, from the app's parameters; a per-frame input's each frame, f
 @tt{#:enabled} computes, each frame, whether nodes run, e.g. a pass the user toggles. Whatever the
 app doesn't compute (meshes, cpu and extern inputs, imported images and buffers, and any parameter
 or per-frame input it leaves alone) C++ gives, through the app's inputs.
+
+@subsubsection[#:tag "phases"]{Phases}
+
+An app can run several graphs, one each frame: the first whose @tt{#:when} condition holds, or
+otherwise the last (which has none). So work happens in phases, e.g. precomputing a table, then
+drawing with it. Within a graph, a node with @tt{#:once #t} runs in the graph's first frame only.
+Results come back as @racket[read] events, without stalling the frames, and the state carries them
+to the next phase:
+
+@(define phases-source #<<ZGAL
+(compute-material Measure
+  (workgroup 64)
+  (bindings (sizes (buffer-array uint)))
+  (compute (write! (at sizes globalInvocationId.x) (* globalInvocationId.x 2))))
+
+(compute-material Draw
+  (workgroup 64)
+  (bindings (sizes (buffer-array uint)) (shapes (buffer-array float)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count) (write! (at shapes i) (float (at sizes i)))))))
+
+(graph Precompute
+  (buffer sizes uint 64 #:frames shared)
+  (material measuring Measure sizes #:invocations (64))
+  (dispatch measure measuring #:once #t)
+  (readback readSizes sizes #:once #t))
+
+(graph Render
+  (input sizes (per-frame (data uint)))
+  (upload sizeBuffer sizes)
+  (buffer shapes float (count sizes) #:frames per-frame)
+  (material drawing Draw (sizes sizeBuffer) shapes
+            #:push ((count (count sizes))) #:invocations ((count sizes)))
+  (dispatch draw drawing))
+
+(app Staged
+  (state
+   (sizes (data uint) (empty-data uint))
+   (ready bool #f))
+  (on (read readSizes copied) (with state #:sizes copied #:ready #t))
+  (run Precompute #:when (not state.ready))
+  (run Render (sizes state.sizes)))
+ZGAL
+)
+@(zgal-source phases-source)
+@(generated-file phases-source "example.zgal.h" #:from #rx"^    Result<void> beginFrame" #:to #rx"^    }$")
+
+C++ gives such an app a render graph per graph (@tt{Name::Graphs}), and draws the one
+@tt{renderGraph()} returns after each @tt{beginFrame()}, as @tt{zgal::run} does.
 
 @subsection{The generated class}
 
@@ -1193,10 +1266,14 @@ A class @tt{Name} has
        the extern functions, and the graph's inputs the app doesn't compute;}
  @item{@tt{static Result<std::unique_ptr<Name>> create(context, graph, inputs)}, which computes the
        initial state and builds the graph into the @tt{RenderGraph} (without @racket[run], the app
-       has no graph of its own: C++ builds one, and reads the state);}
- @item{@tt{handle(const zgal::Event&)}, running the event's handler, and @tt{beginFrame()}, running
-       the frame handler and the enables;}
- @item{@tt{ids()} (the graph's ids), @tt{renderGraph()}, @tt{context()} and @tt{quitRequested()}.}
+       has no graph of its own: C++ builds one, and reads the state). An app running several graphs
+       takes @tt{Name::Graphs}, a @tt{RenderGraph*} per graph (named like the graph, lower case
+       first: @tt{.precompute}), instead;}
+ @item{@tt{handle(const zgal::Event&)}, running the event's handler, and @tt{Result<void>
+       beginFrame()}, running the handlers of readbacks' finished copies and the frame handler,
+       choosing the graph and computing the enables (it fails if reading a copy does);}
+ @item{@tt{ids()} (the graph's ids; with several graphs, @tt{precomputeIds()} and so on),
+       @tt{renderGraph()} (the graph to draw this frame), @tt{context()} and @tt{quitRequested()}.}
 ]
 
 The clock is C++'s choice, made explicit: @tt{zgal::Timestep::realTime(maxStep)} advances by the
@@ -1209,9 +1286,9 @@ deterministic.
 @tt{include/zgal/App.h} holds what the generated class uses (events, @tt{Timestep}) and knows
 nothing of windows. @tt{include/zgal/Window.h} connects an app to a @tt{VulkanApp}:
 @tt{zgal::run(vulkanApp, app)} sends the window's input to the app's handlers and draws frames,
-each after @tt{beginFrame()}, until the window closes or the app quits; @tt{zgal::drawFrame} draws
-one, for headless loops. Without a @tt{VulkanApp} (the image filter), C++ calls @tt{beginFrame()}
-and executes the graph itself. The particles example's @tt{main}:
+each after @tt{beginFrame()} (drawing the graph the app chose), until the window closes or the app
+quits; @tt{zgal::drawFrame} draws one, for headless loops. Without a @tt{VulkanApp} (the image
+filter), C++ calls @tt{beginFrame()} and executes @tt{renderGraph()} itself. The particles example's @tt{main}:
 
 @(file-excerpt "examples/particles/particles.cpp" #:from #rx"TRY_ASSIGN[(]auto particlesApp, particles::ParticlesApp::create" #:to #rx"TRY[(]zgal::run[(]app, [*]particlesApp[)][)];")
 

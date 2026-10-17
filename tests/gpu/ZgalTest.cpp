@@ -489,7 +489,7 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL apps compute their state from events and frames
     auto app = Counting::create(ctx, graph, Counting::Inputs{.start = 2, .timestep = zgal::Timestep::fixed(0.25f)}).value();
     CHECK(app->state().count == 2);
     auto marked = [&] {
-        app->beginFrame();
+        app->beginFrame().value();
         graph.execute().value();
         auto pixels = graph.nodeAs<ReadbackNode>(app->ids().nodes.readback).pixels().value();
         int count = 0;
@@ -721,7 +721,7 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL buffers sized from per-frame inputs follow them
         RenderGraph graph(ctx);
         auto app = Growing::create(ctx, graph, Growing::Inputs{}).value();
         auto squares = [&] {
-            app->beginFrame();
+            app->beginFrame().value();
             graph.execute().value();
             return app->ids().readSquaresContents(graph).value();
         };
@@ -770,4 +770,49 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL array bindings choose textures and buffers per 
         CHECK_THROWS_WITH_AS((void)GatherGraph::build(ctx, graph, GatherGraph::Inputs{.layers = {FrameBinding<Image>()}}),
                              doctest::Contains("GatherGraph's imported image layers 0 isn't given"), ContractViolation);
     }
+}
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL apps run phases: graphs chosen by state, once nodes, readback events and data uploads") {
+    auto& ctx = context();
+    {
+        RenderGraph seedGraph(ctx);
+        RenderGraph useGraph(ctx);
+        auto app = Phases::create(ctx, Phases::Graphs{.seedGraph = &seedGraph, .useGraph = &useGraph}, Phases::Inputs{
+            .extend = [](const zgal::Data<uint32_t>& seeds) {
+                std::vector<uint32_t> grown = seeds.elements();
+                grown.push_back(100);
+                return zgal::Data<uint32_t>(std::move(grown));
+            },
+        }).value();
+        auto frame = [&] {
+            app->beginFrame().value();
+            app->renderGraph().execute().value();
+        };
+
+        // The seed graph computes and reads back its seeds once
+        frame();
+        CHECK(&app->renderGraph() == &seedGraph);
+        CHECK_FALSE(seedGraph.isEnabled(app->seedGraphIds().nodes.seed));
+        CHECK_FALSE(app->state().ready);
+        ctx.waitIdleAll();
+
+        // Its copy arrives as an event, which switches to the graph using the seeds
+        frame();
+        CHECK(app->state().ready);
+        CHECK(app->state().seeds.elements() == std::vector<uint32_t>{1, 11, 21, 31});
+        CHECK(&app->renderGraph() == &useGraph);
+        CHECK(app->useGraphIds().readDoubledContents(useGraph).value() == std::vector<uint32_t>{2, 22, 42, 62});
+        frame();
+        CHECK(app->state().reads >= 1);
+        CHECK(app->state().lastTotal == 128);
+
+        // Changed seeds are uploaded again, into a buffer of their new size
+        app->handle(zgal::Event{zgal::KeyPressed{zgal::Key::Space}});
+        frame();
+        CHECK(app->useGraphIds().readDoubledContents(useGraph).value() == std::vector<uint32_t>{2, 22, 42, 62, 200});
+        frame();
+        CHECK(app->state().lastTotal == 328);
+        ctx.waitIdleAll();
+    }
+    ctx.collectRetired();
 }

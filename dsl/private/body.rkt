@@ -373,10 +373,22 @@
             [(array-t e _) e]
             [(runtime-array-t e) e]
             [(binding-array-t e) e]
+            [(data-t e) e]
             [(vector-t k _) (scalar-t k)]
             [(matrix-t n) (vector-t 'float n)]
             [t (zgal-error 'type-mismatch (first args) "at indexes arrays, vectors and matrices, not ~a" (a-type t))]))
         (t-index base index t here)]
+       [(count)
+        (arity 1 1)
+        (define base (recur (first args)))
+        (unless (data-t? (texpr-type base))
+          (zgal-error 'type-mismatch (first args) "count gives how many elements data has, and this is ~a" (a-type (texpr-type base))))
+        (t-op 'data-count (list base) (scalar-t 'uint) here)]
+       [(empty-data)
+        (arity 1 1)
+        (unless (eq? (context-stage ctx) 'app)
+          (zgal-error 'wrong-stage stx "data is only in apps (shaders read buffers)"))
+        (t-construct '() (data-t (check-type-name (first args) ctx)) here)]
        [(array-length)
         (arity 1 1)
         (define base (recur (first args)))

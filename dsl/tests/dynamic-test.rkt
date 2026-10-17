@@ -68,3 +68,57 @@
                     "binding s: expected (array kind)")
   (check-zgal-error "(compute-material C (workgroup 1) (bindings (b (buffer-array uint))) (compute (write! (at b 0) (array-length b))))"
                     'type-mismatch "array-length gives an array binding's number of elements"))
+
+(define phases
+  (string-append
+   "(compute-material Fill (workgroup 64) (bindings (cells (buffer-array uint)) (copies (buffer-array uint)))\n"
+   "  (compute (write! (at copies 0) (at cells globalInvocationId.x))))\n"
+   "(graph Setup (buffer cells uint 4 #:frames shared) (buffer copies uint 4 #:frames shared)\n"
+   "  (material filling Fill cells copies #:invocations (4))\n"
+   "  (dispatch fill filling #:once #t)\n"
+   "  (readback readCells cells #:once #t))\n"
+   "(graph Show (input cells (per-frame (data uint))) (upload cellBuffer cells)\n"
+   "  (buffer copies uint (count cells) #:frames per-frame)\n"
+   "  (material filling Fill (cells cellBuffer) copies #:invocations ((count cells)))\n"
+   "  (dispatch fill filling))\n"
+   "(app Phased (state (cells (data uint) (empty-data uint)) (ready bool #f))\n"
+   "  (on (read readCells copied) (with state #:cells copied #:ready (> (count copied) 0)))\n"
+   "  (run Setup #:when (not state.ready))\n"
+   "  (run Show (cells state.cells)))\n"))
+
+(test-case "Nodes can run once, in the graph's first frame"
+  (define h (named (compile-text phases) ".zgal.h"))
+  (check-true (string-contains? h "graph.runOnce(node);"))
+  (check-zgal-error (string-replace phases "(dispatch fill filling #:once #t)" "(dispatch fill filling #:once #t #:enabled #t)")
+                    'bad-option "node fill runs once, so it has no #:enabled condition")
+  (check-zgal-error (string-replace phases "(run Setup #:when" "(run Setup #:enabled ((fill #t)) #:when")
+                    'type-mismatch "fill runs once (#:once), so the app doesn't enable it"))
+
+(test-case "Apps run one of several graphs each frame, chosen from their state"
+  (define h (named (compile-text phases) ".zgal.h"))
+  (check-true (string-contains? h "RenderGraph* setup = nullptr;"))
+  (check-true (string-contains? h "static Result<std::unique_ptr<Phased>> create(VulkanContext& context, Graphs graphs, Inputs inputs)"))
+  (check-true (string-contains? h "if (active_Setup()) {"))
+  (check-true (string-contains? h "const Show& showIds() const"))
+  (check-zgal-error (string-replace phases "(run Show (cells state.cells))" "(run Show (cells state.cells) #:when #t)")
+                    'bad-option "the last graph an app runs has no #:when")
+  (check-zgal-error (string-replace phases "(run Setup #:when (not state.ready))" "(run Setup)")
+                    'bad-option "gives every graph but the last a #:when condition")
+  (check-zgal-error (string-replace phases "(run Show (cells state.cells)))" "(run Show (cells state.cells) #:when #t) (run Show (cells state.cells)))")
+                    'duplicate-name "app Phased runs graph Show twice"))
+
+(test-case "Readbacks' copies are events, whose data the state holds and graphs upload"
+  (define h (named (compile-text phases) ".zgal.h"))
+  (check-true (string-contains? h "zgal::Data<uint32_t> cells{};"))
+  (check-true (string-contains? h "TRY_ASSIGN(auto copied, graph0_->nodeAs<BufferReadbackNode>(ids0_->nodes.readCells).takeFinished<uint32_t>()"))
+  (check-true (string-contains? h "graph.add<zgal::DataUploadNode<uint32_t>>(\"upload cellBuffer\", buffer_cellBuffer, data_cells);"))
+  (check-true (string-contains? h "data_cells->get(frame).size()"))
+  (check-zgal-error (string-replace phases "(on (read readCells copied)" "(on (read fill copied)")
+                    'type-mismatch "fill is a dispatch node, not a readback")
+  (check-zgal-error (string-replace phases "(on (read readCells copied)" "(on (read nothing copied)")
+                    'unknown-name "no graph app Phased runs has a node nothing")
+  ;; Per-frame data's count is only known each frame
+  (check-zgal-error (string-replace phases "(upload cellBuffer cells)" "(upload cellBuffer cells) (constant n (count cells))")
+                    'not-build-time "cells is a per-frame data input, whose count is only known each frame")
+  (check-zgal-error "(compute-material C (workgroup 1) (bindings (b (buffer-array uint))) (compute (write! (at b 0) (count b))))"
+                    'type-mismatch "count gives how many elements data has"))
