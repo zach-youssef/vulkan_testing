@@ -132,14 +132,22 @@ public:
     // Processes window events and, unless the window has been asked to close, draws a frame.
     // Headless apps always draw.
     Result<FrameOutcome> runFrame() {
-        if (hasWindow()) {
-            glfwPollEvents();
-            if (glfwWindowShouldClose(window_.get())) {
-                return FrameOutcome::WindowClosed;
-            }
+        if (!pollEvents()) {
+            return FrameOutcome::WindowClosed;
         }
         TRY(drawFrame());
         return FrameOutcome::Drawn;
+    }
+
+    // Processes window events (calling the input handlers), returning whether the app should keep
+    // drawing: false once the window has been asked to close. For loops that do work between events
+    // and drawing; runFrame() is both. Headless apps have no events and keep drawing.
+    bool pollEvents() {
+        if (!hasWindow()) {
+            return true;
+        }
+        glfwPollEvents();
+        return !glfwWindowShouldClose(window_.get());
     }
 
     // Waits, without drawing, until the window is closed

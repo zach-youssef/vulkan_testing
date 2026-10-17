@@ -11,7 +11,9 @@
          "graph.rkt"
          "writer.rkt")
 
-(provide emit-graph!)
+(provide emit-graph!
+         graph-input-members
+         item-loc)
 
 ;; The graph being emitted, for messages
 (define current-graph-name (make-parameter #f))
@@ -131,6 +133,25 @@
 ;; ---------------------------------------------------------------------------------------------
 ;; The graph
 
+;; The members of g's Inputs struct, in order: (cons item declaration)
+(define (graph-input-members g)
+  (define name (graph-name g))
+  (for/list ([item (in-list (graph-items g))]
+             #:when (or (g-parameter? item) (g-input? item) (g-import? item) (g-import-buffer? item)))
+    (cons item
+          (match item
+            [(g-parameter n t _) (format "~a ~a{};" (value-cpp-type t) n)]
+            [(g-input n kind t _)
+             (format "~a ~a;"
+                     (match kind
+                       ['per-frame (format "zgal::FrameSource<~a>" (value-cpp-type t))]
+                       ['meshes "std::vector<Handle<Mesh>>"]
+                       ['cpu "RenderGraph::RunFn"]
+                       ['extern (format "zgal::ExternNodes<~a>" name)])
+                     n)]
+            [(g-import n resting _) (format "FrameBinding<Image> ~a;   // Imported, resting ~a" n (symbol->string resting))]
+            [(g-import-buffer n t _) (format "FrameBinding<Buffer<~a>> ~a;   // Imported" (cpp-type t) n)]))))
+
 (define (emit-graph! w prog g)
   (parameterize ([current-graph-name (graph-name g)])
     (emit-graph-body! w prog g)))
@@ -169,21 +190,8 @@
   ;; Inputs
   (gen "    // What C++ supplies: the parameters, and the inputs. Give every one.")
   (gen "    struct Inputs {")
-  (for ([p (in-list parameters)])
-    (at p (format "        ~a ~a{};" (value-cpp-type (g-parameter-type p)) (g-parameter-name p))))
-  (for ([i (in-list inputs)])
-    (at i (format "        ~a ~a;"
-                  (match (g-input-kind i)
-                    ['per-frame (format "zgal::FrameSource<~a>" (value-cpp-type (g-input-type i)))]
-                    ['meshes "std::vector<Handle<Mesh>>"]
-                    ['cpu "RenderGraph::RunFn"]
-                    ['extern (format "zgal::ExternNodes<~a>" name)])
-                  (g-input-name i))))
-  (for ([i (in-list imports)])
-    (at i (format "        FrameBinding<Image> ~a;   // Imported, resting ~a" (g-import-name i)
-                  (symbol->string (g-import-resting i)))))
-  (for ([i (in-list buffer-imports)])
-    (at i (format "        FrameBinding<Buffer<~a>> ~a;   // Imported" (cpp-type (g-import-buffer-type i)) (g-import-buffer-name i))))
+  (for ([m (in-list (graph-input-members g))])
+    (at (car m) (string-append "        " (cdr m))))
   (gen "    };")
   (gen "")
   ;; Ids

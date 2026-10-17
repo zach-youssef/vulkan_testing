@@ -20,8 +20,9 @@
 
 (struct t-lit (value type loc) #:transparent)                 ; a number or boolean
 (struct t-local (name type loc) #:transparent)                ; name: as the backends spell it
-;; A name declared outside the body. kind: 'binding 'push 'varying 'input 'stage 'constant.
-;; spelling: the GLSL spelling for 'input and 'stage
+;; A name declared outside the body. kind: 'binding 'push 'varying 'input 'stage 'constant 'shared,
+;; or 'host: a value an app's C++ computes (its parameters, framesInFlight, surfaceSize).
+;; spelling: the GLSL spelling for 'input and 'stage, the C++ expression for 'host
 (struct t-global (kind name spelling type loc) #:transparent)
 (struct t-call (function args type loc) #:transparent)        ; a built-in function (a symbol)
 (struct t-user-call (name args type loc) #:transparent)       ; a function of the file
@@ -42,6 +43,7 @@
 (struct t-results (fields loc) #:transparent)                 ; (cons output-name expression)
 (struct t-with (base fields type loc) #:transparent)          ; fields: (cons name expression)
 (struct t-barrier (loc) #:transparent)                        ; a compute shader's workgroup barrier
+(struct t-effect (op args loc) #:transparent)                 ; an app's effect: 'print 'set-frames-in-flight 'quit
 
 ;; The type of a stage's results
 (struct results-t () #:transparent)
@@ -53,7 +55,7 @@
     [(t-field _ _ t _) t] [(t-swizzle _ _ t _) t] [(t-index _ _ t _) t] [(t-if _ _ _ t _) t]
     [(t-let _ _ t _) t] [(t-fold _ _ _ t _) t] [(t-for _ _ _) (void-t)] [(t-values _ t _) t]
     [(t-begin _ t _) t] [(t-store _ _ _ _) (void-t)] [(t-write _ _ _) (void-t)]
-    [(t-results _ _) (results-t)] [(t-with _ _ t _) t] [(t-barrier _) (void-t)]))
+    [(t-results _ _) (results-t)] [(t-with _ _ t _) t] [(t-barrier _) (void-t)] [(t-effect _ _ _) (void-t)]))
 
 (define (texpr-loc e)
   (match e
@@ -62,7 +64,7 @@
     [(t-field _ _ _ l) l] [(t-swizzle _ _ _ l) l] [(t-index _ _ _ l) l] [(t-if _ _ _ _ l) l]
     [(t-let _ _ _ l) l] [(t-fold _ _ _ _ l) l] [(t-for _ _ l) l] [(t-values _ _ l) l]
     [(t-begin _ _ l) l] [(t-store _ _ _ l) l] [(t-write _ _ l) l] [(t-results _ l) l] [(t-with _ _ _ l) l]
-    [(t-barrier l) l]))
+    [(t-barrier l) l] [(t-effect _ _ l) l]))
 
 ;; Applies f to e's subexpressions, returning a list of the results
 (define (texpr-children e)
@@ -77,7 +79,8 @@
     [(t-for loops body _) (append (append-map (λ (l) (list (second l) (third l))) loops) (list body))]
     [(t-values es _ _) es] [(t-begin es _ _) es]
     [(t-store i t v _) (list i t v)] [(t-write p v _) (list p v)]
-    [(t-results fields _) (map cdr fields)] [(t-with b fields _ _) (cons b (map cdr fields))]))
+    [(t-results fields _) (map cdr fields)] [(t-with b fields _ _) (cons b (map cdr fields))]
+    [(t-effect _ args _) args]))
 
 (define (describe t)
   (cond [(literal? t) "integer literal"]
@@ -290,11 +293,11 @@
        => (λ (c)
             (set-add! (context-uses ctx) base-name)
             (t-global 'constant base-name base-name (constant-decl-type c) here))]
-      [(and (not (eq? (context-stage ctx) 'function))
-            (hash-ref (hash-ref stage-variables (context-stage ctx)) base-name #f))
+      [(hash-ref (hash-ref stage-variables (context-stage ctx) (hash)) base-name #f)
        => (λ (v) (t-global 'stage base-name (first v) (second v) here))]
       [(member base-name stage-variable-names)
-       (zgal-error 'unknown-name stx "~a is a built-in variable of another stage~a" base-name
+       (zgal-error 'unknown-name stx "~a is a built-in variable of ~a~a" base-name
+                   (if (eq? (context-stage ctx) 'app) "a shader stage, not of apps" "another stage")
                    (if (eq? (context-stage ctx) 'function) " (functions can't use stage variables: pass them as arguments)" ""))]
       [else (zgal-error 'unknown-name stx "~a isn't declared here" base-name)]))
   (for/fold ([e base]) ([p (in-list (rest parts))])
@@ -429,6 +432,28 @@
         (t-write place (coerce (recur (second args)) (texpr-type place) (second args) "the written value") here)]
        [(sample sample-lod fetch sample-compare texture-size image-load image-size)
         (check-texture head stx args ctx locals)]
+       [(print! set-frames-in-flight! quit!)
+        (unless (eq? (context-stage ctx) 'app)
+          (zgal-error 'bad-effect stx "~a is an effect of apps, so only app handlers use it" head))
+        (case head
+          [(print!)
+           (arity 1 #f)
+           (t-effect 'print
+                     (for/list ([a (in-list args)])
+                       (cond
+                         [(string? (syntax-e a)) (t-lit (syntax-e a) (opaque-t 'string) (stx->loc a))]
+                         [else
+                          (define e (settle (recur a)))
+                          (unless (scalar-t? (texpr-type e))
+                            (zgal-error 'type-mismatch a "print! prints strings and scalars, not ~a" (a-type (texpr-type e))))
+                          e]))
+                     here)]
+          [(set-frames-in-flight!)
+           (arity 1 1)
+           (t-effect 'set-frames-in-flight (list (coerce (recur (first args)) (scalar-t 'uint) (first args) "the number of frames in flight")) here)]
+          [(quit!)
+           (arity 0 0)
+           (t-effect 'quit '() here)])]
        [(barrier!)
         (arity 0 0)
         (unless (eq? (context-stage ctx) 'compute)
@@ -808,6 +833,7 @@
   (match e
     [(t-local name t l) (hash-ref mapping name (λ () e))]
     [(or (t-lit _ _ _) (t-global _ _ _ _ _) (t-barrier _)) e]
+    [(t-effect op as l) (t-effect op (map go as) l)]
     [(t-call f as t l) (t-call f (map go as) t l)]
     [(t-user-call f as t l) (t-user-call f (map go as) t l)]
     [(t-texture op as t l) (t-texture op (map go as) t l)]
@@ -900,7 +926,7 @@
   (let ok? ([e e])
     (and (not (opaque-t? (texpr-type e)))
          (match e
-           [(or (t-texture _ _ _ _) (t-store _ _ _ _) (t-write _ _ _) (t-barrier _)) #f]
+           [(or (t-texture _ _ _ _) (t-store _ _ _ _) (t-write _ _ _) (t-barrier _) (t-effect _ _ _)) #f]
            [(t-global kind name _ _ _) (and (eq? kind 'constant) (set-member? cpu-constants name))]
            [(t-user-call f _ _ _) (and (set-member? cpu-functions f) (andmap ok? (texpr-children e)))]
            [_ (andmap ok? (texpr-children e))]))))

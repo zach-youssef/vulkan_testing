@@ -69,7 +69,23 @@
 (struct constant-decl (name type body cpu? uses loc) #:transparent)
 
 ;; source: the .zgal file's path. Declarations are in file order.
-(struct program (source structs vertex-formats materials graphs functions) #:transparent)
+(struct program (source structs vertex-formats materials graphs functions apps) #:transparent)
+
+;; ---------------------------------------------------------------------------------------------
+;; Apps: state, the handlers changing it, and the graph they run. Bodies are typed expressions
+;; (body.rkt), compiled for the CPU.
+
+;; parameters: fields C++ gives. state: a struct-decl (named State) and the fields' initial values,
+;; in order. handlers: list of handler. run: a graph-run, or #f.
+(struct app (name parameters state initial handlers run loc) #:transparent)
+;; event: kind 'key-pressed 'key-released (keys: key name symbols), 'mouse-pressed 'mouse-released
+;; (button: 'left 'right 'middle), 'cursor-moved 'scrolled 'frame. binding: the name the event's
+;; value is bound to (a cursor position, scroll offset or time step), or #f. body: the next state.
+(struct event (kind keys button binding loc) #:transparent)
+(struct handler (event body loc) #:transparent)
+;; bindings: (cons graph-item-name expression) for the graph's parameters (computed once) and
+;; per-frame inputs (each frame). enables: (cons node-name expression), computed each frame.
+(struct graph-run (graph bindings enables loc) #:transparent)
 
 (define (type-name t)
   (match t

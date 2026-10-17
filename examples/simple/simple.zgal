@@ -1,8 +1,8 @@
-;; The simple example's shaders, in ZGAL (dsl/; `make docs` for the language). Its graph is built
-;; in C++ (simple_example.cpp), to show the C++ API; the build generates simple.zgal.h, with a class
-;; per material, and the complete shaders.
+;; The simple example's shaders and app, in ZGAL (dsl/; `make docs` for the language). Its graph
+;; is built in C++ (simple_example.cpp), to show the C++ API; the build generates simple.zgal.h,
+;; with a class per material and the app, and the complete shaders.
 
-;; The camera, written per frame by TutorialMaterial::update
+;; The camera, written per frame by TutorialMaterial::update, from the app's angle
 (struct Camera
   (mvp mat4))                   ; Projection * view * model
 
@@ -43,3 +43,13 @@
      ;; The dispatch is rounded up to whole workgroups
      (when (all (lessThan texel (image-size copy)))
        (store! copy texel (fetch source sourceSampler texel 0))))))
+
+;; The app: the quads' rotation, which space pauses. It has no graph of its own: simple_example.cpp
+;; builds one, and TutorialMaterial reads the angle from the app's state.
+(app SimpleApp
+  (state
+   (angle float 0.0)            ; Radians, a quarter turn a second
+   (spinning bool #t))
+  (on (key-pressed space) (with state #:spinning (not state.spinning)))
+  (on (frame dt)
+    (if state.spinning (with state #:angle (+ state.angle (* (radians 90.0) dt))) state)))

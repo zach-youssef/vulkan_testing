@@ -1,4 +1,5 @@
 #include "app/VulkanApp.h"
+#include "zgal/Window.h"
 #include "graph/nodes/DispatchNode.h"
 #include "descriptors/DescriptorHeap.h"
 #include "TestShaders.h"
@@ -117,6 +118,8 @@ TEST_CASE("A headless VulkanApp has no window, surface or render pass") {
     CHECK_THROWS_AS(app.run().value(), ContractViolation);
     // There is nothing to draw without an active render graph
     CHECK_THROWS_AS(app.drawFrame().value(), ContractViolation);
+    // Without a window there are no events, and nothing asks to close
+    CHECK(app.pollEvents());
     // Graphs of a headless app have no surface
     RenderGraph& graph = app.createGraph();
     CHECK_FALSE(graph.hasSurface());
@@ -322,6 +325,71 @@ TEST_CASE("A windowed VulkanApp passes window input to its handlers") {
         mouseButtonCallback(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, 0);
         CHECK(events == std::vector<std::string>{"key " + std::to_string(GLFW_KEY_SPACE) + " " + std::to_string(GLFW_PRESS),
                                                  "scroll -2"});
+    }
+    for (const auto& error : errors) {
+        FAIL_CHECK("Vulkan validation error: " << error);
+    }
+}
+
+namespace {
+
+// Records the events zgal::connect sends, as a generated app's handle() would receive them
+struct RecordingApp {
+    std::vector<zgal::Event> events;
+    void handle(const zgal::Event& event) { events.push_back(event); }
+};
+
+} // namespace
+
+TEST_CASE("zgal::connect turns a window's input into an app's events, and pollEvents reports closing") {
+    AppConfig config;
+    config.applicationName = "VulkanApp tests";
+    config.window = WindowConfig{"ZGAL input test", 64, 64, false};
+    config.enableValidation = true;
+    config.logInstanceInfo = false;
+    std::vector<std::string> errors;
+    config.onValidationMessage = [&errors](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
+        if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+            errors.emplace_back(message);
+        }
+    };
+    {
+        VulkanApp app;
+        if (auto initialized = app.init(config); !initialized) {
+            MESSAGE("Skipped: " << initialized.error());
+            return;
+        }
+        GLFWwindow* window = app.window();
+        RecordingApp recording;
+        zgal::connect(app, recording);
+
+        // As in the test above, call the callbacks the app installed
+        auto keyCallback = glfwSetKeyCallback(window, nullptr);
+        glfwSetKeyCallback(window, keyCallback);
+        auto scrollCallback = glfwSetScrollCallback(window, nullptr);
+        glfwSetScrollCallback(window, scrollCallback);
+        auto cursorCallback = glfwSetCursorPosCallback(window, nullptr);
+        glfwSetCursorPosCallback(window, cursorCallback);
+
+        keyCallback(window, GLFW_KEY_W, 0, GLFW_PRESS, 0);
+        keyCallback(window, GLFW_KEY_W, 0, GLFW_REPEAT, 0);   // Repeats aren't events
+        keyCallback(window, GLFW_KEY_7, 0, GLFW_RELEASE, 0);
+        keyCallback(window, GLFW_KEY_KP_ADD, 0, GLFW_PRESS, 0);
+        keyCallback(window, GLFW_KEY_INSERT, 0, GLFW_PRESS, 0);   // Not a key apps know
+        scrollCallback(window, 0.0, 1.5);
+        cursorCallback(window, 0.0, 0.0);
+        REQUIRE(recording.events.size() == 5);
+        CHECK(std::get<zgal::KeyPressed>(recording.events[0]).key == zgal::Key::W);
+        CHECK(std::get<zgal::KeyReleased>(recording.events[1]).key == zgal::Key::Digit7);
+        CHECK(std::get<zgal::KeyPressed>(recording.events[2]).key == zgal::Key::KeypadAdd);
+        CHECK(std::get<zgal::Scrolled>(recording.events[3]).offset == glm::vec2(0.0f, 1.5f));
+        // Cursor positions are in [-1, 1] across the window (read from GLFW, wherever it is)
+        const glm::vec2 cursor = std::get<zgal::CursorMoved>(recording.events[4]).cursor;
+        CHECK(cursor == zgal::cursorOf(app));
+
+        CHECK(app.pollEvents());
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
+        CHECK_FALSE(app.pollEvents());
     }
     for (const auto& error : errors) {
         FAIL_CHECK("Vulkan validation error: " << error);

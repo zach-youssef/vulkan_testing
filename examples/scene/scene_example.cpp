@@ -4,8 +4,8 @@
 //   3. tonemap:    exposure and an ACES curve from the HDR image to the window (or, headless, to an
 //                  image read back into a PNG)
 // and the render graph derives their order, barriers and queues from what each pass uses. The
-// shaders' interfaces and the graph are declared in ZGAL (scene.zgal); this file supplies the
-// meshes and per-frame data, and handles input.
+// shaders, the graph and the app (the camera, the sun and the input handlers) are declared in ZGAL
+// (scene.zgal); this file supplies the meshes, sets up the window and runs the app.
 //
 //   scene_example                                     interactive, in a window
 //   scene_example --frames N [--capture out.png] [--size WxH]
@@ -31,9 +31,10 @@
 #include "shaders/ShaderLibrary.h"
 
 #include "Meshes.h"
-// Generated from scene.zgal: SceneUniforms, SceneVertex, the Shadow, Lit and Tonemap materials and
-// SceneGraph
+// Generated from scene.zgal: SceneUniforms, SceneVertex, the Shadow, Lit and Tonemap materials,
+// SceneGraph and SceneApp
 #include "scene.zgal.h"
+#include "zgal/Window.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -45,7 +46,6 @@
 #include "util/StbImageWrite.h"
 
 #include <atomic>
-#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <optional>
@@ -56,90 +56,6 @@
 #error "SCENE_EXAMPLE_SHADER_DIR must be defined to the directory containing the compiled shaders"
 #endif
 const std::string shaderDir = SCENE_EXAMPLE_SHADER_DIR;
-
-// ---------------------------------------------------------------------------------------------------
-// Scene state: what the user controls, read by the materials every frame
-// ---------------------------------------------------------------------------------------------------
-
-// GLM's projections are for OpenGL, whose clip space Y points up; Vulkan's points down
-glm::mat4 flipY(glm::mat4 projection) {
-    projection[1][1] *= -1.0f;
-    return projection;
-}
-
-struct OrbitCamera {
-    glm::vec3 target{0.0f, 0.75f, 0.0f};
-    float yaw = glm::radians(30.0f);     // Around +Y, from +Z
-    float pitch = glm::radians(25.0f);   // Above the horizon
-    float distance = 11.0f;
-
-    glm::vec3 position() const {
-        return target + distance * glm::vec3(std::cos(pitch) * std::sin(yaw), std::sin(pitch),
-                                             std::cos(pitch) * std::cos(yaw));
-    }
-
-    glm::mat4 viewProjection(float aspect) const {
-        const glm::mat4 view = glm::lookAt(position(), target, glm::vec3(0.0f, 1.0f, 0.0f));
-        return flipY(glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f)) * view;
-    }
-
-    void rotate(float dx, float dy) {
-        yaw -= dx * 0.008f;
-        pitch = glm::clamp(pitch + dy * 0.008f, glm::radians(2.0f), glm::radians(85.0f));
-    }
-
-    void zoom(float steps) {
-        distance = glm::clamp(distance * std::pow(0.9f, steps), 3.0f, 40.0f);
-    }
-};
-
-// A sun: parallel rays, so its shadow map uses an orthographic projection covering the scene
-struct SunLight {
-    float azimuth = glm::radians(-60.0f);
-    float elevation = glm::radians(50.0f);
-    bool animated = true;
-    // Half the size of the area the shadow map covers: tighter is sharper
-    static constexpr float kSceneRadius = 7.0f;
-
-    // Unit vector from the scene towards the light (sunDirection in scene.zgal)
-    glm::vec3 direction() const {
-        return sunDirection(azimuth, elevation);
-    }
-
-    glm::mat4 viewProjection() const {
-        const glm::mat4 view = glm::lookAt(direction() * 2.0f * kSceneRadius, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-        const float r = kSceneRadius;
-        return flipY(glm::ortho(-r, r, -r, r, 0.1f, 4.0f * r)) * view;
-    }
-};
-
-struct SceneState {
-    OrbitCamera camera;
-    SunLight light;
-    bool shadows = true;
-    float exposure = 1.0f;
-};
-
-// ---------------------------------------------------------------------------------------------------
-// Per-frame data
-// ---------------------------------------------------------------------------------------------------
-
-// The frame's SceneUniforms (scene.zgal), which the graph writes into the frame's uniform buffer
-// for the shadow and lit passes
-SceneUniforms sceneUniforms(const SceneState& state, const zgal::FrameInfo& frame) {
-    // The HDR image is the surface's size (headless, the extent given to the graph)
-    const float aspect = static_cast<float>(frame.surfaceExtent.width) / static_cast<float>(frame.surfaceExtent.height);
-    // Designated, as the generated struct has padding members between its vec3s
-    return SceneUniforms{
-        .viewProjection = state.camera.viewProjection(aspect),
-        .lightViewProjection = state.light.viewProjection(),
-        .cameraPosition = state.camera.position(),
-        .lightDirection = state.light.direction(),
-        .lightRadiance = glm::vec3(1.0f, 0.95f, 0.85f) * 3.0f,
-        .skyAmbient = glm::vec3(0.25f, 0.32f, 0.45f),
-        .groundAmbient = glm::vec3(0.10f, 0.09f, 0.08f),
-    };
-}
 
 // ---------------------------------------------------------------------------------------------------
 // Geometry
@@ -163,36 +79,6 @@ std::vector<MeshData> buildScene() {
         meshes::sphere({2.8f, 0.5f, 1.8f}, 0.5f, {vec3(0.9f, 0.35f, 0.05f), 0.3f}),
     };
 }
-
-// ---------------------------------------------------------------------------------------------------
-// Input (windowed only)
-// ---------------------------------------------------------------------------------------------------
-
-void setShadows(SceneState& state, RenderGraph& graph, NodeId shadowPass, bool enabled) {
-    // Disabling the pass drops it from the plan; the push constant stops the lit pass sampling the
-    // map it no longer writes
-    state.shadows = enabled;
-    graph.setEnabled(shadowPass, enabled);
-}
-
-// Key presses, received from VulkanApp::runFrame's event polling, between frames
-void onKey(GLFWwindow* window, int key, int action, SceneState& state, RenderGraph& graph, NodeId shadowPass) {
-    if (action != GLFW_PRESS) {
-        return;
-    }
-    switch (key) {
-        case GLFW_KEY_L: state.light.animated = !state.light.animated; break;
-        case GLFW_KEY_S: setShadows(state, graph, shadowPass, !state.shadows); break;
-        case GLFW_KEY_EQUAL: case GLFW_KEY_KP_ADD: state.exposure *= 1.25f; break;
-        case GLFW_KEY_MINUS: case GLFW_KEY_KP_SUBTRACT: state.exposure /= 1.25f; break;
-        case GLFW_KEY_ESCAPE: glfwSetWindowShouldClose(window, GLFW_TRUE); break;
-        default: break;
-    }
-}
-
-// ---------------------------------------------------------------------------------------------------
-// Command line
-// ---------------------------------------------------------------------------------------------------
 
 struct Options {
     std::optional<uint64_t> frames;      // Run this many frames, then exit
@@ -266,42 +152,28 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
     TRY(app.init(config));
     VulkanContext& ctx = app.getContext();
 
-    SceneState state;
-
-    // The meshes, which the shadow and lit passes both draw, sharing their buffers
     std::vector<Handle<Mesh>> meshes;
     for (const MeshData& data : buildScene()) {
         TRY_ASSIGN(auto mesh, Mesh::create(ctx, data.vertices, data.indices));
         meshes.push_back(std::move(mesh));
     }
 
-    // The graph, SceneGraph in scene.zgal: its samplers, images, materials and passes. The HDR
-    // image and its depth follow the window's size (the graph recreates them on resize); headless,
-    // they follow the extent given to the graph, which works the same way. The inputs read the
-    // state each frame.
+    // The app (SceneApp in scene.zgal) builds its graph, SceneGraph, with the per-frame uniforms,
+    // shadows and exposure computed from its state. Headless, the graph is given the extent its
+    // surface-relative images follow, and the smoke test's clock advances a fixed step each frame.
     RenderGraph& graph = app.createGraph();
     if (headless) {
         graph.setSurfaceExtent(options.size);
     }
-    TRY_ASSIGN(const SceneGraph scene, SceneGraph::build(ctx, graph, SceneGraph::Inputs{
+    TRY_ASSIGN(auto scene, SceneApp::create(ctx, graph, SceneApp::Inputs{
+        .timestep = options.frames ? zgal::Timestep::fixed(1.0f / 60.0f) : zgal::Timestep::realTime(0.25f),
         .headless = headless,
         .capture = options.capture.has_value(),
         .meshes = std::move(meshes),
-        .uniforms = [&state](const zgal::FrameInfo& frame) { return sceneUniforms(state, frame); },
-        .shadows = [&state](const zgal::FrameInfo&) { return state.shadows; },
-        .exposure = [&state](const zgal::FrameInfo&) { return state.exposure; },
     }));
-    const NodeId shadowPass = scene.nodes.shadowPass;
     app.setActiveGraph(graph);
 
-    GLFWwindow* window = nullptr;
     if (!headless) {
-        // The window is polled for dragging each frame; keys and scrolling arrive as events
-        window = app.window();
-        app.setInputHandlers(InputHandlers{
-            .key = [&, window](int key, int, int action, int) { onKey(window, key, action, state, graph, shadowPass); },
-            .scroll = [&state](double, double yOffset) { state.camera.zoom(static_cast<float>(yOffset)); },
-        });
         std::cout << "Controls:\n"
                      "  drag (left mouse)  orbit the camera\n"
                      "  scroll             zoom\n"
@@ -312,68 +184,48 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
                      "Shaders reload when their SPIR-V changes: edit examples/scene/scene.zgal and run `make shaders`."
                   << std::endl;
     }
-
-    if (window && options.frames) {
-        // Reports the smoke test's resize; the graph itself needs no listener
-        app.addSurfaceResizeListener([](VkExtent2D extent) {
-            std::cout << "Surface resized to " << extent.width << "x" << extent.height << std::endl;
-        });
-    }
-
-    double lastX = 0.0, lastY = 0.0;
-    if (window) {
-        glfwGetCursorPos(window, &lastX, &lastY);
-    }
-    auto lastTime = std::chrono::steady_clock::now();
-    for (uint64_t frame = 0; !options.frames || frame < *options.frames; ++frame) {
-        // Smoke tests use a fixed time step, so captures are reproducible
-        const auto now = std::chrono::steady_clock::now();
-        const float dt = options.frames ? 1.0f / 60.0f : std::chrono::duration<float>(now - lastTime).count();
-        lastTime = now;
-        if (state.light.animated) {
-            state.light.azimuth += 0.4f * dt;
+    if (!headless && !options.frames) {
+        TRY(zgal::run(app, *scene));
+    } else {
+        if (!headless) {
+            zgal::connect(app, *scene);
+            app.addSurfaceResizeListener([](VkExtent2D extent) {
+                std::cout << "Surface resized to " << extent.width << "x" << extent.height << std::endl;
+            });
         }
-
-        if (window) {
-            double x = 0.0, y = 0.0;
-            glfwGetCursorPos(window, &x, &y);
-            if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
-                state.camera.rotate(static_cast<float>(x - lastX), static_cast<float>(y - lastY));
-            }
-            lastX = x;
-            lastY = y;
-        }
-
-        if (options.frames) {
-            // Smoke tests exercise what a user would: shadows off for a while (a different plan),
-            // and a resize (the graph recreates the surface-sized images). Headless, the size is
-            // restored afterwards so the capture has the requested size.
-            const uint64_t frames = *options.frames;
-            const VkExtent2D smaller{options.size.width * 3 / 4, options.size.height * 3 / 4};
+        // The smoke test: shadows off for a quarter of the frames (the shadow pass drops out of the
+        // plan), and the view resized halfway (and back, headless)
+        const uint64_t frames = *options.frames;
+        const VkExtent2D smaller{options.size.width * 3 / 4, options.size.height * 3 / 4};
+        auto setShadows = [&](bool enabled) {
+            SceneApp::State state = scene->state();
+            state.shadows = enabled;
+            scene->setState(state);
+        };
+        for (uint64_t frame = 0; frame < frames; ++frame) {
             if (frame == frames / 4) {
-                setShadows(state, graph, shadowPass, false);
+                setShadows(false);
             } else if (frame == frames / 2) {
-                setShadows(state, graph, shadowPass, true);
-                if (window) {
-                    app.setWindowSize(smaller.width, smaller.height);
-                } else {
+                setShadows(true);
+                if (headless) {
                     graph.setSurfaceExtent(smaller);
+                } else {
+                    app.setWindowSize(smaller.width, smaller.height);
                 }
-            } else if (frame == 3 * frames / 4 && !window) {
+            } else if (frame == 3 * frames / 4 && headless) {
                 graph.setSurfaceExtent(options.size);
             }
-        }
-
-        TRY_ASSIGN(const FrameOutcome outcome, app.runFrame());
-        if (outcome == FrameOutcome::WindowClosed) {
-            break;
+            if (!app.pollEvents() || scene->quitRequested()) {
+                break;
+            }
+            TRY(zgal::drawFrame(app, *scene));
         }
     }
     // Everything below the app is destroyed first, so the GPU must be done with it
     VK_TRY(ctx.waitIdleAll(), "Failed to wait for the device");
 
-    if (scene.nodes.readback) {
-        TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(*scene.nodes.readback).pixels());
+    if (scene->ids().nodes.readback) {
+        TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(*scene->ids().nodes.readback).pixels());
         return std::optional(std::move(pixels));
     }
     return std::nullopt;

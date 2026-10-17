@@ -43,7 +43,7 @@
          "(struct Light\n  (direction vec3)")
    (kind 'unknown-form
          "Unknown top-level form"
-         "A file is a sequence of `struct`, `vertex-format`, `define`, `graphics-material`, `compute-material` and `graph` forms, and a graph of the items and nodes the reference lists."
+         "A file is a sequence of `struct`, `vertex-format`, `define`, `graphics-material`, `compute-material`, `graph` and `app` forms, and a graph of the items and nodes the reference lists."
          "(structure Light (direction vec3))")
    (kind 'malformed
          "A form doesn't have the expected shape"
@@ -181,6 +181,10 @@
          "A copy node's buffers don't fit"
          "A `copy` node copies elements between two different buffers (graph or imported) holding the same element type; its `#:count` and offsets count elements."
          "(graph G\n  (buffer a float 16 #:frames shared)\n  (buffer b uint 16 #:frames shared)\n  (copy c a b))")
+   (kind 'bad-effect
+         "An app's effect outside an app"
+         "`print!`, `set-frames-in-flight!` and `quit!` act on the running program, so only an app's handlers use them; shaders and functions compute values (and shaders write buffers and images)."
+         "(define (shout [x : float]) : float\n  (begin (print! x) x))")
    (kind 'version-in-body
          "A shader body declares what ZGAL generates"
          "ZGAL writes the start of every shader: `#version`, the extensions it needs and `bindless.glsl`, then the material's interface. Bodies start with their own code, so remove the line."

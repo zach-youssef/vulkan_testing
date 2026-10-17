@@ -1,5 +1,5 @@
-;; The particles example's shaders and graph, in ZGAL (dsl/; `make docs` for the language). The
-;; build generates particles.zgal.h and the complete shaders.
+;; The particles example's shaders, graph and app, in ZGAL (dsl/; `make docs` for the language).
+;; The build generates particles.zgal.h and the complete shaders.
 
 ;; The simulation's parameters for one frame, written by the CPU
 (struct SimParams
@@ -122,7 +122,6 @@
   (parameter height uint)
   (parameter particleCount uint)
   (input params (per-frame SimParams))
-  (input report cpu)
 
   ;; A parameter buffer per frame in flight, so the CPU can write the next frame's while the GPU
   ;; reads the previous one's
@@ -144,6 +143,78 @@
 
   (dispatch simulate simulation)
   (draw drawParticles screen drawing (* 6 particleCount))
-  ;; Reports the frame rate. CPU nodes run each frame in graph order.
-  (cpu report report)
   (readback readback offscreen #:when capture))
+
+;; Width / height of what's drawn: the surface, or headless, the image
+(define (aspectOf [surface : vec2] [image : vec2]) : float
+  (if (> surface.y 0.0) (/ surface.x surface.y) (/ image.x image.y)))
+
+;; The app: the controls and the simulation's clock, as state the handlers compute the next of, and
+;; the parameters each frame's simulation gets from it
+(app ParticlesApp
+  (parameter headless bool)
+  (parameter capture bool)
+  (parameter width uint)
+  (parameter height uint)
+  (parameter particleCount uint)
+  (state
+   (paused bool #f)
+   (resetRequested bool #t)     ; The particle buffer starts out uninitialized
+   (resetting bool #f)          ; This frame respawns every particle
+   (mouseHeld bool #f)
+   (mouse vec2 (vec2 0.0))      ; In simulation space, while the left button is held
+   (dt float 0.0)
+   (time float 0.0)
+   (steps uint 0)               ; Frames begun
+   (reportTime float 0.0)       ; Since the frame rate was last printed
+   (reportFrames uint 0))
+
+  ;; Takes effect at the next frame boundary; per-frame resources follow
+  (on (key-pressed 1) (set-frames-in-flight! 1) (print! "Frames in flight: 1"))
+  (on (key-pressed 2) (set-frames-in-flight! 2) (print! "Frames in flight: 2"))
+  (on (key-pressed 3) (set-frames-in-flight! 3) (print! "Frames in flight: 3"))
+  (on (key-pressed space)
+    (if state.paused (print! "Running") (print! "Paused"))
+    (with state #:paused (not state.paused)))
+  (on (key-pressed r) (with state #:resetRequested #t))
+  ;; The cursor is in [-1, 1] across the window: simulation space is as wide as the aspect
+  (on (mouse-pressed left cursor)
+    (with state #:mouseHeld #t
+                #:mouse (* cursor (vec2 (aspectOf surfaceSize (vec2 (float width) (float height))) 1.0))))
+  (on (mouse-released left cursor) (with state #:mouseHeld #f))
+  (on (cursor-moved cursor)
+    (if state.mouseHeld
+        (with state #:mouse (* cursor (vec2 (aspectOf surfaceSize (vec2 (float width) (float height))) 1.0)))
+        state))
+  ;; The clock stands still while paused, and for the first frame. Prints the frame rate every
+  ;; couple of seconds.
+  (on (frame elapsed)
+    (let* ([dt (if (or state.paused (= state.steps 0)) 0.0 elapsed)]
+           [reportTime (+ state.reportTime elapsed)]
+           [report (>= reportTime 2.0)])
+      (when report
+        (print! (/ (float (+ state.reportFrames 1)) reportTime) " fps, " framesInFlight " frames in flight"))
+      (with state #:dt dt #:time (+ state.time dt) #:steps (+ state.steps 1)
+                  #:resetting state.resetRequested #:resetRequested #f
+                  #:reportTime (if report 0.0 reportTime)
+                  #:reportFrames (if report 0 (+ state.reportFrames 1)))))
+
+  (run ParticlesGraph
+    (headless headless)
+    (capture capture)
+    (width width)
+    (height height)
+    (particleCount particleCount)
+    ;; Without the mouse, the attractor wanders on a Lissajous curve
+    (params (let* ([aspect (aspectOf surfaceSize (vec2 (float width) (float height)))])
+              (SimParams (if state.mouseHeld
+                             state.mouse
+                             (vec2 (* 0.6 aspect (sin (* 0.4 state.time))) (* 0.5 (sin (* 0.7 state.time)))))
+                         state.dt
+                         state.time
+                         aspect
+                         0.15
+                         (- state.steps 1)
+                         (if state.resetting 1 0)
+                         particleCount
+                         0.006)))))

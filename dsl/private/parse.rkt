@@ -7,6 +7,7 @@
          racket/path
          racket/set
          racket/string
+         "app.rkt"
          "ast.rkt"
          "errors.rkt"
          "body.rkt"
@@ -629,24 +630,32 @@
                     name (type-name t) name (type-name t)))
       (varying name t interpolation (stx->loc v-stx))))
 
-  (define-values (structs-out formats-out materials-out graphs-out)
-    (for/fold ([ss '()] [fs '()] [ms '()] [gs '()]
-               #:result (values (reverse ss) (reverse fs) (reverse ms) (reverse gs)))
+  (define graphs (make-hash))   ; name -> graph
+  (define-values (structs-out formats-out materials-out graphs-out apps-out)
+    (for/fold ([ss '()] [fs '()] [ms '()] [gs '()] [as '()]
+               #:result (values (reverse ss) (reverse fs) (reverse ms) (reverse gs) (reverse as)))
               ([form (in-list forms)])
       (define items (syntax->list form))
       (match (head-symbol form)
-        ['struct (values (cons (parse-struct form items) ss) fs ms gs)]
-        ['vertex-format (values ss (cons (parse-vertex-format form items) fs) ms gs)]
-        ['graphics-material (values ss fs (cons (parse-material form items 'graphics) ms) gs)]
-        ['compute-material (values ss fs (cons (parse-material form items 'compute) ms) gs)]
-        ['graph (values ss fs ms (cons (parse-graph form parse-type top-level materials) gs))]
-        ['define (parse-define form items) (values ss fs ms gs)]
+        ['struct (values (cons (parse-struct form items) ss) fs ms gs as)]
+        ['vertex-format (values ss (cons (parse-vertex-format form items) fs) ms gs as)]
+        ['graphics-material (values ss fs (cons (parse-material form items 'graphics) ms) gs as)]
+        ['compute-material (values ss fs (cons (parse-material form items 'compute) ms) gs as)]
+        ['graph
+         (define g (parse-graph form parse-type top-level materials))
+         (hash-set! graphs (graph-name g) g)
+         (values ss fs ms (cons g gs) as)]
+        ['app
+         (values ss fs ms gs (cons (parse-app form parse-type top-level structs functions constants graphs)
+                                   as))]
+        ['define (parse-define form items) (values ss fs ms gs as)]
         [_ (zgal-error 'unknown-form form
-                       "expected struct, vertex-format, define, graphics-material, compute-material or graph, found ~a"
+                       "expected struct, vertex-format, define, graphics-material, compute-material, graph or app, found ~a"
                        (let ([head (head-symbol form)]) (if head (format "(~a ...)" head) (show form))))])))
   (program source structs-out formats-out materials-out graphs-out
            (sort (append (hash-values functions) (hash-values constants)) <
-                 #:key (λ (d) (hash-ref declaration-order (if (function-decl? d) (function-decl-name d) (constant-decl-name d)))))))
+                 #:key (λ (d) (hash-ref declaration-order (if (function-decl? d) (function-decl-name d) (constant-decl-name d)))))
+           apps-out))
 
 ;; Vertex inputs are named "in" followed by the attribute, e.g. inPosition
 (define (input-variable-name attribute)

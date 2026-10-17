@@ -9,6 +9,7 @@
          "ast.rkt"
          "layout.rkt"
          "cpp-common.rkt"
+         "cpp-app.rkt"
          "cpp-graph.rkt"
          "features.rkt"
          "print-body.rkt"
@@ -352,10 +353,14 @@
   (cond
     [(ormap (λ (m) (eq? (material-kind m) 'graphics)) materials) (gen "#include \"materials/GraphicsMaterial.h\"")]
     [(pair? materials) (gen "#include \"materials/Material.h\"")])
+  (define apps (program-apps prog))
   (when (pair? graphs)
     (for ([h (in-list '("graph/RenderGraph.h" "graph/nodes/DispatchNode.h" "graph/nodes/ReadbackNode.h"
                         "graph/nodes/RenderablesNode.h" "materials/Renderable.h" "zgal/Runtime.h"))])
       (gen (format "#include \"~a\"" h))))
+  (when (pair? apps)
+    (when (null? graphs) (gen "#include \"graph/RenderGraph.h\""))
+    (gen "#include \"zgal/App.h\""))
   (gen "")
   (gen "#include <glm/glm.hpp>")
   (gen "")
@@ -367,10 +372,13 @@
     (gen "#include <string>")
     (gen "#include <utility>")
     (gen "#include <vector>"))
-  (when (pair? graphs)
+  (when (or (pair? graphs) (pair? apps))
     (gen "#include <algorithm>")
     (gen "#include <memory>")
     (gen "#include <optional>"))
+  (when (pair? apps)
+    (gen "#include <iostream>")
+    (gen "#include <variant>"))
   (for ([d (in-list (program-structs prog))]) (emit-struct! w d))
   (for ([f (in-list (program-vertex-formats prog))]) (emit-vertex-format! w f))
   ;; Functions and constants the CPU can use too
@@ -384,4 +392,5 @@
       (if (function-decl? d) (emit-function! w d 'cpp) (emit-constant! w d 'cpp))))
   (for ([m (in-list materials)]) (emit-material! w prog m))
   (for ([g (in-list graphs)]) (emit-graph! w prog g))
+  (for ([a (in-list apps)]) (emit-app! w prog a))
   (writer-text w))

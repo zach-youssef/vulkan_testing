@@ -3,7 +3,7 @@
           scribble/core
           "helpers.rkt")
 
-@title{ZGAL: shaders and render graphs for the Vulkan wrapper}
+@title{ZGAL: shaders, render graphs and apps for the Vulkan wrapper}
 
 ZGAL (Zach's Graphics Application Language) is a small language for a Vulkan application's
 shaders and render graphs. A @tt{.zgal} file declares a material's interface (the structs in its
@@ -20,9 +20,13 @@ resources, materials and nodes. The compiler generates a @tt{build()} function a
 per-frame values. Functions that don't use textures are also compiled to C++, so the CPU and the
 shaders can share code.
 
+And it can declare apps (@secref["apps"]): an application's state, the handlers computing its next
+state from input events and each frame, and the graph it runs, whose per-frame inputs are computed
+from the state. The compiler generates a class running them, which C++'s @tt{main} creates and
+runs in a window (or headless).
+
 ZGAL is written in Racket (@tt{dsl/}). Shaders can also still be written in GLSL, with only their
-interface in ZGAL (@secref["glsl"]). A later stage is planned to describe application state (see
-@secref["roadmap"]).
+interface in ZGAL (@secref["glsl"]).
 
 This document is built from the compiler: every example is compiled while it builds, and the
 generated code it shows is the compiler's actual output. Build it with @tt{make docs}, which writes
@@ -92,8 +96,8 @@ material without an entry for it is a contract violation), or a graph a binding 
 
 For @tt{name.zgal}, the compiler writes
 @itemlist[
- @item{@tt{name.zgal.h}: the structs, vertex formats, a class per material (@secref["cpp"]) and
-       a struct per graph (@secref["graphs"]).}
+ @item{@tt{name.zgal.h}: the structs, vertex formats, a class per material (@secref["cpp"]), a
+       struct per graph (@secref["graphs"]) and a class per app (@secref["apps"]).}
  @item{one complete shader per material shader, named like its body (e.g. @tt{tonemap.frag}), to
        compile with glslc (@secref["glsl"]).}
 ]
@@ -139,12 +143,12 @@ Errors are printed as @tt{file:line:column: error: message [id]} and the exit st
 
 A @tt{.zgal} file is a sequence of s-expressions: @racket[struct], @racket[vertex-format],
 @racket[define] (functions and constants, @secref["functions"]), @racket[graphics-material],
-@racket[compute-material] and @racket[graph] forms, in any order except that anything is declared
+@racket[compute-material], @racket[graph] and @racket[app] forms, in any order except that anything is declared
 before it's used. Comments start with @tt{;} and run to the end of the
 line. The reader only reads data: @tt{#lang} and @tt{#reader}, which would run code, are rejected.
 
 @racketgrammar*[
- #:literals (struct vertex-format define graphics-material compute-material graph array :)
+ #:literals (struct vertex-format define graphics-material compute-material graph app array :)
  [file (code:line form ...)]
  [form (struct Name field ...+)
        (vertex-format Name field ...+)
@@ -152,9 +156,11 @@ line. The reader only reads data: @tt{#lang} and @tt{#reader}, which would run c
        (define name expression)
        (graphics-material Name graphics-clause ...)
        (compute-material Name compute-clause ...)
-       (graph Name graph-item ...)]
+       (graph Name graph-item ...)
+       (app Name app-clause ...)]
  [field (name type)]
- [type float int uint bool vec2 vec3 vec4 ivec2 ivec3 ivec4 uvec2 uvec3 uvec4 mat2 mat3 mat4
+ [type float int uint bool uint8 int8 uint16 int16
+       vec2 vec3 vec4 ivec2 ivec3 ivec4 uvec2 uvec3 uvec4 mat2 mat3 mat4
        StructName
        (array type length)]]
 
@@ -654,9 +660,8 @@ The scene example's graph:
 
 @(file-excerpt "examples/scene/scene.zgal" #:from #rx"^[(]graph SceneGraph" #:to #rx"readback readback offscreen")
 
-and the C++ building it, which supplies the meshes and reads the application's state each frame:
-
-@(file-excerpt "examples/scene/scene_example.cpp" #:from #rx"TRY_ASSIGN[(]const SceneGraph scene" #:to #rx"^    [}][)][)];")
+Its app (@secref["apps"]) computes the uniforms, shadows and exposure from its state each frame,
+and C++ supplies the meshes.
 
 @racketgrammar*[
  #:literals (graph parameter input per-frame meshes cpu extern import-image import-buffer constant
@@ -885,6 +890,147 @@ graph's: @tt{app.setActiveGraph(graph)} or @tt{graph.execute()}, @tt{graph.setEn
 ...)}, and readbacks.
 
 @; -----------------------------------------------------------------------------------------------
+@section[#:tag "apps"]{Apps}
+
+An @racket[app] is an application's behaviour: its state, the handlers computing the next state
+from input events and from each frame, and the graph it runs, with per-frame inputs computed from
+the state. Handlers are expressions, like shader bodies, and the state is immutable: a handler's
+value is the next state, usually a copy with some fields changed (@racket[(with state ...)]). The
+compiler generates a C++ class running them. C++ still writes @tt{main}: it creates the window (or
+not), supplies what ZGAL can't (meshes, files, the clock), and runs the app.
+
+The particles example's app:
+
+@(file-excerpt "examples/particles/particles.zgal" #:from #rx"^[(]app ParticlesApp" #:to #rx"0[.]006[)][)][)][)][)]$")
+
+@racketgrammar*[
+ #:literals (app parameter state on run key-pressed key-released mouse-pressed mouse-released
+             cursor-moved scrolled frame left right middle)
+ [app-form (app Name app-clause ...)]
+ [app-clause (parameter name type)
+             (state (field type initial-value) ...)
+             (on event body ...+)
+             (run Graph (input expression) ... maybe-enabled)]
+ [event (key-pressed key ...+)
+        (key-released key ...+)
+        (mouse-pressed button cursor)
+        (mouse-released button cursor)
+        (cursor-moved cursor)
+        (scrolled offset)
+        (frame dt)]
+ [button left right middle]
+ [maybe-enabled (code:line) (code:line #:enabled ((node expression) ...))]]
+
+@subsection{State and handlers}
+
+@itemlist[
+ @item{@racket[parameter]s are values C++ gives when it creates the app, of any type.}
+ @item{@racket[state] declares the state's fields, any type (@tt{bool} too: the state stays on the
+       CPU), and their initial values, computed from the parameters.}
+ @item{@racket[on] handles an event. Its body names @tt{state}, the event's value (bound to the
+       name in the event), the parameters, the file's constants and functions, and the app's
+       values @tt{framesInFlight} (a @tt{uint}) and @tt{surfaceSize} (the graph's surface extent,
+       a @tt{vec2}). Its value is the next state. A body may run effects before it, and a body of
+       only effects leaves the state as it is.}
+]
+
+Events:
+@tabular[
+ #:style 'boxed
+ #:sep (hspace 2)
+ #:row-properties '(bottom-border ())
+ (list
+  (list @bold{Event} @bold{Value} @bold{When})
+  (list @tt{(key-pressed key ...)} "" "one of the keys is pressed")
+  (list @tt{(key-released key ...)} "" "one of the keys is released")
+  (list @tt{(mouse-pressed button cursor)} @elem{the cursor, a @tt{vec2}} "the button is pressed")
+  (list @tt{(mouse-released button cursor)} @elem{the cursor, a @tt{vec2}} "the button is released")
+  (list @tt{(cursor-moved cursor)} @elem{the cursor, a @tt{vec2}} "the cursor moves")
+  (list @tt{(scrolled offset)} @elem{the offset, a @tt{vec2} in scroll steps, y up} "the user scrolls")
+  (list @tt{(frame dt)} @elem{the time since the last frame, a @tt{float} in seconds} "each frame, before drawing"))]
+Cursor positions are in [-1, 1] across the window, y down, like Vulkan's clip space. Keys are
+@tt{a}-@tt{z}, @tt{0}-@tt{9}, @tt{space}, @tt{escape}, @tt{enter}, @tt{tab}, @tt{backspace},
+@tt{left}, @tt{right}, @tt{up}, @tt{down}, @tt{minus}, @tt{equal}, @tt{keypad-add},
+@tt{keypad-subtract} and @tt{f1}-@tt{f12}. An event is handled once: a key belongs to one handler.
+
+Effects, which only handlers have:
+@itemlist[
+ @item{@racket[(print! value ...)] prints strings and scalars, then a newline.}
+ @item{@racket[(set-frames-in-flight! n)] changes the number of frames in flight, at the next
+       frame boundary.}
+ @item{@racket[(quit!)] asks the app to stop: @tt{zgal::run} returns.}
+]
+
+@subsection{The graph}
+
+@racket[run] names a graph of the file and computes its inputs: a parameter's expression once, when
+the app is created, from the app's parameters; a per-frame input's each frame, from the state too.
+@tt{#:enabled} computes, each frame, whether nodes run, e.g. a pass the user toggles. Whatever the
+app doesn't compute (meshes, cpu and extern inputs, imported images and buffers, and any parameter
+or per-frame input it leaves alone) C++ gives, through the app's inputs.
+
+@subsection{The generated class}
+
+A small app:
+
+@(define app-source #<<ZGAL
+(graphics-material Fill
+  (push (shade float))
+  (outputs (color vec4))
+  (vertex (results #:position (vec4 (- (* (vec2 (float (bitand vertexIndex 1)) (float (shr vertexIndex 1))) 4.0) 1.0) 0.0 1.0)))
+  (fragment (vec4 shade)))
+
+(graph Canvas
+  (input shade (per-frame float))
+  (target screen (surface #:depth none))
+  (material fill Fill #:push ((shade shade)))
+  (draw paint screen fill 3))
+
+(app Dimmer
+  (parameter start float)
+  (state
+   (shade float start)
+   (fading bool #f))
+  (on (key-pressed f) (with state #:fading (not state.fading)))
+  (on (key-pressed escape) (quit!))
+  (on (frame dt)
+    (if state.fading (with state #:shade (max 0.0 (- state.shade (* 0.5 dt)))) state))
+  (run Canvas (shade state.shade)))
+ZGAL
+)
+@(zgal-source app-source)
+@(generated-file app-source "example.zgal.h" #:from #rx"^class Dimmer" #:to #rx"^    // Runs the handler")
+
+A class @tt{Name} has
+@itemlist[
+ @item{@tt{struct State}, and @tt{state()} and @tt{setState()} (for tests driving the app);}
+ @item{@tt{struct Inputs}: the parameters, a @tt{zgal::Timestep timestep} (with a frame handler),
+       and the graph's inputs the app doesn't compute;}
+ @item{@tt{static Result<std::unique_ptr<Name>> create(context, graph, inputs)}, which computes the
+       initial state and builds the graph into the @tt{RenderGraph} (without @racket[run], the app
+       has no graph of its own: C++ builds one, and reads the state);}
+ @item{@tt{handle(const zgal::Event&)}, running the event's handler, and @tt{beginFrame()}, running
+       the frame handler and the enables;}
+ @item{@tt{ids()} (the graph's ids), @tt{renderGraph()}, @tt{context()} and @tt{quitRequested()}.}
+]
+
+The clock is C++'s choice, made explicit: @tt{zgal::Timestep::realTime(maxStep)} advances by the
+time since the last frame (at most @tt{maxStep}, so a stall doesn't make the app jump; 0 on the
+first frame), and @tt{zgal::Timestep::fixed(step)} by a fixed step, so headless runs are
+deterministic.
+
+@subsection{Running an app}
+
+@tt{include/zgal/App.h} holds what the generated class uses (events, @tt{Timestep}) and knows
+nothing of windows. @tt{include/zgal/Window.h} connects an app to a @tt{VulkanApp}:
+@tt{zgal::run(vulkanApp, app)} sends the window's input to the app's handlers and draws frames,
+each after @tt{beginFrame()}, until the window closes or the app quits; @tt{zgal::drawFrame} draws
+one, for headless loops. Without a @tt{VulkanApp} (the image filter), C++ calls @tt{beginFrame()}
+and executes the graph itself. The particles example's @tt{main}:
+
+@(file-excerpt "examples/particles/particles.cpp" #:from #rx"TRY_ASSIGN[(]auto particles, ParticlesApp::create" #:to #rx"TRY[(]zgal::run[(]app, [*]particles[)][)];")
+
+@; -----------------------------------------------------------------------------------------------
 @section[#:tag "glsl"]{GLSL bodies}
 
 A material's shaders can be written in GLSL instead, listed in its @racket[shaders] clause, with
@@ -1012,8 +1158,11 @@ indirectly (a size an earlier pass writes on the GPU), compute anything per fram
 constants, dispatch sizes and uniforms, or describe nodes that depend on the application's data
 except through @racket[extern] nodes (build-time loops over list inputs could cover some of them).
 
-ZGAL has grown in stages: interfaces, graphs, then shader bodies, with functions shared by the GLSL
-and C++ backends and bindings' accesses inferred. Application state is planned next. The compiler's checked program (@tt{dsl/private/ast.rkt}) describes interfaces
+Apps handle events only: they can't ask whether a key is held or where the cursor is outside
+handlers (track it in the state from press and release events), read files, or create resources.
+
+ZGAL has grown in stages: interfaces, graphs, shader bodies (with functions shared by the GLSL and
+C++ backends, and bindings' accesses inferred), then apps. The compiler's checked program (@tt{dsl/private/ast.rkt}) describes interfaces
 without assuming a backend, so other backends (e.g. WebGL) only add emitters.
 
 @; -----------------------------------------------------------------------------------------------
@@ -1043,8 +1192,12 @@ without assuming a backend, so other backends (e.g. WebGL) only add emitters.
   (list @tt{dsl/private/glsl.rkt} "the GLSL backend")
   (list @tt{dsl/private/cpp.rkt} "the C++ backend: structs, vertex formats and materials")
   (list @tt{dsl/private/cpp-graph.rkt} "the C++ backend for graphs")
+  (list @tt{dsl/private/app.rkt} "reading and checking apps")
+  (list @tt{dsl/private/cpp-app.rkt} "the C++ backend for apps")
   (list @tt{dsl/private/cpp-common.rkt} "C++ spellings the backend's modules share")
   (list @tt{include/zgal/Runtime.h} "what the generated graphs use at runtime: FrameInfo, Uniform, Instance")
+  (list @tt{include/zgal/App.h} "what the generated apps use: events, Timestep")
+  (list @tt{include/zgal/Window.h} "running an app in a VulkanApp's window")
   (list @tt{dsl/docs/} "this document, and the helpers compiling its examples")
   (list @tt{dsl/tests/} "the compiler's tests (make test-dsl)"))]
 
@@ -1071,6 +1224,7 @@ This document is part of the language: change it in the same commit as the compi
  @item{@tt{dsl/tests/errors-test.rkt}: the error catalog, and the errors' messages and locations.}
  @item{@tt{dsl/tests/body-test.rkt}: shader bodies: typing, scoping, inference, inlining, which
        functions compile to C++, small integers, shared memory and barriers.}
+ @item{@tt{dsl/tests/app-test.rkt}: apps: handlers, events, effects and their graphs.}
  @item{@tt{dsl/tests/golden-test.rkt}: the output for @tt{golden/features.zgal}, which uses every
        feature.}
  @item{@tt{dsl/tests/toolchain-test.rkt}: the generated shaders and header through glslc and the C++
@@ -1079,5 +1233,7 @@ This document is part of the language: change it in the same commit as the compi
  @item{@tt{tests/gpu/ZgalTest.cpp}: generated materials and graphs on the device: the C++ structs
        and push constants have the layout the shaders write and read (8- and 16-bit integers
        included), a function computes the same on the CPU (as C++) as on the GPU, a reduction
-       through shared memory, and imported buffers, copies, cpu and extern nodes in a graph.}
+       through shared memory, imported buffers, copies, cpu and extern nodes in a graph, and an
+       app's state, events and graph inputs. @tt{tests/gpu/VulkanAppTest.cpp} checks
+       @tt{zgal::connect} turns window input into events.}
 ]

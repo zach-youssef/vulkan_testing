@@ -479,3 +479,54 @@ TEST_CASE_FIXTURE(GpuTest, "A ZGAL material needing device features the context 
     CHECK_THROWS_WITH_AS((void)Reduce::loadShaders(ctx), doctest::Contains("Reduce needs device features the context doesn't enable"),
                          ContractViolation);
 }
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL apps compute their state from events and frames, and their graph's inputs from it") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    auto app = Counting::create(ctx, graph, Counting::Inputs{.start = 2, .timestep = zgal::Timestep::fixed(0.25f)}).value();
+    CHECK(app->state().count == 2);
+    auto marked = [&] {
+        app->beginFrame();
+        graph.execute().value();
+        auto pixels = graph.nodeAs<ReadbackNode>(app->ids().nodes.readback).pixels().value();
+        int count = 0;
+        for (size_t i = 0; i < 8; ++i) {
+            count += pixels[4 * i] == 255 ? 1 : 0;
+        }
+        return count;
+    };
+
+    CHECK(marked() == 2);
+    app->handle(zgal::Event{zgal::KeyPressed{zgal::Key::Up}});
+    app->handle(zgal::Event{zgal::KeyPressed{zgal::Key::Up}});
+    CHECK(marked() == 4);
+    // Events without a handler change nothing
+    app->handle(zgal::Event{zgal::KeyReleased{zgal::Key::Up}});
+    app->handle(zgal::Event{zgal::Scrolled{{0.0f, 1.0f}}});
+    CHECK(marked() == 4);
+    app->handle(zgal::Event{zgal::MousePressed{zgal::MouseButton::Left, {0.5f, 0.0f}}});
+    CHECK(app->state().count == 6);
+    CHECK(marked() == 6);
+    // The marking pass is enabled from the state each frame
+    app->handle(zgal::Event{zgal::KeyPressed{zgal::Key::M}});
+    CHECK(marked() == 0);
+    CHECK_FALSE(graph.isEnabled(app->ids().nodes.markRow));
+    app->handle(zgal::Event{zgal::KeyPressed{zgal::Key::M}});
+    CHECK(marked() == 6);
+
+    // The frame handler ran each frame, on the fixed clock
+    CHECK(app->state().frames == 6);
+    CHECK(app->state().elapsed == doctest::Approx(6 * 0.25f));
+    // C++ can set the state, e.g. to drive a test
+    Counting::State state = app->state();
+    state.count = 1;
+    app->setState(state);
+    CHECK(marked() == 1);
+    CHECK_FALSE(app->quitRequested());
+    ctx.waitIdleAll();
+
+    // The clock is a required choice
+    RenderGraph other(ctx);
+    CHECK_THROWS_WITH_AS((void)Counting::create(ctx, other, Counting::Inputs{.start = 1}), doctest::Contains("timestep isn't given"),
+                         ContractViolation);
+}

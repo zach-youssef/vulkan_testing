@@ -47,7 +47,7 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | `include/app` | `VulkanApp` (the only GLFW user) |
 | `include/glsl` | `bindless.glsl`, included by shaders (`glslc -I include/glsl`) |
 | `include/util` | `StbImageWrite.h`: `stb_image_write` without its deprecation warnings |
-| `include/zgal` | `Runtime.h`: what code generated from ZGAL uses (`zgal::FrameInfo`, `FrameSource`, `Uniform`, material instances) |
+| `include/zgal` | What code generated from ZGAL uses: `Runtime.h` for graphs (`zgal::FrameInfo`, `FrameSource`, `Uniform`, material instances), `App.h` for apps (events, `Timestep`), and `Window.h`, running an app in a `VulkanApp` |
 | `dsl` | ZGAL (Zach's Graphics Application Language), declaring shader interfaces and render graphs: its compiler (Racket), documentation (`dsl/docs`) and tests (`dsl/tests`) |
 
 Include headers relative to `include/`, e.g. `#include "graph/RenderGraph.h"`. Exactly one
@@ -59,15 +59,16 @@ images, define `STB_IMAGE_WRITE_IMPLEMENTATION` in one translation unit and incl
 ## Writing an application
 
 Read `examples/simple/simple_example.cpp` first: it builds its graph with the C++ API, using
-materials generated from `simple.zgal`. Every example's shaders are written in ZGAL (see "Shaders
-and graphs in ZGAL"), and the others declare their graphs there too. They show common kinds of
-application:
+materials and a small app generated from `simple.zgal`. Every example's shaders and app are written
+in ZGAL (see "Shaders, graphs and apps in ZGAL"), and the others declare their graphs there too;
+their C++ is `main`: options, the window, and what ZGAL can't express (meshes, files). They show
+common kinds of application:
 
 | Example | Shows |
 |---|---|
-| `examples/image_filter` | Headless use without `VulkanApp`: a chain of compute passes, `#:enabled` passes chosen by options, push constant parameters, an imported image, readback |
-| `examples/particles` | Compute writing a graph buffer that a graphics pass reads (across queues), per-frame parameters, a CPU node, input, changing frames in flight at runtime |
-| `examples/scene` | A 3D renderer: shadow map, HDR target that follows window resizes, tonemapping, orbit camera, shader hot reload, window or headless targets chosen by a parameter |
+| `examples/image_filter` | Headless use without `VulkanApp`: a chain of compute passes enabled from the app's state, push constant parameters, an imported image, readback |
+| `examples/particles` | Compute writing a graph buffer that a graphics pass reads (across queues), per-frame parameters computed from app state, input handlers, changing frames in flight at runtime |
+| `examples/scene` | A 3D renderer: shadow map, HDR target that follows window resizes, tonemapping, an orbit camera whose matrices are ZGAL functions, toggling a pass, shader hot reload, window or headless targets chosen by a parameter |
 
 ```cpp
 // Fallible calls return Result<T>; TRY / TRY_ASSIGN return errors to the caller
@@ -235,13 +236,14 @@ int main() { return exitStatus(runApp()); }            // prints the error
   receives window events during `runFrame()`; `app.window()` gives the `GLFWwindow*` for polling
   (`glfwGetKey`). Don't set GLFW callbacks or the user pointer yourself: the app owns them.
 
-### Shaders and graphs in ZGAL
+### Shaders, graphs and apps in ZGAL
 
 A `.zgal` file declares materials (their interface, declared once instead of in both the shaders
 and C++: bindings, push constants, vertex input, varyings, outputs and the structs their buffers
-hold), their shaders, in ZGAL's expression language, and render graphs using them. The compiler
-(`dsl/zgal.rkt`, run by the Makefile's `zgal-rule`, which also compiles the shaders) generates a
-header with a class per material and a struct per graph, and the complete GLSL shaders. Prefer it
+hold), their shaders, in ZGAL's expression language, render graphs using them, and apps running a
+graph. The compiler (`dsl/zgal.rkt`, run by the Makefile's `zgal-rule`, which also compiles the
+shaders) generates a header with a class per material, a struct per graph and a class per app, and
+the complete GLSL shaders. Prefer it
 for new applications; every example uses it. Read `build/docs/zgal.txt` (from `make docs`) before
 writing ZGAL: it has the language, what's generated and every error. In short:
 
@@ -275,6 +277,17 @@ writing ZGAL: it has the language, what's generated and every error. In short:
 - Outside a graph, C++ builds a generated material from `Name::loadShaders(ctx)` and
   `Name::Bindings{.binding = entry, ...}`, and fills push constants by overriding
   `writePush(frameIndex, Push&)`.
+- An `(app Name ...)` declares parameters, an immutable `(state (field type initial) ...)`, and
+  `(on event body)` handlers whose value is the next state (usually `(with state #:field v)`):
+  events are `key-pressed`/`key-released` (key names like `space`, `a`, `1`), `mouse-pressed`/
+  `mouse-released`, `cursor-moved` (positions in [-1, 1]), `scrolled` and `(frame dt)`. Handlers'
+  effects are `print!`, `set-frames-in-flight!` and `quit!`. `(run Graph (input expr) ...
+  #:enabled ((node expr) ...))` computes the graph's parameters once and per-frame inputs and node
+  enables each frame from the state; C++ gives the graph's other inputs through the app's
+  `Inputs`. C++ creates it with `Name::create(ctx, graph, Name::Inputs{..., .timestep =
+  zgal::Timestep::realTime(max) or fixed(step)})` and runs it with `zgal::run(vulkanApp, *app)`
+  (`include/zgal/Window.h`), or headless calls `app->beginFrame()` before each frame. Tests drive
+  it with `handle(zgal::Event{...})`, `state()` and `setState()`.
 - Never edit generated files (under `build/`): change the `.zgal` file (or a GLSL body).
 
 ### Shaders

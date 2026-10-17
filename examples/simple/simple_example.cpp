@@ -9,14 +9,14 @@
 #include "graph/nodes/RenderablesNode.h"
 #include "shaders/ShaderLibrary.h"
 #include "resources/Image.h"
+#include "zgal/Window.h"
 
-// Generated from simple.zgal: Camera, Vertex and the Tutorial and CopyTexture materials
+// Generated from simple.zgal: Camera, Vertex, the Tutorial and CopyTexture materials and SimpleApp
 #include "simple.zgal.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-#include <chrono>
 #include <cstring>
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -33,8 +33,8 @@
 const std::string shaderDir = SIMPLE_EXAMPLE_SHADER_DIR;
 const std::string textureDir = SIMPLE_EXAMPLE_TEXTURE_DIR;
 
-// Draws a texture with a rotating camera (Tutorial in simple.zgal). Owns the camera's per-frame
-// uniform buffers, which update() writes.
+// Draws a texture with a rotating camera (Tutorial in simple.zgal), at the app's angle. Owns the
+// camera's per-frame uniform buffers, which update() writes.
 class TutorialMaterial : public Tutorial {
 public:
     using Mapping = Buffer<Camera>::Mapping;
@@ -42,6 +42,7 @@ public:
     // Loads the shaders and creates the material's per-frame resources, which can fail, then the
     // material
     static Result<Handle<TutorialMaterial>> create(VulkanContext& context,
+                                                   const SimpleApp& app,
                                                    AttachmentFormats formats,
                                                    FrameBinding<DescriptorEntry> texture,
                                                    FrameBinding<DescriptorEntry> sampler) {
@@ -60,12 +61,13 @@ public:
         TRY_ASSIGN(auto mappings, PerFrame<Mapping>::create(context, [buffers](uint32_t frameIdx) {
             return (*buffers)[frameIdx]->getPersistentMapping(0, sizeof(Camera));
         }));
-        return context.resources().create<TutorialMaterial>(context, shaders, std::move(formats), std::move(texture),
+        return context.resources().create<TutorialMaterial>(context, app, shaders, std::move(formats), std::move(texture),
                                                             std::move(sampler), std::move(buffers), std::move(entries),
                                                             std::move(mappings));
     }
 
     TutorialMaterial(VulkanContext& context,
+                     const SimpleApp& app,
                      const Shaders& shaders,
                      AttachmentFormats formats,
                      FrameBinding<DescriptorEntry> texture,
@@ -77,17 +79,13 @@ public:
                // The bindings, by name: the generated class gives each its access and stages
                Bindings{.camera = uniformEntries, .albedo = std::move(texture), .albedoSampler = std::move(sampler)},
                std::move(formats), GraphicsPipelineOptions{}),
+      app_(&app),
       uniformBuffers_(std::move(uniformBuffers)),
       uniformEntries_(std::move(uniformEntries)),
       mappedUniformBuffers_(std::move(mappedUniformBuffers)) {}
 
     void update(uint32_t currentImage, VkExtent2D swapChainExtent) override {
-        static auto startTime = std::chrono::high_resolution_clock::now();
-
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
-
-        auto model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.f), glm::vec3(0.0f, 0.0f, 1.0f));
+        auto model = glm::rotate(glm::mat4(1.0f), app_->state().angle, glm::vec3(0.0f, 0.0f, 1.0f));
         auto view =
         glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
         auto projection = glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float) swapChainExtent.height, 0.1f, 10.0f);
@@ -100,6 +98,7 @@ public:
     }
 
 private:
+    const SimpleApp* app_;
     Handle<PerFrameHandles<Buffer<Camera>>> uniformBuffers_;
     Handle<PerFrameHandles<DescriptorEntry>> uniformEntries_;
     PerFrame<Mapping> mappedUniformBuffers_;
@@ -183,6 +182,12 @@ Result<void> runExample() {
                                        FixedExtent{{texture->getWidth(), texture->getHeight()}});
     RenderTarget screen = graph.surfaceTarget();
 
+    // The app (SimpleApp in simple.zgal): the rotation's state, which its handlers advance each
+    // frame and pause on space. It has no graph of its own: this one is built here.
+    TRY_ASSIGN(auto simple, SimpleApp::create(context, graph, SimpleApp::Inputs{
+        .timestep = zgal::Timestep::realTime(0.25f),
+    }));
+
     // A compute material copying the texture, and a material drawing the copy, shared by two
     // renderables, both from simple.zgal. Their bindings tell the graph which resources they use,
     // and how: the generated classes give each binding the access and stages its shaders use.
@@ -191,7 +196,7 @@ Result<void> runExample() {
         context, copyShaders,
         CopyTexture::Bindings{.source = textureEntry, .sourceSampler = samplerEntry, .copy = graph.storageEntry(copied)},
         texture->getWidth(), texture->getHeight());
-    TRY_ASSIGN(auto material, TutorialMaterial::create(context, graph.formats(screen), graph.sampledEntry(copied),
+    TRY_ASSIGN(auto material, TutorialMaterial::create(context, *simple, graph.formats(screen), graph.sampledEntry(copied),
                                                        samplerEntry));
 
     std::vector<Handle<Renderable>> renderables;
@@ -204,10 +209,10 @@ Result<void> runExample() {
     // bindings, and acquires and presents the surface around the draw.
     graph.add<DispatchNode>("copy texture", computeMaterial);
     graph.add<RenderablesNode>("draw quads", std::move(renderables), screen);
-    app.setActiveGraph(graph);
 
-    // Run
-    return app.run();
+    // Run: the window's input goes to the app's handlers, and each frame runs its frame handler
+    // before drawing the graph
+    return zgal::run(app, *simple);
 }
 
 int main() {

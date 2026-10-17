@@ -109,6 +109,25 @@
   (dispatch markRow mark)
   (readback readback row))
 
+;; For the app test: an app running CountGraph, whose handlers change how many pixels are marked,
+;; and whether they are
+(app Counting
+  (parameter start uint)
+  (state
+   (count uint start)
+   (marking bool #t)
+   (frames uint 0)
+   (elapsed float 0.0))
+  (on (key-pressed up) (with state #:count (min (+ state.count 1) 8)))
+  (on (key-pressed down) (with state #:count (- state.count 1)))
+  (on (key-pressed m) (with state #:marking (not state.marking)))
+  ;; The cursor's x, from [-1, 1] across the window to [0, 8] pixels
+  (on (mouse-pressed left at) (with state #:count (uint (* (+ at.x 1.0) 4.0))))
+  (on (frame dt) (with state #:frames (+ state.frames 1) #:elapsed (+ state.elapsed dt)))
+  (run CountGraph
+    (count state.count)
+    #:enabled ((markRow state.marking))))
+
 ;; For the CPU and GPU test: functions compiled for both. Its integer part must match exactly,
 ;; its floating point part to the GPU's precision.
 (define (pcgHash [v : uint]) : uint

@@ -203,3 +203,37 @@
   (copy copySome staging packedCopy #:count 32 #:source-offset 1 #:destination-offset (uint count) #:enabled enabled)
   (dispatch reduce reduce)
   (extern customNodes custom #:when enabled))
+
+;; Every event, effect and kind of graph binding: parameters computed once, per-frame inputs from
+;; the state, node enables (one of a #:when node), and the rest passed through from C++
+(app Explorer
+  (parameter level int)
+  (parameter gain float)
+  (state
+   (tint vec3 (vec3 gain))
+   (cursor vec2 (vec2 0.0))
+   (dragging bool #f)
+   (zoom float 1.0)
+   (frames uint 0)
+   (light Light (Light (vec3 0.0 1.0 0.0) gain (vec4 1.0))))
+  (on (key-pressed a 1 f12 keypad-add) (with state #:tint (* state.tint 2.0)))
+  (on (key-released space) (print! "frames: " state.frames ", dragging: " state.dragging))
+  (on (key-pressed escape) (quit!))
+  (on (key-pressed 3) (set-frames-in-flight! 3))
+  (on (mouse-pressed left at) (with state #:dragging #t #:cursor at))
+  (on (mouse-released right at) (with state #:dragging #f))
+  (on (cursor-moved at) (if state.dragging (with state #:cursor at) state))
+  (on (scrolled offset) (with state #:zoom (* state.zoom (.x (polish (vec3 offset.y) 1)))))
+  (on (frame dt)
+    (let* ([next (+ state.frames 1)])
+      (when (= (remainder next 100) 0)
+        (print! "frame " next " of " framesInFlight " in flight at " surfaceSize.x))
+      (with state #:frames next)))
+  (run Everything
+    (enabled (> level 0))
+    (count level)
+    (size (uint (* level 2)))
+    (scale gain)
+    (tintNow (* state.tint state.zoom))
+    #:enabled ((accumulate state.dragging)
+               (drawPlain (not state.dragging)))))

@@ -1,4 +1,4 @@
-;; The image filter's shaders and graph, in ZGAL (dsl/; `make docs` for the language). The build
+;; The image filter's shaders, graph and app, in ZGAL (dsl/; `make docs` for the language). The build
 ;; generates image_filter.zgal.h and the complete shaders.
 ;;
 ;; Every pass is a compute shader run once per pixel of the working image (16 x 16 workgroups),
@@ -136,11 +136,8 @@
 ;; Each filter takes the working image back to the working image, so the graph contains every pass
 ;; and the ones the user didn't ask for are disabled (see image_filter.cpp)
 (graph FilterGraph
-  (parameter blur bool)
-  (parameter radius int)          ; Only used if blur is enabled, but valid either way
-  (parameter edges bool)
-  (parameter binarize bool)
-  (parameter level float)         ; The threshold, if binarize is enabled
+  (parameter radius int)          ; Only used if the blur runs, but valid either way
+  (parameter level float)         ; The threshold, if it runs
   ;; createFromFile leaves the input ready for sampling, and the graph keeps it that way
   (import-image source #:resting shader-read-only)
 
@@ -176,10 +173,33 @@
 
   ;; Insertion order is program order wherever passes use the same image
   (dispatch load load)
-  (dispatch blurRows blurRows #:enabled blur)
-  (dispatch blurColumns blurColumns #:enabled blur)
-  (dispatch sobelRows sobelRows #:enabled edges)
-  (dispatch sobelColumns sobelColumns #:enabled edges)
-  (dispatch threshold threshold #:enabled binarize)
+  ;; The app enables the filters asked for
+  (dispatch blurRows blurRows)
+  (dispatch blurColumns blurColumns)
+  (dispatch sobelRows sobelRows)
+  (dispatch sobelColumns sobelColumns)
+  (dispatch threshold threshold)
   (dispatch store store)
   (readback readback encoded))
+
+;; Which filters run is the app's state, so the passes are enabled each frame: an interactive
+;; editor would change it between frames, and the graph would only compile each combination of
+;; passes once
+(app FilterApp
+  (parameter blur bool)
+  (parameter radius int)
+  (parameter edges bool)
+  (parameter binarize bool)
+  (parameter level float)
+  (state
+   (blurring bool blur)
+   (findingEdges bool edges)
+   (binarizing bool binarize))
+  (run FilterGraph
+    (radius radius)
+    (level level)
+    #:enabled ((blurRows state.blurring)
+               (blurColumns state.blurring)
+               (sobelRows state.findingEdges)
+               (sobelColumns state.findingEdges)
+               (threshold state.binarizing))))

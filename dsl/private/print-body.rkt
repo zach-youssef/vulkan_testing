@@ -33,6 +33,7 @@
 
 (define (literal v t dialect)
   (match t
+    [(opaque-t 'string) (cpp-string v)]
     [(scalar-t 'bool) (if v "true" "false")]
     [(scalar-t 'float)
      (define text (number->string (exact->inexact v)))
@@ -65,7 +66,7 @@
     [(t-global kind name spelling _ _)
      (case kind
        [(binding push) (format "~a()" name)]
-       [(input stage) spelling]
+       [(input stage host) spelling]
        [else name])]
     [(t-call 'not (list a) _ _) (if (eq? dialect 'glsl) (format "not(~a)" (p a)) (format "glm::not_(~a)" (p a)))]
     [(t-call f as _ _) (format "~a~a(~a)" (if (eq? dialect 'cpp) "glm::" "") f (args as))]
@@ -110,7 +111,17 @@
     [(t-index b i _ _) (format "~a[~a]" (operand b) (p i))]
     [(t-if c a b _ _) (format "~a ? ~a : ~a" (operand c) (operand a) (operand b))]
     [(t-store i texel v _) (format "imageStore(~a, ~a, ~a)" (p i) (p texel) (p v))]
-    [(t-barrier _) "barrier()"]))
+    [(t-barrier _) "barrier()"]
+    ;; Apps' effects, in the C++ of a generated app class (cpp-app.rkt), whose members they use
+    [(t-effect 'print as _)
+     (format "std::cout << ~a << std::endl"
+             (string-join (for/list ([a (in-list as)])
+                            (if (equal? (texpr-type a) (scalar-t 'bool))
+                                (format "(~a ? \"true\" : \"false\")" (p a))
+                                (p a)))
+                          " << "))]
+    [(t-effect 'set-frames-in-flight (list n) _) (format "context_->setFramesInFlight(~a)" (p n))]
+    [(t-effect 'quit '() _) "quit_ = true"]))
 
 (define (declaration name t dialect)
   (match* (t dialect)

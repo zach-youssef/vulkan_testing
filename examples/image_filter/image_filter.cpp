@@ -30,7 +30,7 @@
 #include "graph/nodes/ReadbackNode.h"
 #include "resources/Image.h"
 
-// Generated from image_filter.zgal: the filters' materials and FilterGraph
+// Generated from image_filter.zgal: the filters' materials, FilterGraph and FilterApp
 #include "image_filter.zgal.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -146,11 +146,11 @@ Result<FilteredImage> filterImage(VulkanContext& context, const Options& options
     TRY_ASSIGN(auto source, Image::createFromFile(context, options.input));
     const VkExtent2D extent{source->getWidth(), source->getHeight()};
 
-    // The graph, FilterGraph in image_filter.zgal: every pass, with the ones the user didn't ask
-    // for disabled. Disabled passes still need valid parameters: the radius is only used if the
-    // blur runs.
+    // The app, FilterApp in image_filter.zgal, builds its graph, FilterGraph: every pass, with the
+    // ones the user didn't ask for disabled each frame. Disabled passes still need valid
+    // parameters: the radius is only used if the blur runs.
     RenderGraph graph(context);
-    TRY_ASSIGN(const FilterGraph filter, FilterGraph::build(context, graph, FilterGraph::Inputs{
+    TRY_ASSIGN(auto filter, FilterApp::create(context, graph, FilterApp::Inputs{
         .blur = options.blurRadius.has_value(),
         .radius = options.blurRadius.value_or(1),
         .edges = options.edges,
@@ -158,6 +158,8 @@ Result<FilteredImage> filterImage(VulkanContext& context, const Options& options
         .level = options.threshold.value_or(0.5f),
         .source = source,
     }));
+    // Without a VulkanApp, the frame begins here: the app enables the passes its state asks for
+    filter->beginFrame();
 
     // execute() would compile on demand; compiling first reports graph errors before any GPU work
     TRY(graph.compile().withContext("compiling the filter graph"));
@@ -168,7 +170,7 @@ Result<FilteredImage> filterImage(VulkanContext& context, const Options& options
 
     TRY(graph.execute());
     // Waits for the frame to finish. The readback is RGBA8, tightly packed.
-    TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(filter.nodes.readback).pixels());
+    TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(filter->ids().nodes.readback).pixels());
     return FilteredImage{std::move(pixels), extent};
 }
 
