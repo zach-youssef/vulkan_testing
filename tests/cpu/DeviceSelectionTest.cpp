@@ -106,7 +106,8 @@ TEST_CASE("SwapChainSupportDetails::chooseSwapExtent clamps the framebuffer size
 TEST_CASE("DeviceFeatures reports the required features a device lacks") {
     DeviceFeatures none;
     auto missing = none.missingRequired();
-    CHECK(missing.size() == 14);
+    CHECK(missing.size() == 17);
+    CHECK(std::find(missing.begin(), missing.end(), "shaderSampledImageArrayNonUniformIndexing") != missing.end());
     CHECK(missing.front() == "samplerAnisotropy");
     CHECK(std::find(missing.begin(), missing.end(), "descriptorBindingUpdateUnusedWhilePending") != missing.end());
     CHECK(missing.back() == "dynamicRendering");

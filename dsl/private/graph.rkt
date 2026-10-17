@@ -33,6 +33,7 @@
     [(g-parameter _ t _) (entry 'parameter t item)]
     [(g-input _ kind t _) (entry kind t item)]
     [(g-import _ _ _) (entry 'import #f item)]
+    [(g-import-images _ _ _) (entry 'import-images #f item)]
     [(g-import-buffer _ t _) (entry 'import-buffer t item)]
     [(g-upload _ _ t _) (entry 'upload t item)]
     [(g-constant _ _ t _) (entry 'constant t item)]
@@ -49,7 +50,7 @@
 
 (define kind-names
   (hash 'parameter "a parameter" 'constant "a constant" 'per-frame "a per-frame input" 'meshes "a meshes input"
-        'cpu "a cpu input" 'extern "an extern input" 'import "an imported image" 'import-buffer "an imported buffer" 'data "a data input" 'upload "an uploaded buffer" 'sampler "a sampler" 'uniform "a uniform"
+        'cpu "a cpu input" 'extern "an extern input" 'import "an imported image" 'import-images "imported images" 'import-buffer "an imported buffer" 'data "a data input" 'upload "an uploaded buffer" 'sampler "a sampler" 'uniform "a uniform"
         'image "an image" 'buffer "a buffer" 'target "a target" 'material "a material"))
 
 ;; ---------------------------------------------------------------------------------------------
@@ -351,6 +352,12 @@
        (define resting (choice-option options '#:resting '(shader-read-only general transfer-src) form
                                       #:required? #t #:where stx))
        (declare! (g-import (item-name) resting (stx->loc stx)) stx)]
+      ['import-images
+       (args! 1 "(import-images name #:resting state)")
+       (check-known-options options '(#:resting) form)
+       (define resting (choice-option options '#:resting '(shader-read-only general transfer-src) form
+                                      #:required? #t #:where stx))
+       (declare! (g-import-images (item-name) resting (stx->loc stx)) stx)]
       ['import-buffer
        (args! 2 "(import-buffer name type)")
        (check-known-options options '() form)
@@ -426,7 +433,7 @@
        (unless (>= (length args) 2)
          (zgal-error 'malformed stx "expected (material name Material (binding resource) ... #:option value ...)"))
        (declare! (parse-material-instance stx args options) stx)]
-      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-buffer, upload, constant, sampler, uniform, image, buffer, target, material and nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern)"
+      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, import-buffer, upload, constant, sampler, uniform, image, buffer, target, material and nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern)"
                      name head)]))
 
   ;; The type of a buffer's elements
@@ -594,8 +601,24 @@
                e))))
     (g-material instance-name m bindings push pipeline invocations (stx->loc stx)))
 
-  ;; The resource bound to binding b: checks it fits, and returns its name
+  ;; The resource bound to binding b: checks it fits, and returns its name. An array binding takes
+  ;; a list of resources of its elements' kind, or imported images (for arrays of images).
   (define (check-binding b stx)
+    (cond
+      [(not (eq? (binding-kind b) 'array)) (check-resource b stx)]
+      [(syntax->list stx)
+       => (λ (elements) (for/list ([e (in-list elements)]) (check-resource (binding-element b) e #:array b)))]
+      [(and (symbol? (syntax-e stx))
+            (match (hash-ref env (symbol->string (syntax-e stx)) #f) [(entry 'import-images _ _) #t] [_ #f]))
+       (unless (memq (binding-resource-kind b) '(texture storage-image))
+         (zgal-error 'binding-mismatch stx "binding ~a is an array of ~as, so it takes a list of them, but ~a is imported images"
+                     (binding-name b) (binding-resource-kind b) (syntax-e stx)))
+       (symbol->string (syntax-e stx))]
+      [else (zgal-error 'binding-mismatch stx "binding ~a is an array, so it takes a list of resources, e.g. (~a (a b)), or imported images, not ~a"
+                        (binding-name b) (binding-name b) (show stx))]))
+
+  ;; array: the array binding b is an element of, or #f
+  (define (check-resource b stx #:array [array #f])
     (define kinds
       (case (binding-kind b)
         [(texture storage-image) '(image import)]
@@ -614,13 +637,13 @@
       [(not (symbol? r)) (zgal-error 'malformed stx "expected a resource's name, found ~a" (show stx))]
       [(not e) (zgal-error 'unknown-name stx "~a isn't declared in graph ~a before here" r name)]
       [(not (memq (entry-kind e) kinds))
-       (zgal-error 'binding-mismatch stx "binding ~a is a ~a, so it takes ~a, but ~a is ~a"
-                   (binding-name b) (binding-kind b) what r (hash-ref kind-names (entry-kind e)))])
+       (zgal-error 'binding-mismatch stx "binding ~a is ~a ~a, so it takes ~a, but ~a is ~a"
+                   (binding-name b) (if array "an array of" "a") (binding-kind b) what r (hash-ref kind-names (entry-kind e)))])
     (when (memq (binding-kind b) '(buffer buffer-array))
       (unless (equal? (entry-type e) (binding-element b))
         (zgal-error 'binding-mismatch stx "binding ~a holds ~a, but ~a holds ~a" (binding-name b)
                     (type-name (binding-element b)) r (type-name (entry-type e))))
-      (when (and (eq? (entry-kind e) 'uniform) (not (eq? (binding-access b) 'read)))
+      (when (and (eq? (entry-kind e) 'uniform) (not (eq? (binding-access (or array b)) 'read)))
         (zgal-error 'binding-mismatch stx "binding ~a writes, but ~a is a uniform, which the CPU writes and shaders only read"
                     (binding-name b) r)))
     (symbol->string r))

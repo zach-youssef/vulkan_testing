@@ -1554,12 +1554,18 @@ inline NodeBuilder& NodeBuilder::uses(Handle<Material> material) {
     // The material's resources, as its bindings declare them
     const auto& bindings = material->bindings();
     for (size_t i = 0; i < bindings.size(); ++i) {
-        auto resource = graph_->resolveBinding(bindings[i], record.name, i);
-        if (!resource) {
-            continue;
-        }
         const VkPipelineStageFlags2 stages = bindings[i].stages ? bindings[i].stages : material->defaultStages();
-        graph_->nodes_[node_].uses.push_back({resource->first, resource->second, bindings[i].access, stages, false});
+        // An array's elements, not its buffer of indices (which only the CPU writes)
+        std::vector<FrameBinding<DescriptorEntry>> entries{bindings[i].entry};
+        if (bindings[i].descriptorArray) {
+            entries = bindings[i].descriptorArray->elements();
+        }
+        for (const auto& entry : entries) {
+            auto resource = graph_->resolveBinding(MaterialBinding{entry, bindings[i].access, stages}, record.name, i);
+            if (resource) {
+                graph_->nodes_[node_].uses.push_back({resource->first, resource->second, bindings[i].access, stages, false});
+            }
+        }
     }
     graph_->nodes_[node_].materials.push_back(std::move(material));
     graph_->structureChanged();

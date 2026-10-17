@@ -24,18 +24,31 @@
     [(array-t e n) (format "~a ~a[~a];" (spell-type e 'glsl) name n)]
     [_ (format "~a ~a;" (spell-type t 'glsl) name)]))
 
-;; Buffer blocks are declared per type (and per kind: one holding a value, or an array of them)
+;; Buffer blocks are declared per type (and per kind: one holding a value, or an array of them).
+;; b's resources' (an array binding's elements')
 (define (buffer-array-name b)
-  (format "~a_~a" (if (eq? (binding-kind b) 'buffer) "zgalBuffers" "zgalBufferArrays")
-          (type-name (binding-element b))))
+  (format "~a_~a" (if (eq? (binding-resource-kind b) 'buffer) "zgalBuffers" "zgalBufferArrays")
+          (type-name (binding-buffer-type b))))
 
-(define (accessor b)
-  (define index (format "materialPush.~a" (binding-name b)))
-  (match (binding-kind b)
+;; The universal set's array a binding's resources are in, indexed by index
+(define (resource-access b index)
+  (match (binding-resource-kind b)
     ['texture (format "bindlessTextures[~a]" index)]
     ['sampler (format "bindlessSamplers[~a]" index)]
     ['storage-image (format "bindlessStorageImages[~a]" index)]
     [(or 'buffer 'buffer-array) (format "~a[~a].data" (buffer-array-name b) index)]))
+
+;; Array bindings' buffers of indices: the count, then the elements' indices (DescriptorArray)
+(define indices-block "zgalIndices")
+
+;; A binding's accessor macro: name() for a resource, name(i) for an array's element i (which
+;; different invocations may choose differently, so the index is nonuniformEXT)
+(define (accessor-definition b)
+  (define push (format "materialPush.~a" (binding-name b)))
+  (if (eq? (binding-kind b) 'array)
+      (format "#define ~a(i) (~a)" (binding-name b)
+              (resource-access b (format "nonuniformEXT(~a[~a].data[1u + uint(i)])" indices-block push)))
+      (format "#define ~a() (~a)" (binding-name b) (resource-access b push))))
 
 (define (interpolation-qualifier v)
   (case (varying-interpolation v)
@@ -93,19 +106,26 @@
   ;; one at the same binding, so either every block is readonly or none is.
   (define qualifiers (if (material-writes-buffers? m) "" "readonly"))
   (for ([b (in-list (remove-duplicates
-                     (filter (λ (b) (memq (binding-kind b) '(buffer buffer-array))) bindings)
+                     (filter (λ (b) (memq (binding-resource-kind b) '(buffer buffer-array))) bindings)
                      #:key buffer-array-name))])
-    (define t (binding-element b))
+    (define t (binding-buffer-type b))
+    (define single? (eq? (binding-resource-kind b) 'buffer))
     (emit! w (format "~a(~a, ZGAL~a_~a, ~a, ~a);"
-                     (if (eq? (binding-kind b) 'buffer) "BINDLESS_BUFFER" "BINDLESS_BUFFER_ARRAY")
+                     (if single? "BINDLESS_BUFFER" "BINDLESS_BUFFER_ARRAY")
                      qualifiers
-                     (if (eq? (binding-kind b) 'buffer) "Buffer" "BufferArray")
+                     (if single? "Buffer" "BufferArray")
                      (type-name t) (spell-type t 'glsl) (buffer-array-name b))
            #:at (binding-loc b)))
+  (define arrays (filter (λ (b) (eq? (binding-kind b) 'array)) bindings))
+  (unless (null? arrays)
+    (emit! w (format "BINDLESS_BUFFER_ARRAY(~a, ZGALIndices, uint, ~a);" qualifiers indices-block) #:at (binding-loc (first arrays))))
 
   ;; Accessors: function-like macros, so they don't replace the push constant members' names
   (for ([b (in-list bindings)])
-    (emit! w (format "#define ~a() (~a)" (binding-name b) (accessor b)) #:at (binding-loc b)))
+    (emit! w (accessor-definition b) #:at (binding-loc b))
+    (when (eq? (binding-kind b) 'array)
+      (emit! w (format "#define zgalLength_~a() (~a[materialPush.~a].data[0])" (binding-name b) indices-block (binding-name b))
+             #:at (binding-loc b))))
   (for ([f (in-list push)])
     (emit! w (format "#define ~a() (materialPush.~a)" (field-name f) (field-name f)) #:at (field-loc f)))
 

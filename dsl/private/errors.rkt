@@ -103,7 +103,7 @@
          "(graphics-material A\n  (shaders \"flat.vert\" \"flat.frag\")\n  (outputs (color vec4)))\n(graphics-material B\n  (shaders \"flat.vert\" \"other.frag\")\n  (outputs (color vec4)))")
    (kind 'bad-binding
          "A binding's kind or access is invalid"
-         "A binding is `(name kind)`, where the kind is `texture`, `sampler`, `(storage-image [access])`, `(buffer type [access])` or `(buffer-array type [access])`, and the access is `read`, `write` or `read-write`. The access is what the render graph synchronizes on. It's inferred when every shader of the material is a ZGAL body, and must be declared, accurately, when one is GLSL."
+         "A binding is `(name kind)`, where the kind is `texture`, `sampler`, `(storage-image [access])`, `(buffer type [access])`, `(buffer-array type [access])` or `(array kind)` (an array of any of those but samplers), and the access is `read`, `write` or `read-write`. The access is what the render graph synchronizes on. It's inferred when every shader of the material is a ZGAL body, and must be declared, accurately, when one is GLSL."
          "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64)\n  (bindings (result (buffer float))))")
    (kind 'bad-stages
          "A binding's stages are invalid"
@@ -131,7 +131,7 @@
          "(graph G\n  (input size (per-frame uint))\n  (image i rgba8 (fixed size size) #:frames shared))")
    (kind 'binding-mismatch
          "A material binding is given the wrong kind of resource"
-         "Textures and storage images take images, samplers take samplers, `buffer` bindings take a uniform or a buffer (or imported buffer) of their type, and `buffer-array` bindings take a buffer (or imported buffer) of their element type. Uniforms are written by the CPU, so a binding writing one is an error."
+         "Textures and storage images take images, samplers take samplers, `buffer` bindings take a uniform or a buffer (or imported buffer) of their type, and `buffer-array` bindings take a buffer (or imported buffer) of their element type. Array bindings take a list of such resources, e.g. `(sources (a b))`, or (for arrays of images) imported images. Uniforms are written by the CPU, so a binding writing one is an error."
          "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64)\n  (bindings (target (storage-image write))))\n(graph G\n  (sampler s)\n  (material fill Fill (target s) #:invocations (64))\n  (dispatch fill fill))")
    (kind 'incomplete-material
          "A material in a graph doesn't give a binding or push constant"

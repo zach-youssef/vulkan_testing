@@ -290,7 +290,11 @@
   (define here (stx->loc stx))
   (define base
     (cond
-      [(hash-ref locals base-name #f) => (λ (l) (t-local (t-local-name l) (t-local-type l) here))]
+      [(hash-ref locals base-name #f)
+       => (λ (l) (if (t-local? l)
+                     (t-local (t-local-name l) (t-local-type l) here)
+                     ;; An alias of a resource (see check-let)
+                     l))]
       [(hash-ref (context-globals ctx) base-name #f)
        => (λ (g)
             (when (eq? (global-kind g) 'output)
@@ -368,10 +372,18 @@
           (match (texpr-type base)
             [(array-t e _) e]
             [(runtime-array-t e) e]
+            [(binding-array-t e) e]
             [(vector-t k _) (scalar-t k)]
             [(matrix-t n) (vector-t 'float n)]
             [t (zgal-error 'type-mismatch (first args) "at indexes arrays, vectors and matrices, not ~a" (a-type t))]))
         (t-index base index t here)]
+       [(array-length)
+        (arity 1 1)
+        (define base (recur (first args)))
+        (unless (binding-array-t? (texpr-type base))
+          (zgal-error 'type-mismatch (first args) "array-length gives an array binding's number of elements, and this is ~a; a buffer-array's length isn't known to shaders (pass it as a push constant)"
+                      (a-type (texpr-type base))))
+        (t-op 'array-length (list base) (scalar-t 'uint) here)]
        [(+ - * /)
         (arity (if (eq? head '-) 1 2) (if (eq? head '/) 2 #f))
         (cond
@@ -548,6 +560,8 @@
   (match e
     [(t-global 'binding _ _ (or (struct-t _) (scalar-t _) (vector-t _ _) (matrix-t _) (runtime-array-t _)) _) #t]
     [(t-global 'shared _ _ _ _) #t]
+    ;; An element of an array of buffers
+    [(t-index (t-global 'binding _ _ (binding-array-t e) _) _ _ _) (not (opaque-t? e))]
     [(t-field b _ _ _) (writable-place? b)]
     [(t-index b _ _ _) (writable-place? b)]
     [(t-swizzle b _ _ _) (writable-place? b)]
@@ -609,16 +623,28 @@
          (unless (= (length name-stxs) (length types))
            (zgal-error 'malformed b "~a name~a bound to ~a value~a" (length name-stxs) (if (= (length name-stxs) 1) "" "s")
                        (length types) (if (= (length types) 1) "" "s")))
-         (define-values (spelled ls2)
-           (for/fold ([spelled '()] [ls ls] #:result (values (reverse spelled) ls))
-                     ([n (in-list name-stxs)] [t (in-list types)])
-             (define name (local-name n ctx))
-             (define spelling (spell! ctx name))
-             (values (cons spelling spelled) (hash-set ls name (t-local spelling t (stx->loc n))))))
-         (values (cons (list spelled types value) bindings) ls2)]
+         (cond
+           ;; GLSL has no locals holding textures, images or buffers' arrays: the name stands for
+           ;; the resource itself (e.g. an element of an array binding)
+           [(and (= (length types) 1) (resource-type? (first types)))
+            (define name (local-name (first name-stxs) ctx))
+            (values bindings (hash-set ls name value))]
+           [else
+            (define-values (spelled ls2)
+              (for/fold ([spelled '()] [ls ls] #:result (values (reverse spelled) ls))
+                        ([n (in-list name-stxs)] [t (in-list types)])
+                (define name (local-name n ctx))
+                (define spelling (spell! ctx name))
+                (values (cons spelling spelled) (hash-set ls name (t-local spelling t (stx->loc n))))))
+            (values (cons (list spelled types value) bindings) ls2)])]
         [_ (zgal-error 'malformed b "expected [name expression] or [(name ...) expression]")])))
   (define body (check-sequence (rest args) stx ctx inner))
-  (t-let bindings body (texpr-type body) (stx->loc stx)))
+  (if (null? bindings) body (t-let bindings body (texpr-type body) (stx->loc stx))))
+
+;; Types of resources rather than values: textures, samplers, images, buffers' arrays and arrays of
+;; bindings
+(define (resource-type? t)
+  (or (opaque-t? t) (runtime-array-t? t) (binding-array-t? t)))
 
 ;; A local's name: valid, and not hiding a function, constant, struct or global
 (define (local-name stx ctx)
@@ -954,7 +980,17 @@
       [(t-global 'binding name _ _ _) name]
       [(or (t-field b _ _ _) (t-index b _ _ _) (t-swizzle b _ _ _)) (root b)]
       [_ #f]))
-  (let walk ([e e])
+  ;; The binding an image or texture is, or is an element of
+  (define (opaque-root e)
+    (match e
+      [(t-global 'binding name _ (opaque-t _) _) name]
+      [(t-index (t-global 'binding name _ (binding-array-t (opaque-t _)) _) _ _ _) name]
+      [_ #f]))
+  (define (walk-indices e)
+    (match e
+      [(t-index _ i _ _) (walk i)]
+      [_ (void)]))
+  (define (walk e)
     (match e
       [(t-global 'binding name _ _ _) (note! name 'read)]
       [(t-write place value _)
@@ -978,17 +1014,20 @@
            [(t-field b _ _ _) (walk-place b)]
            [_ (void)]))
        (for-each walk args)]
-      [(t-store (t-global 'binding name _ _ _) texel value _)
-       (note! name 'write)
+      [(t-store image texel value _)
+       (match (opaque-root image)
+         [#f (walk image)]
+         [name (note! name 'write) (walk-indices image)])
        (walk texel)
        (walk value)]
       [(t-user-call f args _ _)
        (for ([a (in-list args)] [summary (in-list (hash-ref summaries f))])
-         (match a
-           [(t-global 'binding name _ (opaque-t _) _)
-            (for ([access (in-set summary)]) (note! name access))]
-           [_ (walk a)]))]
+         (match (opaque-root a)
+           [#f (walk a)]
+           [name (for ([access (in-set summary)]) (note! name access))
+                 (walk-indices a)]))]
       [_ (for-each walk (texpr-children e))]))
+  (walk e)
   accesses)
 
 ;; The accesses of a function's opaque parameters, by position (sets of 'read and 'write)

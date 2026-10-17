@@ -84,6 +84,7 @@
     [(t-op 'negate (list a) _ _) (format "-~a" (operand a))]
     [(t-op 'not (list a) _ _) (format "!~a" (operand a))]
     [(t-op 'bitnot (list a) _ _) (format "~~~a" (operand a))]
+    [(t-op 'array-length (list (t-global _ name _ _ _)) _ _) (format "zgalLength_~a()" name)]
     [(t-op op as _ _) (string-join (map operand as) (format " ~a " (hash-ref glsl-operators op)))]
     [(t-construct as (struct-t d) _)
      (if (eq? dialect 'glsl)
@@ -108,6 +109,8 @@
          ;; GLM has no swizzles without GLM_FORCE_SWIZZLE: build the vector
          (format "~a(~a)" (spell-type (texpr-type e) dialect)
                  (string-join (for/list ([c (in-string comps)]) (format "~a.~a" (operand b) c)) ", ")))]
+    ;; An array binding's element: its accessor takes the index
+    [(t-index (t-global 'binding name _ (binding-array-t _) _) i _ _) (format "~a(~a)" name (p i))]
     [(t-index b i _ _) (format "~a[~a]" (operand b) (p i))]
     [(t-if c a b _ _) (format "~a ? ~a : ~a" (operand c) (operand a) (operand b))]
     [(t-store i texel v _) (format "imageStore(~a, ~a, ~a)" (p i) (p texel) (p v))]

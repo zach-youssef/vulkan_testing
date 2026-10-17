@@ -35,7 +35,7 @@
                    " | ")))
 
 (define (access-enum b)
-  (match* ((binding-kind b) (binding-access b))
+  (match* ((binding-resource-kind b) (binding-access b))
     [((or 'texture 'sampler) _) "Access::SampledRead"]
     [('storage-image 'read) "Access::StorageRead"]
     [('storage-image 'write) "Access::StorageWrite"]
@@ -45,8 +45,9 @@
     [(_ 'read-write) "Access::StorageBufferReadWrite"]))
 
 
+;; The type of b's entries (an array's elements')
 (define (descriptor-type b)
-  (case (binding-kind b)
+  (case (binding-resource-kind b)
     [(texture) "DescriptorType::SampledImage"]
     [(sampler) "DescriptorType::Sampler"]
     [(storage-image) "DescriptorType::StorageImage"]
@@ -54,12 +55,14 @@
 
 ;; The binding as declared, for comments
 (define (describe-binding b)
-  (define kind
-    (match (binding-kind b)
+  (define (describe-kind kind element access)
+    (match kind
       ['texture "texture"]
       ['sampler "sampler"]
-      ['storage-image (format "(storage-image ~a)" (binding-access b))]
-      [k (format "(~a ~a ~a)" k (type-name (binding-element b)) (binding-access b))]))
+      ['storage-image (format "(storage-image ~a)" access)]
+      ['array (format "(array ~a)" (describe-kind (binding-kind element) (binding-element element) access))]
+      [k (format "(~a ~a ~a)" k (type-name element) access)]))
+  (define kind (describe-kind (binding-kind b) (binding-element b) (binding-access b)))
   (if (null? (binding-stages b))
       kind
       (format "~a, ~a shader" kind (string-join (map symbol->string (binding-stages b)) " and "))))
@@ -143,10 +146,12 @@
 
   ;; Bindings
   (unless (null? bindings)
-    (gen "    // The descriptor entries the shaders use. Their indices are pushed in this order.")
+    (gen "    // The descriptor entries the shaders use (an array's: DescriptorArray::create). Their")
+    (gen "    // indices are pushed in this order.")
     (gen "    struct Bindings {")
     (for ([b (in-list bindings)])
-      (emit! w (format "        FrameBinding<DescriptorEntry> ~a;   // ~a" (binding-name b) (describe-binding b))
+      (emit! w (format "        ~a ~a;   // ~a" (if (eq? (binding-kind b) 'array) "Handle<DescriptorArray>" "FrameBinding<DescriptorEntry>")
+                       (binding-name b) (describe-binding b))
              #:at (binding-loc b)))
     (gen "    };")
     (gen ""))
@@ -309,8 +314,11 @@
       (gen (format "        requireBound(bindings.~a, ~a);" (binding-name b) (cpp-string (binding-name b)))))
     (gen "        return {")
     (for ([b (in-list bindings)])
-      (emit! w (format "            MaterialBinding{std::move(bindings.~a), ~a, ~a}," (binding-name b) (access-enum b)
-                       (stage-flags (binding-stages b)))
+      (emit! w (if (eq? (binding-kind b) 'array)
+                   (format "            MaterialBinding::array(std::move(bindings.~a), ~a, ~a)," (binding-name b) (access-enum b)
+                           (stage-flags (binding-stages b)))
+                   (format "            MaterialBinding{std::move(bindings.~a), ~a, ~a}," (binding-name b) (access-enum b)
+                           (stage-flags (binding-stages b))))
              #:at (binding-loc b)))
     (gen "        };")
     (gen "    }")
@@ -322,6 +330,14 @@
     (gen "        }")
     (gen "    }")
     (gen "")
+    (when (ormap (λ (b) (eq? (binding-kind b) 'array)) bindings)
+      (gen "    static void requireBound(const Handle<DescriptorArray>& binding, const char* name) {")
+      (gen "        if (!binding) {")
+      (gen (format "            contractViolation(std::string(~a) + name + \"' has no DescriptorArray\");"
+                   (cpp-string (format "~a's binding '" name))))
+      (gen "        }")
+      (gen "    }")
+      (gen ""))
     (gen "    // A binding given an entry of the wrong kind would index the wrong descriptor array")
     (gen "    void checkDescriptorTypes(uint32_t frameIndex) {")
     (gen (format "        static constexpr DescriptorType kTypes[] = {~a};"
@@ -329,11 +345,19 @@
     (gen (format "        static constexpr const char* kNames[] = {~a};"
                  (string-join (map (λ (b) (cpp-string (binding-name b))) bindings) ", ")))
     (gen "        for (size_t i = 0; i < bindings().size(); ++i) {")
-    (gen "            auto entry = bindings()[i].entry.get(frameIndex);")
-    (gen "            if (entry && entry->type() != kTypes[i]) {")
-    (gen (format "                contractViolation(std::string(~a) + kNames[i] + \"' needs a \" + descriptorTypeName(kTypes[i])"
+    (gen "            const auto& binding = bindings()[i];")
+    (gen "            // An array's elements")
+    (gen "            std::vector<FrameBinding<DescriptorEntry>> entries{binding.entry};")
+    (gen "            if (binding.descriptorArray) {")
+    (gen "                entries = binding.descriptorArray->elements();")
+    (gen "            }")
+    (gen "            for (const auto& element : entries) {")
+    (gen "                auto entry = element.get(frameIndex);")
+    (gen "                if (entry && entry->type() != kTypes[i]) {")
+    (gen (format "                    contractViolation(std::string(~a) + kNames[i] + \"' needs a \" + descriptorTypeName(kTypes[i])"
                  (cpp-string (format "~a's binding '" name))))
-    (gen "                                  + \" entry, but was given a \" + descriptorTypeName(entry->type()) + \" entry\");")
+    (gen "                                      + \" entry, but was given a \" + descriptorTypeName(entry->type()) + \" entry\");")
+    (gen "                }")
     (gen "            }")
     (gen "        }")
     (gen "    }")

@@ -138,7 +138,7 @@
 (define (graph-input-members g)
   (define name (graph-name g))
   (for/list ([item (in-list (graph-items g))]
-             #:when (or (g-parameter? item) (g-input? item) (g-import? item) (g-import-buffer? item)))
+             #:when (or (g-parameter? item) (g-input? item) (g-import? item) (g-import-images? item) (g-import-buffer? item)))
     (cons item
           (match item
             [(g-parameter n t _) (format "~a ~a{};" (value-cpp-type t) n)]
@@ -152,6 +152,7 @@
                        ['extern (format "zgal::ExternNodes<~a>" name)])
                      n)]
             [(g-import n resting _) (format "FrameBinding<Image> ~a;   // Imported, resting ~a" n (symbol->string resting))]
+            [(g-import-images n resting _) (format "std::vector<FrameBinding<Image>> ~a;   // Imported, resting ~a" n (symbol->string resting))]
             [(g-import-buffer n t _) (format "FrameBinding<Buffer<~a>> ~a;   // Imported" (cpp-type t) n)]))))
 
 (define (emit-graph! w prog g)
@@ -182,6 +183,7 @@
   (define parameters (of-type g-parameter?))
   (define inputs (of-type g-input?))
   (define imports (of-type g-import?))
+  (define image-sets (of-type g-import-images?))
   (define buffer-imports (of-type g-import-buffer?))
   (define uploads (of-type g-upload?))
   (define images (of-type g-image?))
@@ -209,6 +211,7 @@
   (define (id-type base conditional?) (if conditional? (format "std::optional<~a>" base) base))
   (id-struct "Images"
              (append (for/list ([i (in-list imports)]) (list "ImageId" (g-import-name i) i))
+                     (for/list ([i (in-list image-sets)]) (list "std::vector<ImageId>" (g-import-images-name i) i))
                      (for/list ([i (in-list images)]) (list (id-type "ImageId" (g-image-when i)) (g-image-name i) i))))
   (id-struct "Buffers"
              (append (for/list ([b (in-list buffer-imports)]) (list "BufferId" (g-import-buffer-name b) b))
@@ -219,7 +222,7 @@
                ;; An extern node is the nodes C++ adds (none when its condition is false)
                (list (if (eq? (g-node-kind n) 'extern) "std::vector<NodeId>" (id-type "NodeId" (g-node-when n)))
                      (g-node-name n) n)))
-  (unless (and (null? imports) (null? images)) (gen "    Images images;"))
+  (unless (and (null? imports) (null? image-sets) (null? images)) (gen "    Images images;"))
   ;; Readbacks' results, typed
   (define readbacks (filter (λ (n) (eq? (g-node-kind n) 'readback)) nodes))
   (unless (null? readbacks)
@@ -272,6 +275,19 @@
     (at i (format "        const ImageId image_~a = graph.importImage(~a, in->~a, ~a);" (g-import-name i)
                   (cpp-string (g-import-name i)) (g-import-name i) (resting-state (g-import-resting i))))
     (gen (format "        result.images.~a = image_~a;" (g-import-name i) (g-import-name i))))
+  ;; Imported sets of images, each imported
+  (for ([i (in-list image-sets)])
+    (define n (g-import-images-name i))
+    (at i (format "        std::vector<ImageId> images_~a;" n))
+    (at i (format "        for (size_t i = 0; i < in->~a.size(); ++i) {" n))
+    (at i (format "            if (!in->~a[i].isPerFrame() && !in->~a[i].shared()) {" n n))
+    (at i (format "                contractViolation(~a + std::to_string(i) + \" isn't given\");"
+                  (cpp-string (format "~a's imported image ~a " name n))))
+    (at i "            }")
+    (at i (format "            images_~a.push_back(graph.importImage(~a + std::to_string(i), in->~a[i], ~a));" n
+                  (cpp-string (format "~a " n)) n (resting-state (g-import-images-resting i))))
+    (at i "        }")
+    (gen (format "        result.images.~a = images_~a;" n n)))
   ;; Imported buffers
   (for ([i (in-list buffer-imports)])
     (define n (g-import-buffer-name i))
@@ -371,20 +387,46 @@
     (define instance (g-material-name mi))
     (define graphics? (eq? (material-kind m) 'graphics))
     (define (line text) (emit! w text #:at (g-material-loc mi)))
+    ;; The uniforms it binds (alone or in arrays) are written before it records
+    (define bound
+      (remove-duplicates
+       (append-map (λ (pair) (match (cdr pair) [(list rs ...) rs] [r (list r)])) (g-material-bindings mi))))
     (define updates
-      (for/list ([pair (in-list (g-material-bindings mi))]
-                 #:when (eq? (entry-kind (hash-ref env (cdr pair))) 'uniform))
-        (format "[uniform = uniform_~a](const zgal::FrameInfo& frame) { uniform->update(frame); }" (cdr pair))))
+      (for/list ([r (in-list bound)] #:when (eq? (entry-kind (hash-ref env r)) 'uniform))
+        (format "[uniform = uniform_~a](const zgal::FrameInfo& frame) { uniform->update(frame); }" r)))
+    ;; The entry of a resource for a binding of kind
+    (define (entry-of kind resource)
+      (match* (kind (entry-kind (hash-ref env resource)))
+        [('texture _) (format "graph.sampledEntry(~a)" (resource-ref resource))]
+        [('storage-image _) (format "graph.storageEntry(~a)" (resource-ref resource))]
+        [('sampler _) (format "context.descriptors().sampler(sampler_~a)" resource)]
+        [(_ 'uniform) (format "uniform_~a->entries()" resource)]
+        [(_ (or 'buffer 'import-buffer 'upload)) (format "graph.storageBufferEntry(~a)" (resource-ref resource))]))
     (define entries
       (for/list ([pair (in-list (g-material-bindings mi))])
         (match-define (cons b resource) pair)
         (format ".~a = ~a" (binding-name b)
-                (match* ((binding-kind b) (entry-kind (hash-ref env resource)))
-                  [('texture _) (format "graph.sampledEntry(~a)" (resource-ref resource))]
-                  [('storage-image _) (format "graph.storageEntry(~a)" (resource-ref resource))]
-                  [('sampler _) (format "context.descriptors().sampler(sampler_~a)" resource)]
-                  [(_ 'uniform) (format "uniform_~a->entries()" resource)]
-                  [(_ (or 'buffer 'import-buffer 'upload)) (format "graph.storageBufferEntry(~a)" (resource-ref resource))]))))
+                (if (eq? (binding-kind b) 'array)
+                    (format "array_~a_~a" instance (binding-name b))
+                    (entry-of (binding-kind b) resource)))))
+    ;; Arrays' entries
+    (for ([pair (in-list (g-material-bindings mi))] #:when (eq? (binding-kind (car pair)) 'array))
+      (match-define (cons b resource) pair)
+      (define kind (binding-resource-kind b))
+      (define variable (format "array_~a_~a" instance (binding-name b)))
+      (cond
+        [(list? resource)
+         (line (format "        TRY_ASSIGN(auto ~a, DescriptorArray::create(context, {~a}));" variable
+                       (string-join (for/list ([r (in-list resource)]) (entry-of kind r)) ", ")))]
+        [else
+         ;; Imported images: as many as C++ gives
+         (line (format "        std::vector<FrameBinding<DescriptorEntry>> elements_~a_~a;" instance (binding-name b)))
+         (line (format "        for (const ImageId image : images_~a) {" resource))
+         (line (format "            elements_~a_~a.push_back(graph.~a(image));" instance (binding-name b)
+                       (if (eq? kind 'texture) "sampledEntry" "storageEntry")))
+         (line "        }")
+         (line (format "        TRY_ASSIGN(auto ~a, DescriptorArray::create(context, std::move(elements_~a_~a)));"
+                       variable instance (binding-name b)))]))
     (define target
       (for/first ([n (in-list nodes)] #:when (and (equal? (g-node-material n) instance) (g-node-target n)))
         (g-node-target n)))
@@ -501,6 +543,6 @@
 
 (define (item-loc item)
   (match item
-    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
+    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
     [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ l) l]))

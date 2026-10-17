@@ -233,12 +233,12 @@
              [(entry kind _ _)
               (zgal-error 'type-mismatch n "~a is ~a, which C++ gives (through the app's inputs); apps compute parameters and per-frame inputs"
                           input (case kind [(meshes) "a meshes input"] [(cpu) "a cpu input"] [(extern) "an extern input"]
-                                  [(import import-buffer) "an imported resource"] [(data) "a data input"] [else "not an input"]))]))
+                                  [(import import-images import-buffer) "an imported resource"] [(data) "a data input"] [else "not an input"]))]))
          (cons input (cpu-only e))]
         [_ (zgal-error 'malformed b "expected (input expression)")])))
   ;; What the app doesn't compute, C++ gives: they're the app's inputs too
   (for ([item (in-list (graph-items g))]
-        #:when (or (g-parameter? item) (g-input? item) (g-import? item) (g-import-buffer? item))
+        #:when (or (g-parameter? item) (g-input? item) (g-import? item) (g-import-images? item) (g-import-buffer? item))
         #:unless (hash-ref bound (graph-item-name item) #f))
     (names (graph-item-name item) stx))
   (define enables

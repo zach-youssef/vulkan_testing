@@ -69,7 +69,7 @@
 (define (material-integer-widths m prog)
   (widths-of
    (append
-    (for/list ([b (in-list (material-bindings m))] #:when (binding-element b)) (binding-element b))
+    (for/list ([b (in-list (material-bindings m))] #:when (binding-buffer-type b)) (binding-buffer-type b))
     (map field-type (material-shared m))
     (append-map declaration-types (material-declarations m prog))
     (append-map (λ (sb) (texpr-types (cdr sb))) (material-bodies m prog)))))

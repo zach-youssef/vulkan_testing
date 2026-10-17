@@ -192,6 +192,21 @@
      (discard!))
    (vec4 coverage (dFdxFine coverage.x) 1.0)))
 
+;; Arrays of bindings: textures, uniforms' values and storage images chosen per invocation, through
+;; let* aliases, and written through an element
+(compute-material Pick
+  (workgroup 8 8)
+  (bindings
+   (decals (array texture))
+   (settings (array (buffer Lights)))
+   (targets (array (storage-image))))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)]
+          [which (remainder globalInvocationId.x (array-length decals))]
+          [decal (at decals which)]
+          [target (at targets (remainder which (array-length targets)))])
+     (store! target texel (vec4 (float (.x (texture-size decal 0))) (float (.count (at settings 0))) 0.0 1.0)))))
+
 ;; Every graph item, node and option
 (graph Everything
   (parameter enabled bool)
@@ -242,6 +257,9 @@
   (buffer packedCopy Packed 64 #:frames shared)
   (buffer totalBuffer uint 1 #:frames shared)
   (material reduce Reduce (packed packedCopy) (total totalBuffer) #:invocations (64))
+  ;; Array bindings: lists of resources (a uniform among them), and imported images
+  (import-images decals #:resting shader-read-only)
+  (material pick Pick decals (settings (lightBuffer lightBuffer)) (targets (maskImage copy)) #:invocations (8 8))
   (draw-meshes drawSurface scene meshes surface #:enabled enabled)
   (dispatch accumulate accumulate #:when (>= count 2))
   (draw drawPlain screen plain (* 3 size))
@@ -251,6 +269,7 @@
   (copy copyAll packedInput packedCopy)
   (copy copySome staging packedCopy #:count 32 #:source-offset 1 #:destination-offset (uint count) #:enabled enabled)
   (dispatch reduce reduce)
+  (dispatch pick pick #:when enabled)
   (extern customNodes custom #:when enabled)
   ;; Data in and out: a clear, a buffer copied into an image, and readbacks of buffers
   (clear clearTotal totalBuffer #:value (count seeds))

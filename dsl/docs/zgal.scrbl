@@ -367,13 +367,14 @@ ZGAL
 @subsection[#:tag "bindings"]{Bindings}
 
 @racketgrammar*[
- #:literals (texture sampler storage-image buffer buffer-array read write read-write vertex fragment)
+ #:literals (texture sampler storage-image buffer buffer-array array read write read-write vertex fragment)
  [binding (name kind) (name kind #:stages (stage ...+))]
  [kind texture
        sampler
        (storage-image maybe-access)
        (buffer type maybe-access)
-       (buffer-array type maybe-access)]
+       (buffer-array type maybe-access)
+       (array kind)]
  [maybe-access (code:line) access]
  [access read write read-write]
  [stage vertex fragment]]
@@ -411,6 +412,34 @@ with just those. With ZGAL bodies they're inferred; with GLSL ones they default 
 aren't synchronized and compute bindings are always used by the compute stage, so neither takes
 @racket[#:stages].
 
+@subsubsection[#:tag "arrays"]{Arrays of bindings}
+
+@racket[(array kind)] is a binding holding any number of entries of another kind (but samplers),
+which shaders choose between: e.g. a set of textures, or the buffers of several meshes. Push
+constants can't hold many indices, so C++ gives an array as a @tt{DescriptorArray}
+(@tt{include/descriptors/DescriptorArray.h}), which keeps the entries' indices in a small buffer
+per frame in flight (the count, then each index) and rewrites it when they change; the material
+pushes that buffer's index. Bodies choose an element with @racket[(at binding i)], which different
+invocations can choose differently (the index is @tt{nonuniformEXT}), and @racket[(array-length
+binding)] is how many there are. The elements share the array's access, and a graph's node using
+the material uses every element.
+
+@(zgal-example
+  (string-append
+   "(compute-material Gather\n"
+   "  (workgroup 64)\n"
+   "  (bindings\n"
+   "   (layers (array texture))\n"
+   "   (counts (array (buffer-array uint)))\n"
+   "   (widths (buffer-array uint)))\n"
+   "  (compute\n"
+   "   (let* ([i globalInvocationId.x])\n"
+   "     (when (< i (array-length layers))\n"
+   "       (let* ([layer (at layers i)])\n"
+   "         (write! (at widths i) (+ (uint (.x (texture-size layer 0))) (at (at counts i) 0))))))))\n")
+  #:show '("Gather.comp")
+  #:from #rx"#define layers" #:to #rx"zgalLength_counts")
+
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "bodies"]{Shader bodies}
 
@@ -438,8 +467,9 @@ A body's last expression (e.g. inside @racket[let*] and @racket[if]) gives its r
 A body names, besides its own locals:
 @itemlist[
  @item{the material's bindings: a texture is a @tt{texture2D}, a sampler a @tt{sampler}, a storage
-       image an @tt{image2D}, a @tt{buffer} binding its value, and a @tt{buffer-array} binding an
-       array of its element type;}
+       image an @tt{image2D}, a @tt{buffer} binding its value, a @tt{buffer-array} binding an
+       array of its element type, and an @racket[array] binding elements of its kind, chosen with
+       @racket[at] (@secref["arrays"]);}
  @item{its push constants, by name;}
  @item{in a compute shader, its shared variables, by name;}
  @item{in a vertex shader, its @racket[vertex-input]'s attributes, by name;}
@@ -458,7 +488,7 @@ Fields and swizzles follow names after dots: @tt{scene.lightDirection}, @tt{albe
 @subsection[#:tag "body-expressions"]{Expressions}
 
 @racketgrammar*[
- #:literals (let* if cond else when unless begin fold sum for while range values with at results)
+ #:literals (let* if cond else when unless begin fold sum for while range values with at array-length results)
  [expression literal
              name
              (.field expression)
@@ -476,6 +506,7 @@ Fields and swizzles follow names after dots: @tt{scene.lightDirection}, @tt{albe
              (values expression ...+)
              (with struct #:field value ...)
              (at array-or-vector index)
+             (array-length array-binding)
              (results #:name expression ...)
              (operator expression ...)
              (constructor expression ...)
@@ -502,7 +533,9 @@ Fields and swizzles follow names after dots: @tt{scene.lightDirection}, @tt{albe
        @racket[(uint8 x)], @racket[(int8 x)], @racket[(uint16 x)] and @racket[(int16 x)], which
        narrow a value to write it (@secref["small-integers"]).}
  @item{@bold{Binding}: @racket[let*] binds in order; @racket[[(a b) e]] binds the values of a
-       @racket[fold] with several accumulators (or of @racket[values]).}
+       @racket[fold] with several accumulators (or of @racket[values]). A name bound to a texture,
+       image or buffer array (e.g. @racket[[layer (at layers i)]]) stands for it: GLSL has no
+       variables holding them.}
  @item{@bold{Loops}: @racket[fold] starts its accumulators at their initial values, and for each
        value of the ranges (nested, the first outermost; @racket[(range from to step)] goes from
        @tt{from} up to, and not including, @tt{to}, by @tt{step}, 1 by default) computes their new
@@ -779,7 +812,7 @@ Its app (@secref["apps"]) computes the uniforms, shadows and exposure from its s
 and C++ supplies the meshes.
 
 @racketgrammar*[
- #:literals (graph parameter input per-frame data meshes cpu extern import-image import-buffer upload
+ #:literals (graph parameter input per-frame data meshes cpu extern import-image import-images import-buffer upload
              constant sampler uniform image buffer target surface attachments if color depth material
              dispatch draw-meshes draw readback copy clear fixed extent-of)
  [graph-form (graph Name graph-item ...)]
@@ -790,6 +823,7 @@ and C++ supplies the meshes.
              (input name extern)
              (input name (data type))
              (import-image name #:resting resting-state)
+             (import-images name #:resting resting-state)
              (import-buffer name type)
              (upload name data-input)
              (constant name expression)
@@ -840,6 +874,7 @@ C++ passes them to @tt{build()} in an @tt{Inputs} struct, by name:
   (list @tt{(input n extern)} @tt{zgal::ExternNodes<Graph>} @elem{a function adding an @racket[extern] node's nodes (@secref["extern"])})
   (list @tt{(input n (data T))} @tt{std::vector<T>} @elem{elements an @racket[upload] puts in a buffer when the graph is built, e.g. a model or a data structure the CPU computed})
   (list @tt{(import-image n #:resting s)} @tt{FrameBinding<Image>} "an image the application owns, returned to its resting state (shader-read-only, general or transfer-src) after each frame")
+  (list @tt{(import-images n #:resting s)} @tt{std::vector<FrameBinding<Image>>} @elem{images the application owns, as many as it gives, imported one by one, for an @racket[array] binding (@secref["arrays"]): e.g. textures loaded from files})
   (list @tt{(import-buffer n T)} @tt{FrameBinding<Buffer<T>>} "a buffer the application owns (and fills, maps or reads), with the usage its uses need, one or one per frame"))]
 
 @tt{zgal::FrameInfo} (@tt{include/zgal/Runtime.h}) gives the frame's index (into per-frame
@@ -924,7 +959,9 @@ A graph's @racket[material] instantiates a material of the file, giving a resour
 bindings, either @tt{(binding resource)} or just @tt{binding} for a resource of the same name. A
 texture or storage image binding takes an image, a sampler binding a sampler, a @tt{buffer} binding
 a uniform or (graph or imported) buffer of its type, and a @tt{buffer-array} binding a buffer of its
-element type. Its
+element type. An @racket[array] binding takes a list of resources of its elements' kind,
+@tt{(layers (albedo normals albedo))}, or (for arrays of images) imported images, and the graph
+makes its @tt{DescriptorArray}. Its
 options are
 @itemlist[
  @item{@tt{#:push ((field expression) ...)}: a value for every push constant;}

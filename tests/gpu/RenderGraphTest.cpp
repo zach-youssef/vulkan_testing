@@ -47,6 +47,20 @@ private:
     uint32_t height_;
 };
 
+// Dispatches a shader a fixed number of workgroups
+class FixedComputeMaterial : public ComputeMaterial {
+public:
+    FixedComputeMaterial(VulkanContext& context, std::vector<MaterialBinding> bindings, Handle<Shader> shader, glm::vec3 groups)
+    : ComputeMaterial(context, std::move(bindings), std::move(shader)), groups_(groups) {}
+
+    void update(uint32_t, VkExtent2D) override {}
+
+    glm::vec3 getDispatchDimensions() override { return groups_; }
+
+private:
+    glm::vec3 groups_;
+};
+
 constexpr uint32_t kWidth = 64;
 constexpr uint32_t kHeight = 32;
 
@@ -428,6 +442,55 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph recreates buffers sized each frame when 
     // Replaced buffers are destroyed once the frames using them finish
     ctx.waitIdleAll();
     ctx.collectRetired();
+}
+
+TEST_CASE_FIXTURE(GpuTest, "Materials bind arrays of entries, whose elements a node uses") {
+    auto& ctx = context();
+    {
+        RenderGraph graph(ctx);
+        // Graph buffers only the array reads: their usage and order come from its uses
+        std::vector<BufferId> sources;
+        std::vector<FrameBinding<DescriptorEntry>> elements;
+        for (uint32_t i = 0; i < 2; ++i) {
+            sources.push_back(graph.createBuffer("source" + std::to_string(i), FrameMode::Shared, sizeof(uint32_t)));
+            elements.push_back(graph.storageBufferEntry(sources.back()));
+        }
+        // An element can repeat
+        elements.push_back(elements[0]);
+        BufferId target = graph.createBuffer("target", FrameMode::Shared, 3 * sizeof(uint32_t));
+        for (uint32_t i = 0; i < 2; ++i) {
+            graph.addTransfer("fill" + std::to_string(i), [source = sources[i]](NodeBuilder& builder) {
+                builder.write(source, Access::TransferDst);
+            }, [source = sources[i], value = i + 1](RecordContext& record) {
+                vkCmdFillBuffer(record.commandBuffer, record.graph.buffer(source, record.frameIndex), 0, VK_WHOLE_SIZE, value);
+            });
+        }
+        auto array = DescriptorArray::create(ctx, elements).value();
+        auto material = ctx.resources().create<FixedComputeMaterial>(ctx, std::vector<MaterialBinding>{
+            MaterialBinding::array(array, Access::StorageBufferRead),
+            MaterialBinding::storageBuffer(graph.storageBufferEntry(target), Access::StorageBufferWrite),
+        }, testShader(ctx, "descriptor_array.comp"), glm::vec3{1, 1, 1});
+        graph.add<DispatchNode>("read", material);
+        NodeId readback = graph.add<BufferReadbackNode>("readback", target);
+
+        graph.execute().value();
+        CHECK(graph.nodeAs<BufferReadbackNode>(readback).contents<uint32_t>().value() == std::vector<uint32_t>{301, 302, 301});
+        // The indices are written once per frame slot, and again only when they change
+        for (uint32_t frame = 0; frame < 2 * ctx.framesInFlight(); ++frame) {
+            graph.execute().value();
+        }
+        CHECK(array->writes() == ctx.framesInFlight());
+        CHECK(graph.nodeAs<BufferReadbackNode>(readback).contents<uint32_t>().value() == std::vector<uint32_t>{301, 302, 301});
+        ctx.waitIdleAll();
+    }
+    {
+        // An empty array holds a count of 0
+        auto array = DescriptorArray::create(ctx, {}).value();
+        CHECK(array->size() == 0);
+        array->update(0);
+        CHECK(array->writes() == 1);
+    }
+    CHECK_THROWS_AS((void)MaterialBinding::array(nullptr, Access::SampledRead), ContractViolation);
 }
 
 TEST_CASE_FIXTURE(GpuTest, "Materials update after the CPU nodes ordered before their nodes") {

@@ -171,6 +171,10 @@ public:
         features.vulkan12.timelineSemaphore = VK_TRUE;
         features.vulkan12.descriptorIndexing = VK_TRUE;
         features.vulkan12.runtimeDescriptorArray = VK_TRUE;
+        // Shaders choosing among descriptors per invocation (e.g. through a DescriptorArray)
+        features.vulkan12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        features.vulkan12.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
+        features.vulkan12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
         features.vulkan12.descriptorBindingPartiallyBound = VK_TRUE;
         features.vulkan12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
         features.vulkan12.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;

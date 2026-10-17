@@ -30,6 +30,9 @@
 ;; nothing), and several values (from a fold with several accumulators)
 (struct opaque-t (kind) #:transparent)
 (struct runtime-array-t (element) #:transparent)
+;; An array binding: its elements' type (a texture, storage image, buffer's value or buffer-array's
+;; array), chosen with `at`
+(struct binding-array-t (element) #:transparent)
 (struct void-t () #:transparent)
 (struct values-t (types) #:transparent)
 
@@ -42,8 +45,9 @@
 ;; name: its file name, which the shader library finds it by. stage: 'vertex 'fragment 'compute.
 (struct shader (path name stage loc) #:transparent)
 
-;; kind: 'texture 'sampler 'storage-image 'buffer 'buffer-array
-;; element: the type a buffer holds (or holds an array of), else #f
+;; kind: 'texture 'sampler 'storage-image 'buffer 'buffer-array, or 'array: an array of entries
+;; element: the type a buffer holds (or holds an array of), an array's element (a binding whose
+;; kind is one of the others, but sampler), else #f
 ;; access: 'read 'write 'read-write, or #f for textures and samplers
 ;; stages: the stages using it (a subset of the material's), or '() for all of them
 (struct binding (name kind element access stages loc) #:transparent)
@@ -116,8 +120,18 @@
     [(struct-t d) (struct-decl-name d)]
     [(opaque-t k) (symbol->string k)]
     [(runtime-array-t e) (format "(array ~a)" (type-name e))]
+    [(binding-array-t e) (format "an array of ~a" (type-name e))]
     [(void-t) "void"]
     [(values-t ts) (format "(values ~a)" (string-join (map type-name ts) " "))]))
+
+;; The kind of b's resources: its kind, or for an array its elements'
+(define (binding-resource-kind b)
+  (if (eq? (binding-kind b) 'array) (binding-kind (binding-element b)) (binding-kind b)))
+
+;; The type b's buffers hold (or hold arrays of), for buffer kinds and arrays of them, else #f
+(define (binding-buffer-type b)
+  (and (memq (binding-resource-kind b) '(buffer buffer-array))
+       (if (eq? (binding-kind b) 'array) (binding-element (binding-element b)) (binding-element b))))
 
 (define (material-shader m stage)
   (for/first ([s (in-list (material-shaders m))] #:when (eq? (shader-stage s) stage)) s))
@@ -125,7 +139,7 @@
 ;; Whether the material's shaders may write storage buffers (then no buffer block is readonly)
 (define (material-writes-buffers? m)
   (for/or ([b (in-list (material-bindings m))])
-    (and (memq (binding-kind b) '(buffer buffer-array))
+    (and (memq (binding-resource-kind b) '(buffer buffer-array))
          (memq (binding-access b) '(write read-write))
          #t)))
 
@@ -148,6 +162,8 @@
 (struct g-input (name kind type loc) #:transparent)
 ;; resting: 'shader-read-only, 'general or 'transfer-src
 (struct g-import (name resting loc) #:transparent)
+;; Images the application owns, however many it gives, for array bindings
+(struct g-import-images (name resting loc) #:transparent)
 ;; A buffer the application owns, holding elements of type
 (struct g-import-buffer (name type loc) #:transparent)
 ;; A device-local buffer holding a data input's elements, uploaded when the graph is built
@@ -168,8 +184,9 @@
 (struct t-attachment (image load store clear loc) #:transparent) ; clear: a list of 4 reals, or a real
 (struct t-surface (clear depth loc) #:transparent)              ; depth: a format symbol or 'none
 (struct t-target-if (condition then else loc) #:transparent)
-;; An instance of a material declared in the file. bindings: (cons binding resource-name) in the
-;; material's order. push: (cons field expression) in the material's order. options: an
+;; An instance of a material declared in the file. bindings: (cons binding resource) in the
+;; material's order, where resource is a name, or for an array binding a list of names or the name
+;; of imported images. push: (cons field expression) in the material's order. options: an
 ;; association list of pipeline options. invocations: expressions (compute) or #f.
 (struct g-material (name material bindings push options invocations loc) #:transparent)
 ;; kind: 'dispatch 'draw-meshes 'draw 'readback 'cpu 'copy 'clear 'extern. target, material,
@@ -183,6 +200,6 @@
 ;; The declaration of a graph-level name
 (define (graph-item-name item)
   (match item
-    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-import-buffer n _ _) n] [(g-upload n _ _ _) n] [(g-constant n _ _ _) n]
+    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-import-images n _ _) n] [(g-import-buffer n _ _) n] [(g-upload n _ _ _) n] [(g-constant n _ _ _) n]
     [(g-sampler n _ _) n] [(g-uniform n _ _ _) n] [(g-image n _ _ _ _ _) n] [(g-buffer n _ _ _ _ _) n]
     [(g-target n _ _) n] [(g-material n _ _ _ _ _ _) n]))

@@ -148,3 +148,19 @@ private:
     std::unique_ptr<VulkanBuffer> buffer_;
     std::unique_ptr<VulkanMemory> memory_;
 };
+
+// Memory the CPU writes and shaders read: device local where the device can also map it (all
+// memory on unified memory architectures such as Apple's, and resizable BAR on discrete GPUs), so
+// shaders read video memory rather than across the bus; otherwise host memory
+inline VkMemoryPropertyFlags mappedMemoryFor(VulkanContext& context) {
+    constexpr VkMemoryPropertyFlags mapped = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    VkPhysicalDeviceMemoryProperties properties;
+    vkGetPhysicalDeviceMemoryProperties(context.physicalDevice(), &properties);
+    for (uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
+        const VkMemoryPropertyFlags flags = properties.memoryTypes[i].propertyFlags;
+        if ((flags & (mapped | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) == (mapped | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            return mapped | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        }
+    }
+    return mapped;
+}

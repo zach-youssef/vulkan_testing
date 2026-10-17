@@ -414,17 +414,16 @@
       (when (hash-ref globals name #f)
         (zgal-error 'duplicate-name where "~a names two things in material ~a's ~a shader" name material-name stage))
       (hash-set! globals name g))
+    (define (binding-type b)
+      (case (binding-kind b)
+        [(texture) (opaque-t 'texture2D)]
+        [(sampler) (opaque-t 'sampler)]
+        [(storage-image) (opaque-t 'image2D)]
+        [(buffer) (binding-element b)]
+        [(buffer-array) (runtime-array-t (binding-element b))]
+        [(array) (binding-array-t (binding-type (binding-element b)))]))
     (for ([b (in-list bindings)])
-      (global! (binding-name b)
-               (global 'binding (binding-name b) (binding-name b)
-                       (case (binding-kind b)
-                         [(texture) (opaque-t 'texture2D)]
-                         [(sampler) (opaque-t 'sampler)]
-                         [(storage-image) (opaque-t 'image2D)]
-                         [(buffer) (binding-element b)]
-                         [(buffer-array) (runtime-array-t (binding-element b))])
-                       b)
-               stx))
+      (global! (binding-name b) (global 'binding (binding-name b) (binding-name b) (binding-type b) b) stx))
     (for ([f (in-list push)])
       (global! (field-name f) (global 'push (field-name f) (field-name f) (field-type f) f) stx))
     (when (and (eq? stage 'vertex) input)
@@ -502,7 +501,7 @@
         (hash-update! accesses name (λ (a) (set-union a access)) (set))
         (hash-update! stages-using name (λ (a) (set-add a (shader-stage s))) (set))))
     (for/list ([b (in-list bindings)])
-      (define storage? (memq (binding-kind b) '(storage-image buffer buffer-array)))
+      (define storage? (memq (binding-resource-kind b) '(storage-image buffer buffer-array)))
       (define used (hash-ref accesses (binding-name b) (set)))
       (define inferred
         (cond [(set-empty? used) #f]
@@ -599,6 +598,16 @@
     (define head (or (head-symbol stx) (syntax-e stx)))
     (define items (syntax->list stx))
     (match head
+      ;; An array of entries of another kind; its access is the array's
+      ['array
+       (match items
+         [(list _ element-stx)
+          (define-values (kind element access) (parse-binding-kind element-stx name))
+          (when (memq kind '(sampler array))
+            (zgal-error 'bad-binding element-stx "binding ~a: an array holds textures, storage images or buffers, not ~a"
+                        name (if (eq? kind 'sampler) "samplers" "arrays")))
+          (values 'array (binding name kind element #f '() (stx->loc element-stx)) access)]
+         [_ (zgal-error 'bad-binding stx "binding ~a: expected (array kind), e.g. (array texture) or (array (buffer-array float))" name)])]
       ['texture #:when (symbol? (syntax-e stx)) (values 'texture #f #f)]
       ['sampler #:when (symbol? (syntax-e stx)) (values 'sampler #f #f)]
       ['storage-image
@@ -623,7 +632,7 @@
          [_ (zgal-error 'bad-binding stx "binding ~a: expected (~a type [access]), with access read, write or read-write"
                         name head)])]
       [_ (zgal-error 'bad-binding stx
-                     "binding ~a: unknown kind ~a; expected texture, sampler, (storage-image access), (buffer type access) or (buffer-array type access)"
+                     "binding ~a: unknown kind ~a; expected texture, sampler, (storage-image access), (buffer type access), (buffer-array type access) or (array kind)"
                      name (show stx))]))
 
   (define (parse-binding-options options stx material-kind binding-kind name)

@@ -747,3 +747,27 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL buffers sized from per-frame inputs follow them
     }
     ctx.collectRetired();
 }
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL array bindings choose textures and buffers per invocation") {
+    auto& ctx = context();
+    {
+        std::vector<FrameBinding<Image>> layers;
+        for (uint32_t width : {2u, 4u, 6u}) {
+            layers.emplace_back(Image::createEmptyRGBA(ctx, width, 1).value());
+        }
+        RenderGraph graph(ctx);
+        const GatherGraph gather = GatherGraph::build(ctx, graph, GatherGraph::Inputs{.layers = layers}).value();
+        CHECK(gather.images.layers.size() == 3);
+        graph.execute().value();
+        CHECK(gather.readGatheredContents(graph).value() == std::vector<uint32_t>{5002, 9004, 5006});
+        CHECK(gather.readEvensContents(graph).value() == std::vector<uint32_t>{5002, 5006});
+        CHECK(gather.readOddsContents(graph).value()[0] == 9004);
+        ctx.waitIdleAll();
+    }
+    {
+        // Every image must be given
+        RenderGraph graph(ctx);
+        CHECK_THROWS_WITH_AS((void)GatherGraph::build(ctx, graph, GatherGraph::Inputs{.layers = {FrameBinding<Image>()}}),
+                             doctest::Contains("GatherGraph's imported image layers 0 isn't given"), ContractViolation);
+    }
+}

@@ -175,6 +175,10 @@ int main() { return exitStatus(runApp()); }            // prints the error
   ```
   `sampler` is a GLSL keyword, so don't name a member that. Storage images are declared without a
   format (`bindlessStorageImages[]`). Vertex and fragment shaders of one material share the block.
+  For a set of entries a shader chooses between (e.g. textures), `DescriptorArray::create(ctx,
+  {entry, ...})` keeps their indices in a small buffer per frame (the count, then the indices) and
+  `MaterialBinding::array(array, access)` pushes its index; shaders index the universal arrays with
+  `nonuniformEXT`, and a node using the material uses every element.
   Give every `BINDLESS_BUFFER` in a shader the same qualifiers: MoltenVK can't alias a `readonly`
   block with a writable one (pipeline creation fails).
 - **Declare every binding's access accurately.** The graph synchronizes only on declared accesses,
@@ -270,6 +274,9 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   `(range from to step)`, `(while ([acc init] ...) condition next)` loops, `(return!)` in compute
   and `(discard!)` in fragment shaders, subgroup built-ins (`subgroupAdd`, `subgroupElect`, ...,
   checked against the device when shaders load) and derivatives (`fwidth`, fragment only).
+- `(name (array texture))` (or of storage images or buffers) binds any number of entries:
+  bodies choose with `(at name i)` and count with `(array-length name)`, and graphs give a list of
+  resources, `(name (a b c))`, or `(import-images name #:resting ...)` images C++ gives.
 - `uint8`, `int8`, `uint16` and `int16` pack buffers and shared memory. Bodies read them widened to
   `uint`/`int` and narrow explicitly to write them (`(uint8 x)`). A material using them needs device
   features: add its (or its graph's) `requiredFeatures()` to the context's features.

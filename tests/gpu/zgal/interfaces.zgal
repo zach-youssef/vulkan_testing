@@ -323,3 +323,36 @@
   (on (key-pressed up) (with state #:amount (* state.amount 2)))
   (on (key-pressed 0) (with state #:amount 0))
   (run SquaresGraph (amount state.amount)))
+
+;; Arrays of bindings: textures and buffers chosen per invocation, and buffers written through an
+;; array
+(compute-material Gather
+  (workgroup 64)
+  (bindings
+   (layers (array texture))
+   (sources (array (buffer-array uint)))
+   (halves (array (buffer-array uint)))
+   (gathered (buffer-array uint)))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i (array-length sources))
+       (let* ([layer (at layers i)]
+              [extent (texture-size layer 0)]
+              [value (+ (* (at (at sources i) 0) 1000) (uint extent.x))])
+         (write! (at gathered i) value)
+         (write! (at (at halves (remainder i 2)) (/ i 2)) value))))))
+
+(graph GatherGraph
+  (import-images layers #:resting shader-read-only)
+  (buffer one uint 1 #:frames shared)
+  (buffer two uint 1 #:frames shared)
+  (buffer evens uint 2 #:frames shared)
+  (buffer odds uint 2 #:frames shared)
+  (buffer gathered uint 3 #:frames shared)
+  (clear fillOne one #:value 5)
+  (clear fillTwo two #:value 9)
+  (material gather Gather layers (sources (one two one)) (halves (evens odds)) gathered #:invocations (3))
+  (dispatch run gather)
+  (readback readGathered gathered)
+  (readback readEvens evens)
+  (readback readOdds odds))
