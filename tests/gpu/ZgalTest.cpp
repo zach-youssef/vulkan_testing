@@ -164,3 +164,111 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL materials check their bindings, formats and opt
                          ContractViolation);
     ctx.waitIdleAll();
 }
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs write uniforms once per frame and compute push constants each frame") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    int tintCalls = 0;
+    float brightness = 1.0f;
+    const ProbeGraph probe = ProbeGraph::build(ctx, graph, ProbeGraph::Inputs{
+        .scale = 0.5f,
+        .withReadback = true,
+        .tint = [&tintCalls](const zgal::FrameInfo&) {
+            ++tintCalls;
+            return TintData{.color = {1.0f, 0.5f, 0.25f, 1.0f}};
+        },
+        .brightness = [&brightness](const zgal::FrameInfo&) { return brightness; },
+    }).value();
+    REQUIRE(probe.nodes.readback);
+    auto firstPixel = [&] {
+        auto pixels = graph.nodeAs<ReadbackNode>(*probe.nodes.readback).pixels().value();
+        return std::vector<uint8_t>(pixels.begin(), pixels.begin() + 4);
+    };
+
+    // (1, 0.5, 0.25) * 0.5 * brightness
+    graph.execute().value();
+    CHECK(firstPixel() == std::vector<uint8_t>{128, 64, 32, 255});
+    brightness = 2.0f;
+    graph.execute().value();
+    CHECK(firstPixel() == std::vector<uint8_t>{255, 128, 64, 255});
+    // Both materials use the uniform, but it's computed once a frame
+    CHECK(tintCalls == 2);
+    ctx.waitIdleAll();
+}
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs leave out what their conditions exclude, and need every input") {
+    auto& ctx = context();
+    {
+        RenderGraph graph(ctx);
+        const ProbeGraph probe = ProbeGraph::build(ctx, graph, ProbeGraph::Inputs{
+            .scale = 1.0f,
+            .withReadback = false,
+            .tint = [](const zgal::FrameInfo&) { return TintData{}; },
+            .brightness = [](const zgal::FrameInfo&) { return 1.0f; },
+        }).value();
+        CHECK_FALSE(probe.nodes.readback);
+        graph.execute().value();
+        ctx.waitIdleAll();
+    }
+    {
+        RenderGraph graph(ctx);
+        CHECK_THROWS_WITH_AS((void)ProbeGraph::build(ctx, graph, ProbeGraph::Inputs{
+                                 .tint = [](const zgal::FrameInfo&) { return TintData{}; },
+                             }),
+                             doctest::Contains("ProbeGraph's input brightness isn't given"), ContractViolation);
+    }
+}
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs compute dispatch sizes each frame") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    uint32_t count = 3;
+    const CountGraph counting = CountGraph::build(ctx, graph, CountGraph::Inputs{
+        .count = [&count](const zgal::FrameInfo&) { return count; },
+    }).value();
+    // The red channel of each of the row's 8 pixels
+    auto marked = [&] {
+        auto pixels = graph.nodeAs<ReadbackNode>(counting.nodes.readback).pixels().value();
+        std::vector<uint8_t> red;
+        for (size_t i = 0; i < 8; ++i) {
+            red.push_back(pixels[4 * i]);
+        }
+        return red;
+    };
+
+    graph.execute().value();
+    CHECK(marked() == std::vector<uint8_t>{255, 255, 255, 0, 0, 0, 0, 0});
+    count = 6;
+    graph.execute().value();
+    CHECK(marked() == std::vector<uint8_t>{255, 255, 255, 255, 255, 255, 0, 0});
+    ctx.waitIdleAll();
+}
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL uniforms are computed once a frame and only written when they change") {
+    auto& ctx = context();
+    float value = 1.0f;
+    int calls = 0;
+    auto uniform = zgal::Uniform<float>::create(ctx, [&](const zgal::FrameInfo&) {
+        ++calls;
+        return value;
+    }).value();
+    const uint32_t frames = ctx.framesInFlight();
+    uint64_t frameNumber = 0;
+    auto runFrames = [&](uint32_t n) {
+        for (uint32_t i = 0; i < n; ++i, ++frameNumber) {
+            const zgal::FrameInfo frame{static_cast<uint32_t>(frameNumber % frames), frameNumber, {0, 0}};
+            uniform->update(frame);
+            // Again in the same frame, as a second material using it would
+            uniform->update(frame);
+        }
+    };
+
+    // Each frame's buffer is written once, then holds the value
+    runFrames(2 * frames);
+    CHECK(calls == static_cast<int>(2 * frames));
+    CHECK(uniform->writes() == frames);
+    // A new value is written to each buffer once more
+    value = 2.0f;
+    runFrames(2 * frames);
+    CHECK(uniform->writes() == 2 * frames);
+}

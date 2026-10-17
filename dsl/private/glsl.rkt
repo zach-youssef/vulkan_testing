@@ -44,7 +44,7 @@
   (for ([line (in-list (string-split body "\n" #:trim? #f))] [number (in-naturals 1)])
     (when (regexp-match? #px"^\\s*#\\s*version\\b" line)
       (zgal-error 'version-in-body (loc path number 1)
-                   "shader bodies don't declare #version: ZGAL writes it, with the material's interface, before the body"))))
+                  "shader bodies don't declare #version: ZGAL writes it, with the material's interface, before the body"))))
 
 ;; The complete source of shader s of material m. body: the shader body's text. out-path: where
 ;; the shader is written (for #line directives naming it).

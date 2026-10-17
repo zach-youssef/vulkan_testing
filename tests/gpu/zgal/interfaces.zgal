@@ -58,3 +58,53 @@
    (uv vec2))
   (outputs
    (outColor vec4)))
+
+;; For the graph test: a tint written per frame, and a material filling its target with it
+(struct TintData
+  (color vec4))
+
+(graphics-material Fill
+  (shaders "shaders/fill.vert" "shaders/fill.frag")
+  (bindings
+   (tint (buffer TintData read) #:stages (fragment)))
+  (push
+   (scale float))
+  (outputs
+   (outColor vec4)))
+
+;; Two materials sharing a uniform (so it must be written once per frame), push constants computed
+;; from a parameter and a per-frame input, and a conditional readback
+(graph ProbeGraph
+  (parameter scale float)
+  (parameter withReadback bool)
+  (input tint (per-frame TintData))
+  (input brightness (per-frame float))
+  (uniform tints TintData tint)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target canvasTarget (color canvas))
+  (material first Fill (tint tints) #:push ((scale 0.0)))
+  (material second Fill (tint tints) #:push ((scale (* scale brightness))))
+  ;; Both draw the whole target; the second, drawn after, wins
+  (draw drawFirst canvasTarget first 3)
+  (draw drawSecond canvasTarget second 3)
+  (readback readback canvas #:when withReadback))
+
+;; For the dynamic dispatch test: stores a value at each invocation's pixel of a row
+(compute-material Mark
+  (shaders "shaders/mark.comp")
+  (workgroup 1)
+  (bindings
+   (row (storage-image write)))
+  (push
+   (value float)))
+
+;; Clears a row (as wide as the image), then marks as many pixels as a per-frame input says: the
+;; dispatch sizes are computed each frame
+(graph CountGraph
+  (input count (per-frame uint))
+  (image row rgba8 (fixed 8 1) #:frames shared)
+  (material clear Mark row #:push ((value 0.0)) #:invocations ((width row)))
+  (material mark Mark row #:push ((value 1.0)) #:invocations (count))
+  (dispatch clearRow clear)
+  (dispatch markRow mark)
+  (readback readback row))

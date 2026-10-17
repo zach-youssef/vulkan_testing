@@ -131,3 +131,68 @@
                             #:bodies (hash "c.comp" "// A comment\n  #version 460\nvoid main() {}")))
   (check-equal? (exn:zgal-id e) 'version-in-body)
   (check-equal? (exn:zgal-where e) (loc "c.comp" 2 1)))
+
+;; Graphs
+
+(define fill-material
+  (string-append "(struct Data (x float))\n"
+                 "(compute-material Fill (shaders \"fill.comp\") (workgroup 64)\n"
+                 "  (bindings (data (buffer Data read-write))) (push (scale float)))\n"))
+
+(test-case "Graph names refer to declarations before them"
+  (check-zgal-error "(graph G\n  (constant a b)\n  (constant b 1))" 'unknown-name "b isn't declared in this graph before here"))
+
+(test-case "Integer literals take their context's type, and other mismatches are reported"
+  (check-false (zgal-error-of "(graph G\n  (parameter n uint)\n  (constant total (* 6 n))\n  (image i rgba8 (fixed total 2) #:frames shared))"))
+  (check-zgal-error "(graph G\n  (parameter n uint)\n  (constant x (+ n 1.5)))" 'type-mismatch "the operands of +: uint and float don't match")
+  (check-zgal-error "(graph G\n  (parameter n uint)\n  (constant x (if n 1 2)))" 'type-mismatch "a condition is a bool, not a uint"))
+
+(test-case "Per-frame inputs are only for push constants"
+  (check-zgal-error "(graph G\n  (input on (per-frame bool))\n  (image i rgba8 (fixed 4 4) #:frames shared #:when on))"
+                    'not-build-time "on is a per-frame input"))
+
+(test-case "Uniforms hold their source's type, and shaders only read them"
+  (check-zgal-error (string-append fill-material "(graph G\n  (input source (per-frame float))\n  (uniform u Data source))")
+                    'type-mismatch "source is a per-frame float, but the uniform holds a Data")
+  (check-zgal-error (string-append fill-material
+                                   "(graph G\n  (input source (per-frame Data))\n  (uniform u Data source)\n"
+                                   "  (material fill Fill (data u) #:push ((scale 1.0)) #:invocations (1))\n  (dispatch run fill))")
+                    'binding-mismatch "u is a uniform, which the CPU writes and shaders only read"))
+
+(test-case "Buffers bound to materials hold the bindings' types"
+  (check-zgal-error (string-append fill-material
+                                   "(graph G\n  (buffer b float 4 #:frames shared)\n"
+                                   "  (material fill Fill (data b) #:push ((scale 1.0)) #:invocations (1))\n  (dispatch run fill))")
+                    'binding-mismatch "binding data holds Data, but b holds float"))
+
+(test-case "Compute materials in graphs say how many invocations they dispatch"
+  (check-zgal-error (string-append fill-material
+                                   "(graph G\n  (buffer b Data 4 #:frames shared)\n"
+                                   "  (material fill Fill (data b) #:push ((scale 1.0)))\n  (dispatch run fill))")
+                    'bad-option "needs #:invocations"))
+
+(test-case "draw-meshes needs a material with vertex input, and draw one without"
+  (check-zgal-error (string-append "(graphics-material Flat (shaders \"f.vert\" \"f.frag\") (outputs (color vec4)))\n"
+                                   "(graph G\n  (input meshes meshes)\n  (target t (surface #:depth none))\n"
+                                   "  (material quad Flat)\n  (draw-meshes run t meshes quad))")
+                    'material-kind "has no vertex-input"))
+
+(test-case "Push constants' values have the fields' types"
+  (check-zgal-error (string-append fill-material
+                                   "(graph G\n  (buffer b Data 4 #:frames shared)\n"
+                                   "  (material fill Fill (data b) #:push ((scale #t)) #:invocations (1))\n  (dispatch run fill))")
+                    'type-mismatch "push constant scale is a float, not a bool"))
+
+(test-case "Graph images' sizes are known each frame, imported images' when the graph is built"
+  (check-zgal-error "(graph G\n  (image a rgba8 (surface 1.0) #:frames shared)\n  (constant w (width a)))"
+                    'not-build-time "a is a graph image, whose size is only known each frame")
+  (check-false (zgal-error-of "(graph G\n  (import-image a #:resting general)\n  (constant w (width a)))")))
+
+(test-case "Compute materials' invocations can use per-frame inputs and images' sizes"
+  (check-false (zgal-error-of
+                (string-append fill-material
+                               "(graph G\n  (input n (per-frame uint))\n  (image i rgba8 (surface 1.0) #:frames shared)\n"
+                               "  (buffer b Data 4 #:frames shared)\n"
+                               "  (material fill Fill (data b) #:push ((scale 1.0)) #:invocations ((+ n (width i))))\n"
+                               "  (dispatch run fill))")
+                #:bodies (hash "fill.comp" "void main() {}"))))

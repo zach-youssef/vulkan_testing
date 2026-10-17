@@ -1,19 +1,13 @@
-#version 450
 #include "filter_common.glsl"
 
 // Makes each pixel black or white, in place. Compares perceived brightness, so a threshold of 0.5
 // splits at the mid grey of an image editor.
-layout(push_constant) uniform Params {
-    uint image;
-    float threshold;
-} params;
-
 void main() {
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
-    if (outside(texel, imageSize(bindlessStorageImages[params.image]))) {
+    if (outside(texel, imageSize(working()))) {
         return;
     }
-    vec4 colour = imageLoad(bindlessStorageImages[params.image], texel);
-    float value = perceivedBrightness(colour.rgb) >= params.threshold ? 1.0 : 0.0;
-    imageStore(bindlessStorageImages[params.image], texel, vec4(vec3(value), colour.a));
+    vec4 colour = imageLoad(working(), texel);
+    float value = perceivedBrightness(colour.rgb) >= threshold() ? 1.0 : 0.0;
+    imageStore(working(), texel, vec4(vec3(value), colour.a));
 }

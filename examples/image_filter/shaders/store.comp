@@ -1,18 +1,12 @@
-#version 450
 #include "filter_common.glsl"
 
 // Encodes the linear working image as sRGB bytes for the PNG. Storage images can't be sRGB, so the
 // output is UNORM and the encoding happens here.
-layout(push_constant) uniform Indices {
-    uint working;
-    uint encoded;
-} indices;
-
 void main() {
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
-    if (outside(texel, imageSize(bindlessStorageImages[indices.encoded]))) {
+    if (outside(texel, imageSize(encoded()))) {
         return;
     }
-    vec4 colour = imageLoad(bindlessStorageImages[indices.working], texel);
-    imageStore(bindlessStorageImages[indices.encoded], texel, vec4(srgbEncode(colour.rgb), clamp(colour.a, 0.0, 1.0)));
+    vec4 colour = imageLoad(working(), texel);
+    imageStore(encoded(), texel, vec4(srgbEncode(colour.rgb), clamp(colour.a, 0.0, 1.0)));
 }

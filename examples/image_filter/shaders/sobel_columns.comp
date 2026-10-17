@@ -1,25 +1,19 @@
-#version 450
 #include "filter_common.glsl"
 
 // The vertical half of the separable Sobel operator (see sobel_rows.comp). Writes the gradient
 // magnitude as grey.
-layout(push_constant) uniform Indices {
-    uint source;
-    uint destination;
-} indices;
-
 void main() {
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
-    if (outside(texel, imageSize(bindlessStorageImages[indices.destination]))) {
+    if (outside(texel, imageSize(destination()))) {
         return;
     }
-    vec2 above = loadClamped(indices.source, texel - ivec2(0, 1)).rg;
-    vec2 centre = loadClamped(indices.source, texel).rg;
-    vec2 below = loadClamped(indices.source, texel + ivec2(0, 1)).rg;
+    vec2 above = loadClamped(source(), texel - ivec2(0, 1)).rg;
+    vec2 centre = loadClamped(source(), texel).rg;
+    vec2 below = loadClamped(source(), texel + ivec2(0, 1)).rg;
     float gx = above.r + 2.0 * centre.r + below.r;
     float gy = below.g - above.g;
     // The magnitude is in perceived brightness (at most 4 * sqrt(2) for a hard edge): scale it so a
     // full-contrast edge saturates, then decode so the output shows that brightness
     float magnitude = clamp(length(vec2(gx, gy)) / 4.0, 0.0, 1.0);
-    imageStore(bindlessStorageImages[indices.destination], texel, vec4(srgbDecode(vec3(magnitude)), 1.0));
+    imageStore(destination(), texel, vec4(srgbDecode(vec3(magnitude)), 1.0));
 }

@@ -8,8 +8,10 @@
          racket/string
          "ast.rkt"
          "errors.rkt"
+         "graph.rkt"
          "layout.rkt"
-         "names.rkt")
+         "names.rkt"
+         "syntax.rkt")
 
 (provide read-forms
          parse-program
@@ -44,56 +46,6 @@
       [_ (exn-message e)]))
   (zgal-error 'read-error where "~a" message))
 
-;; ---------------------------------------------------------------------------------------------
-;; Helpers
-
-(define (show stx) (format "~s" (syntax->datum stx)))
-
-(define (head-symbol stx)
-  (define items (syntax->list stx))
-  (and items (pair? items) (symbol? (syntax-e (car items))) (syntax-e (car items))))
-
-(define (expect-list stx what)
-  (or (syntax->list stx)
-      (zgal-error 'malformed stx "expected ~a, found ~a" what (show stx))))
-
-(define (camel-case s)
-  (match (string-split s "-")
-    [(cons first rest)
-     (apply string-append first
-            (for/list ([part (in-list rest)] #:unless (string=? part ""))
-              (string-append (string-upcase (substring part 0 1)) (substring part 1))))]
-    [_ s]))
-
-;; A declared name: a symbol that is a valid, unreserved identifier. Returns it as a string.
-(define (parse-name stx what)
-  (define d (syntax-e stx))
-  (unless (symbol? d)
-    (zgal-error 'malformed stx "expected ~a, found ~a" what (show stx)))
-  (define s (symbol->string d))
-  (unless (valid-identifier? s)
-    (if (string-contains? s "-")
-        (zgal-error 'bad-identifier stx
-                     "~a isn't a valid name: names become GLSL and C++ identifiers, so write ~a"
-                     s (camel-case s))
-        (zgal-error 'bad-identifier stx
-                     "~a isn't a valid name: use letters, digits and underscores, starting with a letter (and no __)"
-                     s)))
-  (define reason (reserved-name-reason s))
-  (when reason
-    (zgal-error 'reserved-name stx "~a can't be used as a name: it ~a" s reason))
-  s)
-
-;; Tracks names in one namespace, reporting the second declaration of a name
-(define (make-namespace description)
-  (define seen (make-hash))
-  (λ (name stx [what "it"])
-    (define previous (hash-ref seen name #f))
-    (when previous
-      (zgal-error 'duplicate-name stx "~a is already declared ~a (line ~a)"
-                   name description (loc-line previous)))
-    (hash-set! seen name (stx->loc stx))))
-
 (define (hash-union* a b)
   (for/fold ([h a]) ([(k v) (in-hash b)]) (hash-set h k v)))
 
@@ -117,6 +69,7 @@
   (define top-level (make-namespace "at the top level"))
   (define structs (make-hash))          ; name -> struct-decl
   (define formats (make-hash))          ; name -> vertex-format
+  (define materials (make-hash))        ; name -> material
   (define shader-names (make-hash))     ; file name -> (cons material-name loc)
   ;; Every struct's name, so using one before its declaration can say so
   (define all-struct-names
@@ -197,7 +150,7 @@
        (define (require-clause key)
          (or (clause key)
              (zgal-error 'missing-clause stx "~a ~a has no (~a ...) clause~a" form-name name key
-                          (case key
+                         (case key
                             [(outputs) "; write (outputs) if it writes no colour attachments"]
                             [else ""]))))
        ;; Names in the shaders' global scope
@@ -229,7 +182,9 @@
                  (declare! (field-name f) s))
                fields)
              '()))
-       (material kind name shaders bindings push input varyings outputs workgroup (stx->loc stx))]
+       (define m (material kind name shaders bindings push input varyings outputs workgroup (stx->loc stx)))
+       (hash-set! materials name m)
+       m]
       [_ (zgal-error 'malformed stx "expected (~a Name clause ...)" form-name)]))
 
   (define (parse-clauses stxs kind form-name)
@@ -243,7 +198,7 @@
         (zgal-error 'malformed stx "expected a clause (name ...), found ~a" (show stx)))
       (unless (memq key allowed)
         (zgal-error 'unknown-clause stx "~a has no ~a clause; it takes ~a" form-name key
-                     (string-join (map symbol->string allowed) ", ")))
+                    (string-join (map symbol->string allowed) ", ")))
       (when (hash-ref clauses key #f)
         (zgal-error 'duplicate-clause stx "~a has two (~a ...) clauses" form-name key))
       (hash-set clauses key stx)))
@@ -260,13 +215,13 @@
             [(list _ "frag") 'fragment]
             [(list _ "comp") 'compute]
             [_ (zgal-error 'bad-shader path-stx
-                            "~a doesn't end in .vert, .frag or .comp, which give a shader's stage" path)]))
+                           "~a doesn't end in .vert, .frag or .comp, which give a shader's stage" path)]))
         (define resolved (path->string (simplify-path (build-path directory path) #f)))
         (define name (path->string (file-name-from-path resolved)))
         (match (hash-ref shader-names name #f)
           [(cons other where)
            (zgal-error 'shader-reused path-stx "~a is already a shader of material ~a (line ~a)"
-                        name other (loc-line where))]
+                       name other (loc-line where))]
           [_ (hash-set! shader-names name (cons material-name (stx->loc path-stx)))])
         (shader resolved name stage (stx->loc path-stx))))
     (define stages (map shader-stage shaders))
@@ -274,8 +229,8 @@
     (unless (and (= (length stages) (length expected))
                  (for/and ([s (in-list expected)]) (memq s stages)))
       (zgal-error 'bad-shader stx "~a needs ~a, but has ~a" material-name
-                   (if (eq? kind 'graphics) "a .vert and a .frag shader" "one .comp shader")
-                   (if (null? shaders) "none" (string-join (map shader-name shaders) " and "))))
+                  (if (eq? kind 'graphics) "a .vert and a .frag shader" "one .comp shader")
+                  (if (null? shaders) "none" (string-join (map shader-name shaders) " and "))))
     shaders)
 
   (define (parse-workgroup stx)
@@ -293,7 +248,7 @@
        (define fmt
          (or (and (symbol? format-name) (hash-ref formats (symbol->string format-name) #f))
              (zgal-error 'unknown-name format-stx "~a isn't a vertex format declared earlier in the file"
-                          (show format-stx))))
+                         (show format-stx))))
        (define all (for/list ([a (in-list (vertex-format-attributes fmt))] [i (in-naturals)]) (cons i a)))
        (define chosen
          (if (null? attribute-stxs)
@@ -306,7 +261,7 @@
                                  #:when (and (symbol? a-name) (string=? (field-name (cdr entry)) (symbol->string a-name))))
                        entry)
                      (zgal-error 'unknown-name a-stx "vertex format ~a has no attribute ~a"
-                                  (vertex-format-name fmt) (show a-stx)))))))
+                                 (vertex-format-name fmt) (show a-stx)))))))
        (for ([entry (in-list chosen)])
          (declare! (input-variable-name (field-name (cdr entry))) stx))
        (vertex-input fmt chosen (stx->loc stx))]
@@ -322,7 +277,7 @@
          (define stages (parse-binding-options options b-stx kind binding-kind name))
          (binding name binding-kind element access stages (stx->loc b-stx))]
         [_ (zgal-error 'malformed b-stx "expected a binding (name kind [#:stages (stage ...)]), found ~a"
-                        (show b-stx))])))
+                       (show b-stx))])))
 
   (define (parse-access stx kind-name)
     (define a (syntax-e stx))
@@ -346,16 +301,17 @@
           (define t (parse-type type-stx))
           (when (array-t? t)
             (zgal-error 'type-not-allowed type-stx
-                         "binding ~a: a ~a holds a struct, scalar, vector or matrix; for an array of them use (buffer-array type access)"
-                         name head))
-          (define problem (std430-problem t))
+                        "binding ~a: a ~a holds a struct, scalar, vector or matrix; for an array of them use (buffer-array type access)"
+                        name head))
+          ;; A buffer-array's elements are laid out like an array's
+          (define problem (std430-problem (if (eq? head 'buffer-array) (array-t t 1) t)))
           (when problem (zgal-error 'type-not-allowed type-stx "binding ~a: ~a" name problem))
           (values head t (parse-access access (symbol->string head)))]
          [_ (zgal-error 'bad-binding stx "binding ~a: expected (~a type access), with access read, write or read-write"
-                         name head)])]
+                        name head)])]
       [_ (zgal-error 'bad-binding stx
-                      "binding ~a: unknown kind ~a; expected texture, sampler, (storage-image access), (buffer type access) or (buffer-array type access)"
-                      name (show stx))]))
+                     "binding ~a: unknown kind ~a; expected texture, sampler, (storage-image access), (buffer type access) or (buffer-array type access)"
+                     name (show stx))]))
 
   (define (parse-binding-options options stx material-kind binding-kind name)
     (match options
@@ -382,8 +338,8 @@
     (define-values (_ end) (place-fields fields start))
     (when (> end push-constant-limit)
       (zgal-error 'push-too-large stx
-                   "the push constants take ~a bytes (~a for ~a binding indices, then the push fields), more than the ~a the pipeline layout has"
-                   end start (length bindings) push-constant-limit)))
+                  "the push constants take ~a bytes (~a for ~a binding indices, then the push fields), more than the ~a the pipeline layout has"
+                  end start (length bindings) push-constant-limit)))
 
   (define (parse-varyings stx declare!)
     (for/list ([v-stx (in-list (cdr (syntax->list stx)))])
@@ -407,22 +363,24 @@
       (when (and (memq (if (vector-t? t) (vector-t-kind t) (scalar-t-kind t)) '(int uint))
                  (not (eq? interpolation 'flat)))
         (zgal-error 'varying-not-flat v-stx "varying ~a is a ~a, so it must be flat: (~a ~a flat)"
-                     name (type-name t) name (type-name t)))
+                    name (type-name t) name (type-name t)))
       (varying name t interpolation (stx->loc v-stx))))
 
-  (define-values (structs-out formats-out materials-out)
-    (for/fold ([ss '()] [fs '()] [ms '()] #:result (values (reverse ss) (reverse fs) (reverse ms)))
+  (define-values (structs-out formats-out materials-out graphs-out)
+    (for/fold ([ss '()] [fs '()] [ms '()] [gs '()]
+               #:result (values (reverse ss) (reverse fs) (reverse ms) (reverse gs)))
               ([form (in-list forms)])
       (define items (syntax->list form))
       (match (head-symbol form)
-        ['struct (values (cons (parse-struct form items) ss) fs ms)]
-        ['vertex-format (values ss (cons (parse-vertex-format form items) fs) ms)]
-        ['graphics-material (values ss fs (cons (parse-material form items 'graphics) ms))]
-        ['compute-material (values ss fs (cons (parse-material form items 'compute) ms))]
+        ['struct (values (cons (parse-struct form items) ss) fs ms gs)]
+        ['vertex-format (values ss (cons (parse-vertex-format form items) fs) ms gs)]
+        ['graphics-material (values ss fs (cons (parse-material form items 'graphics) ms) gs)]
+        ['compute-material (values ss fs (cons (parse-material form items 'compute) ms) gs)]
+        ['graph (values ss fs ms (cons (parse-graph form parse-type top-level materials) gs))]
         [_ (zgal-error 'unknown-form form
-                        "expected struct, vertex-format, graphics-material or compute-material, found ~a"
-                        (let ([head (head-symbol form)]) (if head (format "(~a ...)" head) (show form))))])))
-  (program source structs-out formats-out materials-out))
+                       "expected struct, vertex-format, graphics-material, compute-material or graph, found ~a"
+                       (let ([head (head-symbol form)]) (if head (format "(~a ...)" head) (show form))))])))
+  (program source structs-out formats-out materials-out graphs-out))
 
 ;; Vertex inputs are named "in" followed by the attribute, e.g. inPosition
 (define (input-variable-name attribute)

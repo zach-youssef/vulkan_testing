@@ -57,3 +57,50 @@
    (uv vec2))
   (outputs
    (outColor vec4)))            ; Linear: the sRGB target encodes it
+
+;; The frame: a shadow map from the light, the lit scene into an HDR image the size of the surface,
+;; then the tonemap to the display. The render graph orders the passes, picks queues and
+;; synchronizes them from what each uses.
+(graph SceneGraph
+  ;; Headless, the display is an image instead of the window, and with capture it's read back
+  (parameter headless bool)
+  (parameter capture bool)
+  (input meshes meshes)                        ; Drawn by both the shadow and the lit pass
+  (input uniforms (per-frame SceneUniforms))
+  (input shadows (per-frame bool))             ; Whether the shadow pass is enabled
+  (input exposure (per-frame float))
+
+  ;; Bilinear for the HDR image, and a comparison sampler for the shadow map, which returns how
+  ;; much of the bilinear footprint is closer to the light than the reference depth. Outside the
+  ;; map the white border reads as lit.
+  (sampler linearSampler #:filter linear #:address clamp-to-edge)
+  (sampler shadowSampler #:filter linear #:mipmap nearest #:address clamp-to-border #:border opaque-white
+           #:compare less-or-equal #:anisotropy #f)
+  (uniform scene SceneUniforms uniforms)
+
+  ;; Shared between frames to save memory: the next frame's shadow pass waits for this frame's lit
+  ;; pass to finish reading it
+  (image shadowMap d32 (fixed 2048 2048) #:frames shared)
+  ;; Per frame, so a frame's lit pass can overlap the previous frame's tonemap. It follows the
+  ;; surface's size (headless, the extent given to the graph).
+  (image hdr rgba16f (surface 1.0) #:frames per-frame)
+  (image depth d32 (surface 1.0) #:frames shared)
+  (image offscreen rgba8-srgb (surface 1.0) #:frames shared #:when headless)
+
+  (target shadowTarget (depth shadowMap #:store store))
+  ;; The clear colour is the sky, in linear HDR like everything drawn
+  (target hdrTarget (color hdr #:clear (0.4 0.55 0.8 1.0)) (depth depth))
+  (target display (if headless (color offscreen) (surface #:depth none)))
+
+  (material shadow Shadow scene)
+  (material lit Lit scene shadowMap shadowSampler
+            ;; When the shadow pass is disabled, its map is stale
+            #:push ((shadowsEnabled (if shadows 1 0))))
+  (material tonemap Tonemap hdr (hdrSampler linearSampler)
+            #:push ((exposure exposure)))
+
+  (draw-meshes shadowPass shadowTarget meshes shadow)
+  (draw-meshes litPass hdrTarget meshes lit)
+  ;; A fullscreen triangle, without vertex buffers
+  (draw tonemapPass display tonemap 3)
+  (readback readback offscreen #:when capture))

@@ -26,13 +26,12 @@
 #define VK_WRAP_UTIL_IMPL
 
 #include "core/VulkanContext.h"
-#include "descriptors/DescriptorHeap.h"
 #include "graph/RenderGraph.h"
-#include "graph/nodes/DispatchNode.h"
 #include "graph/nodes/ReadbackNode.h"
-#include "materials/Material.h"
 #include "resources/Image.h"
-#include "shaders/ShaderLibrary.h"
+
+// Generated from image_filter.zgal: the filters' materials and FilterGraph
+#include "image_filter.zgal.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -45,7 +44,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <type_traits>
 #include <vector>
 
 // Defined by the Makefile
@@ -136,55 +134,6 @@ Options parseArguments(int argc, char** argv) {
     return options;
 }
 
-// Push constant data for a filter's parameters. Shaders declare them after the binding indices,
-// so keep members 4-byte scalars: they then have the same offsets in C++ and GLSL.
-template<typename Params>
-std::vector<uint8_t> pushData(const Params& params) {
-    static_assert(std::is_trivially_copyable_v<Params>);
-    std::vector<uint8_t> data(sizeof(Params));
-    memcpy(data.data(), &params, sizeof(Params));
-    return data;
-}
-
-struct BlurParams {
-    int32_t directionX;
-    int32_t directionY;
-    int32_t radius;
-    float sigma;
-};
-
-struct ThresholdParams {
-    float threshold;
-};
-
-// One filter pass: a compute shader run once per pixel, reading and writing the resources of its
-// bindings, with the filter's parameters pushed after the bindings' indices
-class FilterMaterial : public ComputeMaterial {
-public:
-    FilterMaterial(VulkanContext& context, Handle<Shader> shader, std::vector<MaterialBinding> bindings,
-                   VkExtent2D extent, std::vector<uint8_t> params)
-    : ComputeMaterial(context, std::move(bindings), std::move(shader)), extent_(extent), params_(std::move(params)) {}
-
-    void update(uint32_t, VkExtent2D) override {
-        // The parameters never change, so there's nothing to update per frame
-    }
-
-    glm::vec3 getDispatchDimensions() override {
-        // 16 x 16 matches the shaders' workgroup size (filter_common.glsl). Round up so images
-        // that aren't a multiple of it are covered; the shaders skip the excess invocations.
-        return {(extent_.width + 15) / 16, (extent_.height + 15) / 16, 1};
-    }
-
-protected:
-    void writePushConstants(uint32_t, std::vector<uint8_t>& data) override {
-        data.insert(data.end(), params_.begin(), params_.end());
-    }
-
-private:
-    VkExtent2D extent_;
-    std::vector<uint8_t> params_;
-};
-
 // RGBA8 pixels, tightly packed
 struct FilteredImage {
     std::vector<uint8_t> pixels;
@@ -196,65 +145,19 @@ struct FilteredImage {
 Result<FilteredImage> filterImage(VulkanContext& context, const Options& options) {
     TRY_ASSIGN(auto source, Image::createFromFile(context, options.input));
     const VkExtent2D extent{source->getWidth(), source->getHeight()};
-    TRY_ASSIGN(auto sampler, VulkanSampler::createWithModeAndFilter(context, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                                                                    VK_FILTER_NEAREST));
 
-    // The graph's images. They're only used within one frame, so one copy is shared by every frame
-    // in flight rather than one per frame.
+    // The graph, FilterGraph in image_filter.zgal: every pass, with the ones the user didn't ask
+    // for disabled. Disabled passes still need valid parameters: the radius is only used if the
+    // blur runs.
     RenderGraph graph(context);
-    // createFromFile leaves the input ready for sampling, and the graph keeps it that way
-    graph.importImage("input", source, ImageState::shaderReadOnly());
-    ImageId working = graph.createImage("working", FrameMode::Shared, VK_FORMAT_R16G16B16A16_SFLOAT, FixedExtent{extent});
-    ImageId scratch = graph.createImage("scratch", FrameMode::Shared, VK_FORMAT_R16G16B16A16_SFLOAT, FixedExtent{extent});
-    ImageId encoded = graph.createImage("encoded", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{extent});
-
-    // Bindings to graph images. Their access is what the graph synchronizes on: e.g. the blur's
-    // column pass reading scratch waits for the row pass writing it.
-    auto reads = [&](ImageId image) {
-        return MaterialBinding::storageImage(graph.storageEntry(image), Access::StorageRead);
-    };
-    auto writes = [&](ImageId image) {
-        return MaterialBinding::storageImage(graph.storageEntry(image), Access::StorageWrite);
-    };
-    // Adds a pass. DispatchNode declares the material's uses, so nothing else needs declaring.
-    // Fails if the shader can't be loaded.
-    auto addPass = [&](std::string name, const std::string& shader, std::vector<MaterialBinding> bindings,
-                       std::vector<uint8_t> params = {}) -> Result<NodeId> {
-        TRY_ASSIGN(auto loaded, context.shaders().get(shader));
-        auto material = context.resources().create<FilterMaterial>(context, std::move(loaded), std::move(bindings),
-                                                                   extent, std::move(params));
-        return graph.add<DispatchNode>(std::move(name), std::move(material));
-    };
-
-    // Insertion order is program order wherever passes use the same image
-    auto& heap = context.descriptors();
-    TRY(addPass("load", "load.comp", {MaterialBinding::sampled(heap.sampledImage(source)),
-                                      MaterialBinding::sampler(heap.sampler(sampler)), writes(working)}));
-
-    // Disabled passes still need valid parameters: the radius is only used if the blur runs
-    const int radius = options.blurRadius.value_or(1);
-    const float sigma = radius / 2.0f;   // The kernel spans two standard deviations either side
-    TRY_ASSIGN(const NodeId blurRows, addPass("blur rows", "blur.comp", {reads(working), writes(scratch)},
-                                              pushData(BlurParams{1, 0, radius, sigma})));
-    TRY_ASSIGN(const NodeId blurColumns, addPass("blur columns", "blur.comp", {reads(scratch), writes(working)},
-                                                 pushData(BlurParams{0, 1, radius, sigma})));
-
-    TRY_ASSIGN(const NodeId sobelRows, addPass("sobel rows", "sobel_rows.comp", {reads(working), writes(scratch)}));
-    TRY_ASSIGN(const NodeId sobelColumns, addPass("sobel columns", "sobel_columns.comp", {reads(scratch), writes(working)}));
-
-    TRY_ASSIGN(const NodeId threshold,
-               addPass("threshold", "threshold.comp",
-                       {MaterialBinding::storageImage(graph.storageEntry(working), Access::StorageReadWrite)},
-                       pushData(ThresholdParams{options.threshold.value_or(0.5f)})));
-
-    TRY(addPass("store", "store.comp", {reads(working), writes(encoded)}));
-    const NodeId readback = graph.add<ReadbackNode>("readback", encoded);
-
-    graph.setEnabled(blurRows, options.blurRadius.has_value());
-    graph.setEnabled(blurColumns, options.blurRadius.has_value());
-    graph.setEnabled(sobelRows, options.edges);
-    graph.setEnabled(sobelColumns, options.edges);
-    graph.setEnabled(threshold, options.threshold.has_value());
+    TRY_ASSIGN(const FilterGraph filter, FilterGraph::build(context, graph, FilterGraph::Inputs{
+        .blur = options.blurRadius.has_value(),
+        .radius = options.blurRadius.value_or(1),
+        .edges = options.edges,
+        .binarize = options.threshold.has_value(),
+        .level = options.threshold.value_or(0.5f),
+        .source = source,
+    }));
 
     // execute() would compile on demand; compiling first reports graph errors before any GPU work
     TRY(graph.compile().withContext("compiling the filter graph"));
@@ -265,7 +168,7 @@ Result<FilteredImage> filterImage(VulkanContext& context, const Options& options
 
     TRY(graph.execute());
     // Waits for the frame to finish. The readback is RGBA8, tightly packed.
-    TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(readback).pixels());
+    TRY_ASSIGN(auto pixels, graph.nodeAs<ReadbackNode>(filter.nodes.readback).pixels());
     return FilteredImage{std::move(pixels), extent};
 }
 

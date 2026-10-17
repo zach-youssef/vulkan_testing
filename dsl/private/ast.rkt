@@ -41,7 +41,7 @@
   #:transparent)
 
 ;; source: the .zgal file's path. Declarations are in file order.
-(struct program (source structs vertex-formats materials) #:transparent)
+(struct program (source structs vertex-formats materials graphs) #:transparent)
 
 (define (type-name t)
   (match t
@@ -60,3 +60,52 @@
     (and (memq (binding-kind b) '(buffer buffer-array))
          (memq (binding-access b) '(write read-write))
          #t)))
+
+;; ---------------------------------------------------------------------------------------------
+;; Graphs
+
+;; Expressions: literals (exact integers, reals and booleans), references to parameters, constants
+;; and per-frame inputs, and operations (op is a symbol, e.g. '+ or 'vec2)
+(struct e-literal (value loc) #:transparent)
+(struct e-ref (name loc) #:transparent)
+(struct e-op (op args loc) #:transparent)
+
+;; A graph: its items in file order, and its nodes in file order
+(struct graph (name items nodes loc) #:transparent)
+
+;; type: a scalar-t (bool, int, uint or float)
+(struct g-parameter (name type loc) #:transparent)
+;; kind: 'per-frame (with a type), 'meshes or 'cpu
+(struct g-input (name kind type loc) #:transparent)
+;; resting: 'shader-read-only, 'general or 'transfer-src
+(struct g-import (name resting loc) #:transparent)
+;; Build-time values. type: the expression's type
+(struct g-constant (name expr type loc) #:transparent)
+;; options: an association list of option symbols (e.g. 'filter) to values (symbols, booleans, numbers)
+(struct g-sampler (name options loc) #:transparent)
+;; A per-frame buffer of type, written from the per-frame input `source`
+(struct g-uniform (name type source loc) #:transparent)
+;; format: a symbol (see formats in graph.rkt). extent: (list 'fixed w h), (list 'surface scale) or
+;; (list 'extent-of import-name). frames: 'shared or 'per-frame. when: an expression or #f.
+(struct g-image (name format extent frames when loc) #:transparent)
+(struct g-buffer (name type count frames when loc) #:transparent)
+;; spec: a t-attachments, t-surface or t-if
+(struct g-target (name spec loc) #:transparent)
+(struct t-attachments (colors depth loc) #:transparent)       ; depth: a t-attachment or #f
+(struct t-attachment (image load store clear loc) #:transparent) ; clear: a list of 4 reals, or a real
+(struct t-surface (clear depth loc) #:transparent)              ; depth: a format symbol or 'none
+(struct t-if (condition then else loc) #:transparent)
+;; An instance of a material declared in the file. bindings: (cons binding resource-name) in the
+;; material's order. push: (cons field expression) in the material's order. options: an
+;; association list of pipeline options. invocations: expressions (compute) or #f.
+(struct g-material (name material bindings push options invocations loc) #:transparent)
+;; kind: 'dispatch 'draw-meshes 'draw 'readback 'cpu. target, material, subject (the meshes,
+;; image or cpu input): names or #f. count: an expression or #f. when, enabled: expressions or #f.
+(struct g-node (kind name target material subject count when enabled loc) #:transparent)
+
+;; The declaration of a graph-level name
+(define (graph-item-name item)
+  (match item
+    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-constant n _ _ _) n]
+    [(g-sampler n _ _) n] [(g-uniform n _ _ _) n] [(g-image n _ _ _ _ _) n] [(g-buffer n _ _ _ _ _) n]
+    [(g-target n _ _) n] [(g-material n _ _ _ _ _ _) n]))

@@ -8,28 +8,12 @@
          racket/string
          "ast.rkt"
          "layout.rkt"
+         "cpp-common.rkt"
+         "cpp-graph.rkt"
          "parse.rkt"
          "writer.rkt")
 
 (provide emit-header)
-
-(define (cpp-string s)
-  (string-append "\"" (regexp-replace* #px"[\\\\\"]" s "\\\\&") "\""))
-
-(define (scalar-cpp kind)
-  (case kind [(float) "float"] [(int) "int32_t"] [(uint) "uint32_t"] [(bool) "uint32_t"]))
-
-(define (cpp-type t)
-  (match t
-    [(scalar-t k) (scalar-cpp k)]
-    [(vector-t k n) (format "glm::~a" (type-name t))]
-    [(matrix-t n) (format "glm::mat~a" n)]
-    [(struct-t d) (struct-decl-name d)]))
-
-(define (cpp-declaration t name)
-  (match t
-    [(array-t e n) (format "~a ~a[~a]" (cpp-type e) name n)]
-    [_ (format "~a ~a" (cpp-type t) name)]))
 
 (define (vertex-format-enum t)
   (define components (if (vector-t? t) (vector-t-size t) 1))
@@ -320,9 +304,14 @@
   (gen "// #line directives map declarations to their lines there, so errors in them point there.")
   (gen "#pragma once")
   (gen "")
+  (define graphs (program-graphs prog))
   (cond
     [(ormap (λ (m) (eq? (material-kind m) 'graphics)) materials) (gen "#include \"materials/GraphicsMaterial.h\"")]
     [(pair? materials) (gen "#include \"materials/Material.h\"")])
+  (when (pair? graphs)
+    (for ([h (in-list '("graph/RenderGraph.h" "graph/nodes/DispatchNode.h" "graph/nodes/ReadbackNode.h"
+                        "graph/nodes/RenderablesNode.h" "materials/Renderable.h" "zgal/Runtime.h"))])
+      (gen (format "#include \"~a\"" h))))
   (gen "")
   (gen "#include <glm/glm.hpp>")
   (gen "")
@@ -333,7 +322,12 @@
     (gen "#include <string>")
     (gen "#include <utility>")
     (gen "#include <vector>"))
+  (when (pair? graphs)
+    (gen "#include <algorithm>")
+    (gen "#include <memory>")
+    (gen "#include <optional>"))
   (for ([d (in-list (program-structs prog))]) (emit-struct! w d))
   (for ([f (in-list (program-vertex-formats prog))]) (emit-vertex-format! w f))
   (for ([m (in-list materials)]) (emit-material! w prog m))
+  (for ([g (in-list graphs)]) (emit-graph! w prog g))
   (writer-text w))

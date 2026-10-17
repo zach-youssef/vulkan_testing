@@ -15,10 +15,12 @@
          "../compile.rkt"
          "../private/ast.rkt"
          "../private/errors.rkt"
+         "../private/graph.rkt"
          "../private/layout.rkt"
          "../private/parse.rkt")
 
-(provide repository-file
+(provide format-table
+         repository-file
          prose
          zgal-source
          zgal-example
@@ -117,6 +119,16 @@
              (nested #:style 'code-inset (verbatim body))))
      (zgal-source (error-kind-example k))
      (nested #:style 'code-inset (verbatim (format-zgal-error e))))))
+
+;; The image formats graphs name, and their Vulkan formats
+(define (format-table)
+  (tabular
+   #:style 'boxed
+   #:sep (hspace 2)
+   #:row-properties '(bottom-border ())
+   (cons (list (bold "ZGAL") (bold "Vulkan"))
+         (for/list ([f (in-list (sort (hash-keys image-formats) symbol<?))])
+           (list (tt (symbol->string f)) (tt (hash-ref image-formats f)))))))
 
 ;; A file in the repository, as a string
 (define (repository-file path)

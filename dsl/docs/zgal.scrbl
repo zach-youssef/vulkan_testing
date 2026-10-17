@@ -3,7 +3,7 @@
           scribble/core
           "helpers.rkt")
 
-@title{ZGAL: shader interfaces for the Vulkan wrapper}
+@title{ZGAL: shader interfaces and render graphs for the Vulkan wrapper}
 
 ZGAL (Zach's Graphics Application Language) is a small language for the part of a shader that C++ has to agree with: the structs in
 buffers, a material's bindings and push constants, vertex formats, and what one stage passes to the
@@ -13,9 +13,14 @@ for the wrapper (@tt{include/}) and complete GLSL shaders, each the shader's own
 so the shaders and the C++ can't disagree about a binding's order, a field's offset or a vertex
 attribute's location.
 
-ZGAL is written in Racket (@tt{dsl/}). This is its first stage: it describes interfaces, and shader
-bodies are still GLSL. Later stages are planned to describe render graphs, shader bodies and
-application state (see @secref["roadmap"]).
+A @tt{.zgal} file can also declare render graphs (@secref["graphs"]): their parameters, inputs,
+resources, materials and nodes. The compiler generates a @tt{build()} function adding them to a
+@tt{RenderGraph}, so C++ supplies only what changes at runtime: meshes, imported images and
+per-frame values.
+
+ZGAL is written in Racket (@tt{dsl/}). It describes interfaces and graphs; shader bodies are still
+GLSL. Later stages are planned to describe shader bodies and application state (see
+@secref["roadmap"]).
 
 This document is built from the compiler: every example is compiled while it builds, and the
 generated code it shows is the compiler's actual output. Build it with @tt{make docs}, which writes
@@ -72,17 +77,22 @@ name, and asks for its push constants through @tt{writePush}:
 @(generated-file tonemap-source "example.zgal.h" #:bodies tonemap-bodies
                  #:from #rx"Fills the push constants" #:to #rx"writePush")
 
-The scene example subclasses it to read the exposure from its state:
+C++ can subclass it to supply the push constants, and create it from the shaders
+@tt{loadShaders} finds in the context's shader library, as this GPU test does with another
+material:
 
-@(file-excerpt "examples/scene/scene_example.cpp" #:from #rx"^class TonemapMaterial" #:to #rx"^};")
+@(file-excerpt "tests/gpu/ZgalTest.cpp" #:from #rx"^class TintedMaterial" #:to #rx"^};")
+@(file-excerpt "tests/gpu/ZgalTest.cpp" #:from #rx"auto shaders = Tinted::loadShaders" #:to #rx"glm::vec4[(]1.0f, 0.5f, 0.5f, 1.0f[)][)];")
 
-and creates it from the shaders @tt{loadShaders} finds in the context's shader library:
+The scene example doesn't write any of that: its graph, declared in the same file, instantiates
+the material, binds the HDR image and a sampler to it, and computes the exposure each frame from a
+per-frame input (@secref["graphs"]):
 
-@(file-excerpt "examples/scene/scene_example.cpp" #:from #rx"Tonemap::loadShaders" #:to #rx"heap.sampler[(]linearSampler")
+@(file-excerpt "examples/scene/scene.zgal" #:from #rx"[(]material tonemap Tonemap" #:to #rx"#:push [(][(]exposure exposure")
 
 Nothing else describes the interface. Adding a binding means adding it to the @tt{.zgal} file,
 which gives the shaders its accessor and the C++ a member of @tt{Bindings} to fill (creating the
-material without an entry for it is a contract violation).
+material without an entry for it is a contract violation), or a graph a binding to give.
 
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "build"]{Building with ZGAL}
@@ -91,8 +101,8 @@ material without an entry for it is a contract violation).
 
 For @tt{name.zgal}, the compiler writes
 @itemlist[
- @item{@tt{name.zgal.h}: the structs, vertex formats and a class per material
-       (@secref["cpp"]).}
+ @item{@tt{name.zgal.h}: the structs, vertex formats, a class per material (@secref["cpp"]) and
+       a struct per graph (@secref["graphs"]).}
  @item{one complete shader per material shader, named like its body (e.g. @tt{tonemap.frag}), to
        compile with glslc (@secref["glsl"]).}
 ]
@@ -137,17 +147,18 @@ Errors are printed as @tt{file:line:column: error: message [id]} and the exit st
 @subsection{Syntax and names}
 
 A @tt{.zgal} file is a sequence of s-expressions: @racket[struct], @racket[vertex-format],
-@racket[graphics-material] and @racket[compute-material] forms, in any order except that a struct
-or vertex format is declared before it's used. Comments start with @tt{;} and run to the end of the
+@racket[graphics-material], @racket[compute-material] and @racket[graph] forms, in any order except
+that anything is declared before it's used. Comments start with @tt{;} and run to the end of the
 line. The reader only reads data: @tt{#lang} and @tt{#reader}, which would run code, are rejected.
 
 @racketgrammar*[
- #:literals (struct vertex-format graphics-material compute-material array)
+ #:literals (struct vertex-format graphics-material compute-material graph array)
  [file (code:line form ...)]
  [form (struct Name field ...+)
        (vertex-format Name field ...+)
        (graphics-material Name graphics-clause ...)
-       (compute-material Name compute-clause ...)]
+       (compute-material Name compute-clause ...)
+       (graph Name graph-item ...)]
  [field (name type)]
  [type float int uint bool vec2 vec3 vec4 ivec2 ivec3 ivec4 uvec2 uvec3 uvec4 mat2 mat3 mat4
        StructName
@@ -361,6 +372,216 @@ with just those; by default, both. Samplers aren't synchronized and compute bind
 used by the compute stage, so neither takes @racket[#:stages].
 
 @; -----------------------------------------------------------------------------------------------
+@section[#:tag "graphs"]{Graphs}
+
+A @racket[graph] declares a render graph: what C++ supplies (parameters, fixed when the graph is
+built, and inputs), the resources it creates, instances of the file's materials bound to them, and
+the nodes running them. The compiler generates a struct with a @tt{build()} function adding all of
+it to a @tt{RenderGraph}, and returning the ids of its images, buffers and nodes. Everything else a
+graph does (ordering, queues, barriers, semaphores, recreating images when the surface resizes) is
+the render graph's, as for graphs built in C++.
+
+The scene example's graph:
+
+@(file-excerpt "examples/scene/scene.zgal" #:from #rx"^[(]graph SceneGraph" #:to #rx"readback readback offscreen")
+
+and the C++ building it, which supplies the meshes and reads the application's state each frame:
+
+@(file-excerpt "examples/scene/scene_example.cpp" #:from #rx"TRY_ASSIGN[(]const SceneGraph scene" #:to #rx"^    [}][)][)];")
+
+@racketgrammar*[
+ #:literals (graph parameter input per-frame meshes cpu import-image constant sampler uniform image
+             buffer target surface attachments if color depth material dispatch draw-meshes draw
+             readback fixed extent-of)
+ [graph-form (graph Name graph-item ...)]
+ [graph-item (parameter name type)
+             (input name (per-frame type))
+             (input name meshes)
+             (input name cpu)
+             (import-image name #:resting resting-state)
+             (constant name expression)
+             (sampler name sampler-option ...)
+             (uniform name type per-frame-input)
+             (image name format extent #:frames frames maybe-when)
+             (buffer name type count #:frames frames maybe-when)
+             (target name target-spec)
+             (material name Material binding ... material-option ...)
+             node]
+ [node (dispatch name material node-option ...)
+       (draw-meshes name target meshes-input material node-option ...)
+       (draw name target material vertex-count node-option ...)
+       (readback name image node-option ...)
+       (cpu name cpu-input node-option ...)]
+ [node-option (code:line #:when expression) (code:line #:enabled expression)]
+ [maybe-when (code:line) (code:line #:when expression)]
+ [frames shared per-frame]]
+
+Items and nodes appear in any order, and refer to items declared before them. Items share one
+namespace (in the graph, and C++'s @tt{Inputs}, @tt{Images} and @tt{Buffers}); nodes have their own
+(@tt{Nodes}), so a node can be named like its material.
+
+@subsection{Parameters and inputs}
+
+C++ passes them to @tt{build()} in an @tt{Inputs} struct, by name:
+
+@tabular[
+ #:style 'boxed
+ #:sep (hspace 2)
+ #:row-properties '(bottom-border ())
+ (list
+  (list @bold{Declaration} @bold{C++ member} @bold{Use})
+  (list @tt{(parameter n type)} @elem{@tt{bool}, @tt{int32_t}, @tt{uint32_t} or @tt{float}} "a value fixed when the graph is built: conditions, sizes, push constants")
+  (list @tt{(input n (per-frame T))} @tt{zgal::FrameSource<T>} "a function C++ calls each frame with a zgal::FrameInfo: uniforms' sources and push constants")
+  (list @tt{(input n meshes)} @tt{std::vector<Handle<Mesh>>} @elem{the meshes a @racket[draw-meshes] node draws})
+  (list @tt{(input n cpu)} @tt{RenderGraph::RunFn} @elem{a @racket[cpu] node's work, each frame})
+  (list @tt{(import-image n #:resting s)} @tt{FrameBinding<Image>} "an image the application owns, returned to its resting state (shader-read-only, general or transfer-src) after each frame"))]
+
+@tt{zgal::FrameInfo} (@tt{include/zgal/Runtime.h}) gives the frame's index (into per-frame
+collections), its number, and the graph's surface extent. Missing functions and images are a
+contract violation when the graph is built. The graph's materials and nodes keep the functions, so
+whatever they use must outlive the graph.
+
+@subsection{Expressions}
+
+@racketgrammar*[
+ #:literals (if and or not = < <= > >= + - * / min max float int uint width height)
+ [expression number #t #f name
+             (if expression expression expression)
+             (and expression ...+) (or expression ...+) (not expression)
+             (= a b) (< a b) (<= a b) (> a b) (>= a b)
+             (+ a b ...+) (- a b ...) (* a b ...+) (/ a b) (min a b) (max a b)
+             (float a) (int a) (uint a)
+             (vec2 a b) (ivec3 a b c) (code:line ...)
+             (width image) (height image)]]
+
+Expressions are typed like GLSL: arithmetic operands share a type (scalars or vectors), and
+conditions are bools. Integer literals take the type their context needs, so @tt{(* 6 count)} is a
+@tt{uint} when @tt{count} is. A name is a parameter, constant or per-frame input.
+
+Most expressions are computed once, when the graph is built: conditions, constants, extents and
+counts. They can use parameters, constants and imported images' sizes. Push constants and compute
+materials' @tt{#:invocations} are computed each frame, so they can also use per-frame inputs and the
+current size of the graph's own images, which the graph can recreate (e.g. surface-relative ones,
+when the surface resizes).
+
+@subsection{Resources}
+
+@itemlist[
+ @item{@racket[sampler] options, all optional: @tt{#:filter} (@tt{linear}, @tt{nearest}),
+       @tt{#:mipmap} (@tt{linear}, @tt{nearest}), @tt{#:address} (@tt{repeat},
+       @tt{mirrored-repeat}, @tt{clamp-to-edge}, @tt{clamp-to-border}), @tt{#:border}
+       (@tt{transparent-black}, @tt{opaque-black}, @tt{opaque-white}), @tt{#:compare} (a
+       comparison, e.g. @tt{less-or-equal}, for shadow maps), @tt{#:anisotropy} (@tt{#t} or
+       @tt{#f}) and @tt{#:max-lod}. The defaults are @tt{SamplerDesc}'s.}
+ @item{@racket[uniform]: a mapped buffer per frame in flight, holding a value of its type that the
+       per-frame input computes once a frame, before the first material using it records, however
+       many use it. To spare memory traffic, a frame's buffer is only written when the value differs
+       from what it holds (so data that doesn't change isn't written again), and the buffers are in
+       device-local memory where the device can map it (all memory on unified memory
+       architectures, and resizable BAR on discrete GPUs). Shaders only read uniforms.}
+ @item{@racket[image]: created by the graph, which derives its usage. The extent is
+       @tt{(fixed width height)}, @tt{(surface scale)} (a fraction of the surface, recreated when it
+       resizes) or @tt{(extent-of imported-image)}. @tt{#:frames} is required: @tt{per-frame} images
+       let frames overlap, @tt{shared} ones save memory.}
+ @item{@racket[buffer]: @tt{count} elements of a type, for @tt{buffer} and @tt{buffer-array}
+       bindings.}
+ @item{@racket[target]: colour attachments @tt{(color image #:clear (r g b a) #:load clear|load|dont-care
+       #:store store|dont-care)} and a depth attachment @tt{(depth image #:clear d ...)}; or the
+       swapchain image, @tt{(surface #:clear (r g b a) #:depth format|none)}; or
+       @tt{(if condition spec spec)}, where a spec is one of those or @tt{(attachments ...)}.
+       Colour attachments default to clearing and storing, and depth to clearing and discarding.}
+]
+
+Image formats:
+
+@(format-table)
+
+With @tt{#:when}, an image or buffer is created only if the condition holds, and C++ gets a
+@tt{std::optional} id. Using it when it wasn't created (e.g. in a target or binding the condition
+doesn't cover) is a contract violation when the graph is built.
+
+@subsection{Materials and nodes}
+
+A graph's @racket[material] instantiates a material of the file, giving a resource for each of its
+bindings, either @tt{(binding resource)} or just @tt{binding} for a resource of the same name. A
+texture or storage image binding takes an image, a sampler binding a sampler, a @tt{buffer} binding
+a uniform or buffer of its type, and a @tt{buffer-array} binding a buffer of its element type. Its
+options are
+@itemlist[
+ @item{@tt{#:push ((field expression) ...)}: a value for every push constant;}
+ @item{graphics materials' pipeline options: @tt{#:cull} (@tt{none}, @tt{back}, @tt{front},
+       @tt{front-and-back}), @tt{#:front-face}, @tt{#:blend} (@tt{opaque}, @tt{alpha},
+       @tt{premultiplied-alpha}, @tt{additive}), @tt{#:depth-test}, @tt{#:depth-write},
+       @tt{#:depth-compare} and @tt{#:topology}, defaulting to @tt{GraphicsPipelineOptions}';}
+ @item{compute materials' @tt{#:invocations (x [y [z]])}, the invocations each dispatch covers
+       (rounded up to whole workgroups), which is required. It's computed each frame, so dispatch
+       sizes can follow per-frame inputs (e.g. a reduction over however many elements the CPU has
+       this frame) and images' sizes.}
+]
+A graphics material is built for the formats of the one target its nodes draw into, and every
+material is used by a node.
+
+Nodes:
+@itemlist[
+ @item{@racket[dispatch]: a compute material (a @tt{DispatchNode}).}
+ @item{@racket[draw-meshes]: draws each mesh of a meshes input with a graphics material that has a
+       @racket[vertex-input] (a @tt{RenderablesNode}).}
+ @item{@racket[draw]: draws a vertex count with a graphics material without one, e.g. a fullscreen
+       triangle or particles pulled from a buffer.}
+ @item{@racket[readback]: copies an image to the CPU each frame (a @tt{ReadbackNode}): C++ reads
+       it with @tt{graph.nodeAs<ReadbackNode>(*nodes.name).pixels()}.}
+ @item{@racket[cpu]: runs a cpu input each frame, in graph order.}
+]
+@tt{#:when} leaves a node out when the condition is false (C++ gets a @tt{std::optional} id), and
+@tt{#:enabled} adds it disabled: disabled nodes still count when the graph allocates resources, and
+C++ can enable them later with @tt{graph.setEnabled}.
+
+@subsection{The generated struct}
+
+A small graph:
+
+@(define graph-source #<<ZGAL
+(struct Settings
+  (gain float))
+
+(compute-material Amplify
+  (shaders "amplify.comp")
+  (workgroup 64)
+  (bindings
+   (settings (buffer Settings read))
+   (samples (buffer-array float read-write)))
+  (push
+   (count uint)))
+
+(graph Amplifier
+  (parameter count uint)
+  (parameter verbose bool)
+  (input settings (per-frame Settings))
+  (input report cpu)
+  (uniform settingsBuffer Settings settings)
+  (buffer samples float count #:frames shared)
+  (material amplify Amplify (settings settingsBuffer) samples
+            #:push ((count count))
+            #:invocations (count))
+  (dispatch amplify amplify)
+  (cpu report report #:when verbose))
+ZGAL
+)
+@(define graph-bodies
+   (hash "amplify.comp"
+         "void main() {\n    uint i = gl_GlobalInvocationID.x;\n    if (i < count()) {\n        samples()[i] *= settings().gain;\n    }\n}\n"))
+@(zgal-source graph-source)
+@(generated-file graph-source "example.zgal.h" #:bodies graph-bodies #:from #rx"^struct Amplifier" #:to #rx"^    Nodes nodes;")
+
+@tt{build()} returns a @tt{Result}: creating samplers and uniforms, and loading shaders, can fail.
+It creates each material as a @tt{zgal::Instance} or @tt{zgal::PushInstance} of its generated class
+(@tt{include/zgal/Runtime.h}), which writes its uniforms and computes its workgroups and push
+constants in @tt{update()}, once a frame, so every bind and dispatch that frame uses the same
+values. C++ uses the result like any
+graph's: @tt{app.setActiveGraph(graph)} or @tt{graph.execute()}, @tt{graph.setEnabled(nodes.name,
+...)}, and readbacks.
+
+@; -----------------------------------------------------------------------------------------------
 @section[#:tag "glsl"]{Shader bodies}
 
 A generated shader is, in order,
@@ -466,9 +687,13 @@ What ZGAL doesn't describe yet:
  @item{a shader used by more than one material.}
 ]
 
-ZGAL is planned to grow in stages: render graphs and their resources; shader bodies in an
-expression language with GLSL and C++ backends, from which bindings' accesses are inferred; and
-application state. The compiler's checked program (@tt{dsl/private/ast.rkt}) describes interfaces
+Graphs can't yet import buffers, use storage images other than 2D ones, run a node on a chosen
+queue, dispatch indirectly (a size an earlier pass writes on the GPU), or compute anything per
+frame but push constants, dispatch sizes and uniforms.
+
+ZGAL is planned to grow in stages: after interfaces and graphs, shader bodies in an expression
+language with GLSL and C++ backends (graphs' expressions are its start), from which bindings'
+accesses are inferred; and application state. The compiler's checked program (@tt{dsl/private/ast.rkt}) describes interfaces
 without assuming a backend, so other backends (e.g. WebGL) only add emitters.
 
 @; -----------------------------------------------------------------------------------------------
@@ -483,13 +708,18 @@ without assuming a backend, so other backends (e.g. WebGL) only add emitters.
   (list @tt{dsl/zgal.rkt} "the command line")
   (list @tt{dsl/compile.rkt} "compiling a file: reading, checking and generating; the tests and this document use it")
   (list @tt{dsl/private/parse.rkt} "reading and checking a file into the program")
+  (list @tt{dsl/private/syntax.rkt} "helpers for reading forms: shapes, names, namespaces")
+  (list @tt{dsl/private/graph.rkt} "reading and checking graphs, and their expressions' types")
   (list @tt{dsl/private/ast.rkt} "the checked program, independent of any backend")
   (list @tt{dsl/private/layout.rkt} "std430 layouts, and which types each place accepts")
   (list @tt{dsl/private/names.rkt} "valid and reserved names")
   (list @tt{dsl/private/errors.rkt} "the error catalog")
   (list @tt{dsl/private/writer.rkt} "writing generated code with #line directives")
   (list @tt{dsl/private/glsl.rkt} "the GLSL backend")
-  (list @tt{dsl/private/cpp.rkt} "the C++ backend")
+  (list @tt{dsl/private/cpp.rkt} "the C++ backend: structs, vertex formats and materials")
+  (list @tt{dsl/private/cpp-graph.rkt} "the C++ backend for graphs")
+  (list @tt{dsl/private/cpp-common.rkt} "C++ spellings the backend's modules share")
+  (list @tt{include/zgal/Runtime.h} "what the generated graphs use at runtime: FrameInfo, Uniform, Instance")
   (list @tt{dsl/docs/} "this document, and the helpers compiling its examples")
   (list @tt{dsl/tests/} "the compiler's tests (make test-dsl)"))]
 

@@ -1,0 +1,82 @@
+;; The particles example's shader interfaces and graph, in ZGAL (dsl/; `make docs` for the
+;; language). The build generates particles.zgal.h and the complete shaders, each body in shaders/
+;; preceded by its material's interface.
+
+;; The simulation's parameters for one frame, written by the CPU
+(struct SimParams
+  (attractor vec2)
+  (dt float)
+  (time float)
+  (aspect float)                ; Simulation space is [-aspect, aspect] x [-1, 1], y down like NDC
+  (attractorStrength float)
+  (stepIndex uint)              ; Simulation steps so far: seeds respawns
+  (reset uint)                  ; Non-zero: respawn every particle
+  (particleCount uint)
+  (particleRadius float))
+
+(struct Particle
+  (position vec2)
+  (velocity vec2)
+  (life float)                  ; Seconds left; respawned at 0
+  (maxLife float))
+
+;; Integrates the particles, one invocation each
+(compute-material ParticleSim
+  (shaders "shaders/particles.comp")
+  (workgroup 256)
+  (bindings
+   (params (buffer SimParams read))
+   (particles (buffer-array Particle read-write))))
+
+;; Draws every particle as a soft quad: two triangles per particle, pulled from the particle buffer
+;; by gl_VertexIndex rather than read as vertex attributes. That's the bindless way: the buffer is
+;; already in the universal descriptor set for the simulation, it needs no vertex input state, and
+;; the graph sees the read through the binding like any other.
+(graphics-material ParticleDraw
+  (shaders "shaders/particles.vert" "shaders/particles.frag")
+  (bindings
+   (params (buffer SimParams read) #:stages (vertex))
+   (particles (buffer-array Particle read) #:stages (vertex)))
+  (varyings
+   (corner vec2)                ; [-1, 1] across the quad
+   (color vec3))
+  (outputs
+   (outColor vec4)))
+
+;; The frame: the simulation, then the draw. The simulation writes the particle buffer and the draw
+;; reads it, so the graph runs them in that order (on different queues if it can) and synchronizes
+;; them.
+(graph ParticlesGraph
+  ;; Headless, the particles are drawn into an image of this size instead of the window, and with
+  ;; capture the last frame is read back
+  (parameter headless bool)
+  (parameter capture bool)
+  (parameter width uint)
+  (parameter height uint)
+  (parameter particleCount uint)
+  (input params (per-frame SimParams))
+  (input report cpu)
+
+  ;; A parameter buffer per frame in flight, so the CPU can write the next frame's while the GPU
+  ;; reads the previous one's
+  (uniform simParams SimParams params)
+  ;; The particles live on the GPU only, in one buffer shared by every frame: each frame's
+  ;; simulation continues from the last, and waits for the previous frame's draw
+  (buffer particles Particle particleCount #:frames shared)
+  (image offscreen rgba8-srgb (fixed width height) #:frames per-frame #:when headless)
+  ;; No depth: additive blending doesn't need it
+  (target screen (if headless
+                     (color offscreen #:clear (0.0 0.0 0.01 1.0))
+                     (surface #:clear (0.0 0.0 0.01 1.0) #:depth none)))
+
+  (material simulation ParticleSim (params simParams) particles
+            #:invocations (particleCount))
+  ;; Overlapping particles add up, so the result doesn't depend on draw order
+  (material drawing ParticleDraw (params simParams) particles
+            #:cull none #:blend additive)
+
+  (dispatch simulate simulation)
+  (draw drawParticles screen drawing (* 6 particleCount))
+  ;; Reports the frame rate. CPU nodes run each frame in graph order.
+  (cpu report report)
+  (readback readback offscreen #:when capture))

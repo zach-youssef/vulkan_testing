@@ -43,7 +43,7 @@
          "(struct Light\n  (direction vec3)")
    (kind 'unknown-form
          "Unknown top-level form"
-         "A file is a sequence of `struct`, `vertex-format`, `graphics-material` and `compute-material` forms."
+         "A file is a sequence of `struct`, `vertex-format`, `graphics-material`, `compute-material` and `graph` forms, and a graph of the items and nodes the reference lists."
          "(structure Light (direction vec3))")
    (kind 'malformed
          "A form doesn't have the expected shape"
@@ -67,7 +67,7 @@
          "(struct Light (direction float3))")
    (kind 'unknown-name
          "A reference to something that isn't declared"
-         "A `vertex-input` names a `vertex-format` declared earlier in the file, and optionally attributes of it."
+         "Names refer to declarations earlier in the file: a `vertex-input` to a `vertex-format` (and its attributes), a graph's material to a material, and a graph's items to the graph's parameters, inputs, resources and materials declared before them."
          "(vertex-format Vertex (position vec3))\n(graphics-material Flat\n  (shaders \"flat.vert\" \"flat.frag\")\n  (vertex-input Vertex normal)\n  (outputs (color vec4)))")
    (kind 'type-not-allowed
          "The type can't be used here"
@@ -121,6 +121,42 @@
          "The workgroup size is invalid"
          "`(workgroup x [y [z]])` gives one to three positive integers, the compute shader's local size; omitted dimensions are 1."
          "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 0))")
+   (kind 'type-mismatch
+         "A value has the wrong type, or a name the wrong kind"
+         "Graph expressions are typed: `if` needs a bool condition and branches of one type, arithmetic operands share a type (integer literals adapt to it), and a push constant's value has the field's type. A name used as a value is a parameter, constant or per-frame input, and one used as a resource is of the kind the place needs (e.g. a target, a material)."
+         "(graph G\n  (parameter size float)\n  (constant halfSize (/ size 2))\n  (image small rgba8 (fixed halfSize halfSize) #:frames shared))")
+   (kind 'not-build-time
+         "A per-frame input where a value is computed once"
+         "Conditions (`#:when`, `#:enabled`), constants, extents, buffer counts and vertex counts are computed when the graph is built, from parameters, constants and imported images' sizes. Per-frame inputs, and the sizes of the graph's own images (which it can recreate, e.g. when the surface resizes), are only known each frame, so only push constants and compute materials' `#:invocations` can use them."
+         "(graph G\n  (input size (per-frame uint))\n  (image i rgba8 (fixed size size) #:frames shared))")
+   (kind 'binding-mismatch
+         "A material binding is given the wrong kind of resource"
+         "Textures and storage images take images, samplers take samplers, `buffer` bindings take a uniform or a buffer of their type, and `buffer-array` bindings take a buffer of their element type. Uniforms are written by the CPU, so a binding writing one is an error."
+         "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64)\n  (bindings (target (storage-image write))))\n(graph G\n  (sampler s)\n  (material fill Fill (target s) #:invocations (64))\n  (dispatch fill fill))")
+   (kind 'incomplete-material
+         "A material in a graph doesn't give a binding or push constant"
+         "A graph's material gives a resource for every binding of the material it instantiates, and a value for every push constant (`#:push ((field value) ...)`)."
+         "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64)\n  (push (value float)))\n(graph G\n  (material fill Fill #:invocations (64))\n  (dispatch fill fill))")
+   (kind 'material-kind
+         "A node is given a material of the wrong kind"
+         "`dispatch` runs compute materials. `draw-meshes` draws graphics materials with a `vertex-input` (from mesh vertex buffers), and `draw` graphics materials without one (a vertex count, e.g. a fullscreen triangle)."
+         "(graphics-material Flat\n  (shaders \"flat.vert\" \"flat.frag\")\n  (outputs (color vec4)))\n(graph G\n  (target t (surface #:depth none))\n  (material quad Flat)\n  (dispatch run quad))")
+   (kind 'material-targets
+         "A graphics material is drawn into more than one target"
+         "A graphics material's pipeline is built for its target's formats, so each target needs a material of its own: declare one per target."
+         "(graphics-material Flat\n  (shaders \"flat.vert\" \"flat.frag\")\n  (outputs (color vec4)))\n(graph G\n  (image a rgba8 (fixed 4 4) #:frames shared)\n  (image b rgba8 (fixed 4 4) #:frames shared)\n  (target ta (color a))\n  (target tb (color b))\n  (material quad Flat)\n  (draw first ta quad 3)\n  (draw second tb quad 3))")
+   (kind 'unused-material
+         "No node uses a graph's material"
+         "A graph's materials are built for the nodes using them (a graphics material for its target's formats), so a material no node uses is a mistake: remove it, or add the node."
+         "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64))\n(graph G\n  (material fill Fill #:invocations (64)))")
+   (kind 'unknown-format
+         "Unknown image format"
+         "Image formats are written like `rgba8`, `rgba8-srgb`, `rgba16f` or `d32`; the reference lists them all with their Vulkan formats."
+         "(graph G\n  (image i rgba10 (fixed 4 4) #:frames shared))")
+   (kind 'bad-option
+         "A keyword option is missing, unknown or invalid"
+         "Options follow a form's positional arguments as `#:keyword value`. The message says what the form takes; some are required, e.g. an image's `#:frames` (`shared` or `per-frame`, a trade-off the wrapper makes explicit too)."
+         "(graph G\n  (image i rgba8 (fixed 4 4)))")
    (kind 'version-in-body
          "A shader body declares what ZGAL generates"
          "ZGAL writes the start of every shader: `#version`, the extensions it needs and `bindless.glsl`, then the material's interface. Bodies start with their own code, so remove the line."

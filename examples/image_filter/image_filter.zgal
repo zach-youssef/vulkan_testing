@@ -1,0 +1,111 @@
+;; The image filter's shader interfaces and graph, in ZGAL (dsl/; `make docs` for the language).
+;; The build generates image_filter.zgal.h and the complete shaders, each body in shaders/ preceded
+;; by its material's interface.
+;;
+;; Every pass is a compute shader run once per pixel of the working image (16 x 16 workgroups).
+
+;; Copies the input into the working image. The input is an sRGB texture, so sampling decodes it to
+;; linear colour.
+(compute-material Load
+  (shaders "shaders/load.comp")
+  (workgroup 16 16)
+  (bindings
+   (source texture)
+   (sourceSampler sampler)
+   (working (storage-image write))))
+
+;; One direction of a separable Gaussian blur, in linear light (so bright and dark areas mix as
+;; light does)
+(compute-material Blur
+  (shaders "shaders/blur.comp")
+  (workgroup 16 16)
+  (bindings
+   (source (storage-image read))
+   (destination (storage-image write)))
+  (push
+   (direction ivec2)            ; (1, 0) for the horizontal pass, (0, 1) for the vertical one
+   (radius int)                 ; In pixels; the kernel covers [-radius, radius]
+   (sigma float)))
+
+;; The two halves of a separable Sobel operator on perceived brightness
+(compute-material SobelRows
+  (shaders "shaders/sobel_rows.comp")
+  (workgroup 16 16)
+  (bindings
+   (source (storage-image read))
+   (destination (storage-image write))))
+(compute-material SobelColumns
+  (shaders "shaders/sobel_columns.comp")
+  (workgroup 16 16)
+  (bindings
+   (source (storage-image read))
+   (destination (storage-image write))))
+
+;; Makes each pixel black or white, in place
+(compute-material Threshold
+  (shaders "shaders/threshold.comp")
+  (workgroup 16 16)
+  (bindings
+   (working (storage-image read-write)))
+  (push
+   (threshold float)))
+
+;; Encodes the linear working image as sRGB bytes for the PNG. Storage images can't be sRGB, so
+;; the output is UNORM and the encoding happens here.
+(compute-material Store
+  (shaders "shaders/store.comp")
+  (workgroup 16 16)
+  (bindings
+   (working (storage-image read))
+   (encoded (storage-image write))))
+
+;; Each filter takes the working image back to the working image, so the graph contains every pass
+;; and the ones the user didn't ask for are disabled (see image_filter.cpp)
+(graph FilterGraph
+  (parameter blur bool)
+  (parameter radius int)          ; Only used if blur is enabled, but valid either way
+  (parameter edges bool)
+  (parameter binarize bool)
+  (parameter level float)         ; The threshold, if binarize is enabled
+  ;; createFromFile leaves the input ready for sampling, and the graph keeps it that way
+  (import-image source #:resting shader-read-only)
+
+  (constant imageWidth (width source))
+  (constant imageHeight (height source))
+  (sampler nearest #:filter nearest #:address clamp-to-edge)
+  ;; The graph's images. They're only used within one frame, so one copy is shared by every frame
+  ;; in flight rather than one per frame. Linear colour as half floats: 8 bits would band.
+  (image working rgba16f (extent-of source) #:frames shared)
+  (image scratch rgba16f (extent-of source) #:frames shared)
+  (image encoded rgba8 (extent-of source) #:frames shared)
+
+  ;; Bindings' accesses are what the graph synchronizes on: e.g. the blur's column pass reading
+  ;; scratch waits for the row pass writing it
+  (material load Load source (sourceSampler nearest) working
+            #:invocations (imageWidth imageHeight))
+  ;; The kernel spans two standard deviations either side
+  (material blurRows Blur (source working) (destination scratch)
+            #:push ((direction (ivec2 1 0)) (radius radius) (sigma (/ (float radius) 2.0)))
+            #:invocations (imageWidth imageHeight))
+  (material blurColumns Blur (source scratch) (destination working)
+            #:push ((direction (ivec2 0 1)) (radius radius) (sigma (/ (float radius) 2.0)))
+            #:invocations (imageWidth imageHeight))
+  (material sobelRows SobelRows (source working) (destination scratch)
+            #:invocations (imageWidth imageHeight))
+  (material sobelColumns SobelColumns (source scratch) (destination working)
+            #:invocations (imageWidth imageHeight))
+  (material threshold Threshold working
+            #:push ((threshold level))
+            #:invocations (imageWidth imageHeight))
+  (material store Store working encoded
+            #:invocations (imageWidth imageHeight))
+
+  ;; Insertion order is program order wherever passes use the same image
+  (dispatch load load)
+  (dispatch blurRows blurRows #:enabled blur)
+  (dispatch blurColumns blurColumns #:enabled blur)
+  (dispatch sobelRows sobelRows #:enabled edges)
+  (dispatch sobelColumns sobelColumns #:enabled edges)
+  (dispatch threshold threshold #:enabled binarize)
+  (dispatch store store)
+  (readback readback encoded))

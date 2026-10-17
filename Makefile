@@ -89,16 +89,21 @@ IMAGE_FILTER_BIN = $(IMAGE_FILTER_OUT)/image_filter
 IMAGE_FILTER_SHADER_SRCS = $(wildcard $(IMAGE_FILTER_DIR)/shaders/*.comp)
 IMAGE_FILTER_SHADER_INCLUDES = $(wildcard $(IMAGE_FILTER_DIR)/shaders/*.glsl)
 IMAGE_FILTER_SHADERS = $(patsubst $(IMAGE_FILTER_DIR)/shaders/%,$(IMAGE_FILTER_OUT)/shaders/%.spv,$(IMAGE_FILTER_SHADER_SRCS))
-IMAGE_FILTER_CFLAGS = $(CFLAGS) -DIMAGE_FILTER_SHADER_DIR='"$(abspath $(IMAGE_FILTER_OUT)/shaders)"'
+# The shaders' interfaces and the graph are in image_filter.zgal
+IMAGE_FILTER_GEN = $(IMAGE_FILTER_OUT)/generated
+IMAGE_FILTER_ZGAL_STAMP = $(IMAGE_FILTER_GEN)/image_filter.zgal.stamp
+IMAGE_FILTER_CFLAGS = $(CFLAGS) -I$(IMAGE_FILTER_GEN) -DIMAGE_FILTER_SHADER_DIR='"$(abspath $(IMAGE_FILTER_OUT)/shaders)"'
 IMAGE_FILTER_TEST_DIR = $(IMAGE_FILTER_DIR)/tests
 IMAGE_FILTER_TEST_OUT = $(IMAGE_FILTER_OUT)/tests
 IMAGE_FILTER_DIFF = $(IMAGE_FILTER_TEST_OUT)/image_diff
 
-$(IMAGE_FILTER_OUT)/shaders/%.spv : $(IMAGE_FILTER_DIR)/shaders/% $(IMAGE_FILTER_SHADER_INCLUDES) $(GLSL_INCLUDES)
-	@mkdir -p $(dir $@)
-	glslc $(GLSLC_FLAGS) $< -o $@
+$(eval $(call zgal-rule,$(IMAGE_FILTER_DIR)/image_filter.zgal,$(IMAGE_FILTER_GEN)))
 
-$(IMAGE_FILTER_OUT)/image_filter.o : $(IMAGE_FILTER_DIR)/image_filter.cpp $(HEADERS)
+$(IMAGE_FILTER_SHADERS): $(IMAGE_FILTER_OUT)/shaders/%.spv : $(IMAGE_FILTER_ZGAL_STAMP) $(IMAGE_FILTER_SHADER_INCLUDES) $(GLSL_INCLUDES)
+	@mkdir -p $(dir $@)
+	glslc $(GLSLC_FLAGS) -I$(IMAGE_FILTER_DIR)/shaders $(IMAGE_FILTER_GEN)/shaders/$* -o $@
+
+$(IMAGE_FILTER_OUT)/image_filter.o : $(IMAGE_FILTER_DIR)/image_filter.cpp $(IMAGE_FILTER_ZGAL_STAMP) $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -c -o $@ $< $(IMAGE_FILTER_CFLAGS)
 
@@ -131,15 +136,20 @@ test-example-image_filter: $(IMAGE_FILTER_BIN) $(IMAGE_FILTER_DIFF)
 # ---------------------------------------------------------------------------
 PARTICLES_DIR = $(EXAMPLES_DIR)/particles
 PARTICLES_OUT = $(EXAMPLES_OUT)/particles
+# The shaders' interfaces and the graph are in particles.zgal
+PARTICLES_GEN = $(PARTICLES_OUT)/generated
+PARTICLES_ZGAL_STAMP = $(PARTICLES_GEN)/particles.zgal.stamp
 PARTICLES_SHADER_SRCS = $(wildcard $(PARTICLES_DIR)/shaders/*)
 PARTICLES_SHADERS = $(patsubst $(PARTICLES_DIR)/shaders/%,$(PARTICLES_OUT)/shaders/%.spv,$(PARTICLES_SHADER_SRCS))
-PARTICLES_CFLAGS = $(CFLAGS) -DPARTICLES_SHADER_DIR='"$(abspath $(PARTICLES_OUT)/shaders)"'
+PARTICLES_CFLAGS = $(CFLAGS) -I$(PARTICLES_GEN) -DPARTICLES_SHADER_DIR='"$(abspath $(PARTICLES_OUT)/shaders)"'
 
-$(PARTICLES_OUT)/shaders/%.spv : $(PARTICLES_DIR)/shaders/% $(GLSL_INCLUDES)
+$(eval $(call zgal-rule,$(PARTICLES_DIR)/particles.zgal,$(PARTICLES_GEN)))
+
+$(PARTICLES_SHADERS): $(PARTICLES_OUT)/shaders/%.spv : $(PARTICLES_ZGAL_STAMP) $(GLSL_INCLUDES)
 	@mkdir -p $(dir $@)
-	glslc $(GLSLC_FLAGS) $< -o $@
+	glslc $(GLSLC_FLAGS) -I$(PARTICLES_DIR)/shaders $(PARTICLES_GEN)/shaders/$* -o $@
 
-$(PARTICLES_OUT)/particles.o : $(PARTICLES_DIR)/particles.cpp $(HEADERS)
+$(PARTICLES_OUT)/particles.o : $(PARTICLES_DIR)/particles.cpp $(PARTICLES_ZGAL_STAMP) $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -c -o $@ $< $(PARTICLES_CFLAGS)
 

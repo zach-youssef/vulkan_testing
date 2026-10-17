@@ -1,41 +1,3 @@
-#version 450
-#include "bindless.glsl"
-
-// The material's bindings, in order (shared with particles.vert)
-layout(push_constant) uniform Indices {
-    uint params;      // SimParams, one buffer per frame in flight
-    uint particles;   // Particle[particleCount], shared by every frame
-} indices;
-
-// Matches SimParams in particles.cpp
-struct SimParams {
-    vec2 attractor;
-    float dt;
-    float time;
-    float aspect;             // Simulation space is [-aspect, aspect] x [-1, 1], y down like NDC
-    float attractorStrength;
-    uint step;                // Simulation steps so far: seeds respawns
-    uint reset;               // Non-zero: respawn every particle
-    uint particleCount;
-    float particleRadius;
-};
-
-// Matches Particle in particles.cpp
-struct Particle {
-    vec2 position;
-    vec2 velocity;
-    float life;      // Seconds left; respawned at 0
-    float maxLife;
-    vec2 padding;
-};
-
-// Both blocks are writable: MoltenVK can't alias a readonly block with a writable one at the same
-// binding
-BINDLESS_BUFFER(, ParamBuffers, SimParams, paramBuffers);
-BINDLESS_BUFFER_ARRAY(, ParticleBuffers, Particle, particleBuffers);
-
-layout(local_size_x = 256) in;
-
 // PCG hash: a well distributed random uint from a uint
 uint hash(uint v) {
     uint state = v * 747796405u + 2891336453u;
@@ -50,7 +12,7 @@ float random(inout uint seed) {
 
 // A new particle on a ring around the centre, drifting round it
 Particle spawn(uint index, SimParams params) {
-    uint seed = hash(index ^ hash(params.step));
+    uint seed = hash(index ^ hash(params.stepIndex));
     float angle = random(seed) * 6.2831853;
     float radius = 0.3 + 0.6 * random(seed);
     vec2 direction = vec2(cos(angle), sin(angle));
@@ -61,23 +23,22 @@ Particle spawn(uint index, SimParams params) {
     p.maxLife = 3.0 + 5.0 * random(seed);
     // Spread initial lifetimes so particles don't all respawn together
     p.life = params.reset != 0 ? p.maxLife * random(seed) : p.maxLife;
-    p.padding = vec2(0.0);
     return p;
 }
 
 void main() {
     uint index = gl_GlobalInvocationID.x;
-    SimParams params = paramBuffers[indices.params].data;
+    SimParams params = params();
     if (index >= params.particleCount) {
         return;
     }
 
     if (params.reset != 0) {
-        particleBuffers[indices.particles].data[index] = spawn(index, params);
+        particles()[index] = spawn(index, params);
         return;
     }
 
-    Particle p = particleBuffers[indices.particles].data[index];
+    Particle p = particles()[index];
     // Softened inverse-square attraction, so particles passing through the attractor don't explode
     vec2 toAttractor = params.attractor - p.position;
     float distanceSquared = dot(toAttractor, toAttractor) + 0.01;
@@ -93,5 +54,5 @@ void main() {
     if (p.life <= 0.0 || offscreen) {
         p = spawn(index, params);
     }
-    particleBuffers[indices.particles].data[index] = p;
+    particles()[index] = p;
 }
