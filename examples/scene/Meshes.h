@@ -1,6 +1,7 @@
 #pragma once
 
-#include "materials/GraphicsMaterial.h"
+// SceneVertex, generated from scene.zgal
+#include "scene.zgal.h"
 
 #include <vulkan/vulkan.h>
 
@@ -18,31 +19,11 @@
  baked into the vertices), since nothing in the scene moves but the light and the camera. Each
  vertex carries its surface's material: a linear albedo and a roughness.
 
+ The vertex format, SceneVertex, is declared in scene.zgal.
+
  Front faces are counter-clockwise seen from outside, as in OpenGL; the example's projections flip Y
  for Vulkan, which keeps them counter-clockwise on screen.
  */
-
-struct SceneVertex {
-    glm::vec3 position;
-    glm::vec3 normal;
-    glm::vec4 albedoRoughness;   // rgb: linear albedo, a: roughness
-
-    // Every attribute, for the lit pass
-    static VertexLayout layout() {
-        return VertexLayout::interleaved(sizeof(SceneVertex), {
-            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SceneVertex, position)},
-            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SceneVertex, normal)},
-            {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SceneVertex, albedoRoughness)},
-        });
-    }
-
-    // Positions only, for the shadow pass (the same buffers, skipping the other attributes)
-    static VertexLayout positionLayout() {
-        return VertexLayout::interleaved(sizeof(SceneVertex), {
-            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(SceneVertex, position)},
-        });
-    }
-};
 
 struct SurfaceMaterial {
     glm::vec3 albedo;

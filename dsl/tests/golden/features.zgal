@@ -1,0 +1,52 @@
+;; Every feature of the language, for the golden tests (golden-test.rkt): the generated header and
+;; shaders are compared with expected/, and compiled by toolchain-test.rkt
+
+(struct Light
+  (direction vec3)
+  (intensity float)             ; Packed after the vec3
+  (color vec4))
+
+(struct Lights
+  (count uint)
+  (lights (array Light 4)))
+
+(vertex-format MeshVertex
+  (position vec3)
+  (normal vec3)
+  (uv vec2)
+  (material uint))
+
+;; Every kind of binding, stages, push constants and every kind of varying
+(graphics-material Surface
+  (shaders "shaders/surface.vert" "shaders/surface.frag")
+  (vertex-input MeshVertex position uv material)
+  (bindings
+   (lights (buffer Lights read) #:stages (fragment))
+   (transforms (buffer-array mat4 read) #:stages (vertex))
+   (albedo texture #:stages (fragment))
+   (albedoSampler sampler)
+   (mask (storage-image read) #:stages (fragment)))
+  (push
+   (object uint)
+   (tint vec3))
+  (varyings
+   (uv vec2)
+   (screen vec2 noperspective)
+   (material uint flat))
+  (outputs
+   (color vec4)
+   (normalOut vec4)))
+
+;; Writes buffers and an image: no buffer block is readonly
+(compute-material Accumulate
+  (shaders "shaders/accumulate.comp")
+  (workgroup 8 8)
+  (bindings
+   (lights (buffer Lights read))
+   (sums (buffer-array float read-write))
+   (target (storage-image write))))
+
+;; No bindings or push constants at all
+(graphics-material Plain
+  (shaders "shaders/plain.vert" "shaders/plain.frag")
+  (outputs (color vec4)))

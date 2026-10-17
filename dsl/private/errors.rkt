@@ -1,0 +1,149 @@
+#lang racket/base
+;; ZGAL's errors: every error the compiler reports has an id from the catalog below, which the
+;; documentation renders (with each example's actual message) and the tests check (each example
+;; must report its id). Raising an id that isn't in the catalog is an internal error, so the
+;; catalog can't fall behind the compiler.
+
+(require racket/list
+         racket/string)
+
+(provide (struct-out loc)
+         (struct-out exn:zgal)
+         (struct-out error-kind)
+         stx->loc
+         zgal-error
+         error-catalog
+         error-kind-ref
+         format-zgal-error)
+
+;; A position in a source file (a .zgal file or a shader body). Lines and columns count from 1.
+(struct loc (source line column) #:transparent)
+
+(define (stx->loc stx)
+  (loc (let ([source (syntax-source stx)])
+         (if (path? source) (path->string source) (format "~a" source)))
+       (or (syntax-line stx) 1)
+       (add1 (or (syntax-column stx) 0))))
+
+;; An error in the program being compiled: `where` is a loc or #f
+(struct exn:zgal exn:fail (id where) #:transparent)
+
+;; id: a symbol. title: a short description. explanation: what causes it and how to fix it.
+;; example: a program reporting it. bodies: shader bodies the example uses (path -> text).
+(struct error-kind (id title explanation example bodies) #:transparent)
+
+(define (kind id title explanation example [bodies (hash)])
+  (error-kind id title explanation example bodies))
+
+(define error-catalog
+  (list
+   (kind 'read-error
+         "The file isn't valid s-expressions"
+         "Parentheses don't balance, or a token can't be read (e.g. a string isn't closed). The location is where the reader gave up, which for a missing `)` is often the end of the file: look for the form that doesn't close."
+         "(struct Light\n  (direction vec3)")
+   (kind 'unknown-form
+         "Unknown top-level form"
+         "A file is a sequence of `struct`, `vertex-format`, `graphics-material` and `compute-material` forms."
+         "(structure Light (direction vec3))")
+   (kind 'malformed
+         "A form doesn't have the expected shape"
+         "The message says what was expected, e.g. a struct field is `(name type)`. The reference gives every form's grammar."
+         "(struct Light direction vec3)")
+   (kind 'bad-identifier
+         "Not a valid name"
+         "Names become GLSL and C++ identifiers, so they are letters, digits and underscores, start with a letter and don't contain `__`. Lisp-style names such as `shadow-map` aren't translated: write `shadowMap`, the name the shaders and C++ use."
+         "(struct Light (light-direction vec3))")
+   (kind 'reserved-name
+         "The name is reserved"
+         "The name is a GLSL or C++ keyword, a GLSL built-in function (binding accessors are function-like macros, so a binding named `texture` would replace GLSL's `texture()`), a type, a name the wrapper's C++ uses (e.g. `Material`), or one the generated code uses (`main`, `materialPush`, anything starting with `zgal` or `gl_`)."
+         "(struct Light (sampler uint))")
+   (kind 'duplicate-name
+         "A name is declared twice"
+         "Top-level names (structs, vertex formats, materials) are one namespace, as are the fields of a struct. Within a material, bindings, push constants, varyings, outputs and vertex inputs (`in` followed by the attribute's name) share the shaders' global scope, and can't reuse a struct's name either."
+         "(struct Light (direction vec3) (direction vec3))")
+   (kind 'unknown-type
+         "Unknown type"
+         "Types are `float`, `int`, `uint`, `bool`, their vectors (`vec2`-`vec4`, `ivec2`-`ivec4`, `uvec2`-`uvec4`), `mat2`, `mat3`, `mat4`, `(array type length)` and structs declared earlier in the file. A struct must be declared before it's used."
+         "(struct Light (direction float3))")
+   (kind 'unknown-name
+         "A reference to something that isn't declared"
+         "A `vertex-input` names a `vertex-format` declared earlier in the file, and optionally attributes of it."
+         "(vertex-format Vertex (position vec3))\n(graphics-material Flat\n  (shaders \"flat.vert\" \"flat.frag\")\n  (vertex-input Vertex normal)\n  (outputs (color vec4)))")
+   (kind 'type-not-allowed
+         "The type can't be used here"
+         "Buffers and push constants use the std430 layout, which C++ must match byte for byte: `bool` has no fixed size there (use `uint`), and `mat3` and arrays of 3-component vectors are padded differently by GLM (use `mat4` and 4-component vectors). Vertex attributes, varyings and outputs are scalars or vectors of `float`, `int` or `uint`. Buffer bindings hold a struct, scalar, vector or matrix, not an array (use `buffer-array`)."
+         "(struct Light (enabled bool))")
+   (kind 'bad-array-length
+         "An array's length isn't a positive integer"
+         "Arrays in structs and push constants have a fixed length: `(array float 8)`. For arrays sized at runtime, use a `buffer-array` binding."
+         "(struct Weights (values (array float 0)))")
+   (kind 'unknown-clause
+         "Unknown or misplaced material clause"
+         "Graphics materials take `shaders`, `vertex-input`, `bindings`, `push`, `varyings` and `outputs`; compute materials take `shaders`, `workgroup`, `bindings` and `push`."
+         "(compute-material Blur\n  (shaders \"blur.comp\")\n  (workgroup 16 16)\n  (outputs (color vec4)))")
+   (kind 'missing-clause
+         "A required material clause is missing"
+         "Every material needs `shaders`. Graphics materials need `outputs` (write `(outputs)` for depth-only materials): it fixes how many colour attachments their targets have. Compute materials need `workgroup`."
+         "(graphics-material Flat\n  (shaders \"flat.vert\" \"flat.frag\"))")
+   (kind 'duplicate-clause
+         "A material clause appears twice"
+         "Each clause appears at most once; list everything in one clause."
+         "(graphics-material Flat\n  (shaders \"flat.vert\" \"flat.frag\")\n  (outputs (color vec4))\n  (outputs (normal vec4)))")
+   (kind 'bad-shader
+         "The material's shaders don't fit it"
+         "Shaders are paths relative to the .zgal file, and their extension is their stage: `.vert`, `.frag` or `.comp`. A graphics material has one vertex and one fragment shader, a compute material one compute shader."
+         "(graphics-material Flat\n  (shaders \"flat.vert\")\n  (outputs (color vec4)))")
+   (kind 'shader-not-found
+         "A shader body doesn't exist"
+         "The path is relative to the .zgal file. Shader bodies are only read when generating GLSL, so checking a file (`--check`) doesn't report this."
+         "(graphics-material Flat\n  (shaders \"missing.vert\" \"missing.frag\")\n  (outputs (color vec4)))")
+   (kind 'shader-reused
+         "Two materials use the same shader"
+         "Each shader body is compiled with its material's interface, so it belongs to one material. The shader library finds shaders by file name, so two shaders can't share one either, even in different directories. Share code between shaders with GLSL `#include`."
+         "(graphics-material A\n  (shaders \"flat.vert\" \"flat.frag\")\n  (outputs (color vec4)))\n(graphics-material B\n  (shaders \"flat.vert\" \"other.frag\")\n  (outputs (color vec4)))")
+   (kind 'bad-binding
+         "A binding's kind or access is invalid"
+         "A binding is `(name kind)`, where the kind is `texture`, `sampler`, `(storage-image access)`, `(buffer type access)` or `(buffer-array type access)`, and the access is `read`, `write` or `read-write`. The access is what the render graph synchronizes on, so it's required: declare it accurately."
+         "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64)\n  (bindings (result (buffer float))))")
+   (kind 'bad-stages
+         "A binding's stages are invalid"
+         "`#:stages` lists the shader stages using a graphics material's binding (`vertex`, `fragment`), so the render graph synchronizes with the right ones; without it, both. Compute materials' bindings are always used by the compute stage, and samplers aren't synchronized, so neither takes `#:stages`."
+         "(graphics-material Flat\n  (shaders \"flat.vert\" \"flat.frag\")\n  (bindings (albedo texture #:stages (geometry)))\n  (outputs (color vec4)))")
+   (kind 'push-too-large
+         "The push constants don't fit"
+         "A material's push constants are a 32-bit index per binding followed by its `push` fields, and the wrapper's pipeline layout has 128 bytes of them. Move large or rarely changing data into a buffer."
+         "(compute-material Big\n  (shaders \"big.comp\")\n  (workgroup 64)\n  (push (a mat4) (b mat4) (c float)))")
+   (kind 'varying-not-flat
+         "An integer varying isn't flat"
+         "Vulkan doesn't interpolate integers: declare integer varyings `flat`, e.g. `(id uint flat)`."
+         "(graphics-material Ids\n  (shaders \"ids.vert\" \"ids.frag\")\n  (varyings (id uint))\n  (outputs (color vec4)))")
+   (kind 'bad-workgroup
+         "The workgroup size is invalid"
+         "`(workgroup x [y [z]])` gives one to three positive integers, the compute shader's local size; omitted dimensions are 1."
+         "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 0))")
+   (kind 'version-in-body
+         "A shader body declares what ZGAL generates"
+         "ZGAL writes the start of every shader: `#version`, the extensions it needs and `bindless.glsl`, then the material's interface. Bodies start with their own code, so remove the line."
+         "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64))"
+         (hash "fill.comp" "#version 450\nvoid main() {}\n"))))
+
+(define catalog-by-id
+  (for/hash ([k (in-list error-catalog)]) (values (error-kind-id k) k)))
+
+(define (error-kind-ref id) (hash-ref catalog-by-id id #f))
+
+;; Raises an error in the program being compiled. where: a syntax object, a loc or #f.
+(define (zgal-error id where fmt . args)
+  (unless (error-kind-ref id)
+    (error 'zgal "internal error: error id ~a isn't in the catalog" id))
+  (define location (cond [(syntax? where) (stx->loc where)]
+                         [(loc? where) where]
+                         [else #f]))
+  (raise (exn:zgal (apply format fmt args) (current-continuation-marks) id location)))
+
+;; "file:line:column: error: message [id]", the format compilers use, so editors can jump to it
+(define (format-zgal-error e)
+  (define where (exn:zgal-where e))
+  (string-append
+   (if where (format "~a:~a:~a: " (loc-source where) (loc-line where) (loc-column where)) "")
+   (format "error: ~a [~a]" (exn-message e) (exn:zgal-id e))))

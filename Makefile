@@ -25,6 +25,32 @@ GLSL_INCLUDES = $(wildcard $(INCLUDE_DIR)/glsl/*.glsl)
 GLSLC_FLAGS = -I$(INCLUDE_DIR)/glsl --target-env=vulkan1.3
 
 # ---------------------------------------------------------------------------
+# ZGAL (dsl/): the shader interface language. Its compiler, in Racket, generates a C++ header and
+# complete shaders from a .zgal file. make docs builds its documentation.
+# ---------------------------------------------------------------------------
+RACKET = racket
+RACO = raco
+DSL_DIR = dsl
+DSL_SRCS = $(wildcard $(DSL_DIR)/*.rkt $(DSL_DIR)/private/*.rkt)
+# The compiler, compiled (Racket keeps compiled code in compiled/ directories beside the sources)
+ZGAL_COMPILED = $(DSL_DIR)/compiled/zgal_rkt.zo
+ZGAL = $(RACKET) $(DSL_DIR)/zgal.rkt
+
+$(ZGAL_COMPILED): $(DSL_SRCS)
+	$(RACO) make $(DSL_DIR)/zgal.rkt
+
+# Generates <out>/<name>.zgal.h and <out>/shaders/<shader> from <dir>/<name>.zgal, and a depfile
+# making the stamp depend on the shader bodies:
+#   $(call zgal-rule,<dir>/<name>.zgal,<out>)
+# Shaders compile from <out>/shaders with -I<dir>/shaders, for files their bodies include.
+define zgal-rule
+$(2)/$(notdir $(1)).stamp: $(1) $(ZGAL_COMPILED)
+	$(ZGAL) --cpp-out $(2) --glsl-out $(2)/shaders --depfile $(2)/$(notdir $(1)).d --dep-target $$@ $$<
+	@touch $$@
+-include $(2)/$(notdir $(1)).d
+endef
+
+# ---------------------------------------------------------------------------
 # Examples
 #   make            - build the simple example into build/examples/simple
 # ---------------------------------------------------------------------------
@@ -131,17 +157,21 @@ test-example-particles: $(PARTICLES_OUT)/particles
 # ---------------------------------------------------------------------------
 SCENE_DIR = $(EXAMPLES_DIR)/scene
 SCENE_OUT = $(EXAMPLES_OUT)/scene
-# Stages only; scene.glsl is included by them
+# The shaders' interfaces are in scene.zgal: the generated shaders are its bodies (shaders/) with
+# the interface prepended
+SCENE_GEN = $(SCENE_OUT)/generated
+SCENE_ZGAL_STAMP = $(SCENE_GEN)/scene.zgal.stamp
 SCENE_SHADER_SRCS = $(wildcard $(SCENE_DIR)/shaders/*.vert $(SCENE_DIR)/shaders/*.frag)
-SCENE_SHADER_INCLUDES = $(wildcard $(SCENE_DIR)/shaders/*.glsl)
 SCENE_SHADERS = $(patsubst $(SCENE_DIR)/shaders/%,$(SCENE_OUT)/shaders/%.spv,$(SCENE_SHADER_SRCS))
-SCENE_CFLAGS = $(CFLAGS) -DSCENE_EXAMPLE_SHADER_DIR='"$(abspath $(SCENE_OUT)/shaders)"'
+SCENE_CFLAGS = $(CFLAGS) -I$(SCENE_GEN) -DSCENE_EXAMPLE_SHADER_DIR='"$(abspath $(SCENE_OUT)/shaders)"'
 
-$(SCENE_OUT)/shaders/%.spv : $(SCENE_DIR)/shaders/% $(GLSL_INCLUDES) $(SCENE_SHADER_INCLUDES)
+$(eval $(call zgal-rule,$(SCENE_DIR)/scene.zgal,$(SCENE_GEN)))
+
+$(SCENE_SHADERS): $(SCENE_OUT)/shaders/%.spv : $(SCENE_ZGAL_STAMP) $(GLSL_INCLUDES)
 	@mkdir -p $(dir $@)
-	glslc $(GLSLC_FLAGS) $< -o $@
+	glslc $(GLSLC_FLAGS) -I$(SCENE_DIR)/shaders $(SCENE_GEN)/shaders/$* -o $@
 
-$(SCENE_OUT)/scene_example.o : $(SCENE_DIR)/scene_example.cpp $(wildcard $(SCENE_DIR)/*.h) $(HEADERS)
+$(SCENE_OUT)/scene_example.o : $(SCENE_DIR)/scene_example.cpp $(wildcard $(SCENE_DIR)/*.h) $(SCENE_ZGAL_STAMP) $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) -c -o $@ $< $(SCENE_CFLAGS)
 
@@ -174,7 +204,11 @@ shaders: $(SIMPLE_SHADERS) $(IMAGE_FILTER_SHADERS) $(PARTICLES_SHADERS) $(SCENE_
 TEST_DIR = tests
 TEST_OUT = $(OUT)/tests
 TEST_SHADER_OUT = $(TEST_OUT)/shaders
-TEST_CFLAGS = $(CFLAGS) -Ithird_party -Ithird_party/approvaltests -Ithird_party/flip -I$(TEST_DIR) \
+# The GPU tests' ZGAL interfaces (tests/gpu/zgal), generated like an example's
+TEST_GEN = $(TEST_OUT)/generated
+TEST_ZGAL_DIR = $(TEST_DIR)/gpu/zgal
+TEST_ZGAL_STAMP = $(TEST_GEN)/interfaces.zgal.stamp
+TEST_CFLAGS = $(CFLAGS) -Ithird_party -Ithird_party/approvaltests -Ithird_party/flip -I$(TEST_DIR) -I$(TEST_GEN) \
               -DTEST_SHADER_DIR='"$(abspath $(TEST_SHADER_OUT))"' \
               -DTEST_TEXTURE_DIR='"$(abspath $(SIMPLE_DIR)/textures)"'
 TEST_HEADERS = $(HEADERS) $(wildcard $(TEST_DIR)/*/*.h)
@@ -189,6 +223,16 @@ GPU_TEST_OBJS = $(patsubst $(TEST_DIR)/%.cpp,$(TEST_OUT)/%.o,$(GPU_TEST_SRCS))
 # compiled to $(TEST_SHADER_OUT)/<name>.<stage>.spv
 GPU_TEST_SHADER_SRCS = $(wildcard $(TEST_DIR)/gpu/shaders/*) $(SIMPLE_SHADER_SRCS)
 GPU_TEST_SHADERS = $(patsubst %,$(TEST_SHADER_OUT)/%.spv,$(notdir $(GPU_TEST_SHADER_SRCS)))
+TEST_ZGAL_SHADERS = $(patsubst %,$(TEST_SHADER_OUT)/%.spv,$(notdir $(wildcard $(TEST_ZGAL_DIR)/shaders/*)))
+GPU_TEST_SHADERS += $(TEST_ZGAL_SHADERS)
+
+$(eval $(call zgal-rule,$(TEST_ZGAL_DIR)/interfaces.zgal,$(TEST_GEN)))
+
+$(TEST_ZGAL_SHADERS): $(TEST_SHADER_OUT)/%.spv : $(TEST_ZGAL_STAMP) $(GLSL_INCLUDES)
+	@mkdir -p $(dir $@)
+	glslc $(GLSLC_FLAGS) -I$(TEST_ZGAL_DIR)/shaders $(TEST_GEN)/shaders/$* -o $@
+
+$(TEST_OUT)/gpu/ZgalTest.o: $(TEST_ZGAL_STAMP)
 
 $(TEST_SHADER_OUT)/%.spv : $(TEST_DIR)/gpu/shaders/% $(GLSL_INCLUDES)
 	@mkdir -p $(dir $@)
@@ -218,7 +262,22 @@ test-cpu: $(TEST_OUT)/cpu_tests
 test-gpu: $(TEST_OUT)/gpu_tests
 	./$< $(TEST_ARGS)
 
-test: test-cpu test-gpu
+# The ZGAL compiler's tests, and its documentation, whose examples are compiled as it's built.
+# The tests compile generated code with the build's tools and flags.
+DOCS_OUT = $(OUT)/docs
+ZGAL_TEST_ENV = ZGAL_GLSLC='glslc' ZGAL_GLSLC_FLAGS='$(GLSLC_FLAGS:-I%=-I$(CURDIR)/%)' \
+                 ZGAL_CXX='$(CXX)' ZGAL_CXXFLAGS='$(subst -Iinclude,-I$(CURDIR)/include,$(subst -Ithird_party,-I$(CURDIR)/third_party,$(CXXFLAGS)))'
+
+test-dsl: $(ZGAL_COMPILED) docs
+	$(ZGAL_TEST_ENV) $(RACO) test $(DSL_DIR)/tests
+
+# build/docs/zgal.html, and zgal.txt for reading in a terminal
+docs: $(ZGAL_COMPILED)
+	@mkdir -p $(DOCS_OUT)
+	$(RACO) scribble --html --dest $(DOCS_OUT) $(DSL_DIR)/docs/zgal.scrbl
+	$(RACO) scribble --text --dest $(DOCS_OUT) $(DSL_DIR)/docs/zgal.scrbl
+
+test: test-cpu test-gpu test-dsl
 
 SCREENSHOT_DIR = $(TEST_DIR)/gpu/approved
 
@@ -229,8 +288,8 @@ approve-screenshots:
 	done
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
-.PHONY: clean examples shaders test test-cpu test-gpu approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples
+.PHONY: clean examples shaders test test-cpu test-gpu test-dsl docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples
 
 
 clean:
-	rm -rf $(OUT)
+	rm -rf $(OUT) $(DSL_DIR)/compiled $(DSL_DIR)/*/compiled

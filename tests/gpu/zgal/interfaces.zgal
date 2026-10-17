@@ -1,0 +1,60 @@
+;; Interfaces for the ZGAL GPU tests (tests/gpu/ZgalTest.cpp)
+
+;; Structs exercising std430's rules: a scalar packed after a vec3, 8-byte alignment, a nested
+;; struct, arrays and matrices. Offsets are in the comments; ZgalTest checks the GPU agrees.
+(struct Inner
+  (a vec2)                      ; 0
+  (b float))                    ; 8; 12 bytes, aligned to 8: 16
+(struct Tricky
+  (s float)                     ; 0
+  (v3 vec3)                     ; 16
+  (f float)                     ; 28, packed after the vec3
+  (v2 vec2)                     ; 32
+  (i int)                       ; 40
+  (u uvec3)                     ; 48
+  (m2 mat2)                     ; 64
+  (inner Inner)                 ; 80
+  (scalars (array float 3))     ; 96
+  (inners (array Inner 2))      ; 112
+  (m4 mat4)                     ; 144
+  (last uint))                  ; 208; 212 bytes, aligned to 16: 224
+
+;; Copies its push constants and the elements of a buffer array into a Tricky
+(compute-material LayoutProbe
+  (shaders "shaders/layout_probe.comp")
+  (workgroup 1)
+  (bindings
+   (inputs (buffer-array float read))
+   (result (buffer Tricky write)))
+  (push
+   (seed float)                 ; 8, after the two indices
+   (shift vec3)                 ; 16
+   (tail uint)))                ; 28, packed after the vec3
+
+(vertex-format ColoredVertex
+  (position vec2)
+  (color vec3)
+  (id uint))
+
+;; Draws vertices in their colour times a tint, if their id (passed flat) is 7
+(graphics-material Tinted
+  (shaders "shaders/tinted.vert" "shaders/tinted.frag")
+  (vertex-input ColoredVertex)
+  (push
+   (tint vec4))
+  (varyings
+   (color vec3)
+   (id uint flat))
+  (outputs
+   (outColor vec4)))
+
+;; A texture and a sampler, for the runtime checks of a material's bindings
+(graphics-material Textured
+  (shaders "shaders/textured.vert" "shaders/textured.frag")
+  (bindings
+   (albedo texture #:stages (fragment))
+   (albedoSampler sampler))
+  (varyings
+   (uv vec2))
+  (outputs
+   (outColor vec4)))

@@ -1,0 +1,59 @@
+;; The scene example's shader interfaces, in ZGAL (dsl/; `make docs` for the language). The build
+;; generates scene.zgal.h, with the structs and a class per material, and the complete shaders:
+;; each body in shaders/ preceded by its material's interface.
+
+;; Per-frame data shared by the shadow and lit passes, written by LitMaterial::update
+(struct SceneUniforms
+  (viewProjection mat4)         ; Camera
+  (lightViewProjection mat4)    ; World to shadow map clip space
+  (cameraPosition vec3)
+  (lightDirection vec3)         ; Unit vector towards the light
+  (lightRadiance vec3)          ; Linear colour times intensity
+  (skyAmbient vec3)             ; Ambient light from above
+  (groundAmbient vec3))         ; Ambient light from below
+
+;; The scene's vertices: world space (nothing moves), each carrying its surface's material
+(vertex-format SceneVertex
+  (position vec3)
+  (normal vec3)
+  (albedoRoughness vec4))       ; rgb: linear albedo, a: roughness
+
+;; The scene's depth from the light, into the shadow map. It reads the same vertex buffers as the
+;; lit pass, skipping all but the positions.
+(graphics-material Shadow
+  (shaders "shaders/shadow.vert" "shaders/shadow.frag")
+  (vertex-input SceneVertex position)
+  (bindings
+   (scene (buffer SceneUniforms read) #:stages (vertex)))
+  (outputs))                    ; Depth only
+
+;; PBR shading with filtered shadows, into the HDR image
+(graphics-material Lit
+  (shaders "shaders/lit.vert" "shaders/lit.frag")
+  (vertex-input SceneVertex)
+  (bindings
+   (scene (buffer SceneUniforms read))
+   (shadowMap texture #:stages (fragment))   ; The shadow pass's depth image
+   (shadowSampler sampler))                  ; A comparison sampler: returns the fraction lit
+  (push
+   (shadowsEnabled uint))       ; 0 while the shadow pass is disabled, as its map is stale
+  (varyings
+   (worldPosition vec3)
+   (worldNormal vec3)
+   (albedoRoughness vec4))
+  (outputs
+   (outColor vec4)))            ; Linear HDR radiance
+
+;; Exposure and an ACES curve, from the HDR image to the display. A fullscreen triangle without
+;; vertex input.
+(graphics-material Tonemap
+  (shaders "shaders/tonemap.vert" "shaders/tonemap.frag")
+  (bindings
+   (hdr texture #:stages (fragment))
+   (hdrSampler sampler))
+  (push
+   (exposure float))
+  (varyings
+   (uv vec2))
+  (outputs
+   (outColor vec4)))            ; Linear: the sRGB target encodes it

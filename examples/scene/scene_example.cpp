@@ -29,6 +29,8 @@
 #include "shaders/ShaderLibrary.h"
 
 #include "Meshes.h"
+// The shaders' interfaces: SceneUniforms, SceneVertex and the Shadow, Lit and Tonemap materials
+#include "scene.zgal.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -115,38 +117,25 @@ struct SceneState {
     float exposure = 1.0f;
 };
 
-// Per-frame shader data; matches SceneUniforms in shaders/scene.glsl (std430: vec4s, not vec3s)
-struct SceneUniforms {
-    glm::mat4 viewProjection;
-    glm::mat4 lightViewProjection;
-    glm::vec4 cameraPosition;
-    glm::vec4 lightDirection;
-    glm::vec4 lightRadiance;
-    glm::vec4 skyAmbient;
-    glm::vec4 groundAmbient;
-};
-
 // ---------------------------------------------------------------------------------------------------
 // Materials
 // ---------------------------------------------------------------------------------------------------
 
 /*
- Shades the scene (lit.vert, lit.frag). Owns the scene's per-frame uniform buffer, which update()
- writes and the shadow material also reads: the graph updates every material before any pass
- records, so the shadow pass sees this frame's data.
-
- Bindings: the scene uniforms, the shadow map and its comparison sampler, then a push constant
- saying whether to sample the shadow map at all (when the shadow pass is disabled, its contents
- are stale or undefined).
+ Shades the scene (the Lit material in scene.zgal). Owns the scene's per-frame uniform buffer,
+ which update() writes and the shadow material also reads: the graph updates every material before
+ any pass records, so the shadow pass sees this frame's data. Its push constant says whether to
+ sample the shadow map at all (when the shadow pass is disabled, its contents are stale or
+ undefined).
  */
-class LitMaterial : public GraphicsMaterial {
+class LitMaterial : public Lit {
 public:
     using Mapping = Buffer<SceneUniforms>::Mapping;
 
-    // Creates the per-frame uniform buffers, which can fail, then the material
-    static Result<Handle<LitMaterial>> create(VulkanContext& context, AttachmentFormats formats, Handle<Shader> vertexShader,
-                                              Handle<Shader> fragmentShader, const SceneState& state,
+    // Loads the shaders and creates the per-frame uniform buffers, which can fail, then the material
+    static Result<Handle<LitMaterial>> create(VulkanContext& context, AttachmentFormats formats, const SceneState& state,
                                               FrameBinding<DescriptorEntry> shadowMap, Handle<DescriptorEntry> shadowSampler) {
+        TRY_ASSIGN(auto shaders, loadShaders(context));
         // A buffer per frame in flight, so the CPU never writes one the GPU is reading. Created in
         // this order, so resized in this order when the number of frames in flight changes.
         TRY_ASSIGN(auto buffers, PerFrameHandles<Buffer<SceneUniforms>>::createManaged(context, [&context](uint32_t) {
@@ -160,28 +149,20 @@ public:
         TRY_ASSIGN(auto mappings, PerFrame<Mapping>::create(context, [buffers](uint32_t frame) {
             return (*buffers)[frame]->getPersistentMapping(0, sizeof(SceneUniforms));
         }));
-        return context.resources().create<LitMaterial>(context, std::move(formats), std::move(vertexShader),
-                                                       std::move(fragmentShader), state, std::move(shadowMap),
+        return context.resources().create<LitMaterial>(context, shaders, std::move(formats), state, std::move(shadowMap),
                                                        std::move(shadowSampler), std::move(buffers), std::move(entries),
                                                        std::move(mappings));
     }
 
-    LitMaterial(VulkanContext& context, AttachmentFormats formats, Handle<Shader> vertexShader,
-                Handle<Shader> fragmentShader, const SceneState& state,
+    LitMaterial(VulkanContext& context, const Shaders& shaders, AttachmentFormats formats, const SceneState& state,
                 FrameBinding<DescriptorEntry> shadowMap, Handle<DescriptorEntry> shadowSampler,
                 Handle<PerFrameHandles<Buffer<SceneUniforms>>> uniformBuffers,
                 Handle<PerFrameHandles<DescriptorEntry>> uniformEntries, PerFrame<Mapping> mappings)
-    : GraphicsMaterial(context, {}, std::move(formats), std::move(vertexShader), std::move(fragmentShader),
-                       GraphicsPipelineOptions{.vertexLayout = SceneVertex::layout()}),
+    : Lit(context, shaders,
+          Bindings{.scene = uniformEntries, .shadowMap = std::move(shadowMap), .shadowSampler = std::move(shadowSampler)},
+          std::move(formats), GraphicsPipelineOptions{}),
       state_(&state), uniformBuffers_(std::move(uniformBuffers)), uniformEntries_(std::move(uniformEntries)),
-      mappings_(std::move(mappings)) {
-        bindings_ = {
-            MaterialBinding::storageBuffer(uniformEntries_, Access::StorageBufferRead,
-                                           VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT),
-            MaterialBinding::sampled(std::move(shadowMap), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT),
-            MaterialBinding::sampler(std::move(shadowSampler)),
-        };
-    }
+      mappings_(std::move(mappings)) {}
 
     FrameBinding<DescriptorEntry> sceneEntries() const {
         return uniformEntries_;
@@ -191,60 +172,44 @@ public:
         // The HDR image is the surface's size (headless, the extent given to the graph)
         const float aspect = static_cast<float>(surfaceExtent.width) / static_cast<float>(surfaceExtent.height);
 
-        SceneUniforms uniforms{};
-        uniforms.viewProjection = state_->camera.viewProjection(aspect);
-        uniforms.lightViewProjection = state_->light.viewProjection();
-        uniforms.cameraPosition = glm::vec4(state_->camera.position(), 1.0f);
-        uniforms.lightDirection = glm::vec4(state_->light.direction(), 0.0f);
-        uniforms.lightRadiance = glm::vec4(glm::vec3(1.0f, 0.95f, 0.85f) * 3.0f, 0.0f);
-        uniforms.skyAmbient = glm::vec4(0.25f, 0.32f, 0.45f, 0.0f);
-        uniforms.groundAmbient = glm::vec4(0.10f, 0.09f, 0.08f, 0.0f);
+        // Designated, as the generated struct has padding members between its vec3s
+        const SceneUniforms uniforms{
+            .viewProjection = state_->camera.viewProjection(aspect),
+            .lightViewProjection = state_->light.viewProjection(),
+            .cameraPosition = state_->camera.position(),
+            .lightDirection = state_->light.direction(),
+            .lightRadiance = glm::vec3(1.0f, 0.95f, 0.85f) * 3.0f,
+            .skyAmbient = glm::vec3(0.25f, 0.32f, 0.45f),
+            .groundAmbient = glm::vec3(0.10f, 0.09f, 0.08f),
+        };
         memcpy(mappings_[frameIndex].get(), &uniforms, sizeof(uniforms));
     }
 
 protected:
-    void writePushConstants(uint32_t, std::vector<uint8_t>& data) override {
-        const uint32_t shadows = state_->shadows ? 1 : 0;
-        appendPushConstant(data, shadows);
+    void writePush(uint32_t, Push& push) override {
+        push.shadowsEnabled = state_->shadows ? 1 : 0;
     }
 
 private:
-    template<typename T>
-    static void appendPushConstant(std::vector<uint8_t>& data, const T& value) {
-        const size_t offset = data.size();
-        data.resize(offset + sizeof(T));
-        memcpy(data.data() + offset, &value, sizeof(T));
-    }
-
     const SceneState* state_;
     Handle<PerFrameHandles<Buffer<SceneUniforms>>> uniformBuffers_;
     Handle<PerFrameHandles<DescriptorEntry>> uniformEntries_;
     PerFrame<Mapping> mappings_;
 };
 
-/*
- Maps the HDR image to the display (tonemap.vert, tonemap.frag): a fullscreen triangle generated
- from the vertex index, so there are no vertex attributes. Exposure is a push constant after the
- bindings.
- */
-class TonemapMaterial : public GraphicsMaterial {
+// Maps the HDR image to the display (the Tonemap material in scene.zgal), with the exposure as a
+// push constant
+class TonemapMaterial : public Tonemap {
 public:
-    TonemapMaterial(VulkanContext& context, AttachmentFormats formats, Handle<Shader> vertexShader,
-                    Handle<Shader> fragmentShader, const SceneState& state, FrameBinding<DescriptorEntry> hdr,
-                    Handle<DescriptorEntry> sampler)
-    : GraphicsMaterial(context,
-                       {MaterialBinding::sampled(std::move(hdr), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT),
-                        MaterialBinding::sampler(std::move(sampler))},
-                       std::move(formats), std::move(vertexShader), std::move(fragmentShader),
-                       // No vertex input: the vertex shader builds the triangle from gl_VertexIndex
-                       GraphicsPipelineOptions{.vertexLayout = std::nullopt}),
+    TonemapMaterial(VulkanContext& context, const Shaders& shaders, AttachmentFormats formats, const SceneState& state,
+                    FrameBinding<DescriptorEntry> hdr, Handle<DescriptorEntry> sampler)
+    : Tonemap(context, shaders, Bindings{.hdr = std::move(hdr), .hdrSampler = std::move(sampler)}, std::move(formats),
+              GraphicsPipelineOptions{}),
       state_(&state) {}
 
 protected:
-    void writePushConstants(uint32_t, std::vector<uint8_t>& data) override {
-        const size_t offset = data.size();
-        data.resize(offset + sizeof(float));
-        memcpy(data.data() + offset, &state_->exposure, sizeof(float));
+    void writePush(uint32_t, Push& push) override {
+        push.exposure = state_->exposure;
     }
 
 private:
@@ -376,7 +341,6 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
     TRY(app.init(config));
     VulkanContext& ctx = app.getContext();
     auto& heap = ctx.descriptors();
-    auto& shaders = ctx.shaders();
 
     SceneState state;
 
@@ -427,28 +391,18 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
         displayTarget = graph.surfaceTarget({0.0f, 0.0f, 0.0f, 1.0f}, std::nullopt);   // No depth needed
     }
 
-    // Shaders, loaded from the search path (a missing one is an error)
-    TRY_ASSIGN(auto litVertex, shaders.get("lit.vert"));
-    TRY_ASSIGN(auto litFragment, shaders.get("lit.frag"));
-    TRY_ASSIGN(auto shadowVertex, shaders.get("shadow.vert"));
-    TRY_ASSIGN(auto shadowFragment, shaders.get("shadow.frag"));
-    TRY_ASSIGN(auto tonemapVertex, shaders.get("tonemap.vert"));
-    TRY_ASSIGN(auto tonemapFragment, shaders.get("tonemap.frag"));
-
-    // Materials, built for the formats of the targets they draw into. Graph entries (sampledEntry)
-    // follow the images when the graph recreates them. Their pipelines are built when the graph
-    // compiles.
-    TRY_ASSIGN(auto lit, LitMaterial::create(ctx, graph.formats(hdrTarget), litVertex, litFragment, state,
-                                             graph.sampledEntry(shadowMap), heap.sampler(shadowSampler)));
-    // Positions only: the shadow pass reads the first attribute of the scene's vertices
-    auto shadow = ctx.resources().create<GraphicsMaterial>(
-        ctx, std::vector<MaterialBinding>{MaterialBinding::storageBuffer(lit->sceneEntries(), Access::StorageBufferRead,
-                                                                         VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT)},
-        graph.formats(shadowTarget), shadowVertex, shadowFragment,
-        GraphicsPipelineOptions{.vertexLayout = SceneVertex::positionLayout()});
-    auto tonemap = ctx.resources().create<TonemapMaterial>(ctx, graph.formats(displayTarget), tonemapVertex,
-                                                           tonemapFragment, state, graph.sampledEntry(hdr),
-                                                           heap.sampler(linearSampler));
+    // Materials, built for the formats of the targets they draw into, from the shaders scene.zgal
+    // generates (loaded from the search path: a missing one is an error). Graph entries
+    // (sampledEntry) follow the images when the graph recreates them. Pipelines are built when the
+    // graph compiles.
+    TRY_ASSIGN(auto lit, LitMaterial::create(ctx, graph.formats(hdrTarget), state, graph.sampledEntry(shadowMap),
+                                             heap.sampler(shadowSampler)));
+    TRY_ASSIGN(auto shadowShaders, Shadow::loadShaders(ctx));
+    auto shadow = ctx.resources().create<Shadow>(ctx, shadowShaders, Shadow::Bindings{.scene = lit->sceneEntries()},
+                                                 graph.formats(shadowTarget), GraphicsPipelineOptions{});
+    TRY_ASSIGN(auto tonemapShaders, Tonemap::loadShaders(ctx));
+    auto tonemap = ctx.resources().create<TonemapMaterial>(ctx, tonemapShaders, graph.formats(displayTarget), state,
+                                                           graph.sampledEntry(hdr), heap.sampler(linearSampler));
 
     // Each mesh is drawn twice, sharing its buffers: into the shadow map and lit
     std::vector<Handle<Renderable>> litRenderables;

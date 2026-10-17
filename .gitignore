@@ -2,3 +2,5 @@ build/
 # Screenshot test outputs awaiting approval (see make approve-screenshots)
 tests/**/*.received.png
 tests/**/*.flip.png
+# Racket compiled code (raco make), beside the sources
+compiled/

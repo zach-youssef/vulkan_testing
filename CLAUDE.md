@@ -16,11 +16,15 @@ Agents migrating code written against the pre-refactor wrapper (the `main` branc
 - `make approve-screenshots`: accept the screenshots of the last failed GPU run
   (`tests/gpu/approved/<device>/`). Never approve a changed screenshot without understanding why
   it changed.
+- `make test-dsl`: builds ZGAL's documentation and runs its compiler's tests (`make test` includes
+  it). `make docs` only builds the documentation: `build/docs/zgal.html`, and
+  `build/docs/zgal.txt` to read in a terminal.
 - `tools/verify_stack.sh <repo> <base> [head]`: builds and tests every commit in a range (builds and
-  CPU tests in parallel, GPU tests and example smoke tests one at a time). Check its exit codes, not
-  filtered output.
+  CPU and ZGAL tests in parallel, GPU tests and example smoke tests one at a time). Check its exit
+  codes, not filtered output.
 
-Requirements: the Vulkan SDK (path in the Makefile), `glslc`, GLFW and GLM. Development happens on an
+Requirements: the Vulkan SDK (path in the Makefile), `glslc`, GLFW, GLM and Racket 8 (`racket` and
+`raco`, with Scribble, as in the main distribution) for ZGAL. Development happens on an
 Apple M4 with MoltenVK, which exposes four queue families of one queue each.
 
 GPU tests run headless on a shared `VulkanContext` with validation and synchronization validation
@@ -43,6 +47,7 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | `include/app` | `VulkanApp` (the only GLFW user) |
 | `include/glsl` | `bindless.glsl`, included by shaders (`glslc -I include/glsl`) |
 | `include/util` | `StbImageWrite.h`: `stb_image_write` without its deprecation warnings |
+| `dsl` | ZGAL (Zach's Graphics Application Language), the shader interface language: its compiler (Racket), documentation (`dsl/docs`) and tests (`dsl/tests`) |
 
 Include headers relative to `include/`, e.g. `#include "graph/RenderGraph.h"`. Exactly one
 translation unit must `#define VK_WRAP_UTIL_IMPL` before including the wrapper and
@@ -59,7 +64,7 @@ show common kinds of application:
 |---|---|
 | `examples/image_filter` | Headless use without `VulkanApp`: a chain of compute passes, `setEnabled`, push constant parameters, `ReadbackNode` |
 | `examples/particles` | Compute writing a graph buffer that a graphics pass reads (across queues), per-frame parameters, input, changing frames in flight at runtime |
-| `examples/scene` | A 3D renderer: shadow map, HDR target that follows window resizes, tonemapping, orbit camera, shader hot reload |
+| `examples/scene` | A 3D renderer: shadow map, HDR target that follows window resizes, tonemapping, orbit camera, shader hot reload. Its shader interfaces are in ZGAL (`scene.zgal`) |
 
 ```cpp
 // Fallible calls return Result<T>; TRY / TRY_ASSIGN return errors to the caller
@@ -227,6 +232,23 @@ int main() { return exitStatus(runApp()); }            // prints the error
   receives window events during `runFrame()`; `app.window()` gives the `GLFWwindow*` for polling
   (`glfwGetKey`). Don't set GLFW callbacks or the user pointer yourself: the app owns them.
 
+### Shader interfaces in ZGAL
+
+A material's interface (its bindings, push constants, vertex input, varyings and outputs, and the
+structs its buffers hold) can be declared once in a `.zgal` file instead of in both the shaders and
+C++. The compiler (`dsl/zgal.rkt`, run by the Makefile's `zgal-rule`) generates a header with a
+class per material and the complete shaders: each shader body (GLSL without `#version`, bindings or
+inputs) preceded by its material's interface. Prefer it for new materials; `examples/scene` uses it
+(`scene.zgal`, `shaders/`, `LitMaterial` and `TonemapMaterial`), and the other examples declare
+interfaces by hand. Read `build/docs/zgal.txt` (from `make docs`) before writing ZGAL: it has the
+language, what's generated and every error. In short:
+
+- Bodies use bindings and push constants through accessors, `name()`, e.g.
+  `texture(sampler2D(hdr(), hdrSampler()), uv) * exposure()`, and vertex inputs as `inName`.
+- C++ builds a generated material from `Name::loadShaders(ctx)` and `Name::Bindings{.binding =
+  entry, ...}`, and fills push constants by overriding `writePush(frameIndex, Push&)`.
+- Never edit generated files (under `build/`): change the `.zgal` file or the body.
+
 ### Shaders
 
 - The wrapper doesn't compile GLSL. Compile to SPIR-V (`glslc -I include/glsl --target-env=vulkan1.3`;
@@ -263,3 +285,20 @@ int main() { return exitStatus(runApp()); }            // prints the error
   a hazard is a bug.
 - Each commit must build and pass all tests on its own; verify a stack with `tools/verify_stack.sh`.
 - `docs/MIGRATING.md` describes the old API for consumers; update it if public APIs change.
+
+## Working on ZGAL
+
+- Its documentation (`dsl/docs/zgal.scrbl`) is part of the language: change it in the same commit
+  as the compiler, so it stays accurate. A new form or clause gets a grammar, a description and an
+  example; show generated code through the document's helpers (`zgal-example`, `generated-file`),
+  which compile it as the document builds, and quote repository files with `file-excerpt`, never by
+  pasting.
+- Every error the compiler reports has an id in the catalog (`dsl/private/errors.rkt`), with an
+  explanation and an example that reports it. The documentation renders the catalog, and the tests
+  check the catalog and the compiler agree.
+- The compiler's output is checked against golden files (`dsl/tests/golden/expected`). When it
+  changes on purpose, regenerate them (`ZGAL_UPDATE_GOLDEN=1 raco test dsl/tests/golden-test.rkt`)
+  and review the difference. Changes to generated C++ or GLSL also need GPU tests
+  (`tests/gpu/ZgalTest.cpp`, with interfaces in `tests/gpu/zgal`).
+- Keep the checked program (`dsl/private/ast.rkt`) independent of backends: GLSL and C++ are
+  emitters, and others (e.g. WebGL) are planned.

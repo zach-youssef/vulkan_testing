@@ -3,7 +3,8 @@
 #   tools/verify_stack.sh <repo> <base> [head]
 # e.g. tools/verify_stack.sh . main HEAD
 #
-# Prints one line per commit with the CPU and GPU test exit codes and summaries; the per-commit
+# Prints one line per commit with the CPU and GPU test exit codes and summaries (and those of the
+# ZGAL tests and example smoke tests where a commit has them); the per-commit
 # build and test logs are kept in the temporary directory printed at the end.
 # Each commit is exported to its own directory. All builds and CPU test runs happen in
 # parallel; GPU tests run one commit at a time (they share the device) on a separate worker,
@@ -19,6 +20,10 @@ build_and_cpu_test() {
     mkdir -p $d && git -C $repo archive $c | tar -x -C $d
     if (cd $d && make >build.log 2>&1 && make build/tests/cpu_tests build/tests/gpu_tests >>build.log 2>&1); then
         (cd $d && ./build/tests/cpu_tests >cpu.log 2>&1); echo $? > $d/cpu.exit
+        # ZGAL's compiler tests and documentation; commits before ZGAL have none
+        if grep -q '^test-dsl:' $d/Makefile; then
+            (cd $d && make test-dsl >dsl.log 2>&1); echo $? > $d/dsl.exit
+        fi
         echo ok > $d/build.status
     else
         echo failed > $d/build.status
@@ -50,6 +55,8 @@ for c in $commits; do
     if [[ $(cat $d/build.status) != ok ]]; then echo "$line: BUILD FAILED ($d/build.log)"; continue; fi
     examples=""
     if [[ -f $d/examples.exit ]]; then examples=", examples exit $(cat $d/examples.exit)"; fi
-    echo "$line: cpu exit $(cat $d/cpu.exit) [$(summary $d/cpu.log)], gpu exit $(cat $d/gpu.exit) [$(summary $d/gpu.log)]$examples"
+    dsl=""
+    if [[ -f $d/dsl.exit ]]; then dsl=", zgal exit $(cat $d/dsl.exit)"; fi
+    echo "$line: cpu exit $(cat $d/cpu.exit) [$(summary $d/cpu.log)], gpu exit $(cat $d/gpu.exit) [$(summary $d/gpu.log)]$dsl$examples"
 done
 echo "Logs: $out"
