@@ -866,10 +866,10 @@ conditions are bools. Integer literals take the type their context needs, so @tt
 
 Most expressions are computed once, when the graph is built: conditions, constants, extents and
 counts. They can use parameters, constants, imported images' sizes and the number of elements C++
-gives a data input (@racket[(count input)]). Push constants and compute
-materials' @tt{#:invocations} are computed each frame, so they can also use per-frame inputs and the
-current size of the graph's own images, which the graph can recreate (e.g. surface-relative ones,
-when the surface resizes).
+gives a data input (@racket[(count input)]). Push constants, compute materials'
+@tt{#:invocations} and buffers' counts are computed each frame, so they can also use per-frame
+inputs and the current size of the graph's own images, which the graph can recreate (e.g.
+surface-relative ones, when the surface resizes).
 
 @subsection{Resources}
 
@@ -891,7 +891,12 @@ when the surface resizes).
        resizes) or @tt{(extent-of imported-image)}. @tt{#:frames} is required: @tt{per-frame} images
        let frames overlap, @tt{shared} ones save memory.}
  @item{@racket[buffer]: @tt{count} elements of a type, for @tt{buffer} and @tt{buffer-array}
-       bindings, in device-local memory.}
+       bindings, in device-local memory. A count using per-frame inputs is computed at the start of
+       every frame, and when it changes the graph recreates the buffer (discarding its contents) and
+       the materials binding it follow; frames still in flight finish with the previous one. So an
+       app's state can size a buffer, e.g. a particle system growing as particles are added. A
+       count of 0 is a buffer holding nothing. Give the count to the shaders too (a push
+       constant), and dispatch as many invocations.}
  @item{@racket[upload]: a device-local buffer holding a data input's elements, created and
        uploaded when the graph is built. It binds and copies like a graph buffer. An upload given
        no elements is a contract violation (a buffer can't be empty).}

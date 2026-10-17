@@ -223,6 +223,9 @@
   (image copy rgba8 (extent-of picture) #:frames shared #:when enabled)
   (buffer sumBuffer float (* size size) #:frames shared)
   (buffer transformBuffer mat4 doubled #:frames per-frame #:when (and enabled (> count 0)))
+  ;; Sized each frame, from a per-frame input: recreated when the size changes
+  (input sampleCount (per-frame uint))
+  (buffer samples uint (* sampleCount 2) #:frames per-frame)
   (target scene (color colorImage #:clear (0.1 0.2 0.3 1.0) #:load clear #:store store)
                 (color copy #:load load)
                 (depth depthImage #:clear 0.0 #:store dont-care))
@@ -254,7 +257,8 @@
   (copy toSeedImage seedBuffer seedImage)
   (copy seedCorner seedBuffer seedImage #:source-offset 1 #:destination-offset (1 (uint count)) #:extent (1 1))
   (readback readSeeds seedBuffer)
-  (readback readTotal totalBuffer #:when enabled))
+  (readback readTotal totalBuffer #:when enabled)
+  (readback readSamples samples))
 
 ;; Every event, effect and kind of graph binding: parameters computed once, per-frame inputs from
 ;; the state, node enables (one of a #:when node), and the rest passed through from C++
@@ -290,5 +294,6 @@
     (size (uint (* level 2)))
     (scale gain)
     (tintNow (* state.tint state.zoom))
+    (sampleCount state.frames)
     #:enabled ((accumulate state.dragging)
                (drawPlain (not state.dragging)))))

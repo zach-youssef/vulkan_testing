@@ -205,7 +205,9 @@ int main() { return exitStatus(runApp()); }            // prints the error
   owns. The graph returns them to their resting state at the end of every frame, so code outside the
   graph knows their layout. `createImage(name, FrameMode, format, FixedExtent | SurfaceRelative)` and
   `createBuffer(...)` create graph-owned resources. The frame mode is required, and usage is derived
-  from the declared uses. `graph.sampledEntry(id)`, `storageEntry(id)` and `storageBufferEntry(id)`
+  from the declared uses. A buffer's size can be a function of the frame (`createBuffer(name, mode,
+  [](const FrameContext&) { return bytes; })`), computed at the start of every frame: when it
+  changes the graph recreates the buffer, discarding its contents, and its entries follow. `graph.sampledEntry(id)`, `storageEntry(id)` and `storageBufferEntry(id)`
   give materials entries for graph resources that follow recreation.
 - **Nodes** declare what they use. `RenderablesNode`, `DispatchNode` and `ReadbackNode` cover common
   cases. Per-frame work that can fail (creating resources) goes in `Node::prepareFrame`, which runs
@@ -284,8 +286,9 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   `nameContents(graph)` / `namePixels(graph)`), and `extern` nodes, where a C++ function adds nodes
   that depend on the application's data. Data C++ computes goes in with `(input d (data T))` (a
   `std::vector<T>`) and `(upload buf d)`, which creates and fills a buffer when the graph is built. Push
-  constants and dispatch sizes (`#:invocations`) are computed each frame, so they can follow
-  per-frame inputs and images' current sizes. `Name::build(ctx, graph, Name::Inputs{...})` adds
+  constants, dispatch sizes (`#:invocations`) and buffers' counts are computed each frame, so they
+  can follow per-frame inputs (e.g. an app's state) and images' current sizes; a buffer whose count
+  changes is recreated, its contents discarded. `Name::build(ctx, graph, Name::Inputs{...})` adds
   them to a `RenderGraph` and returns their ids (`nodes.x` for `setEnabled` and readbacks). C++
   supplies parameters, meshes, imported images and buffers, and functions (per-frame values,
   `zgal::FrameSource<T>`; cpu work; extern nodes), which must outlive the graph.

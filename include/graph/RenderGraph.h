@@ -260,6 +260,27 @@ public: // Resources
         return addBuffer(std::move(record));
     }
 
+    // A buffer owned by the graph whose size in bytes is computed at the start of every frame (and
+    // when compiling), e.g. from application state. When the size changes the graph recreates the
+    // buffer, discarding its contents, and its graph entries (storageBufferEntry) follow; frames in
+    // flight keep using the previous one. A size of 0 is a buffer holding nothing (bufferSize() is 0).
+    using BufferSizeSource = std::function<VkDeviceSize(const FrameContext&)>;
+
+    BufferId createBuffer(std::string name, FrameMode mode, BufferSizeSource size, VkBufferUsageFlags extraUsage = 0,
+                          VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+        if (!size) {
+            contractViolation("Buffer '" + name + "' has no size source");
+        }
+        BufferRecord record;
+        record.name = std::move(name);
+        record.kind = BufferKind::Created;
+        record.perFrame = mode == FrameMode::PerFrame;
+        record.sizeSource = std::move(size);
+        record.extraUsage = extraUsage;
+        record.memory = memory;
+        return addBuffer(std::move(record));
+    }
+
     // The image used in a frame. Created images exist once the graph has compiled (compile(), or
     // the first execute()); asking for one earlier, or for the surface, is a contract violation.
     Handle<Image> image(ImageId id, uint32_t frameIndex) {
@@ -614,6 +635,8 @@ private:
         // Creates a storage buffer entry for a frame (imported buffers of a known type)
         std::function<Handle<DescriptorEntry>(uint32_t, DescriptorHeap&)> makeEntry;
         VkDeviceSize size = 0;
+        BufferSizeSource sizeSource;      // Computes size each frame, if given
+        VkDeviceSize realizedSize = 0;    // The size of the buffers created
         VkBufferUsageFlags extraUsage = 0;
         VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         VkBufferUsageFlags usage = 0;
@@ -782,7 +805,17 @@ private:
         } else if (headlessSurfaceExtent_) {
             surfaceExtent_ = *headlessSurfaceExtent_;
         }
-        if (!structureDirty_ && realizedSurfaceExtent_.width == surfaceExtent_.width
+        // Buffers sized each frame
+        bool resized = false;
+        const FrameContext frame{*context_, *this, context_->currentFrame(), context_->frameNumber(), surfaceExtent_};
+        for (auto& record : buffers_) {
+            if (record->sizeSource) {
+                record->size = record->sizeSource(frame);
+            }
+            const bool exists = record->perFrame ? record->perFrameBuffers != nullptr : static_cast<bool>(record->shared);
+            resized = resized || (exists && record->size != record->realizedSize);
+        }
+        if (!structureDirty_ && !resized && realizedSurfaceExtent_.width == surfaceExtent_.width
             && realizedSurfaceExtent_.height == surfaceExtent_.height) {
             return {};
         }
@@ -843,12 +876,14 @@ private:
             }
             const VkBufferUsageFlags usage = bufferUsage[i] | record.extraUsage;
             const bool exists = record.perFrame ? record.perFrameBuffers != nullptr : static_cast<bool>(record.shared);
-            if ((exists && usage == record.usage) || usage == 0) {
+            if ((exists && usage == record.usage && record.size == record.realizedSize) || usage == 0) {
                 continue;
             }
             retireBuffer(record);
             record.usage = usage;
-            auto create = [this, size = record.size, usage, memory = record.memory, name = record.name]() {
+            record.realizedSize = record.size;
+            // Vulkan has no empty buffers: one holding nothing has room for a word it never uses
+            auto create = [this, size = std::max<VkDeviceSize>(record.size, 4), usage, memory = record.memory, name = record.name]() {
                 return Buffer<uint8_t>::create(*context_, size, usage, memory)
                     .withContext("creating graph buffer '" + name + "'");
             };

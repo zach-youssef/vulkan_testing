@@ -300,3 +300,26 @@
   (material cut Cut)
   (draw drawCut canvasTarget cut 3)
   (readback readCanvas canvas))
+
+;; For the stage 3 tests: a buffer sized each frame from an app's state, which the graph recreates
+;; when the size changes
+(compute-material Squares
+  (workgroup 64)
+  (bindings (squares (buffer-array uint)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count) (write! (at squares i) (* i i))))))
+
+(graph SquaresGraph
+  (input amount (per-frame uint))
+  (buffer squares uint amount #:frames per-frame)
+  (material squaring Squares squares #:push ((count amount)) #:invocations (amount))
+  (dispatch square squaring)
+  (readback readSquares squares))
+
+(app Growing
+  (state (amount uint 3))
+  (on (key-pressed up) (with state #:amount (* state.amount 2)))
+  (on (key-pressed 0) (with state #:amount 0))
+  (run SquaresGraph (amount state.amount)))

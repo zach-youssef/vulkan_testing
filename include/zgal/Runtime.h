@@ -32,6 +32,11 @@ struct FrameInfo {
     VkExtent2D surfaceExtent;   // The graph's surfaceExtent(): {0, 0} without a surface or one set headless
 };
 
+// The FrameInfo of a node's or graph's FrameContext
+inline FrameInfo frameInfo(const FrameContext& context) {
+    return {context.frameIndex, context.frameNumber, context.surfaceExtent};
+}
+
 // A value C++ computes for each frame. Called once per frame (for the graph's uniforms, by
 // whichever material using them is updated first; for push constants, by each material using them)
 template<typename T>

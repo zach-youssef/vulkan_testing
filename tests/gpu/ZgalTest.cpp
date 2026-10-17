@@ -714,3 +714,36 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL fragment shaders discard fragments and take der
     }
     ctx.waitIdleAll();
 }
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL buffers sized from per-frame inputs follow them") {
+    auto& ctx = context();
+    {
+        RenderGraph graph(ctx);
+        auto app = Growing::create(ctx, graph, Growing::Inputs{}).value();
+        auto squares = [&] {
+            app->beginFrame();
+            graph.execute().value();
+            return app->ids().readSquaresContents(graph).value();
+        };
+        auto expected = [](uint32_t n) {
+            std::vector<uint32_t> values;
+            for (uint32_t i = 0; i < n; ++i) {
+                values.push_back(i * i);
+            }
+            return values;
+        };
+        CHECK(squares() == expected(3));
+        app->handle(zgal::Event{zgal::KeyPressed{zgal::Key::Up}});
+        CHECK(squares() == expected(6));
+        app->handle(zgal::Event{zgal::KeyPressed{zgal::Key::Up}});
+        CHECK(squares() == expected(12));
+        // Every frame's copy follows
+        for (uint32_t frame = 0; frame < ctx.framesInFlight(); ++frame) {
+            CHECK(squares() == expected(12));
+        }
+        app->handle(zgal::Event{zgal::KeyPressed{zgal::Key::Digit0}});
+        CHECK(squares().empty());
+        ctx.waitIdleAll();
+    }
+    ctx.collectRetired();
+}

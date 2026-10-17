@@ -15,6 +15,7 @@
          (struct-out entry)
          graph-environment
          expression-type
+         per-frame-expression?
          unify
          image-formats
          depth-format?)
@@ -178,6 +179,14 @@
 
 (define (e-loc e)
   (match e [(e-literal _ l) l] [(e-ref _ l) l] [(e-op _ _ l) l]))
+
+;; Whether e can change from frame to frame: it uses per-frame inputs or the size of a graph image
+(define (per-frame-expression? e env)
+  (match e
+    [(e-ref name _) (match (hash-ref env name #f) [(entry 'per-frame _ _) #t] [_ #f])]
+    [(e-op (or 'width 'height) (list (e-ref name _)) _) (match (hash-ref env name #f) [(entry 'image _ _) #t] [_ #f])]
+    [(e-op _ args _) (ormap (λ (a) (per-frame-expression? a env)) args)]
+    [_ #f]))
 
 ;; Checks e has type `expected` (integer literals adapting to it)
 (define (check-expression e env expected what #:per-frame-ok? [per-frame-ok? #t])
@@ -402,7 +411,9 @@
        (args! 3 "(buffer name type count #:frames shared|per-frame)")
        (check-known-options options '(#:frames #:when) form)
        (define t (buffer-element-type (second args) form))
-       (define count (build-time (third args) (scalar-t 'uint) "a buffer's count"))
+       ;; Computed each frame: the graph recreates the buffer when it changes
+       (define count (parse-expression (third args)))
+       (check-expression count env (scalar-t 'uint) "a buffer's count")
        (declare! (g-buffer (item-name) t count (frames options form stx) (condition options '#:when) (stx->loc stx)) stx)]
       ['target
        (unless (>= (length args) 2)

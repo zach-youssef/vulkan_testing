@@ -2,6 +2,7 @@
 #include "TestShaders.h"
 #include "graph/RenderGraph.h"
 #include "graph/nodes/DispatchNode.h"
+#include "graph/nodes/BufferReadbackNode.h"
 #include "graph/nodes/ReadbackNode.h"
 #include "descriptors/DescriptorHeap.h"
 
@@ -376,6 +377,57 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph keeps its descriptor entries current as 
     CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels().value()));
     ctx.setFramesInFlight(originalFrames);
     graph.execute().value();
+}
+
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph recreates buffers sized each frame when their size changes") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    uint32_t count = 4;
+    int sized = 0;
+    BufferId buffer = graph.createBuffer("values", FrameMode::Shared, [&count, &sized](const FrameContext&) {
+        ++sized;
+        return VkDeviceSize(count) * sizeof(uint32_t);
+    }, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);   // For its entries, which no node uses here
+    auto entries = graph.storageBufferEntry(buffer);
+    graph.addTransfer("fill", [buffer](NodeBuilder& builder) { builder.write(buffer, Access::TransferDst); },
+                      [buffer](RecordContext& record) {
+                          vkCmdFillBuffer(record.commandBuffer, record.graph.buffer(buffer, record.frameIndex), 0,
+                                          VK_WHOLE_SIZE, 7);
+                      });
+    NodeId readback = graph.add<BufferReadbackNode>("readback", buffer);
+    auto contents = [&]() { return graph.nodeAs<BufferReadbackNode>(readback).contents<uint32_t>().value(); };
+
+    graph.execute().value();
+    CHECK(contents() == std::vector<uint32_t>(4, 7));
+    CHECK(sized >= 1);
+    const VkBuffer first = graph.buffer(buffer, ctx.currentFrame());
+
+    // Unchanged: the same buffer
+    graph.execute().value();
+    CHECK(graph.buffer(buffer, ctx.currentFrame()) == first);
+
+    // Grown: a new buffer, which the graph's entries follow
+    count = 10;
+    graph.execute().value();
+    CHECK(graph.bufferSize(buffer, ctx.currentFrame()) == 10 * sizeof(uint32_t));
+    CHECK(contents() == std::vector<uint32_t>(10, 7));
+    const uint32_t frame = ctx.currentFrame();
+    graph.execute().value();
+    REQUIRE(entries.get(frame));
+    CHECK(entries.get(frame)->buffer() == graph.buffer(buffer, frame));
+    CHECK(entries.get(frame)->buffer() != first);
+
+    // Empty, then shrunk
+    count = 0;
+    graph.execute().value();
+    CHECK(graph.bufferSize(buffer, ctx.currentFrame()) == 0);
+    CHECK(contents().empty());
+    count = 3;
+    graph.execute().value();
+    CHECK(contents() == std::vector<uint32_t>(3, 7));
+    // Replaced buffers are destroyed once the frames using them finish
+    ctx.waitIdleAll();
+    ctx.collectRetired();
 }
 
 TEST_CASE_FIXTURE(GpuTest, "Materials update after the CPU nodes ordered before their nodes") {

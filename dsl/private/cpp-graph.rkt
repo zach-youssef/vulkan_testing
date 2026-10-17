@@ -322,8 +322,13 @@
                             (format "FixedExtent{zgal::extentOf(context, in->~a, ~a)}" import (cpp-string import))])))]
         [(g-buffer n t count frames when _)
          (values (format "buffer_~a" n) "buffers" when
-                 (format "graph.createBuffer(~a, ~a, VkDeviceSize(~a) * sizeof(~a))" (cpp-string n) (frame-mode frames)
-                         (build-expr count (scalar-t 'uint)) (cpp-type t)))]))
+                 (if (per-frame-expression? count env)
+                     ;; Sized each frame: the graph recreates it when its size changes
+                     (format "graph.createBuffer(~a, ~a, [~a](const FrameContext& frameContext) { const zgal::FrameInfo frame = zgal::frameInfo(frameContext); return VkDeviceSize(~a) * sizeof(~a); })"
+                             (cpp-string n) (frame-mode frames) (frame-captures count env)
+                             (build-expr count (scalar-t 'uint)) (cpp-type t))
+                     (format "graph.createBuffer(~a, ~a, VkDeviceSize(~a) * sizeof(~a))" (cpp-string n) (frame-mode frames)
+                             (build-expr count (scalar-t 'uint)) (cpp-type t))))]))
     (define id-type-name (if (g-image? item) "ImageId" "BufferId"))
     (cond
       [when

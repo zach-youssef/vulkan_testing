@@ -127,7 +127,7 @@
          "(graph G\n  (parameter size float)\n  (constant halfSize (/ size 2))\n  (image small rgba8 (fixed halfSize halfSize) #:frames shared))")
    (kind 'not-build-time
          "A per-frame input where a value is computed once"
-         "Conditions (`#:when`, `#:enabled`), constants, extents, buffer counts and vertex counts are computed when the graph is built, from parameters, constants and imported images' sizes. Per-frame inputs, and the sizes of the graph's own images (which it can recreate, e.g. when the surface resizes), are only known each frame, so only push constants and compute materials' `#:invocations` can use them."
+         "Conditions (`#:when`, `#:enabled`), constants, extents and vertex counts are computed when the graph is built, from parameters, constants and imported images' sizes. Per-frame inputs, and the sizes of the graph's own images (which it can recreate, e.g. when the surface resizes), are only known each frame, so only push constants, compute materials' `#:invocations` and buffers' counts can use them."
          "(graph G\n  (input size (per-frame uint))\n  (image i rgba8 (fixed size size) #:frames shared))")
    (kind 'binding-mismatch
          "A material binding is given the wrong kind of resource"
