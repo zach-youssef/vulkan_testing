@@ -3,6 +3,7 @@
 #include "graph/RenderGraph.h"
 #include "graph/nodes/BufferReadbackNode.h"
 #include "graph/nodes/DispatchNode.h"
+#include "graph/nodes/DispatchSequenceNode.h"
 #include "graph/nodes/IndirectDrawNode.h"
 #include "graph/nodes/ReadbackNode.h"
 #include "materials/GraphicsMaterial.h"
@@ -14,19 +15,20 @@
 namespace {
 
 // Writes words into a buffer with write_words.comp, as a shader writing indirect commands would
+// (unless dispatched with no workgroups)
 class WordsMaterial : public ComputeMaterial {
 public:
-    WordsMaterial(VulkanContext& ctx, FrameBinding<DescriptorEntry> target, std::vector<uint32_t> words)
+    WordsMaterial(VulkanContext& ctx, FrameBinding<DescriptorEntry> target, std::vector<uint32_t> words, uint32_t workgroups = 1)
     : ComputeMaterial(ctx, {MaterialBinding::storageBuffer(std::move(target), Access::StorageBufferWrite)},
                       testShader(ctx, "write_words.comp")),
-      words_(std::move(words)) {
+      words_(std::move(words)), workgroups_(workgroups) {
         if (words_.size() > 12) {
             contractViolation("write_words.comp writes at most 12 words");
         }
     }
 
     void update(uint32_t, VkExtent2D) override {}
-    glm::vec3 getDispatchDimensions() override { return {1, 1, 1}; }
+    glm::vec3 getDispatchDimensions() override { return {float(workgroups_), 1, 1}; }
 
 protected:
     void writePushConstants(uint32_t, std::vector<uint8_t>& data) override {
@@ -39,6 +41,7 @@ protected:
 
 private:
     std::vector<uint32_t> words_;
+    uint32_t workgroups_;
 };
 
 // Counts its workgroups with count_workgroups.comp; dispatched indirectly
@@ -127,6 +130,23 @@ TEST_CASE_FIXTURE(GpuTest, "DispatchNode dispatches the workgroups a command a s
         // Workgroups 0, 1 and 2
         CHECK(graph.nodeAs<BufferReadbackNode>(readback).contents<uint32_t>().value() == std::vector<uint32_t>{3, 3});
     }
+}
+
+TEST_CASE_FIXTURE(GpuTest, "DispatchSequenceNode skips steps dispatching no workgroups") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    BufferId words = graph.createBuffer("words", FrameMode::PerFrame, 4 * sizeof(uint32_t));
+    auto entry = graph.storageBufferEntry(words);
+    auto& resources = ctx.resources();
+    graph.add<DispatchSequenceNode>("steps", std::vector<DispatchSequenceNode::Step>{
+        {resources.create<WordsMaterial>(ctx, entry, std::vector<uint32_t>{1, 2, 3, 4})},
+        {resources.create<WordsMaterial>(ctx, entry, std::vector<uint32_t>{9, 9, 9, 9}, 0)},
+        {resources.create<WordsMaterial>(ctx, entry, std::vector<uint32_t>{5})},
+    });
+    NodeId readback = graph.add<BufferReadbackNode>("readback", words);
+    graph.execute().value();
+    // The first and last steps ran, in order, and the middle one didn't
+    CHECK(graph.nodeAs<BufferReadbackNode>(readback).contents<uint32_t>().value() == std::vector<uint32_t>{5, 2, 3, 4});
 }
 
 TEST_CASE_FIXTURE(GpuTest, "IndirectDrawNode draws the commands shaders wrote") {

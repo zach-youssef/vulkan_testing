@@ -225,7 +225,7 @@ int main() { return exitStatus(runApp()); }            // prints the error
   (from a mesh's buffers for indexed ones), with a count from a buffer where the device has
   `drawIndirectCount` (`ctx.enabledFeatures()`; the context enables it when it can).
   `DispatchSequenceNode` dispatches several materials in order as one node, with barriers between
-  them (the steps of an algorithm). Per-frame work that can fail (creating resources) goes in `Node::prepareFrame`, which runs
+  them (the steps of an algorithm), skipping steps with no workgroups that frame. Per-frame work that can fail (creating resources) goes in `Node::prepareFrame`, which runs
   before anything is acquired or submitted; `record` and `run` can't fail. For one-offs, use `addGraphics`, `addCompute`, `addTransfer` or `addCpu(name, setup, record/run)`.
   Subclass `GraphicsNode` / `ComputeNode` / `TransferNode` / `CpuNode` for reusable nodes.
   `NodeBuilder::uses(material)` declares the material's resource uses automatically. Declare

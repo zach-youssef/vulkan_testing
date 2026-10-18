@@ -15,6 +15,9 @@
 
  A step can replace part of its material's push constants for its own dispatch (e.g. a pass index,
  so passes share a material and its pipeline): `push` overwrites the bytes from `pushOffset`.
+
+ A step whose material dispatches no workgroups this frame is skipped, barrier and all, so a node
+ can hold alternative algorithms and size the one it uses (e.g. one workgroup for few elements).
  */
 class DispatchSequenceNode : public ComputeNode {
 public:
@@ -53,9 +56,13 @@ public:
 
     void record(RecordContext& context) override {
         VkCommandBuffer cmd = context.commandBuffer;
-        for (size_t i = 0; i < steps_.size(); ++i) {
-            const Step& step = steps_[i];
-            if (i > 0) {
+        bool dispatched = false;
+        for (const Step& step : steps_) {
+            const glm::vec3 groups = step.material->getDispatchDimensions();
+            if (groups.x < 1.0f || groups.y < 1.0f || groups.z < 1.0f) {
+                continue;
+            }
+            if (dispatched) {
                 VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
                 barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
                 barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
@@ -71,9 +78,9 @@ public:
                 vkCmdPushConstants(cmd, step.material->getPipelineLayout(), VK_SHADER_STAGE_ALL, step.pushOffset,
                                    static_cast<uint32_t>(step.push.size()), step.push.data());
             }
-            const glm::vec3 groups = step.material->getDispatchDimensions();
             vkCmdDispatch(cmd, static_cast<uint32_t>(groups.x), static_cast<uint32_t>(groups.y),
                           static_cast<uint32_t>(groups.z));
+            dispatched = true;
         }
     }
 
