@@ -139,7 +139,8 @@
   (define state-spelling (spell! ctx "state"))
   (define (state-locals where) (hash "state" (t-local state-spelling state-type (stx->loc where))))
 
-  ;; A readback node of a graph the app runs, for read events: (list graph node element-type)
+  ;; A readback node of a graph the app runs, for read events: (list graph node element-type
+  ;; looped? image?)
   (define (find-readback node-stx)
     (define node-name (format "~a" (syntax-e node-stx)))
     (define found
@@ -155,12 +156,17 @@
       [(list (cons g n) _ ...)
        (unless (eq? (g-node-kind n) 'readback)
          (zgal-error 'type-mismatch node-stx "~a is a ~a node, not a readback" node-name (g-node-kind n)))
-       (when (pair? (g-node-loops n))
-         (zgal-error 'type-mismatch node-stx "readback ~a is in a loop, so it's a readback per iteration; read events take one readback" node-name))
        (define subject (hash-ref (graph-environment g) (g-node-subject n)))
-       (unless (memq (entry-kind subject) '(buffer import-buffer upload))
-         (zgal-error 'type-mismatch node-stx "readback ~a reads an image; read events give buffers' elements" node-name))
-       (list (graph-name g) node-name (entry-type subject))]))
+       (define element
+         (match subject
+           [(entry (or 'buffer 'import-buffer 'upload) t _) t]
+           [(entry 'image _ (g-image _ format _ _ _ _))
+            (or (texel-type format)
+                (zgal-error 'type-mismatch node-stx "readback ~a reads ~a, a depth image; read events give colour images' texels" node-name (g-node-subject n)))]
+           ;; RGBA8
+           [(entry 'import _ (? g-image-file?)) (scalar-t 'uint)]
+           [_ (zgal-error 'type-mismatch node-stx "readback ~a reads an imported image, whose format the graph doesn't know; read events give buffers' elements and graph images' texels" node-name)]))
+       (list (graph-name g) node-name element (pair? (g-node-loops n)) (not (memq (entry-kind subject) '(buffer import-buffer upload))))]))
 
   ;; Handlers
   (define handled (make-hash))   ; (list kind key-or-button) -> loc
@@ -174,23 +180,30 @@
       (match (syntax->list c)
         [(list* _ event-stx body-stxs) #:when (pair? body-stxs)
          (define e (parse-event event-stx claim! (λ (node-stx) (find-readback node-stx))))
+         (define r (event-readback e))
+         ;; The event's value, and a read event's index and size
+         (define bound
+           (filter car
+                   (list (cons (event-binding e)
+                               (case (event-kind e)
+                                 [(frame) (scalar-t 'float)]
+                                 [(read) (data-t (read-event-element r))]
+                                 [else (vector-t 'float 2)]))
+                         (cons (and r (read-event-index r)) (scalar-t 'uint))
+                         (cons (and r (read-event-size r)) (vector-t 'uint 2)))))
          (define locals
-           (if (event-binding e)
-               (hash-set (state-locals c) (event-binding e)
-                         (t-local (spell! ctx (event-binding e))
-                                  (case (event-kind e)
-                                    [(frame) (scalar-t 'float)]
-                                    [(read) (data-t (third (event-readback e)))]
-                                    [else (vector-t 'float 2)])
-                                  (stx->loc event-stx)))
-               (state-locals c)))
+           (for/fold ([ls (state-locals c)]) ([b (in-list bound)])
+             (hash-set ls (car b) (t-local (spell! ctx (car b)) (cdr b) (stx->loc event-stx)))))
          (define body (check-sequence body-stxs c ctx locals))
          (define next
            (if (void-t? (texpr-type body))
                ;; Only effects: the state doesn't change
                (t-begin (list body (hash-ref locals "state")) state-type (stx->loc c))
                (coerce body state-type c "a handler's result (the next state)")))
-         (handler (struct-copy event e [binding (and (event-binding e) (t-local-name (hash-ref locals (event-binding e))))])
+         (define (spelled n) (and n (t-local-name (hash-ref locals n))))
+         (handler (struct-copy event e
+                               [binding (spelled (event-binding e))]
+                               [readback (and r (struct-copy read-event r [index (spelled (read-event-index r))] [size (spelled (read-event-size r))]))])
                   (cpu-only next) (stx->loc c))]
         [_ (zgal-error 'malformed c "expected (on event body ...+)")])))
 
@@ -223,6 +236,20 @@
         [(t-global 'host n _ _ _) (and (member n run-mode-values) #t)]
         [_ #f])))
   (app name parameters externs state initial handlers runs run-mode? (stx->loc stx)))
+
+;; The type of a texel of an image of format f, holding its bits (as images' readbacks copy them),
+;; or #f for a depth format
+(define (texel-type f)
+  (case f
+    [(r8) (scalar-t 'uint8)]
+    [(rg8 r16f) (scalar-t 'uint16)]
+    [(rgba8 rgba8-srgb bgra8 bgra8-srgb rg16f r32ui) (scalar-t 'uint)]
+    [(r32i) (scalar-t 'int)]
+    [(r32f) (scalar-t 'float)]
+    [(rgba16f) (vector-t 'uint 2)]
+    [(rg32f) (vector-t 'float 2)]
+    [(rgba32f) (vector-t 'float 4)]
+    [else #f]))
 
 (define (parse-event stx claim! find-readback)
   (define parts (syntax->list stx))
@@ -257,11 +284,22 @@
        [_ (zgal-error 'malformed stx "expected (~a button cursor), binding the cursor's position" kind)])]
     ['read
      (match args
-       [(list node n)
-        (define readback (find-readback node))
-        (claim! (list kind (second readback)) stx)
-        (event kind '() #f (binding-name n) readback (stx->loc stx))]
-       [_ (zgal-error 'malformed stx "expected (read readback values), binding the elements the readback copied")])]
+       [(list* node n option-stxs)
+        (match-define (list g node-name element looped? image?) (find-readback node))
+        (define-values (positional options) (split-options option-stxs "read"))
+        (unless (null? positional)
+          (zgal-error 'malformed stx "expected (read readback values [#:index i] [#:size s]), binding the elements the readback copied"))
+        (check-known-options options (if image? '(#:index #:size) '(#:index)) "read")
+        (define (option-name key) (let ([o (hash-ref options key #f)]) (and o (binding-name o))))
+        (define index (option-name '#:index))
+        (cond
+          [(and looped? (not index))
+           (zgal-error 'malformed stx "readback ~a is in a loop, a readback per iteration: bind which one copied with #:index, (read ~a values #:index i)" node-name node-name)]
+          [(and index (not looped?))
+           (zgal-error 'bad-option (hash-ref options '#:index) "readback ~a isn't in a loop, so there's no #:index" node-name)])
+        (claim! (list kind node-name) stx)
+        (event kind '() #f (binding-name n) (read-event g node-name element looped? image? index (option-name '#:size)) (stx->loc stx))]
+       [_ (zgal-error 'malformed stx "expected (read readback values [#:index i] [#:size s]), binding the elements the readback copied")])]
     [_
      (match args
        [(list n)

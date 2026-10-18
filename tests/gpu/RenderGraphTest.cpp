@@ -601,6 +601,37 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph runs a node once, and buffer readbacks g
     }
 }
 
+TEST_CASE_FIXTURE(GpuTest, "Image readbacks give finished copies without waiting, as texels with their extent") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    ImageId image = graph.createImage("picture", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{{2, 1}});
+    float red = 1.0f;
+    graph.addTransfer("clear", [image](NodeBuilder& builder) { builder.write(image, Access::TransferDst); },
+                      [image, &red](RecordContext& record) {
+                          const VkClearColorValue color{{red, 0.0f, 0.0f, 1.0f}};
+                          VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                          vkCmdClearColorImage(record.commandBuffer, record.graph.image(image, record.frameIndex)->getImage(),
+                                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
+                      });
+    NodeId readback = graph.add<ReadbackNode>("readback", image);
+    auto& node = graph.nodeAs<ReadbackNode>(readback);
+    CHECK_FALSE(node.takeFinished<uint32_t>().value());
+
+    graph.execute().value();
+    red = 0.0f;
+    graph.execute().value();
+    graph.waitIdle().value();
+    // The newest, once: a texel holds a pixel's bytes (RGBA, so red is the low byte)
+    auto latest = node.takeFinished<uint32_t>().value();
+    REQUIRE(latest);
+    CHECK(latest->texels == std::vector<uint32_t>{0xFF000000u, 0xFF000000u});
+    CHECK(latest->extent.width == 2);
+    CHECK(latest->extent.height == 1);
+    CHECK_FALSE(node.takeFinished<uint32_t>().value());
+    // A texel type of another size than the format's pixels is misuse
+    CHECK_THROWS_AS(node.takeFinished<uint8_t>(), ContractViolation);
+}
+
 TEST_CASE_FIXTURE(GpuTest, "Materials update after the CPU nodes ordered before their nodes") {
     auto& ctx = context();
     RenderGraph graph(ctx);

@@ -215,8 +215,17 @@
   (check-zgal-error (graph "  (readback r cells #:when (> (.x (.xz (uvec2 n 1))) 0))")
                     'unknown-name "xz isn't a swizzle of a uvec2"))
 
-(test-case "Read events take readbacks outside loops"
-  (check-zgal-error (string-append
-                     (graph "  (for ([i (range 0 2)]) (readback r cells))")
-                     "(app A (state (seen uint 0)) (on (read r xs) (with state #:seen (count xs))) (run G (n 1)))\n")
-                    'type-mismatch "readback r is in a loop"))
+(test-case "Read events of looped readbacks give each copy with its readback's index, and images' with their size"
+  (define (app-of on) (string-append (graph "  (for ([i (range 0 2)]) (readback r cells))" "  (readback p picture)")
+                                     "(app A (state (seen uint 0)) " on " (run G (n 1)))\n"))
+  (define h (header (compile-text (app-of "(on (read r xs #:index i) (with state #:seen (+ (count xs) i))) (on (read p texels #:size s) (with state #:seen (+ (at texels 0) s.x)))"))))
+  (check-true (string-contains? h "for (size_t i = 0; i < ids0_->nodes.r.size(); ++i) {"))
+  (check-true (string-contains? h "TRY_ASSIGN(auto copied, graph0_->nodeAs<BufferReadbackNode>(ids0_->nodes.r[i]).takeFinished<uint32_t>()"))
+  (check-true (string-contains? h "state_ = on0(state_, zgal::Data<uint32_t>(std::move(*copied)), static_cast<uint32_t>(i));"))
+  (check-true (string-contains? h "State on0([[maybe_unused]] const State& state, [[maybe_unused]] const zgal::Data<uint32_t>& xs, [[maybe_unused]] uint32_t i)"))
+  ;; An RGBA8 image's texels are uints, each a pixel's bytes
+  (check-true (string-contains? h "graph0_->nodeAs<ReadbackNode>(ids0_->nodes.p).takeFinished<uint32_t>()"))
+  (check-true (string-contains? h "state_ = on1(state_, zgal::Data<uint32_t>(std::move(copied->texels)), glm::uvec2(copied->extent.width, copied->extent.height));"))
+  (check-zgal-error (app-of "(on (read r xs) (with state #:seen (count xs)))") 'malformed "readback r is in a loop, a readback per iteration: bind which one copied with #:index")
+  (check-zgal-error (app-of "(on (read p xs #:index i) state)") 'bad-option "readback p isn't in a loop, so there's no #:index")
+  (check-zgal-error (app-of "(on (read r xs #:index i #:size s) state)") 'bad-option "read takes no #:size option"))

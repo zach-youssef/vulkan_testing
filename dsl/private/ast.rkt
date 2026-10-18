@@ -123,10 +123,14 @@
 ;; condition holds (the last has none); empty for none.
 (struct app (name parameters externs state initial handlers runs run-mode? loc) #:transparent)
 ;; event: kind 'key-pressed 'key-released (keys: key name symbols), 'mouse-pressed 'mouse-released
-;; (button: 'left 'right 'middle), 'cursor-moved 'scrolled 'frame, or 'read: a buffer readback's
-;; copy has finished (readback: (list graph node element-type)). binding: the name the event's
-;; value is bound to (a cursor position, scroll offset, time step or the copied data), or #f.
+;; (button: 'left 'right 'middle), 'cursor-moved 'scrolled 'frame, or 'read: a readback's copy has
+;; finished (readback: a read-event). binding: the name the event's value is bound to (a cursor
+;; position, scroll offset, time step or the copied data), or #f.
 (struct event (kind keys button binding readback loc) #:transparent)
+;; A read event's readback: the graph and node names, the type of the copied elements (an image's:
+;; a texel's), whether it's in a loop and of an image, and the names the iteration's index (for a
+;; looped readback) and an image's size are bound to, or #f
+(struct read-event (graph node element looped? image? index size) #:transparent)
 (struct handler (event body loc) #:transparent)
 ;; bindings: (cons graph-item-name expression) for the graph's parameters (computed once) and
 ;; per-frame inputs (each frame). enables: (cons node-name expression), computed each frame. when:

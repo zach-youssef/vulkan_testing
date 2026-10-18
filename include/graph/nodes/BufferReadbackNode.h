@@ -3,6 +3,7 @@
 #include "core/Contract.h"
 #include "core/Result.h"
 #include "graph/RenderGraph.h"
+#include "graph/nodes/FinishedCopies.h"
 #include "resources/Buffer.h"
 
 #include <cstring>
@@ -45,8 +46,7 @@ public:
         auto& copy = copies_[context.frameIndex];
         lastFrame_ = context.frameIndex;
         // This frame slot's previous copy is overwritten
-        std::erase_if(pending_, [&context](const Pending& p) { return p.frameIndex == context.frameIndex; });
-        pending_.push_back({context.frameIndex, std::nullopt});
+        finished_.recorded(context.frameIndex);
         if (copy.size == 0) {
             return;
         }
@@ -74,29 +74,9 @@ public:
     // none has. Call it between frames.
     template<typename T>
     Result<std::optional<std::vector<T>>> takeFinished() {
-        VulkanContext& context = graph_->context();
-        // Frame slots removed when the number of frames in flight shrank
-        std::erase_if(pending_, [this](const Pending& p) { return p.frameIndex >= copies_.size(); });
-        std::optional<uint32_t> newest;
-        for (auto& p : pending_) {
-            // Copies recorded before now have been submitted, so the work submitted so far includes them
-            if (!p.points) {
-                p.points = context.submittedPoints();
-            }
-            if (context.isComplete(*p.points)) {
-                newest = p.frameIndex;
-            }
-        }
+        const std::optional<uint32_t> newest = finished_.takeNewest(graph_->context(), copies_.size());
         if (!newest) {
             return std::optional<std::vector<T>>();
-        }
-        // Older ones are superseded. Pending copies are in recording order.
-        while (!pending_.empty()) {
-            const bool found = pending_.front().frameIndex == *newest;
-            pending_.erase(pending_.begin());
-            if (found) {
-                break;
-            }
         }
         TRY_ASSIGN(auto elements, read<T>(copies_[*newest]));
         return std::optional<std::vector<T>>(std::move(elements));
@@ -121,16 +101,9 @@ private:
         return elements;
     }
 
-    // A copy recorded and not yet returned by takeFinished: its frame slot, and the work it was
-    // submitted with (captured once it has been submitted)
-    struct Pending {
-        uint32_t frameIndex;
-        std::optional<VulkanContext::TimelinePoints> points;
-    };
-
     BufferId buffer_;
     RenderGraph* graph_ = nullptr;
     PerFrame<Copy> copies_;
-    std::vector<Pending> pending_;
+    FinishedCopies finished_;
     std::optional<uint32_t> lastFrame_;
 };

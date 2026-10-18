@@ -1427,7 +1427,8 @@ their uses in that order, as everywhere: here each batch's passes run one after 
 a loop is one per iteration (whose @tt{#:when} held): C++ finds their ids in @tt{nodes.name}, a
 @tt{std::vector<NodeId>}, the graph names them @tt{"name 0"}, @tt{"name 1"}, and so on, and a
 looped readback's accessor takes the index, @tt{nameContents(graph, i)}. An app's @tt{#:enabled} enables
-or disables them all; read events take readbacks outside loops. Draws in a loop into one target
+or disables them all, and a read event of a looped readback gives each one's copies with its index
+(@tt{#:index}). Draws in a loop into one target
 each begin by clearing it unless the target loads it (@tt{(color image #:load load)}), so later
 iterations keep what earlier ones drew.
 
@@ -1527,7 +1528,9 @@ The particles example's app:
         (cursor-moved cursor)
         (scrolled offset)
         (frame dt)
-        (read readback elements)]
+        (read readback elements maybe-index maybe-size)]
+ [maybe-index (code:line) (code:line #:index i)]
+ [maybe-size (code:line) (code:line #:size size)]
  [button left right middle]
  [maybe-enabled (code:line) (code:line #:enabled ((node expression) ...))]
  [maybe-when (code:line) (code:line #:when condition)]]
@@ -1583,7 +1586,16 @@ Events:
   (list @tt{(cursor-moved cursor)} @elem{the cursor, a @tt{vec2}} "the cursor moves")
   (list @tt{(scrolled offset)} @elem{the offset, a @tt{vec2} in scroll steps, y up} "the user scrolls")
   (list @tt{(frame dt)} @elem{the time since the last frame, a @tt{float} in seconds} "each frame, before drawing")
-  (list @tt{(read readback elements)} @elem{the elements a buffer readback copied, @racket[(data T)]} "a readback's copy has finished (polled before each frame, without waiting)"))]
+  (list @tt{(read readback elements)} @elem{the elements a buffer readback copied, or the texels an image readback copied, @racket[(data T)]} "a readback's copy has finished (polled before each frame, without waiting)"))]
+A readback in a loop is one per iteration: its read event binds which one copied with @tt{#:index i}
+(a @tt{uint}, the readback's index in @tt{nodes.name}), and handles each one's copies. An image
+readback's texels are one per pixel, row by row, each holding the pixel's bits: a @tt{uint} for
+the 8-bit RGBA and BGRA formats (the first channel in the low byte), @tt{float}, @tt{vec2} or
+@tt{vec4} for @tt{r32f}, @tt{rg32f} and @tt{rgba32f}, @tt{uvec2} for @tt{rgba16f} (two halves per
+@tt{uint}), and so on (@tt{r32ui} and @tt{r32i} as they are, @tt{r8} a @tt{uint8}, @tt{rg8} and
+@tt{r16f} a @tt{uint16}, @tt{rg16f} a @tt{uint}). @tt{#:size size} binds the image's size when it
+was copied (a @tt{uvec2}). Imported images' formats aren't known, so only graph images and image
+files (RGBA8) have read events.
 Cursor positions are in [-1, 1] across the window, y down, like Vulkan's clip space. Keys are
 @tt{a}-@tt{z}, @tt{0}-@tt{9}, @tt{space}, @tt{escape}, @tt{enter}, @tt{tab}, @tt{backspace},
 @tt{left}, @tt{right}, @tt{up}, @tt{down}, @tt{minus}, @tt{equal}, @tt{keypad-add},

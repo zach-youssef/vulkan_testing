@@ -798,6 +798,28 @@
   (readback readKeys keys)
   (readback readPicture picture))
 
+;; Read events of looped and image readbacks: a buffer cleared to k and read back, for k = 1 and 2,
+;; and a red picture 2 pixels wide, read back
+(graph Readings
+  (buffer cells uint 2 #:frames shared)
+  (image picture rgba8 (fixed 2 1) #:frames shared)
+  (target canvas (color picture))
+  (material painting Band)
+  (for ([k (range (uint 1) 3)])
+    (clear fill cells #:value k)
+    (readback copy cells))
+  (draw paint canvas painting 3 #:push ((row 0) (rows 1) (shade (vec4 1.0 0.0 0.0 1.0))))
+  (readback shot picture))
+
+(app Reader
+  (state (first uint 0) (second uint 0) (texel uint 0) (width uint 0))
+  ;; Each iteration's copy, by its readback's index
+  (on (read copy values #:index i)
+    (if (= i 0) (with state #:first (at values 0)) (with state #:second (at values 1))))
+  (on (read shot texels #:size size)
+    (with state #:texel (at texels 1) #:width size.x))
+  (run Readings))
+
 ;; For the run-mode test: an app scripting its frames from how it's run, as a smoke test would. It
 ;; marks one more pixel of the row each frame (up to 4), and headless, halfway, shrinks the surface
 ;; the row follows.

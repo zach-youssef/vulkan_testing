@@ -1052,6 +1052,27 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL apps run phases: graphs chosen by state, once n
     ctx.collectRetired();
 }
 
+TEST_CASE_FIXTURE(GpuTest, "ZGAL apps read the copies of looped readbacks by index, and images' texels") {
+    auto& ctx = context();
+    {
+        RenderGraph graph(ctx);
+        auto app = Reader::create(ctx, graph, Reader::Inputs{}).value();
+        app->beginFrame().value();
+        app->renderGraph().execute().value();
+        ctx.waitIdleAll();
+        app->beginFrame().value();
+        // The copy of each iteration's readback
+        CHECK(app->state().first == 1);
+        CHECK(app->state().second == 2);
+        // A texel of RGBA8 holds a pixel's bytes: red in the low byte
+        CHECK(app->state().texel == 0xFF0000FFu);
+        CHECK(app->state().width == 2);
+        app->renderGraph().execute().value();
+        ctx.waitIdleAll();
+    }
+    ctx.collectRetired();
+}
+
 TEST_CASE_FIXTURE(GpuTest, "ZGAL's compute library scans and reduces, counted by the CPU or the GPU") {
     auto& ctx = context();
     // Small, one tile, and several tiles per workgroup (with every workgroup of the grid)

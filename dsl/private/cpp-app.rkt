@@ -224,25 +224,33 @@
   (gen "    Result<void> beginFrame() {")
   (gen "        frameNumber_ = framesBegun_++;")
   (for ([h (in-list read-handlers)])
-    (match-define (list g-name node-name element) (event-readback (handler-event h)))
+    (match-define (read-event g-name node-name element looped? image? index size) (event-readback (handler-event h)))
     (define r (run-of-graph g-name))
-    (define conditional? (g-node-when (node-of r node-name)))
-    (define id (format "~a->nodes.~a" (ids-member r) node-name))
+    (define conditional? (and (not looped?) (g-node-when (node-of r node-name))))
+    (define ids (format "~a->nodes.~a" (ids-member r) node-name))
     (define t (spell-type element 'cpp))
-    (define indent (if conditional? "            " "        "))
-    (when conditional?
-      (emit! w (format "        if (~a) {" id) #:at (handler-loc h)))
-    (emit! w (format "~a{" indent) #:at (handler-loc h))
-    (emit! w (format "~a    TRY_ASSIGN(auto copied, ~a->nodeAs<BufferReadbackNode>(~a).takeFinished<~a>().withContext(~a));" indent
-                     (graph-member r) (if conditional? (string-append "*" id) id) t (cpp-string (format "reading back ~a" node-name)))
-           #:at (handler-loc h))
-    (emit! w (format "~a    if (copied) {" indent) #:at (handler-loc h))
-    (emit! w (format "~a        state_ = ~a(state_, zgal::Data<~a>(std::move(*copied)));" indent (handler-name (index-of-handler h)) t)
-           #:at (handler-loc h))
-    (emit! w (format "~a    }" indent) #:at (handler-loc h))
-    (emit! w (format "~a}" indent) #:at (handler-loc h))
-    (when conditional?
-      (emit! w "        }" #:at (handler-loc h))))
+    (define (line indent text) (emit! w (string-append indent text) #:at (handler-loc h)))
+    ;; A looped readback is one per iteration (in nodes.name), each giving its copies with its index
+    (define-values (id indent)
+      (cond
+        [looped?
+         (line "        " (format "for (size_t i = 0; i < ~a.size(); ++i) {" ids))
+         (values (format "~a[i]" ids) "            ")]
+        [conditional?
+         (line "        " (format "if (~a) {" ids))
+         (values (string-append "*" ids) "            ")]
+        [else
+         (line "        " "{")
+         (values ids "            ")]))
+    (line indent (format "TRY_ASSIGN(auto copied, ~a->nodeAs<~a>(~a).takeFinished<~a>().withContext(~a));"
+                         (graph-member r) (if image? "ReadbackNode" "BufferReadbackNode") id t (cpp-string (format "reading back ~a" node-name))))
+    (line indent "if (copied) {")
+    (line indent (format "    state_ = ~a(state_, zgal::Data<~a>(std::move(~a))~a);" (handler-name (index-of-handler h)) t
+                         (if image? "copied->texels" "*copied")
+                         (string-append (if looped? ", static_cast<uint32_t>(i)" "")
+                                        (if image? ", glm::uvec2(copied->extent.width, copied->extent.height)" ""))))
+    (line indent "}")
+    (line "        " "}"))
   (when frame-handler
     (emit! w (format "        state_ = ~a(state_, inputs_.timestep.next());" (handler-name (index-of-handler frame-handler)))
            #:at (handler-loc frame-handler)))
@@ -308,13 +316,18 @@
            #:at (function-decl-loc f)))
   (for ([h (in-list (app-handlers a))])
     (define binding (event-binding (handler-event h)))
+    (define r (event-readback (handler-event h)))
     (define binding-type
       (case (event-kind (handler-event h))
         [(frame) "float"]
-        [(read) (format "const ~a&" (spell-type (data-t (third (event-readback (handler-event h)))) 'cpp))]
+        [(read) (format "const ~a&" (spell-type (data-t (read-event-element r)) 'cpp))]
         [else "glm::vec2"]))
-    (emit-body-function! w (format "State ~a([[maybe_unused]] const State& state~a)" (handler-name (index-of-handler h))
-                                   (if binding (format ", [[maybe_unused]] ~a ~a" binding-type binding) ""))
+    ;; A read event's index (looped readbacks) and size (images) follow its copy, bound or not
+    (define (extra present? type name) (if present? (format ", [[maybe_unused]] ~a ~a" type (or name "")) ""))
+    (emit-body-function! w (format "State ~a([[maybe_unused]] const State& state~a~a~a)" (handler-name (index-of-handler h))
+                                   (if binding (format ", [[maybe_unused]] ~a ~a" binding-type binding) "")
+                                   (extra (and r (read-event-looped? r)) "uint32_t" (and r (read-event-index r)))
+                                   (extra (and r (read-event-image? r)) "glm::uvec2" (and r (read-event-size r))))
                          (handler-body h) (handler-loc h)))
   (for ([r (in-list runs)])
     (define g (run-graph r))

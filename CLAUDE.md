@@ -368,7 +368,8 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   effects are `print!`, `set-frames-in-flight!`, `resize!` (the window, or headless the surface) and
   `quit!`. Bodies read `frameNumber`, and how the app is run: `headless`, `capture` and `frameLimit`
   (C++ gives a `zgal::RunMode` in `Inputs`), e.g. to script a smoke test. `(on (read readback xs) ...)`
-  receives a buffer readback's finished copy as `(data T)` (immutable shared elements,
+  receives a readback's finished copy (a buffer's elements, or an image's texels with `#:size s`; a
+  looped readback's with `#:index i`) as `(data T)` (immutable shared elements,
   `zgal::Data<T>`; `count`, `at`, `empty-data`), which state fields, externs and graphs'
   `(input d (per-frame (data T)))` (uploaded again when it changes) take. `(run Graph (input expr) ...
   #:enabled ((node expr) ...))` computes the graph's parameters once and per-frame inputs and node
