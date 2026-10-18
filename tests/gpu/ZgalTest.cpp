@@ -1064,7 +1064,7 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs dispatch and draw what shaders wrote, as
 
 TEST_CASE_FIXTURE(GpuTest, "ZGAL's compute library sorts keys and their values, counted by the CPU or the GPU") {
     auto& ctx = context();
-    for (const uint32_t size : {7u, 256u, 100003u}) {
+    for (const uint32_t size : {7u, 256u, 4096u, 4097u, 100003u}) {
         CAPTURE(size);
         std::vector<uint32_t> keys(size);
         std::vector<float> floats(size);

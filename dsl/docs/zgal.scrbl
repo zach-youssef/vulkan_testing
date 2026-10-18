@@ -1311,7 +1311,8 @@ A sort is a radix sort, 4 bits a pass, so 8 passes of three dispatches: counting
 keys by digit, scanning those counts into where each workgroup's keys of each digit go, and moving
 the keys there in order (ranked within subgroups by ballots of their digits' bits, so the device's
 subgroups need ballot operations). Keys move between their buffer and a scratch one, and end in their
-own. The scratch
+own. With a count the CPU knows of at most 4096 keys, one workgroup runs every pass in one dispatch
+instead, as the 24 dispatches take longer than sorting so few keys. The scratch
 buffers hold as many elements as the count, or with a count on the GPU, as the keys' buffer (a
 graph or uploaded buffer then, whose size the graph knows).
 

@@ -982,6 +982,9 @@
             [_ #f]))
         'shared
         'per-frame))
+  ;; The most keys a sort with a count the CPU knows sorts in one workgroup (on an Apple M4, 4096
+  ;; keys take 0.18 ms that way and 0.39 ms in passes; they break even near 8192)
+  (define small-sort-keys 4096)
 
   ;; (sort name keys #:values values #:count n): sorts a buffer of uint keys in place, ascending (and
   ;; stably), moving the values with them
@@ -1014,7 +1017,11 @@
            [(g-upload _ source _ _) (e-op 'count (list (e-ref source where)) where)]
            [_ (zgal-error 'type-mismatch (second args) "sort's keys ~a are an imported buffer, whose size the graph doesn't know, so its #:count is an expression, not an element of a buffer" keys)])]))
     (define groups (grid-groups count where))
-    (define invocations (list (e-op '* (list groups (lit 256)) where)))
+    ;; With a count the CPU knows, up to small-sort-keys keys are sorted by one workgroup in one
+    ;; dispatch, as the 24 dispatches of the passes take longer than sorting them
+    (define small (and (not gpu?) (e-op '<= (list count (lit small-sort-keys)) where)))
+    (define (unless-small e) (if small (e-op 'if (list small (lit 0) e) where) e))
+    (define invocations (list (unless-small (e-op '* (list groups (lit 256)) where))))
     (define flags (append (if gpu? '(gpu-count) '()) (if values-buffer '(values) '())))
     (define suffix (format "~a~a" (if value-type (string-titlecase (type-name value-type)) "Keys") (if gpu? "Counted" "")))
     (define kernel (instantiate-kernel "sort.zgal" (hash 'T (if value-type (scalar-t-kind value-type) 'uint)) flags suffix))
@@ -1045,15 +1052,25 @@
     (define (with-push h) (for/fold ([h h]) ([(k v) (in-hash counted-push)]) (hash-set h k v)))
     (define keys-bindings (hash "keys" keys "scratchKeys" scratch-keys "histogram" histogram))
     (define counter (instance! "count" (hash-ref kernel "ZgalSortCount") (with-counts keys-bindings) (with-push (hash "pass" (lit 0))) invocations))
-    (define offsets (instance! "offsets" (hash-ref kernel "ZgalSortOffsets") (hash "histogram" histogram) (hash "groups" groups) (list (lit 256))))
+    (define offsets (instance! "offsets" (hash-ref kernel "ZgalSortOffsets") (hash "histogram" histogram) (hash "groups" groups) (list (unless-small (lit 256)))))
+    (define scatter-bindings
+      (with-counts (if values-buffer
+                       (hash-set* keys-bindings "items" values-buffer "scratchItems" scratch-values)
+                       keys-bindings)))
     (define scatter
-      (instance! "scatter" (hash-ref kernel "ZgalSortScatter")
-                 (with-counts (if values-buffer
-                                  (hash-set* keys-bindings "items" values-buffer "scratchItems" scratch-values)
-                                  keys-bindings))
-                 (with-push (hash "pass" (lit 0))) invocations))
-    (node 'kernel #:extra (append* (for/list ([pass (in-range 8)])
-                                     (list (k-step counter pass) (k-step offsets #f) (k-step scatter pass))))))
+      (instance! "scatter" (hash-ref kernel "ZgalSortScatter") scatter-bindings
+                 (with-push (hash "pass" (lit 0) "passes" (lit 1))) invocations))
+    (define passes
+      (append* (for/list ([pass (in-range 8)])
+                 (list (k-step counter pass) (k-step offsets #f) (k-step scatter pass)))))
+    (node 'kernel #:extra
+          (if small
+              (cons (k-step (instance! "small" (hash-ref kernel "ZgalSortScatter") scatter-bindings
+                                       (with-push (hash "pass" (lit 0) "passes" (lit 8)))
+                                       (list (e-op 'if (list small (lit 256) (lit 0)) where)))
+                            #f)
+                    passes)
+              passes)))
 
 ;; The commands of (import indirect), by name: their fields, which a buffer of commands holds
   (define command-fields

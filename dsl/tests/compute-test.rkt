@@ -170,7 +170,7 @@
    "  (sort byKey keys #:values ids #:count (at counts 0))\n"
    "  (sort plain uploaded #:count n))\n"))
 
-(test-case "Sort nodes run eight passes of three steps, the pass a pushed constant"
+(test-case "Sort nodes run eight passes of three steps, the pass a pushed constant, or one step for few keys"
   (define outputs (compile-text sort-program))
   (check-equal? (filter (λ (n) (string-prefix? n "ZgalSort")) (shader-names outputs))
                 '("ZgalSortCountFloatCounted.comp" "ZgalSortCountKeys.comp" "ZgalSortOffsetsFloatCounted.comp"
@@ -178,6 +178,11 @@
   (define h (named outputs ".zgal.h"))
   (check-true (string-contains? h "DispatchSequenceNode::withPushedUint(material_zgal_plain_scatter, ZgalSortScatterKeys::kPushOffset + offsetof(ZgalSortScatterKeys::Push, pass), 7u)"))
   (check-equal? (length (regexp-match* #rx"material_zgal_byKey_offsets}" h)) 8)
+  ;; With a count the CPU knows, few keys are sorted by one workgroup, and the passes skipped
+  (check-true (string-contains? h "DispatchSequenceNode>(\"plain\", std::vector<DispatchSequenceNode::Step>{{material_zgal_plain_small}, "))
+  (check-true (string-contains? h "ZgalSortScatterKeys::workgroupsFor(((in->n(frame) <= 4096u) ? 256u : 0u))"))
+  (check-true (string-contains? h "ZgalSortOffsetsKeys::workgroupsFor(((in->n(frame) <= 4096u) ? 0u : 256u))"))
+  (check-false (string-contains? h "zgal_byKey_small"))
   ;; Scratch buffers as large as the keys': the count, or with one on the GPU, the keys' buffer's.
   ;; Per frame when the keys or values are (byKey's values), else shared.
   (check-true (string-contains? h "graph.createBuffer(\"zgal_byKey_keys\", FrameMode::PerFrame, VkDeviceSize(1000u) * sizeof(uint32_t))"))
