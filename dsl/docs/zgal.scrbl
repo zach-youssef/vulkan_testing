@@ -1309,8 +1309,9 @@ and those without elements finish at once.
 
 A sort is a radix sort, 4 bits a pass, so 8 passes of three dispatches: counting each workgroup's
 keys by digit, scanning those counts into where each workgroup's keys of each digit go, and moving
-the keys there in order (ranked within subgroups with ballots, so the device's subgroups need ballot
-operations). Keys move between their buffer and a scratch one, and end in their own. The scratch
+the keys there in order (ranked within subgroups by ballots of their digits' bits, so the device's
+subgroups need ballot operations). Keys move between their buffer and a scratch one, and end in their
+own. The scratch
 buffers hold as many elements as the count, or with a count on the GPU, as the keys' buffer (a
 graph or uploaded buffer then, whose size the graph knows).
 

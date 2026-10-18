@@ -12,6 +12,11 @@
 ;;   ZgalSortScatter moves each workgroup's keys there in order: within a tile, a key's place among
 ;;   those of its digit is counted with subgroup ballots, then across the tile's subgroups.
 ;; The pass is a push constant each step replaces (DispatchSequenceNode).
+;;
+;; Measured on an Apple M4 (tools/bench), ranking by ballots of the digit's bits (4 ballots) rather
+;; than of each digit (16) took a 16M key sort from 28.5 to 19 ms. Neither 8-bit digits (4 passes,
+;; but a slower scatter: 18 ms, and slower at 1M keys) nor ordering each tile by digit in shared
+;; memory before writing it (coalesced writes, but 2 more barriers a tile: 33 ms) paid off.
 
 (compute-material ZgalSortCount
   (workgroup 256)
@@ -77,9 +82,10 @@
    (histogram (buffer-array uint))
    (%if gpu-count (counts (buffer-array uint))))
   (push (%if gpu-count (countIndex uint) (count uint)) (pass uint))
-  ;; subgroupCounts: each subgroup's keys of each digit in the tile; next: where the workgroup's
-  ;; next key of each digit goes
-  (shared (subgroupCounts (array uint 1024)) (next (array uint 16)))
+  ;; subgroupCounts: each subgroup's keys of each digit in the tile, in alternate sides by tile (so
+  ;; one tile's are cleared while the last's are read); next: where the workgroup's next key of
+  ;; each digit goes
+  (shared (subgroupCounts (array uint 2048)) (next (array uint 16)))
   (compute
    (let* ([n (%if gpu-count (at counts countIndex) count)]
           [tiles (/ (+ n 255) 256)]
@@ -88,25 +94,31 @@
           [last (min tiles (+ first run))]
           [lane localInvocationId.x]
           [shift (* pass 4)]
-          [even (= (bitand pass 1) 0)])
+          [even (= (bitand pass 1) 0)]
+          [used (* subgroupCount 16)])
      (when (< lane 16)
        (write! (at next lane) (at histogram (+ (* lane workgroupCount.x) workgroupId.x))))
+     (for ([s (range lane used 256)]) (write! (at subgroupCounts s) 0))
+     (barrier!)
      (for ([t (range first last)])
        (let* ([i (+ (* t 256) lane)]
               [valid (< i n)]
               [key (if valid (if even (at keys i) (at scratchKeys i)) 0)]
-              ;; 16 for none, which no ballot counts
-              [digit (if valid (bitand (shr key shift) 15) 16)]
-              ;; Its place among the subgroup's keys of its digit, in order
-              [rank (fold ([rank (uint 0)]) ([d (range 0 16)])
-                      (let* ([ballot (subgroupBallot (= digit (uint d)))]
-                             [inSubgroup (subgroupBallotBitCount ballot)]
-                             [before (subgroupBallotExclusiveBitCount ballot)])
-                        (when (subgroupElect) (write! (at subgroupCounts (+ (* subgroupId 16) (uint d))) inSubgroup))
-                        (if (= digit (uint d)) before rank)))])
+              [digit (bitand (shr key shift) 15)]
+              [side (* (bitand (- t first) 1) 1024)]
+              [other (- 1024 side)]
+              ;; The subgroup's keys of the same digit: those agreeing with it on each bit
+              [peers (fold ([m (subgroupBallot valid)]) ([b (range 0 4)])
+                       (let* ([set (= (bitand (shr digit (uint b)) 1) 1)]
+                              [ballot (subgroupBallot set)])
+                         (bitand m (if set ballot (bitnot ballot)))))]
+              ;; Its place among them, in order
+              [rank (subgroupBallotExclusiveBitCount peers)])
+         (when (and valid (= rank 0))
+           (write! (at subgroupCounts (+ side (* subgroupId 16) digit)) (subgroupBallotBitCount peers)))
          (barrier!)
          (when valid
-           (let* ([earlier (fold ([acc (uint 0)]) ([s (range 0 subgroupId)]) (+ acc (at subgroupCounts (+ (* s 16) digit))))]
+           (let* ([earlier (fold ([acc (uint 0)]) ([s (range 0 subgroupId)]) (+ acc (at subgroupCounts (+ side (* s 16) digit))))]
                   [place (+ (at next digit) earlier rank)])
              (if even
                  (begin
@@ -119,5 +131,6 @@
          (barrier!)
          (when (< lane 16)
            (write! (at next lane)
-                   (+ (at next lane) (fold ([acc (uint 0)]) ([s (range 0 subgroupCount)]) (+ acc (at subgroupCounts (+ (* s 16) lane)))))))
+                   (+ (at next lane) (fold ([acc (uint 0)]) ([s (range 0 subgroupCount)]) (+ acc (at subgroupCounts (+ side (* s 16) lane)))))))
+         (for ([s (range lane used 256)]) (write! (at subgroupCounts (+ other s)) 0))
          (barrier!))))))
