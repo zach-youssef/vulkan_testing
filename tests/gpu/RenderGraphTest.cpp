@@ -677,3 +677,48 @@ TEST_CASE_FIXTURE(GpuTest, "Compiling builds the materials' pipelines") {
     }
     CHECK(material->getPipeline() != VK_NULL_HANDLE);
 }
+
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph measures its nodes' GPU time when asked") {
+    auto& ctx = context();
+    auto image = storageImage(ctx);
+    RenderGraph graph(ctx);
+    ImageId output = graph.importImage("output", image, ImageState::general());
+    NodeId pattern = graph.add<DispatchNode>("pattern", patternMaterial(ctx, ctx.descriptors().storageImage(image)));
+    NodeId readback = graph.add<ReadbackNode>("readback", output);
+    graph.addCpu("cpu", [](NodeBuilder&) {}, [](FrameContext&) {});
+
+    // Off by default
+    CHECK_FALSE(graph.timingEnabled());
+    graph.execute().value();
+    CHECK(graph.timings().value().empty());
+
+    graph.setTimingEnabled(true);
+    for (int frame = 0; frame < 3; ++frame) {
+        graph.execute().value();
+    }
+    // The GPU nodes of the last frame, in recording order; CPU nodes have no GPU time
+    const auto timings = graph.timings().value();
+    REQUIRE(timings.size() == 2);
+    CHECK(timings[0].node.index == pattern.index);
+    CHECK(timings[0].name == "pattern");
+    CHECK(timings[1].node.index == readback.index);
+    CHECK(timings[1].queue == uint32_t(graph.queueOf(readback).value()));
+    for (const auto& timing : timings) {
+        CHECK(timing.milliseconds >= 0.0);
+        CHECK(timing.milliseconds < 1000.0);
+    }
+    CHECK(hasPattern(graph.nodeAs<ReadbackNode>(readback).pixels().value()));
+
+    // Frames in flight can change while timing; turned off, frames aren't timed
+    ctx.setFramesInFlight(3);
+    graph.execute().value();
+    CHECK(graph.timings().value().size() == 2);
+    graph.setTimingEnabled(false);
+    for (int frame = 0; frame < 3; ++frame) {
+        graph.execute().value();
+    }
+    CHECK(graph.timings().value().empty());
+    ctx.setFramesInFlight(2);
+    graph.execute().value();
+    graph.waitIdle().value();
+}

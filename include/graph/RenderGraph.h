@@ -517,6 +517,20 @@ public: // Compiling and running
                 queue.used = 0;
             }
         }
+        slot.timed.clear();
+        if (timing_) {
+            // The slot's previous frame has finished (beginFrame waited), so its pool can be replaced
+            const uint32_t capacity = 2 * static_cast<uint32_t>(nodes_.size());
+            if (!slot.timestamps || slot.timestampCapacity < capacity) {
+                VkQueryPoolCreateInfo info{};
+                info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+                info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+                info.queryCount = capacity;
+                VK_TRY(VulkanQueryPool::create(slot.timestamps, context_->device(), info), "Failed to create a timestamp query pool");
+                slot.timestampCapacity = capacity;
+            }
+            lastTimedSlot_ = frame;
+        }
 
         // Each distinct material is updated once, just before the first submission recording it,
         // so CPU nodes ordered before its nodes have run
@@ -581,6 +595,53 @@ public: // Compiling and running
     // Blocks until everything this graph submitted has completed (not the whole device)
     Result<void> waitIdle() {
         return context_->wait(submittedPoints_);
+    }
+
+    // A GPU node's time in a frame (see setTimingEnabled)
+    struct NodeTiming {
+        NodeId node;
+        std::string name;
+        uint32_t queue;
+        double milliseconds;
+    };
+
+    // Measures each GPU node's time, with timestamps written before and after it, for profiling. A
+    // timestamp waits for the work recorded before it on its queue, so work that would overlap
+    // serializes around timed nodes: compare timings with each other, not with untimed frames.
+    // Nodes on queues without timestamps, or without graphics or compute (transfer-only queues
+    // can't reset queries), aren't timed.
+    void setTimingEnabled(bool enabled) { timing_ = enabled; }
+    bool timingEnabled() const { return timing_; }
+
+    // The GPU times of the nodes the last timed frame recorded, in recording order, waiting for the
+    // graph's submitted work (like ReadbackNode::pixels); empty before any frame is timed
+    Result<std::vector<NodeTiming>> timings() {
+        std::vector<NodeTiming> result;
+        if (!lastTimedSlot_ || *lastTimedSlot_ >= slots_.size()) {
+            return result;
+        }
+        TRY(waitIdle());
+        auto& slot = slots_[*lastTimedSlot_];
+        if (slot.timed.empty()) {
+            return result;
+        }
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(context_->physicalDevice(), &properties);
+        uint32_t familyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(context_->physicalDevice(), &familyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> families(familyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(context_->physicalDevice(), &familyCount, families.data());
+        for (const auto& [node, queue] : slot.timed) {
+            uint64_t stamps[2] = {};
+            VK_TRY(vkGetQueryPoolResults(context_->device(), **slot.timestamps, 2 * node, 2, sizeof(stamps), stamps,
+                                         sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT),
+                   "Failed to read timestamps");
+            const uint32_t validBits = families[context_->queueDescription(queue).family].timestampValidBits;
+            const uint64_t mask = validBits >= 64 ? ~uint64_t(0) : (uint64_t(1) << validBits) - 1;
+            const uint64_t ticks = ((stamps[1] & mask) - (stamps[0] & mask)) & mask;
+            result.push_back({NodeId{node}, nodes_[node].name, queue, double(ticks) * properties.limits.timestampPeriod / 1.0e6});
+        }
+        return result;
     }
 
     // Called with compiler warnings (by default printed to std::cerr)
@@ -688,6 +749,11 @@ private:
             uint32_t used = 0;
         };
         std::vector<Queue> queues;
+        // With timing: two timestamps per node (before and after it), and the nodes timed in the
+        // slot's last frame, with their queues
+        std::unique_ptr<VulkanQueryPool> timestamps;
+        uint32_t timestampCapacity = 0;
+        std::vector<std::pair<uint32_t, uint32_t>> timed;
     };
 
     NodeRecord& nodeRecord(NodeId id) {
@@ -1355,6 +1421,12 @@ private:
             }
             recordBarriers(barriers);
 
+            // Timestamps around the node, after its barriers: the first waits for the work before it
+            const bool timed = timing_ && timesQueue(queue);
+            if (timed) {
+                vkCmdResetQueryPool(commandBuffer, **slot.timestamps, 2 * node, 2);
+                vkCmdWriteTimestamp2(commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, **slot.timestamps, 2 * node);
+            }
             RecordContext recordContext{frameContext, commandBuffer, {0, 0}};
             if (record.node->kind() == NodeKind::Graphics) {
                 recordContext.renderExtent = beginRendering(commandBuffer, *record.target, frame, acquired);
@@ -1362,6 +1434,10 @@ private:
                 vkCmdEndRendering(commandBuffer);
             } else {
                 record.node->record(recordContext);
+            }
+            if (timed) {
+                vkCmdWriteTimestamp2(commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, **slot.timestamps, 2 * node + 1);
+                slot.timed.emplace_back(node, queue);
             }
         }
 
@@ -1423,6 +1499,19 @@ private:
             state->resolvePending(queue, value);
         }
         return value;
+    }
+
+    // Whether nodes on a queue can be timed: it has timestamps, and resets queries
+    bool timesQueue(uint32_t queue) {
+        const auto& description = context_->queueDescription(queue);
+        if (!(description.flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
+            return false;
+        }
+        uint32_t familyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(context_->physicalDevice(), &familyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> families(familyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(context_->physicalDevice(), &familyCount, families.data());
+        return families[description.family].timestampValidBits > 0;
     }
 
     VkImageView attachmentView(ImageId id, uint32_t frame, const Swapchain::Acquired& acquired) {
@@ -1505,6 +1594,9 @@ private:
     std::optional<uint64_t> lastFrameNumber_;
     VulkanContext::TimelinePoints submittedPoints_;
     PerFrame<FrameSlot> slots_;
+
+    bool timing_ = false;
+    std::optional<uint32_t> lastTimedSlot_;   // The frame slot of the last frame timed
 };
 
 // NodeBuilder's methods, which need RenderGraph

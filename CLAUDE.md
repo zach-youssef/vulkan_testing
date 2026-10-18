@@ -249,6 +249,9 @@ int main() { return exitStatus(runApp()); }            // prints the error
   are cached per set of enabled nodes. CPU nodes replace per-frame callbacks.
 - `BufferReadbackNode::contents<T>()` waits for the latest copy; `takeFinished<T>()` returns the newest
   finished copy without waiting, for polling between frames.
+- Profiling: `graph.setTimingEnabled(true)` writes timestamps around every GPU node, and
+  `graph.timings()` returns the last timed frame's per-node GPU milliseconds (waiting for it).
+  Timestamps serialize work around timed nodes, so compare timings with each other.
 - `VulkanApp` owns graphs: `createGraph()`, `setActiveGraph()`, `destroyGraph()`. Headless code can
   construct `RenderGraph(ctx)` directly and call `execute()`.
 - Input: `app.setInputHandlers({.key = ..., .mouseButton = ..., .cursorPos = ..., .scroll = ...})`

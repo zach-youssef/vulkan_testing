@@ -156,6 +156,9 @@ public:
     }
 };
 
+VULKAN_DEVICE_CLASS(VulkanQueryPool, VkQueryPool, VkQueryPoolCreateInfo, vkCreateQueryPool, vkDestroyQueryPool)
+};
+
 VULKAN_DEVICE_CLASS(VulkanFence, VkFence, VkFenceCreateInfo, vkCreateFence, vkDestroyFence)
 public:
     VulkanFence() {
