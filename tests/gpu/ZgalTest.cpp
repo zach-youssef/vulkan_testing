@@ -996,3 +996,54 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs dispatch and draw what shaders wrote, as
     }
     CHECK(IndirectGraph::requiredFeatures().core.features.multiDrawIndirect == VK_TRUE);
 }
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL's compute library sorts keys and their values, counted by the CPU or the GPU") {
+    auto& ctx = context();
+    for (const uint32_t size : {7u, 256u, 100003u}) {
+        CAPTURE(size);
+        std::vector<uint32_t> keys(size);
+        std::vector<float> floats(size);
+        uint32_t state = 12345;
+        for (uint32_t i = 0; i < size; ++i) {
+            state = state * 1664525u + 1013904223u;
+            // Few distinct keys in some sizes, to check the sort is stable
+            keys[i] = size == 256 ? state % 7u : state;
+            floats[i] = static_cast<float>(static_cast<int32_t>(state >> 8) % 20001 - 10000) * 0.37f;
+        }
+        const uint32_t gpuCount = size - size / 4;
+        RenderGraph graph(ctx);
+        const SortGraph sorting = SortGraph::build(ctx, graph, SortGraph::Inputs{
+            .gpuCount = gpuCount, .keys = keys, .floats = floats}).value();
+        for (int frame = 0; frame < 2; ++frame) {
+            graph.execute().value();
+        }
+
+        // Stable: equal keys keep their order, so the values (indices) match a stable sort's
+        std::vector<uint32_t> order(size);
+        std::iota(order.begin(), order.end(), 0u);
+        std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return keys[a] < keys[b]; });
+        std::vector<uint32_t> sorted;
+        for (uint32_t i : order) {
+            sorted.push_back(keys[i]);
+        }
+        CHECK(sorting.readSortedContents(graph).value() == sorted);
+        CHECK(sorting.readOrderContents(graph).value() == order);
+
+        // The first gpuCount keys only
+        std::vector<uint32_t> partial = keys;
+        std::sort(partial.begin(), partial.begin() + gpuCount);
+        CHECK(sorting.readPartialContents(graph).value() == partial);
+
+        // Float keys sort as their floats, and come back from floatFromSortKey
+        std::vector<float> floatsSorted = floats;
+        std::sort(floatsSorted.begin(), floatsSorted.end());
+        const auto floatKeys = sorting.readFloatKeysContents(graph).value();
+        REQUIRE(floatKeys.size() == size);
+        std::vector<float> back;
+        for (uint32_t key : floatKeys) {
+            back.push_back(floatFromSortKey(key));
+        }
+        CHECK(back == floatsSorted);
+        ctx.waitIdleAll();
+    }
+}

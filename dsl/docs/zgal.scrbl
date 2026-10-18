@@ -884,7 +884,7 @@ and C++ supplies the meshes.
  #:literals (graph parameter input per-frame data meshes cpu extern path import-image import-images image-file model import-buffer upload
              constant sampler uniform image buffer target surface attachments if color depth material
              dispatch draw-meshes draw readback copy clear fixed extent-of reduce inclusive-scan
-             exclusive-scan at add min max)
+             exclusive-scan sort at add min max)
  [graph-form (graph Name graph-item ...)]
  [graph-item (parameter name type)
              (input name (per-frame type))
@@ -921,7 +921,9 @@ and C++ supplies the meshes.
        (extern name extern-input maybe-when)
        (reduce name source-buffer (at buffer index) #:op op #:count count node-option ...)
        (inclusive-scan name source-buffer destination-buffer #:op op #:count count node-option ...)
-       (exclusive-scan name source-buffer destination-buffer #:op op #:count count node-option ...)]
+       (exclusive-scan name source-buffer destination-buffer #:op op #:count count node-option ...)
+       (sort name keys-buffer maybe-values #:count count node-option ...)]
+ [maybe-values (code:line) (code:line #:values buffer)]
  [op add min max]
  [count expression (at uint-buffer index)]
  [maybe-value (code:line) (code:line #:value expression)]
@@ -1162,8 +1164,8 @@ Nodes:
        to @tt{#:destination-offset} (in elements, by default 0), computed when the graph is
        built. A range outside either buffer is a contract violation when it's recorded.}
  @item{@racket[extern]: nodes C++ adds (@secref["extern"]).}
- @item{@racket[reduce], @racket[inclusive-scan] and @racket[exclusive-scan]: the compute library's
-       algorithms (@secref["compute-library"]).}
+ @item{@racket[reduce], @racket[inclusive-scan], @racket[exclusive-scan] and @racket[sort]: the
+       compute library's algorithms (@secref["compute-library"]).}
 ]
 @tt{#:when} leaves a node out when the condition is false (C++ gets a @tt{std::optional} id), and
 @tt{#:enabled} adds it disabled: disabled nodes still count when the graph allocates resources, and
@@ -1242,9 +1244,14 @@ care to write well: ZGAL has them as nodes.
        sum, minimum or maximum), and @racket[exclusive-scan] what comes before it only (the first
        gets the operator's identity: 0, or the largest or smallest value), e.g. where each item's
        output starts from how many outputs each has. The destination may be the source.}
+ @item{@racket[sort] sorts a buffer of @tt{uint} keys in place, ascending and stably (equal keys
+       keep their order), and with @tt{#:values}, moves another buffer's elements (@tt{uint}s,
+       @tt{int}s or @tt{float}s, e.g. indices) with them: e.g. splats by depth, or particles by
+       cell. Other keys map to @tt{uint}s that sort alike: @racket[(import sorting)]'s
+       @tt{floatSortKey} and @tt{intSortKey} (and @tt{floatFromSortKey} back).}
 ]
-They take buffers (graph, imported or uploaded) of @tt{uint}s, @tt{int}s or @tt{float}s. The count
-is required: an expression computed each frame, or an element of a buffer of @tt{uint}s that an
+Scans and reductions take buffers (graph, imported or uploaded) of @tt{uint}s, @tt{int}s or
+@tt{float}s. The count is required: an expression computed each frame, or an element of a buffer of @tt{uint}s that an
 earlier node wrote on the GPU, @tt{(at counts 0)} (e.g. how many particles a pass kept), which the
 kernels read themselves, so nothing waits for the CPU. Elements past the count are left alone.
 
@@ -1273,6 +1280,13 @@ comes before it. Workgroups scan with subgroup operations (so the device's subgr
 operations, and shuffles for minima and maxima, which Metal can't scan natively), then combine the
 subgroups' totals in shared memory. With a count on the GPU all 256 workgroups are dispatched,
 and those without elements finish at once.
+
+A sort is a radix sort, 4 bits a pass, so 8 passes of three dispatches: counting each workgroup's
+keys by digit, scanning those counts into where each workgroup's keys of each digit go, and moving
+the keys there in order (ranked within subgroups with ballots, so the device's subgroups need ballot
+operations). Keys move between their buffer and a scratch one, and end in their own. The scratch
+buffers hold as many elements as the count, or with a count on the GPU, as the keys' buffer (a
+graph or uploaded buffer then, whose size the graph knows).
 
 @subsection[#:tag "extern"]{Extern nodes}
 
@@ -1700,6 +1714,7 @@ without assuming a backend, so other backends (e.g. WebGL) only add emitters.
   (list @tt{dsl/private/features.rkt} "the device features (8- and 16-bit integers) materials need")
   (list @tt{dsl/private/names.rkt} "valid and reserved names")
   (list @tt{dsl/lib/} "the standard library's modules")
+  (list @tt{dsl/lib/kernels/} "the compute library's materials, which graph.rkt instantiates (parse.rkt reads them)")
   (list @tt{dsl/private/errors.rkt} "the error catalog")
   (list @tt{dsl/private/writer.rkt} "writing generated code with #line directives")
   (list @tt{dsl/private/glsl.rkt} "the GLSL backend")
@@ -1708,7 +1723,7 @@ without assuming a backend, so other backends (e.g. WebGL) only add emitters.
   (list @tt{dsl/private/app.rkt} "reading and checking apps")
   (list @tt{dsl/private/cpp-app.rkt} "the C++ backend for apps")
   (list @tt{dsl/private/cpp-common.rkt} "C++ spellings the backend's modules share")
-  (list @tt{include/zgal/Runtime.h} "what the generated graphs use at runtime: FrameInfo, Uniform, Instance")
+  (list @tt{include/zgal/Runtime.h} "what the generated graphs use at runtime: FrameInfo, Uniform, Instance, addCountedDraw")
   (list @tt{include/zgal/App.h} "what the generated apps use: events, Timestep")
   (list @tt{include/zgal/Window.h} "running an app in a VulkanApp's window")
   (list @tt{dsl/docs/} "this document, and the helpers compiling its examples")

@@ -579,3 +579,41 @@
   (dispatch cull culling)
   (draw-meshes draw onCanvas halves drawModel #:indirect (at kept 0) #:draws 2 #:count (at keptCount 0))
   (readback canvasRead canvas))
+
+;; The compute library's radix sort: keys with values (their indices), counted by the CPU, and keys
+;; alone, counted by the GPU; and float keys, from (import sorting)
+(import sorting)
+
+(compute-material Number
+  (workgroup 64)
+  (bindings (order (buffer-array uint)) (floats (buffer-array float)) (floatKeys (buffer-array uint)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (write! (at order i) i)
+       (write! (at floatKeys i) (floatSortKey (at floats i)))))))
+
+(graph SortGraph
+  (parameter gpuCount uint)
+  (input keys (data uint))
+  (input floats (data float))
+  (upload keysBuffer keys)
+  (upload floatsBuffer floats)
+  (buffer sorted uint (count keys) #:frames shared)
+  (buffer order uint (count keys) #:frames shared)
+  (buffer partial uint (count keys) #:frames per-frame)
+  (buffer floatKeys uint (count floats) #:frames shared)
+  (buffer counts uint 1 #:frames shared)
+  (material numbering Number order (floats floatsBuffer) floatKeys #:push ((count (count keys))) #:invocations ((count keys)))
+  (copy toSorted keysBuffer sorted)
+  (copy toPartial keysBuffer partial)
+  (dispatch number numbering)
+  (clear setCount counts #:value gpuCount)
+  (sort byKey sorted #:values order #:count (count keys))
+  (sort some partial #:count (at counts 0))
+  (sort byFloat floatKeys #:count (count floats))
+  (readback readSorted sorted)
+  (readback readOrder order)
+  (readback readPartial partial)
+  (readback readFloatKeys floatKeys))

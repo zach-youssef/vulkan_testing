@@ -310,7 +310,8 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   past the count no instances (MoltenVK lacks it).
 - The compute library: `(reduce n source (at dest i) #:op add|min|max #:count c)`,
   `(inclusive-scan n source dest ...)` and `(exclusive-scan ...)` nodes over buffers of uints, ints
-  or floats. `#:count` is an expression or a GPU-written `(at counts i)`. The compiler instantiates
+  or floats, and `(sort n keys #:values v #:count c)`, a stable radix sort of uint keys (`(import
+  sorting)` maps floats and ints to them). `#:count` is an expression or a GPU-written `(at counts i)`. The compiler instantiates
   their materials from `dsl/lib/kernels` (named `Zgal...`) and dispatches them as one
   `DispatchSequenceNode`.
 - Top-level `(define (f [x : vec3]) : vec3 ...)` functions and `(define name value)` constants are

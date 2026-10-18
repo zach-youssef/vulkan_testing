@@ -156,3 +156,37 @@
                     "draw-meshes #:indirect draws a model's mesh, but meshes is a meshes input")
   (check-zgal-error (string-replace model-program "(buffer kept DrawIndexedCommand" "(buffer kept DrawCommand") 'type-mismatch
                     "#:indirect reads DrawIndexedCommands, (import indirect), but kept holds DrawCommand"))
+
+(define sort-program
+  (string-append
+   "(graph G (input n (per-frame uint)) (input keyData (data uint))\n"
+   "  (upload uploaded keyData)\n"
+   "  (import-buffer imported uint)\n"
+   "  (buffer keys uint 1000 #:frames shared)\n"
+   "  (buffer ids float 1000 #:frames shared)\n"
+   "  (buffer counts uint 2 #:frames shared)\n"
+   "  (sort byKey keys #:values ids #:count (at counts 0))\n"
+   "  (sort plain uploaded #:count n))\n"))
+
+(test-case "Sort nodes run eight passes of three steps, the pass a pushed constant"
+  (define outputs (compile-text sort-program))
+  (check-equal? (filter (λ (n) (string-prefix? n "ZgalSort")) (shader-names outputs))
+                '("ZgalSortCountFloatCounted.comp" "ZgalSortCountKeys.comp" "ZgalSortOffsetsFloatCounted.comp"
+                  "ZgalSortOffsetsKeys.comp" "ZgalSortScatterFloatCounted.comp" "ZgalSortScatterKeys.comp"))
+  (define h (named outputs ".zgal.h"))
+  (check-true (string-contains? h "DispatchSequenceNode::withPushedUint(material_zgal_plain_scatter, ZgalSortScatterKeys::kPushOffset + offsetof(ZgalSortScatterKeys::Push, pass), 7u)"))
+  (check-equal? (length (regexp-match* #rx"material_zgal_byKey_offsets}" h)) 8)
+  ;; Scratch buffers as large as the keys': the count, or with one on the GPU, the keys' buffer's
+  (check-true (string-contains? h "graph.createBuffer(\"zgal_byKey_keys\", FrameMode::PerFrame, VkDeviceSize(1000u) * sizeof(uint32_t))"))
+  (check-true (string-contains? h "graph.createBuffer(\"zgal_byKey_values\", FrameMode::PerFrame, VkDeviceSize(1000u) * sizeof(float))"))
+  (check-true (string-contains? h "graph.createBuffer(\"zgal_plain_keys\", FrameMode::PerFrame, [=](const FrameContext& frameContext)")))
+
+(test-case "Sort nodes check their keys and values"
+  (check-zgal-error (string-replace sort-program "(sort plain uploaded" "(sort plain ids") 'type-mismatch
+                    "sort's keys are uints, but ids holds float")
+  (check-zgal-error (string-replace sort-program "#:values ids" "#:values keys") 'type-mismatch
+                    "sort's values are another buffer than its keys")
+  (check-zgal-error (string-replace sort-program "(sort plain uploaded #:count n)" "(sort plain imported #:count (at counts 1))") 'type-mismatch
+                    "sort's keys imported are an imported buffer, whose size the graph doesn't know")
+  (check-zgal-error (string-replace sort-program "(sort plain uploaded #:count n)" "(sort plain uploaded)") 'bad-option
+                    "sort needs #:count"))

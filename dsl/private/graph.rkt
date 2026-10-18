@@ -730,6 +730,7 @@
                            ;; C++ adds and enables the nodes
                            [(extern) '(#:when)]
                            [(reduce inclusive-scan exclusive-scan) '(#:when #:enabled #:once #:op #:count)]
+                           [(sort) '(#:when #:enabled #:once #:values #:count)]
                            [(dispatch) '(#:when #:enabled #:once #:indirect)]
                            [(draw draw-meshes) '(#:when #:enabled #:once #:indirect #:draws #:count)]
                            [else '(#:when #:enabled #:once)])
@@ -886,7 +887,88 @@
        (shape 2 "(extern name input)")
        (node 'extern #:subject (lookup (second args) '(extern) "an extern input"))]
       [(or 'reduce 'inclusive-scan 'exclusive-scan)
-       (parse-kernel-node head node-name stx args options node)]))
+       (parse-kernel-node head node-name stx args options node)]
+      ['sort (parse-sort-node node-name stx args options node)]))
+
+  ;; The workgroups of the library's fixed grid for a count (see dsl/lib/kernels/reduce.zgal)
+  (define (grid-groups count where)
+    (define (lit n) (e-literal n where))
+    (if (element-ref? count)
+        (lit 256)
+        (e-op 'min (list (e-op 'max (list (e-op '/ (list (e-op '+ (list count (lit 255)) where) (lit 256)) where) (lit 1)) where)
+                         (lit 256))
+              where)))
+
+  ;; (sort name keys #:values values #:count n): sorts a buffer of uint keys in place, ascending (and
+  ;; stably), moving the values with them
+  (define (parse-sort-node node-name stx args options node)
+    (unless (= (length args) 2)
+      (zgal-error 'malformed stx "expected (sort name keys [#:values buffer] #:count n)"))
+    (define where (stx->loc stx))
+    (define (lit n) (e-literal n where))
+    (define keys (lookup (second args) '(buffer import-buffer upload) "a buffer"))
+    (unless (equal? (entry-type (hash-ref env keys)) (scalar-t 'uint))
+      (zgal-error 'type-mismatch (second args) "sort's keys are uints, but ~a holds ~a (map other keys to uints that sort alike, e.g. (import sorting)'s floatSortKey)"
+                  keys (type-name (entry-type (hash-ref env keys)))))
+    (define values-stx (hash-ref options '#:values #f))
+    (define values-buffer (and values-stx (lookup values-stx '(buffer import-buffer upload) "a buffer")))
+    (define value-type (and values-buffer (entry-type (hash-ref env values-buffer))))
+    (when (and value-type (not (member value-type (list (scalar-t 'uint) (scalar-t 'int) (scalar-t 'float)))))
+      (zgal-error 'type-mismatch values-stx "sort's values are uints, ints or floats (e.g. indices), but ~a holds ~a" values-buffer (type-name value-type)))
+    (when (equal? values-buffer keys)
+      (zgal-error 'type-mismatch values-stx "sort's values are another buffer than its keys"))
+    (define count (parse-kernel-count (hash-ref options '#:count #f) "sort" stx))
+    (define gpu? (element-ref? count))
+    ;; The scratch buffers hold as many elements as are sorted: the count, or with a count only the
+    ;; GPU knows, as many as the keys' buffer holds
+    (define capacity
+      (cond
+        [(not gpu?) count]
+        [else
+         (match (entry-item (hash-ref env keys))
+           [(g-buffer _ _ c _ _ _) c]
+           [(g-upload _ source _ _) (e-op 'count (list (e-ref source where)) where)]
+           [_ (zgal-error 'type-mismatch (second args) "sort's keys ~a are an imported buffer, whose size the graph doesn't know, so its #:count is an expression, not an element of a buffer" keys)])]))
+    (define groups (grid-groups count where))
+    (define invocations (list (e-op '* (list groups (lit 256)) where)))
+    (define flags (append (if gpu? '(gpu-count) '()) (if values-buffer '(values) '())))
+    (define suffix (format "~a~a" (if value-type (string-titlecase (type-name value-type)) "Keys") (if gpu? "Counted" "")))
+    (define kernel (instantiate-kernel "sort.zgal" (hash 'T (if value-type (scalar-t-kind value-type) 'uint)) flags suffix))
+    (define created-when (condition options '#:when))
+    (define (internal what) (format "zgal_~a_~a" node-name what))
+    (define (declare-internal! item) (declare! item stx) (set! node-items (append node-items (list item))))
+    (define scratch-keys (internal "keys"))
+    (define scratch-values (internal "values"))
+    (define histogram (internal "histogram"))
+    (declare-internal! (g-buffer scratch-keys (scalar-t 'uint) capacity 'per-frame created-when where))
+    (when values-buffer
+      (declare-internal! (g-buffer scratch-values value-type capacity 'per-frame created-when where)))
+    (declare-internal! (g-buffer histogram (scalar-t 'uint) (lit (* 16 256)) 'per-frame created-when where))
+    (define (instance! what m bindings push invocations)
+      (define name (internal what))
+      (declare-internal!
+       (g-material name m
+                   (for/list ([b (in-list (material-bindings m))]) (cons b (hash-ref bindings (binding-name b))))
+                   (for/list ([f (in-list (material-push m))]) (cons f (hash-ref push (field-name f))))
+                   '() invocations where))
+      name)
+    (define-values (counted-bindings counted-push)
+      (if gpu?
+          (values (hash "counts" (element-ref-buffer count)) (hash "countIndex" (element-ref-index count)))
+          (values (hash) (hash "count" count))))
+    (define (with-counts h) (for/fold ([h h]) ([(k v) (in-hash counted-bindings)]) (hash-set h k v)))
+    (define (with-push h) (for/fold ([h h]) ([(k v) (in-hash counted-push)]) (hash-set h k v)))
+    (define keys-bindings (hash "keys" keys "scratchKeys" scratch-keys "histogram" histogram))
+    (define counter (instance! "count" (hash-ref kernel "ZgalSortCount") (with-counts keys-bindings) (with-push (hash "pass" (lit 0))) invocations))
+    (define offsets (instance! "offsets" (hash-ref kernel "ZgalSortOffsets") (hash "histogram" histogram) (hash "groups" groups) (list (lit 256))))
+    (define scatter
+      (instance! "scatter" (hash-ref kernel "ZgalSortScatter")
+                 (with-counts (if values-buffer
+                                  (hash-set* keys-bindings "items" values-buffer "scratchItems" scratch-values)
+                                  keys-bindings))
+                 (with-push (hash "pass" (lit 0))) invocations))
+    (node 'kernel #:extra (append* (for/list ([pass (in-range 8)])
+                                     (list (k-step counter pass) (k-step offsets #f) (k-step scatter pass))))))
 
 ;; The commands of (import indirect), by name: their fields, which a buffer of commands holds
   (define command-fields
@@ -1056,7 +1138,7 @@
   (define-values (graph-items nodes)
     (for/fold ([items '()] [nodes '()] #:result (values (reverse items) (reverse nodes)))
               ([item-stx (in-list (cddr items))])
-      (if (memq (head-symbol item-stx) '(dispatch draw-meshes draw readback cpu copy clear extern reduce inclusive-scan exclusive-scan))
+      (if (memq (head-symbol item-stx) '(dispatch draw-meshes draw readback cpu copy clear extern reduce inclusive-scan exclusive-scan sort))
           ;; A node, and the items it declares
           (let ([n (parse-node item-stx)])
             (begin0 (values (append (reverse node-items) items) (cons n nodes))

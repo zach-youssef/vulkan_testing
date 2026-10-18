@@ -17,7 +17,7 @@
   (check-true (string-contains? h "inline glm::vec3 acesFilmic("))
   ;; Locations name the module's file, relative to the working directory (the test's)
   (check-true (string-contains? h "#line 7 \"../lib/camera.zgal\""))
-  (check-zgal-error "(import geometry)" 'bad-import "has no module geometry; it has camera, color, indirect, math, random"))
+  (check-zgal-error "(import geometry)" 'bad-import "has no module geometry; it has camera, color, indirect, math, random, sorting"))
 
 (test-case "Files import files, once each, and not themselves"
   (define directory (make-temporary-directory))

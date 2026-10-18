@@ -1075,8 +1075,9 @@
 
 ;; Every invocation of a workgroup must reach a barrier, or none: checks body's barriers aren't
 ;; under conditions or in loops that could differ between invocations. Uniform values are
-;; literals, constants, push constants, workgroupId and workgroupCount, and what's computed only
-;; from them (buffers and shared memory can change, so reading them isn't).
+;; literals, constants, push constants, workgroupId and workgroupCount, elements at uniform
+;; indices of buffers the body doesn't write, and what's computed only from them (shared memory and
+;; buffers the body writes can change, so reading them isn't).
 ;; summaries: as binding-accesses takes, to know which bindings the body writes
 (define (check-barriers body summaries)
   ;; Buffers the shader doesn't write hold the same values for the whole dispatch (only earlier work

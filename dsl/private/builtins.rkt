@@ -113,6 +113,8 @@
      (cons 'subgroupBroadcastFirst '(((genF) genF) ((genI) genI) ((genU) genU) ((genB) genB)))
      (cons 'subgroupBallot `(((,bool-t) ,(vector-t 'uint 4))))
      (cons 'subgroupBallotBitCount `(((,(vector-t 'uint 4)) ,uint-t)))
+     (cons 'subgroupBallotInclusiveBitCount `(((,(vector-t 'uint 4)) ,uint-t)))
+     (cons 'subgroupBallotExclusiveBitCount `(((,(vector-t 'uint 4)) ,uint-t)))
      (cons 'subgroupShuffle `(((genF ,uint-t) genF) ((genI ,uint-t) genI) ((genU ,uint-t) genU) ((genB ,uint-t) genB)))
      (cons 'subgroupShuffleXor `(((genF ,uint-t) genF) ((genI ,uint-t) genI) ((genU ,uint-t) genU) ((genB ,uint-t) genB)))))))
 
@@ -127,7 +129,8 @@
     [(not (regexp-match? #px"^subgroup" s)) #f]
     [(eq? name 'subgroupElect) 'basic]
     [(memq name '(subgroupAll subgroupAny subgroupAllEqual)) 'vote]
-    [(memq name '(subgroupBroadcastFirst subgroupBallot subgroupBallotBitCount)) 'ballot]
+    [(memq name '(subgroupBroadcastFirst subgroupBallot subgroupBallotBitCount subgroupBallotInclusiveBitCount
+                   subgroupBallotExclusiveBitCount)) 'ballot]
     [(memq name '(subgroupShuffle subgroupShuffleXor)) 'shuffle]
     [else 'arithmetic]))
 
