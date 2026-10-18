@@ -438,7 +438,17 @@ Result<Handle<Buffer<T>>> upload(VulkanContext& context, const std::vector<T>& d
                                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 }
 
-// The extent of an imported image (the current frame's, if it has one per frame)
+// upload, of elements laid out as T's (e.g. Vulkan's indirect commands as ZGAL's structs)
+template<typename T, typename U>
+Result<Handle<Buffer<T>>> uploadAs(VulkanContext& context, const std::vector<U>& data, const char* what) {
+    static_assert(sizeof(T) == sizeof(U) && std::is_trivially_copyable_v<U>, "uploadAs reinterprets elements of the same size");
+    std::vector<T> converted(data.size());
+    if (!data.empty()) {
+        std::memcpy(converted.data(), data.data(), data.size() * sizeof(U));
+    }
+    return upload(context, converted, what);
+}
+
 // A graph's image-file: the image at path (found with VulkanContext::findAsset), loaded for sampling.
 // what names it in errors.
 inline Result<Handle<Image>> loadImage(VulkanContext& context, const std::filesystem::path& path, ColorSpace colorSpace,
@@ -447,6 +457,7 @@ inline Result<Handle<Image>> loadImage(VulkanContext& context, const std::filesy
     return Image::createFromFile(context, found, colorSpace).withContext(std::string("loading ") + what);
 }
 
+// The extent of an imported image (the current frame's, if it has one per frame)
 inline VkExtent2D extentOf(VulkanContext& context, const FrameBinding<Image>& image, const char* name) {
     auto handle = image.get(context.currentFrame());
     if (!handle) {

@@ -2098,30 +2098,24 @@ struct Assets {
 #line 372 "dsl/tests/golden/features.zgal"
         {
 #line 372 "dsl/tests/golden/features.zgal"
-            std::vector<Handle<Renderable>> renderables;
-#line 372 "dsl/tests/golden/features.zgal"
-            for (const auto& mesh : model_ship.meshes) {
-#line 372 "dsl/tests/golden/features.zgal"
-                renderables.push_back(context.resources().create<MeshRenderable>(mesh, material_paint));
-#line 372 "dsl/tests/golden/features.zgal"
-            }
+            std::vector<Handle<Renderable>> renderables = model_ship.renderables(context, material_paint);
 #line 372 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.add<RenderablesNode>("drawShip", std::move(renderables), target_shipTarget);
 #line 372 "dsl/tests/golden/features.zgal"
             result.nodes.drawShip = node;
 #line 372 "dsl/tests/golden/features.zgal"
         }
-#line 2115 "build/generated/features.zgal.h"
+#line 2109 "build/generated/features.zgal.h"
         return result;
     }
 #line 358 "dsl/tests/golden/features.zgal"
 };
-#line 2120 "build/generated/features.zgal.h"
+#line 2114 "build/generated/features.zgal.h"
 
 // app Explorer: its state, the handlers computing the next one, and graph Everything
 #line 284 "dsl/tests/golden/features.zgal"
 class Explorer {
-#line 2125 "build/generated/features.zgal.h"
+#line 2119 "build/generated/features.zgal.h"
 public:
     // What the handlers compute the next of
 #line 289 "dsl/tests/golden/features.zgal"
@@ -2132,7 +2126,7 @@ public:
         float zoom{};
         uint32_t frames{};
         Light light{};
-#line 2136 "build/generated/features.zgal.h"
+#line 2130 "build/generated/features.zgal.h"
     };
 
     // What C++ supplies: the parameters, the clock, and graph inputs the app doesn't compute
@@ -2140,7 +2134,7 @@ public:
 #line 285 "dsl/tests/golden/features.zgal"
         int32_t level{};
         float gain{};
-#line 2144 "build/generated/features.zgal.h"
+#line 2138 "build/generated/features.zgal.h"
         zgal::Timestep timestep;   // How far the frame handler's clock advances a frame
 #line 287 "dsl/tests/golden/features.zgal"
         std::function<float(glm::vec2)> noise;
@@ -2158,7 +2152,7 @@ public:
         std::vector<uint32_t> seeds;
 #line 261 "dsl/tests/golden/features.zgal"
         std::vector<FrameBinding<Image>> decals;   // Imported, resting shader-read-only
-#line 2162 "build/generated/features.zgal.h"
+#line 2156 "build/generated/features.zgal.h"
     };
 
     // The app, with its initial state, adding its graph to `graph`. The graphs' callbacks
@@ -2169,12 +2163,12 @@ public:
         }
 #line 287 "dsl/tests/golden/features.zgal"
         if (!inputs.noise) {
-#line 2173 "build/generated/features.zgal.h"
+#line 2167 "build/generated/features.zgal.h"
             contractViolation("Explorer's extern function noise isn't given");
         }
 #line 288 "dsl/tests/golden/features.zgal"
         if (!inputs.report) {
-#line 2178 "build/generated/features.zgal.h"
+#line 2172 "build/generated/features.zgal.h"
             contractViolation("Explorer's extern function report isn't given");
         }
         std::unique_ptr<Explorer> app(new Explorer(context, graph, std::move(inputs)));
@@ -2214,7 +2208,7 @@ public:
             .decals = std::move(app->inputs_.decals),
 #line 310 "dsl/tests/golden/features.zgal"
         }));
-#line 2218 "build/generated/features.zgal.h"
+#line 2212 "build/generated/features.zgal.h"
         app->ids0_.emplace(std::move(ids0));
         return app;
     }
@@ -2243,19 +2237,19 @@ public:
                 case zgal::Key::KeypadAdd:
 #line 296 "dsl/tests/golden/features.zgal"
                     state_ = on0(state_);
-#line 2247 "build/generated/features.zgal.h"
+#line 2241 "build/generated/features.zgal.h"
                     break;
 #line 298 "dsl/tests/golden/features.zgal"
                 case zgal::Key::Escape:
 #line 298 "dsl/tests/golden/features.zgal"
                     state_ = on2(state_);
-#line 2253 "build/generated/features.zgal.h"
+#line 2247 "build/generated/features.zgal.h"
                     break;
 #line 299 "dsl/tests/golden/features.zgal"
                 case zgal::Key::Digit3:
 #line 299 "dsl/tests/golden/features.zgal"
                     state_ = on3(state_);
-#line 2259 "build/generated/features.zgal.h"
+#line 2253 "build/generated/features.zgal.h"
                     break;
                 default:
                     break;
@@ -2267,7 +2261,7 @@ public:
                 case zgal::Key::Space:
 #line 297 "dsl/tests/golden/features.zgal"
                     state_ = on1(state_);
-#line 2271 "build/generated/features.zgal.h"
+#line 2265 "build/generated/features.zgal.h"
                     break;
                 default:
                     break;
@@ -2278,7 +2272,7 @@ public:
             if (e->button == zgal::MouseButton::Left) {
 #line 300 "dsl/tests/golden/features.zgal"
                 state_ = on4(state_, e->cursor);
-#line 2282 "build/generated/features.zgal.h"
+#line 2276 "build/generated/features.zgal.h"
             }
         }
         if (const auto* e = std::get_if<zgal::MouseReleased>(&event)) {
@@ -2286,18 +2280,18 @@ public:
             if (e->button == zgal::MouseButton::Right) {
 #line 301 "dsl/tests/golden/features.zgal"
                 state_ = on5(state_, e->cursor);
-#line 2290 "build/generated/features.zgal.h"
+#line 2284 "build/generated/features.zgal.h"
             }
         }
         if (const auto* e = std::get_if<zgal::CursorMoved>(&event)) {
 #line 302 "dsl/tests/golden/features.zgal"
             state_ = on6(state_, e->cursor);
-#line 2296 "build/generated/features.zgal.h"
+#line 2290 "build/generated/features.zgal.h"
         }
         if (const auto* e = std::get_if<zgal::Scrolled>(&event)) {
 #line 303 "dsl/tests/golden/features.zgal"
             state_ = on7(state_, e->offset);
-#line 2301 "build/generated/features.zgal.h"
+#line 2295 "build/generated/features.zgal.h"
         }
     }
 
@@ -2308,7 +2302,7 @@ public:
 #line 317 "dsl/tests/golden/features.zgal"
         if (ids0_->nodes.accumulate) { graph0_->setEnabled(*ids0_->nodes.accumulate, enabled_accumulate()); }
         graph0_->setEnabled(ids0_->nodes.drawPlain, enabled_drawPlain());
-#line 2312 "build/generated/features.zgal.h"
+#line 2306 "build/generated/features.zgal.h"
         return {};
     }
 
@@ -2470,7 +2464,7 @@ private:
         return !state.dragging;
 #line 318 "dsl/tests/golden/features.zgal"
     }
-#line 2474 "build/generated/features.zgal.h"
+#line 2468 "build/generated/features.zgal.h"
     VulkanContext* context_;
     RenderGraph* graph0_;
     RenderGraph* active_;
@@ -2480,12 +2474,12 @@ private:
     std::optional<Everything> ids0_;
 #line 284 "dsl/tests/golden/features.zgal"
 };
-#line 2484 "build/generated/features.zgal.h"
+#line 2478 "build/generated/features.zgal.h"
 
 // app Stages: its state, the handlers computing the next one, and graphs Warmup, Everything, one active each frame
 #line 329 "dsl/tests/golden/features.zgal"
 class Stages {
-#line 2489 "build/generated/features.zgal.h"
+#line 2483 "build/generated/features.zgal.h"
 public:
     // What the handlers compute the next of
 #line 331 "dsl/tests/golden/features.zgal"
@@ -2493,7 +2487,7 @@ public:
         zgal::Data<Light> lights{};
         bool warm{};
         uint32_t seen{};
-#line 2497 "build/generated/features.zgal.h"
+#line 2491 "build/generated/features.zgal.h"
     };
 
     // What C++ supplies: the parameters, the clock, and graph inputs the app doesn't compute
@@ -2518,7 +2512,7 @@ public:
         zgal::FrameSource<uint32_t> sampleCount;
 #line 261 "dsl/tests/golden/features.zgal"
         std::vector<FrameBinding<Image>> decals;   // Imported, resting shader-read-only
-#line 2522 "build/generated/features.zgal.h"
+#line 2516 "build/generated/features.zgal.h"
     };
 
     // The render graphs it adds its graphs to (e.g. VulkanApp::createGraph), one per graph
@@ -2526,7 +2520,7 @@ public:
 #line 337 "dsl/tests/golden/features.zgal"
         RenderGraph* warmup = nullptr;
         RenderGraph* everything = nullptr;
-#line 2530 "build/generated/features.zgal.h"
+#line 2524 "build/generated/features.zgal.h"
     };
 
     // The app, with its initial state, adding each graph to its render graph. The graphs' callbacks
@@ -2534,7 +2528,7 @@ public:
     static Result<std::unique_ptr<Stages>> create(VulkanContext& context, Graphs graphs, Inputs inputs) {
 #line 330 "dsl/tests/golden/features.zgal"
         if (!inputs.brighten) {
-#line 2538 "build/generated/features.zgal.h"
+#line 2532 "build/generated/features.zgal.h"
             contractViolation("Stages's extern function brighten isn't given");
         }
         if (!graphs.warmup) {
@@ -2550,7 +2544,7 @@ public:
             .lights = [self = app.get()](const zgal::FrameInfo&) { return self->input_lights_Warmup(); },
 #line 337 "dsl/tests/golden/features.zgal"
         }));
-#line 2554 "build/generated/features.zgal.h"
+#line 2548 "build/generated/features.zgal.h"
         app->ids0_.emplace(std::move(ids0));
 #line 338 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto ids1, Everything::build(context, *app->graph1_, Everything::Inputs{
@@ -2588,7 +2582,7 @@ public:
             .decals = std::move(app->inputs_.decals),
 #line 338 "dsl/tests/golden/features.zgal"
         }));
-#line 2592 "build/generated/features.zgal.h"
+#line 2586 "build/generated/features.zgal.h"
         app->ids1_.emplace(std::move(ids1));
         return app;
     }
@@ -2632,7 +2626,7 @@ public:
         } else {
 #line 338 "dsl/tests/golden/features.zgal"
             active_ = graph1_;
-#line 2636 "build/generated/features.zgal.h"
+#line 2630 "build/generated/features.zgal.h"
         }
         return {};
     }
@@ -2683,7 +2677,7 @@ private:
         return true;
 #line 338 "dsl/tests/golden/features.zgal"
     }
-#line 2687 "build/generated/features.zgal.h"
+#line 2681 "build/generated/features.zgal.h"
     VulkanContext* context_;
     RenderGraph* graph0_;
     RenderGraph* graph1_;
@@ -2695,6 +2689,6 @@ private:
     std::optional<Everything> ids1_;
 #line 329 "dsl/tests/golden/features.zgal"
 };
-#line 2699 "build/generated/features.zgal.h"
+#line 2693 "build/generated/features.zgal.h"
 
 } // namespace features

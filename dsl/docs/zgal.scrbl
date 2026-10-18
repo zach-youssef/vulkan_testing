@@ -910,6 +910,7 @@ and C++ supplies the meshes.
              node]
  [node (dispatch name material maybe-indirect node-option ...)
        (draw-meshes name target meshes-input-or-model material node-option ...)
+       (draw-meshes name target model material #:indirect (at commands index) draw-option ... node-option ...)
        (draw name target material vertex-count node-option ...)
        (draw name target material #:indirect (at commands index) draw-option ... node-option ...)
        (readback name image-or-buffer node-option ...)
@@ -935,7 +936,8 @@ and C++ supplies the meshes.
  [maybe-when (code:line) (code:line #:when expression)]
  [frames shared per-frame]
  [asset "path" path-input]
- [model-option (code:line #:base-colors name) (code:line #:base-color-factors name)]
+ [model-option (code:line #:base-colors name) (code:line #:base-color-factors name)
+               (code:line #:draws name) (code:line #:bounds name)]
  [color-space srgb linear]]
 
 Items and nodes appear in any order, and refer to items declared before them. Items share one
@@ -988,14 +990,17 @@ to linear, and @tt{linear} for data (normal maps, masks, lookup tables), read as
 @(generated-file image-file-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto file_albedo" #:to #rx"result.images.mask")
 
 @racket[(model name asset Format)] loads a glTF (@tt{.gltf}, @tt{.glb}) or OBJ (@tt{.obj}, with its
-@tt{.mtl}) file: its triangles, with its nodes' transforms baked in, as meshes of @tt{Format}'s
-vertices, which @racket[draw-meshes] draws. Each mesh's instance index is its material's (the file's
-materials, then a default one for meshes without any), which vertex shaders read as
-@racket[instanceIndex]. The file's materials give their base colours: @tt{#:base-colors} declares
+@tt{.mtl}) file: its triangles, with its nodes' transforms baked in, as one mesh of @tt{Format}'s
+vertices with a draw per primitive, which @racket[draw-meshes] draws. Each draw's instance index is
+its primitive's material's (the file's materials, then a default one for primitives without any),
+which vertex shaders read as @racket[instanceIndex]. The file's materials give their base colours: @tt{#:base-colors} declares
 their textures (sRGB; white for materials without one), for an @racket[(array texture)] binding,
 and @tt{#:base-color-factors} a buffer of their factors (@tt{vec4}s, linear), for a
 @racket[(buffer-array vec4)] binding, both indexed by material. Texture coordinates have glTF's
-convention (@tt{v} is 0 at the top of the image; OBJ's are flipped to it).
+convention (@tt{v} is 0 at the top of the image; OBJ's are flipped to it). For GPU-driven drawing
+(@secref["indirect"]), @tt{#:draws} declares a buffer of the draws, as @tt{DrawIndexedCommand}s
+(@racket[(import indirect)]), and @tt{#:bounds} one of their bounding spheres (@tt{vec4}s: the
+centre, and the radius as @tt{w}), in the model's space.
 
 Models fill the vertex format's attributes by name, converting them to each attribute's type and
 storage:
@@ -1128,7 +1133,8 @@ Nodes:
  @item{@racket[draw-meshes]: draws each mesh of a meshes input or a @racket[model] with a graphics
        material that has a @racket[vertex-input] (a @tt{RenderablesNode}); a model's material reads
        its vertex format. Each draw's first instance is its mesh's instance index
-       (@tt{Mesh::create}'s, or a model mesh's material).}
+       (@tt{Mesh::create}'s, or the material of a model's primitive). With @tt{#:indirect}, a
+       model's commands shaders chose (@secref["indirect"]).}
  @item{@racket[draw]: draws a vertex count with a graphics material without one, e.g. a fullscreen
        triangle or particles pulled from a buffer, or with @tt{#:indirect}, the @tt{DrawCommand}s
        shaders wrote (@secref["indirect"]).}
@@ -1183,6 +1189,10 @@ into a graph buffer (the graph gives it indirect usage), and a node names the fi
        @tt{firstInstance} other than 0 needs @tt{drawIndirectFirstInstance}. With @tt{#:count (at
        counts index)} it draws as many of them as an element of a buffer of @tt{uint}s says (at most
        @tt{#:draws}): a culling pass can append the commands it keeps and count them.}
+ @item{@racket[draw-meshes] of a @racket[model] draws @tt{DrawIndexedCommand}s of its mesh likewise:
+       a shader chooses from the model's @tt{#:draws} (e.g. those whose @tt{#:bounds} are in view)
+       and copies them into a graph buffer. Their first instances are materials, so the graph's
+       @tt{requiredFeatures()} lists @tt{drawIndirectFirstInstance}.}
 ]
 @(define indirect-source #<<ZGAL
 (import indirect)
@@ -1656,8 +1666,7 @@ What ZGAL doesn't describe yet:
  @item{a shader used by more than one material.}
 ]
 
-Graphs can't yet use storage images other than 2D ones, run a node on a chosen queue, draw
-models' meshes indirectly, compute anything per frame but push constants, dispatch sizes and
+Graphs can't yet use storage images other than 2D ones, run a node on a chosen queue, compute anything per frame but push constants, dispatch sizes and
 uniforms, or describe nodes that depend on the application's data
 except through @racket[extern] nodes (build-time loops over list inputs could cover some of them).
 

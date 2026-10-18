@@ -227,6 +227,28 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs draw models with their materials' base c
                 "Asset 'missing.gltf' not found");
 }
 
+TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs draw the meshes of models a shader chose") {
+    auto& ctx = context();
+    REQUIRE(ctx.enabledFeatures().missing(CulledModels::requiredFeatures()).empty());
+    const std::vector<uint8_t> black{0, 0, 0, 255};
+    for (const float side : {1.0f, -1.0f}) {
+        CAPTURE(side);
+        RenderGraph graph(ctx);
+        auto ids = CulledModels::build(ctx, graph, CulledModels::Inputs{.file = "halves.gltf", .side = side}).value();
+        for (int frame = 0; frame < 3; ++frame) {
+            graph.execute().value();
+        }
+        const auto pixels = ids.canvasReadPixels(graph).value();
+        const auto pixel = [&](size_t x, size_t y) {
+            return std::vector<uint8_t>(pixels.begin() + (y * 4 + x) * 4, pixels.begin() + (y * 4 + x) * 4 + 4);
+        };
+        // Only the half on the chosen side: the right half's green factor, or the left's texture
+        CHECK(pixel(3, 1) == (side > 0 ? std::vector<uint8_t>{0, 128, 0, 255} : black));
+        CHECK(pixel(0, 0) == (side > 0 ? black : std::vector<uint8_t>{255, 0, 0, 255}));
+        ctx.waitIdleAll();
+    }
+}
+
 TEST_CASE_FIXTURE(GpuTest, "ZGAL materials check their bindings, formats and options") {
     auto& ctx = context();
     auto& heap = ctx.descriptors();

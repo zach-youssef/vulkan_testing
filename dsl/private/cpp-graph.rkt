@@ -208,6 +208,8 @@
   (define image-files (of-type g-image-file?))
   (define model-textures (of-type g-model-textures?))
   (define model-factors (of-type g-model-factors?))
+  (define model-draws (of-type g-model-draws?))
+  (define model-bounds (of-type g-model-bounds?))
   (define image-sets (of-type g-import-images?))
   (define buffer-imports (of-type g-import-buffer?))
   (define uploads (of-type g-upload?))
@@ -245,6 +247,8 @@
              (append (for/list ([b (in-list buffer-imports)]) (list "BufferId" (g-import-buffer-name b) b))
                      (for/list ([b (in-list uploads)]) (list "BufferId" (g-upload-name b) b))
                      (for/list ([b (in-list model-factors)]) (list "BufferId" (g-model-factors-name b) b))
+                     (for/list ([b (in-list model-draws)]) (list "BufferId" (g-model-draws-name b) b))
+                     (for/list ([b (in-list model-bounds)]) (list "BufferId" (g-model-bounds-name b) b))
                      (for/list ([b (in-list buffers)]) (list (id-type "BufferId" (g-buffer-when b)) (g-buffer-name b) b))))
   (id-struct "Nodes"
              (for/list ([n (in-list nodes)])
@@ -271,7 +275,7 @@
        (at n (format "    // The elements readback ~a copied in the most recent frame (waiting for it)" (g-node-name n)))
        (at n (format "    Result<std::vector<~a>> ~aContents(RenderGraph& graph) const { return graph.nodeAs<BufferReadbackNode>(~a).contents<~a>(); }"
                      t (g-node-name n) id t))]))
-  (unless (and (null? buffer-imports) (null? uploads) (null? model-factors) (null? (filter (λ (b) (not (internal-name? (g-buffer-name b)))) buffers)))
+  (unless (and (null? buffer-imports) (null? uploads) (null? model-factors) (null? model-draws) (null? model-bounds) (null? (filter (λ (b) (not (internal-name? (g-buffer-name b)))) buffers)))
     (gen "    Buffers buffers;"))
   (unless (null? nodes) (gen "    Nodes nodes;"))
   (gen "")
@@ -287,6 +291,9 @@
             [(indirect _ draws _ _ _) (and draws (not (equal? (e-literal-value* draws) 1)))]
             [_ #f]))
     (gen "        features.core.features.multiDrawIndirect = VK_TRUE;   // Indirect draws of several commands"))
+  ;; Indirect draws of models' meshes, whose commands' first instances are materials
+  (when (for/or ([n (in-list nodes)]) (and (eq? (g-node-kind n) 'draw-meshes) (indirect? (g-node-extra n))))
+    (gen "        features.core.features.drawIndirectFirstInstance = VK_TRUE;   // Models' draws, whose first instances are their materials"))
   (gen "        return features;")
   (gen "    }")
   (gen "")
@@ -325,7 +332,7 @@
     (at i (format "        const ImageId image_~a = graph.importImage(~a, file_~a, ImageState::shaderReadOnly());" n (cpp-string n) n))
     (gen (format "        result.images.~a = image_~a;" n n)))
   ;; Models: loaded and uploaded, then their materials' textures imported and factors uploaded
-  (for ([item (in-list items)] #:when (or (g-model? item) (g-model-textures? item) (g-model-factors? item)))
+  (for ([item (in-list items)] #:when (or (g-model? item) (g-model-textures? item) (g-model-factors? item) (g-model-draws? item) (g-model-bounds? item)))
     (match item
       [(g-model n source f _)
        (at item (format "        TRY_ASSIGN(auto model_~a, zgal::loadModel<~a>(context, ~a, ~a));" n (vertex-format-name f)
@@ -337,6 +344,16 @@
       [(g-model-factors n model _)
        (at item (format "        TRY_ASSIGN(auto upload_~a, zgal::upload(context, model_~a.baseColorFactors, ~a));" n model
                         (cpp-string (format "~a's base colour factors ~a" name n))))
+       (at item (format "        const BufferId buffer_~a = graph.importBuffer<glm::vec4>(~a, upload_~a);" n (cpp-string n) n))
+       (gen (format "        result.buffers.~a = buffer_~a;" n n))]
+      [(g-model-draws n model t _)
+       (at item (format "        TRY_ASSIGN(auto upload_~a, zgal::uploadAs<~a>(context, model_~a.draws, ~a));" n (cpp-type t) model
+                        (cpp-string (format "~a's model draws ~a" name n))))
+       (at item (format "        const BufferId buffer_~a = graph.importBuffer<~a>(~a, upload_~a);" n (cpp-type t) (cpp-string n) n))
+       (gen (format "        result.buffers.~a = buffer_~a;" n n))]
+      [(g-model-bounds n model _)
+       (at item (format "        TRY_ASSIGN(auto upload_~a, zgal::upload(context, model_~a.bounds, ~a));" n model
+                        (cpp-string (format "~a's model bounds ~a" name n))))
        (at item (format "        const BufferId buffer_~a = graph.importBuffer<glm::vec4>(~a, upload_~a);" n (cpp-string n) n))
        (gen (format "        result.buffers.~a = buffer_~a;" n n))]))
   ;; Imported sets of images, each imported
@@ -547,9 +564,11 @@
       (format "BufferOffset{~a, VkDeviceSize(~a) * sizeof(~a)}" (resource-ref (element-ref-buffer ref))
               (build-expr (element-ref-index ref) (scalar-t 'uint)) (cpp-type (entry-type (hash-ref env (element-ref-buffer ref))))))
     (define spec (and (indirect? (g-node-extra n)) (g-node-extra n)))
+    ;; A draw-meshes' commands draw ranges of its model's mesh
     (define (draw-desc commands)
-      (format "IndirectDrawNode::Desc{.material = material_~a, .target = target_~a, .commands = ~a, .maxDraws = ~a}"
-              (g-node-material n) (g-node-target n) commands (build-expr (indirect-draws spec) (scalar-t 'uint))))
+      (format "IndirectDrawNode::Desc{.material = material_~a, .target = target_~a, .commands = ~a, .maxDraws = ~a~a}"
+              (g-node-material n) (g-node-target n) commands (build-expr (indirect-draws spec) (scalar-t 'uint))
+              (if (eq? (g-node-kind n) 'draw-meshes) (format ", .mesh = model_~a.mesh" (g-node-subject n)) "")))
     (define counted? (and spec (indirect-count spec) #t))
     (define create
       (match (g-node-kind n)
@@ -557,12 +576,12 @@
          #:when spec
          (format "graph.add<DispatchNode>(~a, material_~a, ~a)" (cpp-string node-name) (g-node-material n) (command-offset (indirect-command spec)))]
         ['dispatch (format "graph.add<DispatchNode>(~a, material_~a)" (cpp-string node-name) (g-node-material n))]
-        ['draw
+        [(or 'draw 'draw-meshes)
          #:when counted?
          (format "zgal::addCountedDraw(graph, ~a, ~a, ~a, material_~a, ~a)" (cpp-string node-name)
                  (draw-desc (command-offset (indirect-command spec))) (command-offset (indirect-count spec))
                  (indirect-limit spec) (resource-ref (indirect-limited spec)))]
-        ['draw
+        [(or 'draw 'draw-meshes)
          #:when spec
          (format "graph.add<IndirectDrawNode>(~a, ~a)" (cpp-string node-name) (draw-desc (command-offset (indirect-command spec))))]
         ['draw-meshes (format "graph.add<RenderablesNode>(~a, std::move(renderables), target_~a)" (cpp-string node-name) (g-node-target n))]
@@ -627,14 +646,16 @@
     (line (if (g-node-when n)
               (format "        if (~a) {" (build-expr (g-node-when n) (scalar-t 'bool)))
               "        {"))
-    (when (eq? (g-node-kind n) 'draw-meshes)
-      (line "            std::vector<Handle<Renderable>> renderables;")
-      (line (format "            for (const auto& mesh : ~a) {"
-                    (if (eq? (entry-kind (hash-ref env (g-node-subject n))) 'model)
-                        (format "model_~a.meshes" (g-node-subject n))
-                        (format "in->~a" (g-node-subject n)))))
-      (line (format "                renderables.push_back(context.resources().create<MeshRenderable>(mesh, material_~a));" (g-node-material n)))
-      (line "            }"))
+    (when (and (eq? (g-node-kind n) 'draw-meshes) (not spec))
+      (cond
+        [(eq? (entry-kind (hash-ref env (g-node-subject n))) 'model)
+         (line (format "            std::vector<Handle<Renderable>> renderables = model_~a.renderables(context, material_~a);"
+                       (g-node-subject n) (g-node-material n)))]
+        [else
+         (line "            std::vector<Handle<Renderable>> renderables;")
+         (line (format "            for (const auto& mesh : in->~a) {" (g-node-subject n)))
+         (line (format "                renderables.push_back(context.resources().create<MeshRenderable>(mesh, material_~a));" (g-node-material n)))
+         (line "            }")]))
     (cond
       [(eq? (g-node-kind n) 'extern)
        ;; C++ adds the nodes, with the ids so far (its nodes may use the graph's resources)
@@ -667,6 +688,6 @@
 
 (define (item-loc item)
   (match item
-    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
+    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-model-draws _ _ _ l) l] [(g-model-bounds _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
     [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ _ l) l]))

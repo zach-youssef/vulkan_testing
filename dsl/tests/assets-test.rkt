@@ -90,7 +90,7 @@
   (check-true (string-contains? h "TRY_ASSIGN(auto model_ship, zgal::loadModel<V>(context, in->file, \"G's model ship\"));"))
   (check-true (string-contains? h "zgal::importImages(graph, \"shipColors\", model_ship.baseColorTextures, ImageState::shaderReadOnly())"))
   (check-true (string-contains? h "graph.importBuffer<glm::vec4>(\"shipFactors\", upload_shipFactors)"))
-  (check-true (string-contains? h "for (const auto& mesh : model_ship.meshes) {")))
+  (check-true (string-contains? h "renderables = model_ship.renderables(context, ")))
 
 (test-case "Models need vertex formats they can fill, read by the materials drawing them"
   (check-zgal-error (string-replace models " (id uint #:default 3)" " (id uint)") 'model-attribute

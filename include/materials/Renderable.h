@@ -28,6 +28,9 @@ public:
     virtual VkBuffer getIndexBuffer() = 0;
     virtual VkIndexType getIndexType() = 0;
     virtual uint32_t getIndexCount() = 0;
+    // The draw's first index, and what's added to each index (to draw a range of shared buffers)
+    virtual uint32_t getFirstIndex() { return 0; }
+    virtual int32_t getVertexOffset() { return 0; }
     // The draw's first instance, which vertex shaders read as gl_InstanceIndex
     virtual uint32_t getFirstInstance() { return 0; }
 
@@ -96,20 +99,41 @@ private:
     uint32_t instanceIndex_;
 };
 
-// A mesh drawn with a material
+// Part of a mesh's indices, drawn as one draw: e.g. one of the primitives of a model, which share
+// their buffers (see Model). Its fields are a VkDrawIndexedIndirectCommand's.
+struct MeshRange {
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0;
+    int32_t vertexOffset = 0;     // Added to each index
+    uint32_t firstInstance = 0;   // gl_InstanceIndex
+};
+
+// A mesh drawn with a material: all of it, or a range of it
 class MeshRenderable : public Renderable {
 public:
     MeshRenderable(Handle<Mesh> mesh, Handle<Material> material)
-    : Renderable(std::move(material)), mesh_(std::move(mesh)) {}
+    : Renderable(std::move(material)), mesh_(std::move(mesh)),
+      range_{0, mesh_->indexCount(), 0, mesh_->instanceIndex()} {}
+
+    MeshRenderable(Handle<Mesh> mesh, Handle<Material> material, MeshRange range)
+    : Renderable(std::move(material)), mesh_(std::move(mesh)), range_(range) {
+        if (uint64_t(range_.firstIndex) + range_.indexCount > mesh_->indexCount()) {
+            contractViolation("MeshRenderable's range of indices is past its mesh's "
+                              + std::to_string(mesh_->indexCount()));
+        }
+    }
 
     VkBuffer getVertexBuffer() override { return mesh_->vertexBuffer(); }
     VkBuffer getIndexBuffer() override { return mesh_->indexBuffer(); }
     VkIndexType getIndexType() override { return mesh_->indexType(); }
-    uint32_t getIndexCount() override { return mesh_->indexCount(); }
-    uint32_t getFirstInstance() override { return mesh_->instanceIndex(); }
+    uint32_t getIndexCount() override { return range_.indexCount; }
+    uint32_t getFirstIndex() override { return range_.firstIndex; }
+    int32_t getVertexOffset() override { return range_.vertexOffset; }
+    uint32_t getFirstInstance() override { return range_.firstInstance; }
 
     const Handle<Mesh>& mesh() const { return mesh_; }
 
 private:
     Handle<Mesh> mesh_;
+    MeshRange range_;
 };

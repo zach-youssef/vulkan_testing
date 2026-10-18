@@ -6,6 +6,8 @@
 #include "graph/nodes/IndirectDrawNode.h"
 #include "graph/nodes/ReadbackNode.h"
 #include "materials/GraphicsMaterial.h"
+#include "resources/Model.h"
+#include "common/ResultChecks.h"
 
 #include <array>
 
@@ -157,4 +159,29 @@ TEST_CASE_FIXTURE(GpuTest, "IndirectDrawNode draws as many commands as a count s
     CHECK(drawIndirect(ctx, false, {3, 1, 0, 0, 3, 1, 0, 1}, 2, 1) == kRed);
     CHECK(drawIndirect(ctx, false, {3, 1, 0, 0, 3, 1, 0, 1}, 2, 2) == kGreen);
     CHECK(drawIndirect(ctx, true, {6, 1, 0, 0, 0}, 1, 0) == kBlue);
+}
+
+TEST_CASE_FIXTURE(GpuTest, "Uploaded models keep their primitives in one mesh, with a draw and bounds each") {
+    auto& ctx = context();
+    const auto data = ModelData::load(ctx.findAsset("halves.gltf").value()).value();
+    REQUIRE(data.primitives.size() == 2);
+    auto model = uploadModel<glm::vec3>(ctx, data, [](const ModelPrimitive& p) -> Result<std::vector<glm::vec3>> {
+        return p.positions;
+    }).value();
+    REQUIRE(model.draws.size() == 2);
+    // Each draw is its primitive's range of the mesh, its first instance its material
+    CHECK(model.mesh->indexType() == VK_INDEX_TYPE_UINT16);
+    CHECK(model.mesh->indexCount() == data.primitives[0].indices.size() + data.primitives[1].indices.size());
+    CHECK(model.draws[1].firstIndex == data.primitives[0].indices.size());
+    CHECK(model.draws[1].vertexOffset == static_cast<int32_t>(data.primitives[0].positions.size()));
+    for (size_t i = 0; i < 2; ++i) {
+        CHECK(model.draws[i].instanceCount == 1);
+        CHECK(model.draws[i].firstInstance == data.primitives[i].material);
+    }
+    // The quads on the left and right halves of clip space
+    CHECK(model.bounds[0].x < 0.0f);
+    CHECK(model.bounds[1].x > 0.0f);
+    CHECK(model.renderables(ctx, drawMaterial(ctx, AttachmentFormats{{VK_FORMAT_R8G8B8A8_UNORM}}, true)).size() == 2);
+
+    CHECK_ERROR(uploadModel<glm::vec3>(ctx, ModelData{}, nullptr), ErrorCode::InvalidData, "without triangles");
 }

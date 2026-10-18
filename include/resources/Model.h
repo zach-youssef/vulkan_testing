@@ -33,15 +33,18 @@
  Models loaded from files: glTF (.gltf, .glb) and OBJ (.obj, with its .mtl). ModelData is what a
  file holds, on the CPU: triangles with their transforms baked in (so a model is drawn without
  per-node matrices) and base colour materials (a factor and an optional texture, as in glTF's
- metallic-roughness model; OBJ's diffuse colour and texture). uploadModel makes meshes and textures
- of it in the vertex format the application chooses:
+ metallic-roughness model; OBJ's diffuse colour and texture). uploadModel puts every primitive in
+ one mesh, in the vertex format the application chooses, with a draw per primitive, and makes its
+ textures:
 
      TRY_ASSIGN(auto data, ModelData::load(ctx.findAsset("ship.gltf").value()));
      TRY_ASSIGN(auto model, uploadModel<MyVertex>(ctx, data, [](const ModelPrimitive& p) -> Result<std::vector<MyVertex>> {...}));
 
- Each mesh's instance index is its material's index, so vertex shaders read the material as
- gl_InstanceIndex (e.g. indexing baseColorFactors in a storage buffer and baseColorTextures in a
- DescriptorArray).
+ Each draw's first instance is its primitive's material's index, so vertex shaders read the
+ material as gl_InstanceIndex (e.g. indexing baseColorFactors in a storage buffer and
+ baseColorTextures in a DescriptorArray). Draw the primitives with renderables(), or GPU-driven, with
+ an IndirectDrawNode of the model's mesh reading commands a shader chose from draws (e.g. those
+ whose bounds are in view).
 
  Texture coordinates have glTF's convention (v = 0 at the top of the image); OBJ's are flipped to it.
  Front faces are counter-clockwise, as both formats specify.
@@ -360,35 +363,78 @@ private:
     }
 };
 
-// A model on the device: a mesh per primitive and, per material, its base colour factor and texture
+// A model on the device: its primitives in one mesh, a draw of each, and per material, its base
+// colour factor and texture
 struct Model {
-    std::vector<Handle<Mesh>> meshes;                  // Instance index: the mesh's material
+    Handle<Mesh> mesh;                                 // Every primitive's vertices and indices
+    // A draw per primitive, as indirect commands: its range of the mesh (its indices are its own
+    // vertices', offset by vertexOffset), one instance, and its material as firstInstance
+    std::vector<VkDrawIndexedIndirectCommand> draws;
+    std::vector<glm::vec4> bounds;                     // Per draw: a bounding sphere, centre (xyz) and radius (w)
     std::vector<glm::vec4> baseColorFactors;           // One per material
     std::vector<Handle<Image>> baseColorTextures;      // One per material (white without a texture)
+
+    // A renderable per draw, drawing it with material (e.g. for a RenderablesNode)
+    std::vector<Handle<Renderable>> renderables(VulkanContext& context, const Handle<Material>& material) const {
+        std::vector<Handle<Renderable>> result;
+        for (const auto& draw : draws) {
+            result.push_back(context.resources().create<MeshRenderable>(
+                mesh, material, MeshRange{draw.firstIndex, draw.indexCount, draw.vertexOffset, draw.firstInstance}));
+        }
+        return result;
+    }
 };
+
+// A sphere around positions: their bounding box's centre, and the distance to the farthest
+inline glm::vec4 boundingSphere(const std::vector<glm::vec3>& positions) {
+    if (positions.empty()) {
+        return glm::vec4(0.0f);
+    }
+    glm::vec3 low = positions[0];
+    glm::vec3 high = positions[0];
+    for (const auto& p : positions) {
+        low = glm::min(low, p);
+        high = glm::max(high, p);
+    }
+    const glm::vec3 centre = (low + high) * 0.5f;
+    float radius = 0.0f;
+    for (const auto& p : positions) {
+        radius = std::max(radius, glm::length(p - centre));
+    }
+    return glm::vec4(centre, radius);
+}
 
 // Uploads a model, converting each primitive to vertices (as many as it has positions) with
 // toVertices, which fails when it can't (e.g. the vertex format needs an attribute the file lacks).
-// Indices are 16-bit when the vertices allow. Textures are sRGB; one image several materials use is
-// loaded once.
+// Indices are 16-bit when every primitive's vertices allow (each draw's indices are its own
+// vertices'). Textures are sRGB; one image several materials use is loaded once.
 template<typename Vertex>
 Result<Model> uploadModel(VulkanContext& context, const ModelData& data,
                           const std::function<Result<std::vector<Vertex>>(const ModelPrimitive&)>& toVertices) {
+    if (data.primitives.empty()) {
+        return Error(ErrorCode::InvalidData, "uploadModel was given a model without triangles");
+    }
     Model model;
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    bool small = true;
     for (const ModelPrimitive& primitive : data.primitives) {
-        TRY_ASSIGN(auto vertices, toVertices(primitive));
-        if (vertices.size() != primitive.positions.size()) {
+        TRY_ASSIGN(auto converted, toVertices(primitive));
+        if (converted.size() != primitive.positions.size()) {
             contractViolation("uploadModel's conversion must give a vertex per position");
         }
-        auto upload = [&]() -> Result<Handle<Mesh>> {
-            if (vertices.size() <= 65536) {
-                const std::vector<uint16_t> indices(primitive.indices.begin(), primitive.indices.end());
-                return Mesh::create(context, vertices, indices, primitive.material);
-            }
-            return Mesh::create(context, vertices, primitive.indices, primitive.material);
-        };
-        TRY_ASSIGN(auto uploaded, upload());
-        model.meshes.push_back(std::move(uploaded));
+        small = small && converted.size() <= 65536;
+        model.draws.push_back({static_cast<uint32_t>(primitive.indices.size()), 1, static_cast<uint32_t>(indices.size()),
+                               static_cast<int32_t>(vertices.size()), primitive.material});
+        model.bounds.push_back(boundingSphere(primitive.positions));
+        vertices.insert(vertices.end(), converted.begin(), converted.end());
+        indices.insert(indices.end(), primitive.indices.begin(), primitive.indices.end());
+    }
+    if (small) {
+        const std::vector<uint16_t> narrow(indices.begin(), indices.end());
+        TRY_ASSIGN(model.mesh, Mesh::create(context, vertices, narrow));
+    } else {
+        TRY_ASSIGN(model.mesh, Mesh::create(context, vertices, indices));
     }
 
     std::map<std::string, Handle<Image>> loaded;

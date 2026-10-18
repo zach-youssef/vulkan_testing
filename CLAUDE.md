@@ -303,7 +303,9 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   GLM's sized types (fill them with `glm::packUnorm` etc., as the generated comments say).
 - GPU-driven work: shaders write the commands of `(import indirect)` (`DispatchCommand`,
   `DrawCommand`, `DrawIndexedCommand`) into graph buffers, and `(dispatch d m #:indirect (at cmds i))`
-  or `(draw d target m #:indirect (at cmds i) #:draws n #:count (at counts j))` read them. Counts
+  or `(draw d target m #:indirect (at cmds i) #:draws n #:count (at counts j))` read them;
+  `draw-meshes` of a model reads `DrawIndexedCommand`s a shader chose from the model's `#:draws` and
+  `#:bounds` (model options). Counts
   use `drawIndirectCount` where the device has it, else a generated node first gives the commands
   past the count no instances (MoltenVK lacks it).
 - The compute library: `(reduce n source (at dest i) #:op add|min|max #:count c)`,
@@ -378,8 +380,11 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   buffers; `create<MeshRenderable>(mesh, material)` draws one with a material, so passes can share
   geometry. Vertex shaders read the mesh's instance index as `gl_InstanceIndex`.
 - Models: `ModelData::load(path)` reads a glTF or OBJ file (triangles with transforms baked in, and
-  base colour materials); `uploadModel<Vertex>(ctx, data, toVertices)` makes a `Model` (meshes whose
-  instance index is their material, base colour factors and sRGB textures).
+  base colour materials); `uploadModel<Vertex>(ctx, data, toVertices)` makes a `Model`: one mesh, a
+  draw per primitive (`VkDrawIndexedIndirectCommand`s whose first instance is the material, and
+  bounding spheres, for GPU culling), base colour factors and sRGB textures. `model.renderables(ctx,
+  material)` draws them with a `RenderablesNode`; `MeshRenderable(mesh, material, MeshRange{...})`
+  draws part of a mesh.
 - Colours: textures are sRGB and sampling decodes them to linear. The swapchain is preferably
   `B8G8R8A8_SRGB`, so shaders output linear values.
 

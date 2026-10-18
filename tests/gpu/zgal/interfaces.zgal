@@ -545,3 +545,37 @@
   (draw paint canvas coloring #:indirect (at draws 0) #:draws 2 #:count (at drawCounts 0))
   (readback readTally tally)
   (readback readPicture picture))
+
+;; GPU culling: keeps the draws of a model whose bounds' centres are on one side (x's sign: side),
+;; appending them and counting them, then draws those
+(compute-material Cull
+  (workgroup 64)
+  (bindings
+   (draws (buffer-array DrawIndexedCommand))
+   (bounds (buffer-array vec4))
+   (kept (buffer-array DrawIndexedCommand))
+   (keptCount (buffer-array uint)))
+  (push (total uint) (side float))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (and (< i total) (> (* (.x (at bounds i)) side) 0.0))
+       (let* ([slot (atomic-add! (at keptCount 0) 1)])
+         (write! (at kept slot) (at draws i)))))))
+
+(graph CulledModels
+  (input file path)
+  (parameter side float)
+  (model halves file ModelVertex #:base-colors halfColors #:base-color-factors halfFactors
+         #:draws halfDraws #:bounds halfBounds)
+  (sampler pick #:filter nearest)
+  (buffer kept DrawIndexedCommand 2 #:frames per-frame)
+  (buffer keptCount uint 1 #:frames per-frame)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target onCanvas (color canvas #:clear (0 0 0 1)))
+  (material culling Cull (draws halfDraws) (bounds halfBounds) kept keptCount
+            #:push ((total 2) (side side)) #:invocations (2))
+  (material drawModel ModelColor (baseColors halfColors) (factors halfFactors) pick #:cull none)
+  (clear resetCount keptCount)
+  (dispatch cull culling)
+  (draw-meshes draw onCanvas halves drawModel #:indirect (at kept 0) #:draws 2 #:count (at keptCount 0))
+  (readback canvasRead canvas))

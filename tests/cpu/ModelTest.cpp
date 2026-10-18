@@ -63,3 +63,10 @@ TEST_CASE("Models that can't be loaded say why") {
     CHECK_ERROR(ModelData::load(asset("quadrants.png")), ErrorCode::InvalidData, "isn't a .gltf, .glb or .obj file");
     CHECK_ERROR(ModelData::load(asset("broken.gltf")), ErrorCode::InvalidData, "Failed to parse glTF file");
 }
+
+TEST_CASE("Bounding spheres surround a primitive's positions") {
+    CHECK(boundingSphere({}) == glm::vec4(0.0f));
+    const glm::vec4 sphere = boundingSphere({{0, 0, 0}, {2, 0, 0}, {1, 1, 0}});
+    CHECK(glm::vec3(sphere) == glm::vec3(1.0f, 0.5f, 0.0f));
+    CHECK(sphere.w == doctest::Approx(std::sqrt(1.25f)));
+}

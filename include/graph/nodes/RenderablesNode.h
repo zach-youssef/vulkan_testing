@@ -27,7 +27,8 @@ public:
             VkBuffer vertexBuffers[] {renderable->getVertexBuffer()};
             vkCmdBindVertexBuffers(context.commandBuffer, 0, 1, vertexBuffers, offsets);
             vkCmdBindIndexBuffer(context.commandBuffer, renderable->getIndexBuffer(), 0, renderable->getIndexType());
-            vkCmdDrawIndexed(context.commandBuffer, renderable->getIndexCount(), 1, 0, 0, renderable->getFirstInstance());
+            vkCmdDrawIndexed(context.commandBuffer, renderable->getIndexCount(), 1, renderable->getFirstIndex(),
+                             renderable->getVertexOffset(), renderable->getFirstInstance());
         }
     }
 

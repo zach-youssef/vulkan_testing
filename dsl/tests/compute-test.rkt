@@ -126,3 +126,33 @@
                     "#:draws is for draws with #:indirect")
   (check-zgal-error (string-replace indirect-program "(buffer dispatches DispatchCommand 2 #:frames shared)" "(import-buffer dispatches DispatchCommand)")
                     'type-mismatch "dispatches is an imported buffer, not a graph buffer"))
+
+(define model-program
+  (string-append
+   "(import indirect)\n"
+   "(vertex-format V (position vec3))\n"
+   "(graphics-material Paint (vertex-input V) (outputs (color vec4)) (vertex (results #:position (vec4 position 1.0))) (fragment (vec4 1.0)))\n"
+   "(graph G\n"
+   "  (input meshes meshes)\n"
+   "  (model ship \"ship.gltf\" V #:draws shipDraws #:bounds shipBounds)\n"
+   "  (buffer kept DrawIndexedCommand 8 #:frames per-frame)\n"
+   "  (image picture rgba8 (fixed 4 4) #:frames shared)\n"
+   "  (target canvas (color picture))\n"
+   "  (material painting Paint)\n"
+   "  (draw-meshes draw canvas ship painting #:indirect (at kept 0) #:draws 8))\n"))
+
+(test-case "Models give their draws and bounds, and draw-meshes draws commands chosen from them"
+  (define h (named (compile-text model-program) ".zgal.h"))
+  (check-true (string-contains? h "TRY_ASSIGN(auto upload_shipDraws, zgal::uploadAs<DrawIndexedCommand>(context, model_ship.draws, \"G's model draws shipDraws\"));"))
+  (check-true (string-contains? h "TRY_ASSIGN(auto upload_shipBounds, zgal::upload(context, model_ship.bounds, \"G's model bounds shipBounds\"));"))
+  (check-true (string-contains? h "graph.add<IndirectDrawNode>(\"draw\", IndirectDrawNode::Desc{.material = material_painting, .target = target_canvas, .commands = BufferOffset{buffer_kept, VkDeviceSize(0u) * sizeof(DrawIndexedCommand)}, .maxDraws = 8u, .mesh = model_ship.mesh})"))
+  (check-true (string-contains? h "features.core.features.drawIndirectFirstInstance = VK_TRUE;"))
+  ;; Drawn directly, a renderable per draw
+  (define direct (named (compile-text (string-replace model-program " #:indirect (at kept 0) #:draws 8" "")) ".zgal.h"))
+  (check-true (string-contains? direct "std::vector<Handle<Renderable>> renderables = model_ship.renderables(context, material_painting);"))
+  (check-zgal-error (string-replace model-program "(import indirect)\n" "") 'unknown-type
+                    "a model's #:draws are DrawIndexedCommands: (import indirect)")
+  (check-zgal-error (string-replace model-program "(draw-meshes draw canvas ship" "(draw-meshes draw canvas meshes") 'type-mismatch
+                    "draw-meshes #:indirect draws a model's mesh, but meshes is a meshes input")
+  (check-zgal-error (string-replace model-program "(buffer kept DrawIndexedCommand" "(buffer kept DrawCommand") 'type-mismatch
+                    "#:indirect reads DrawIndexedCommands, (import indirect), but kept holds DrawCommand"))

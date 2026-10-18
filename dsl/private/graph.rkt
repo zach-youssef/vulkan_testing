@@ -40,6 +40,8 @@
     ;; A set of images, like imported ones, and an uploaded buffer
     [(g-model-textures _ _ _) (entry 'import-images #f item)]
     [(g-model-factors _ _ _) (entry 'upload (vector-t 'float 4) item)]
+    [(g-model-draws _ _ t _) (entry 'upload t item)]
+    [(g-model-bounds _ _ _) (entry 'upload (vector-t 'float 4) item)]
     [(g-import-images _ _ _) (entry 'import-images #f item)]
     [(g-import-buffer _ t _) (entry 'import-buffer t item)]
     [(g-upload _ _ t _) (entry 'upload t item)]
@@ -390,8 +392,8 @@
        (define color (choice-option options '#:color '(srgb linear) form #:required? #t #:where stx))
        (declare! (g-image-file (item-name) (parse-asset-source (second args)) color (stx->loc stx)) stx)]
       ['model
-       (args! 3 "(model name asset Format #:base-colors name #:base-color-factors name)")
-       (check-known-options options '(#:base-colors #:base-color-factors) form)
+       (args! 3 "(model name asset Format #:base-colors name #:base-color-factors name #:draws name #:bounds name)")
+       (check-known-options options '(#:base-colors #:base-color-factors #:draws #:bounds) form)
        (define model-name (item-name))
        (define source (parse-asset-source (second args)))
        (define format-name (syntax-e (third args)))
@@ -404,8 +406,18 @@
        (define (declare-part! key make)
          (define part-stx (hash-ref options key #f))
          (and part-stx (declare! (make (parse-name part-stx (format "~a's ~a" form key)) model-name (stx->loc part-stx)) part-stx)))
+       ;; Its draws, as the commands of (import indirect)
+       (define draws
+         (let ([draws-stx (hash-ref options '#:draws #f)])
+           (and draws-stx
+                (let ([t (with-handlers ([exn:zgal? (λ (_) (zgal-error 'unknown-type draws-stx "a model's #:draws are DrawIndexedCommands: (import indirect)"))])
+                           (parse-type (datum->syntax draws-stx 'DrawIndexedCommand draws-stx)))])
+                  (check-command-type! t "DrawIndexedCommand" draws-stx "a model's #:draws")
+                  (declare-part! '#:draws (λ (n m l) (g-model-draws n m t l)))))))
        (filter values (list model (declare-part! '#:base-colors g-model-textures)
-                            (declare-part! '#:base-color-factors g-model-factors)))]
+                            (declare-part! '#:base-color-factors g-model-factors)
+                            draws
+                            (declare-part! '#:bounds g-model-bounds)))]
       ['import-images
        (args! 1 "(import-images name #:resting state)")
        (check-known-options options '(#:resting) form)
@@ -719,7 +731,7 @@
                            [(extern) '(#:when)]
                            [(reduce inclusive-scan exclusive-scan) '(#:when #:enabled #:once #:op #:count)]
                            [(dispatch) '(#:when #:enabled #:once #:indirect)]
-                           [(draw) '(#:when #:enabled #:once #:indirect #:draws #:count)]
+                           [(draw draw-meshes) '(#:when #:enabled #:once #:indirect #:draws #:count)]
                            [else '(#:when #:enabled #:once)])
                          form)
     (define (shape n text)
@@ -791,7 +803,14 @@
             (zgal-error 'type-mismatch (third args) "model ~a's vertices are ~a, but material ~a (~a) reads ~a"
                         meshes model-format m-name (material-name m) read))]
          [_ (void)])
-       (node 'draw-meshes #:target target #:material m-name #:subject meshes)]
+       (define command-stx (hash-ref options '#:indirect #f))
+       (unless command-stx
+         (for ([k (in-list '(#:draws #:count))] #:when (hash-ref options k #f))
+           (zgal-error 'bad-option (hash-ref options k) "~a is for draws with #:indirect" k)))
+       (when (and command-stx (not (eq? (entry-kind (hash-ref env meshes)) 'model)))
+         (zgal-error 'type-mismatch (third args) "draw-meshes #:indirect draws a model's mesh, but ~a is a meshes input" meshes))
+       (node 'draw-meshes #:target target #:material m-name #:subject meshes
+             #:extra (and command-stx (parse-indirect-draw command-stx "DrawIndexedCommand" node-name options stx)))]
       ['draw
        (define command-stx (hash-ref options '#:indirect #f))
        (if command-stx
@@ -875,20 +894,24 @@
           "DrawCommand" '(("vertexCount" uint) ("instanceCount" uint) ("firstVertex" uint) ("firstInstance" uint))
           "DrawIndexedCommand" '(("indexCount" uint) ("instanceCount" uint) ("firstIndex" uint) ("vertexOffset" int) ("firstInstance" uint))))
 
+  ;; Checks t is the command struct-name of (import indirect)
+  (define (check-command-type! t struct-name where what)
+    (define expected (hash-ref command-fields struct-name))
+    (unless (and (struct-t? t)
+                 (equal? (struct-decl-name (struct-t-decl t)) struct-name)
+                 (equal? (for/list ([f (in-list (struct-decl-fields (struct-t-decl t)))])
+                           (list (field-name f) (type-name (field-type f))))
+                         (map (λ (f) (list (first f) (symbol->string (second f)))) expected)))
+      (zgal-error 'type-mismatch where "~a holds ~a" what (type-name t))))
+
   ;; #:indirect (at commands index): the first command, in a graph buffer of the command struct
   ;; (whose usage the graph derives, so it's an indirect buffer)
   (define (parse-command stx struct-name)
     (match (syntax->list stx)
       [(list at-stx buffer-stx index-stx) #:when (eq? (syntax-e at-stx) 'at)
        (define buffer (lookup buffer-stx '(buffer) "a graph buffer"))
-       (define t (entry-type (hash-ref env buffer)))
-       (define expected (hash-ref command-fields struct-name))
-       (unless (and (struct-t? t)
-                    (equal? (struct-decl-name (struct-t-decl t)) struct-name)
-                    (equal? (for/list ([f (in-list (struct-decl-fields (struct-t-decl t)))])
-                              (list (field-name f) (type-name (field-type f))))
-                            (map (λ (f) (list (first f) (symbol->string (second f)))) expected)))
-         (zgal-error 'type-mismatch buffer-stx "#:indirect reads ~as, (import indirect), but ~a holds ~a" struct-name buffer (type-name t)))
+       (check-command-type! (entry-type (hash-ref env buffer)) struct-name buffer-stx
+                            (format "#:indirect reads ~as, (import indirect), but ~a" struct-name buffer))
        (element-ref buffer (build-time index-stx (scalar-t 'uint) "a command's index") (stx->loc stx))]
       [_ (zgal-error 'malformed stx "#:indirect is the first command's place in a buffer, (at commands index), not ~a" (show stx))]))
 
