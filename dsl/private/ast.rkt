@@ -32,6 +32,8 @@
 (struct runtime-array-t (element) #:transparent)
 ;; Elements apps hold (zgal::Data in C++): from readbacks, C++ and graphs' per-frame data inputs
 (struct data-t (element) #:transparent)
+;; Elements being collected into data (collect's, in apps): a C++ std::vector of element
+(struct builder-t (element) #:transparent)
 ;; An array binding: its elements' type (a texture, storage image, buffer's value or buffer-array's
 ;; array), chosen with `at`
 (struct binding-array-t (element) #:transparent)

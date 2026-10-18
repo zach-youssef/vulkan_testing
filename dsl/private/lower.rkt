@@ -134,6 +134,22 @@
      (define-values (bs _) (go body))
      (define-values (loop-s loop) (nest loops bs go l))
      (values (append loop-s (list loop)) #f)]
+    [(t-collect sources loops c body t l)
+     ;; The sources, then an empty builder each step appends to
+     (define-values (source-s source-v) (go* (map third sources)))
+     (define declares (for/list ([src (in-list sources)] [v (in-list source-v)]) (s-declare (first src) (second src) v l)))
+     (define element (data-t-element t))
+     (define builder (t-local (fresh "collected") (builder-t element) l))
+     (define-values (bs bv) (go body))
+     (define append-it (list (s-effect (t-effect 'append (list builder bv) l) l)))
+     (define step
+       (cond
+         [c (define-values (cs cv) (go c))
+            (append cs (list (s-if cv (append bs append-it) '() l)))]
+         [else (append bs append-it)]))
+     (define-values (loop-s loop) (nest loops step go l))
+     (values (append source-s declares (list (s-declare (t-local-name builder) (builder-t element) #f l)) loop-s (list loop))
+             (t-construct (list builder) t l))]
     [(t-store image texel value l)
      (define-values (s vs) (go* (list image texel value)))
      (values (append s (list (s-effect (t-store (first vs) (second vs) (third vs) l) l))) #f)]

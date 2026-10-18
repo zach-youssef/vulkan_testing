@@ -1622,8 +1622,20 @@ readback's results, what an extern function computes, what a graph uploads. They
 shared (@tt{zgal::Data<T>} in C++), so copying one with the state costs nothing, and data that hasn't
 changed is the same data, which graphs don't upload again. Bodies count them with
 @racket[(count d)], read an element with @racket[(at d i)], and start with none,
-@racket[(empty-data T)]; extern functions take and give them (by reference), e.g. to sort or
-filter results. A graph's @tt{(input name (per-frame (data T)))} takes them each frame.
+@racket[(empty-data T)]; extern functions take and give them (by reference), e.g. to sort
+results. A graph's @tt{(input name (per-frame (data T)))} takes them each frame.
+
+@racket[(collect ([name source] ...) expression)] makes data: an element of the expression's value
+for each step of its clauses, nested (the first outermost), as @racket[fold]'s. A clause goes over a
+range, @tt{[i (range from to)]}, or a data value's elements, @tt{[x d]} (computed once, before the
+loops, so it can't use the clauses' names; later clauses' ranges can use @tt{x}). With
+@tt{#:when condition}, only the steps where it holds give elements, so collect maps, filters and
+builds data:
+@racketblock[
+(on (key-pressed f)
+  (with state #:visible (collect ([p state.particles]) p.position #:when (> p.age 0.0))))
+]
+Its elements are numbers, vectors, matrices or structs (not bools), so graphs can upload them.
 
 @subsection{The graph}
 

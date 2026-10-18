@@ -370,7 +370,8 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   (C++ gives a `zgal::RunMode` in `Inputs`), e.g. to script a smoke test. `(on (read readback xs) ...)`
   receives a readback's finished copy (a buffer's elements, or an image's texels with `#:size s`; a
   looped readback's with `#:index i`) as `(data T)` (immutable shared elements,
-  `zgal::Data<T>`; `count`, `at`, `empty-data`), which state fields, externs and graphs'
+  `zgal::Data<T>`; `count`, `at`, `empty-data`, and `(collect ([x d] [i (range 0 n)]) e #:when c)`
+  mapping, filtering and building it), which state fields, externs and graphs'
   `(input d (per-frame (data T)))` (uploaded again when it changes) take. `(run Graph (input expr) ...
   #:enabled ((node expr) ...))` computes the graph's parameters once and per-frame inputs and node
   enables each frame from the state; C++ gives the graph's other inputs through the app's

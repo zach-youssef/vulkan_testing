@@ -49,6 +49,10 @@
 ;; 'or 'xor 'exchange 'compare-exchange (whose args are the comparand, then the value).
 (struct t-atomic (op place args type loc) #:transparent)
 (struct t-exit (op loc) #:transparent)                        ; 'return (compute) or 'discard (fragment)
+;; (collect ...) in apps: data of body's values for each step of loops (as t-fold's), those where
+;; condition (or #f) holds. sources: (list name type expression), the data inputs data clauses go
+;; over, computed first.
+(struct t-collect (sources loops condition body type loc) #:transparent)
 
 ;; The type of a stage's results
 (struct results-t () #:transparent)
@@ -61,7 +65,7 @@
     [(t-let _ _ t _) t] [(t-fold _ _ _ t _) t] [(t-while _ _ _ t _) t] [(t-for _ _ _) (void-t)] [(t-values _ t _) t]
     [(t-begin _ t _) t] [(t-store _ _ _ _) (void-t)] [(t-write _ _ _) (void-t)]
     [(t-results _ _) (results-t)] [(t-with _ _ t _) t] [(t-barrier _ _) (void-t)] [(t-effect _ _ _) (void-t)]
-    [(t-atomic _ _ _ t _) t] [(t-exit _ _) (void-t)]))
+    [(t-atomic _ _ _ t _) t] [(t-exit _ _) (void-t)] [(t-collect _ _ _ _ t _) t]))
 
 (define (texpr-loc e)
   (match e
@@ -70,7 +74,7 @@
     [(t-field _ _ _ l) l] [(t-swizzle _ _ _ l) l] [(t-index _ _ _ l) l] [(t-if _ _ _ _ l) l]
     [(t-let _ _ _ l) l] [(t-fold _ _ _ _ l) l] [(t-while _ _ _ _ l) l] [(t-for _ _ l) l] [(t-values _ _ l) l]
     [(t-begin _ _ l) l] [(t-store _ _ _ l) l] [(t-write _ _ l) l] [(t-results _ l) l] [(t-with _ _ _ l) l]
-    [(t-barrier _ l) l] [(t-effect _ _ l) l] [(t-atomic _ _ _ _ l) l] [(t-exit _ l) l]))
+    [(t-barrier _ l) l] [(t-effect _ _ l) l] [(t-atomic _ _ _ _ l) l] [(t-exit _ l) l] [(t-collect _ _ _ _ _ l) l]))
 
 ;; Applies f to e's subexpressions, returning a list of the results
 (define (texpr-children e)
@@ -88,7 +92,8 @@
     [(t-values es _ _) es] [(t-begin es _ _) es]
     [(t-store i t v _) (list i t v)] [(t-write p v _) (list p v)]
     [(t-results fields _) (map cdr fields)] [(t-with b fields _ _) (cons b (map cdr fields))]
-    [(t-effect _ args _) args]))
+    [(t-effect _ args _) args]
+    [(t-collect sources loops c body _ _) (append (map third sources) (append-map cdr loops) (filter values (list c body)))]))
 
 ;; Everything in e, including itself
 (define (subexpressions e)
@@ -398,6 +403,7 @@
         (unless (data-t? (texpr-type base))
           (zgal-error 'type-mismatch (first args) "count gives how many elements data has, and this is ~a" (a-type (texpr-type base))))
         (t-op 'data-count (list base) (scalar-t 'uint) here)]
+       [(collect) (check-collect stx args ctx locals)]
        [(empty-data)
         (arity 1 1)
         (unless (eq? (context-stage ctx) 'app)
@@ -776,6 +782,55 @@
                 (a-type (texpr-type body))))
   (t-for loops body (stx->loc stx)))
 
+;; (collect ([name source] ...) expression [#:when condition]): data of expression's values for
+;; each step of the clauses (nested, the first outermost), those where condition holds. A clause
+;; goes over a range, [i (range from to [step])], or a data value's elements, [x d] (d computed
+;; once, before the loops, so it doesn't use the clauses' names).
+(define (check-collect stx args ctx locals)
+  (unless (eq? (context-stage ctx) 'app)
+    (zgal-error 'wrong-stage stx "collect makes data, which is only in apps (shaders write buffers)"))
+  (define-values (positional options) (split-options args "collect"))
+  (check-known-options options '(#:when) "collect")
+  (unless (= (length positional) 2)
+    (zgal-error 'malformed stx "expected (collect ([name (range from to)] or [name data] ...) expression [#:when condition])"))
+  (define clause-stxs (or (syntax->list (first positional)) (zgal-error 'malformed (first positional) "expected ([name (range from to)] or [name data] ...)")))
+  (when (null? clause-stxs)
+    (zgal-error 'malformed (first positional) "collect has at least one clause"))
+  (define-values (sources loops inner)
+    (for/fold ([sources '()] [loops '()] [ls locals] #:result (values (reverse sources) (reverse loops) ls))
+              ([c (in-list clause-stxs)])
+      (match (syntax->list c)
+        [(list n r) #:when (eq? (head-symbol r) 'range)
+         (define-values (range-loops range-locals) (check-loops (datum->syntax c (list c) c) ctx ls))
+         (values sources (append (reverse range-loops) loops) range-locals)]
+        [(list n d)
+         ;; Its elements, by index: x is (at source i)
+         (define source (check d ctx locals))
+         (unless (data-t? (texpr-type source))
+           (zgal-error 'type-mismatch d "a collect clause goes over (range from to) or data, not ~a" (a-type (texpr-type source))))
+         (define element (data-t-element (texpr-type source)))
+         (define name (local-name n ctx))
+         (define source-spelling (spell! ctx (string-append name "Source")))
+         (define index (spell! ctx (string-append name "Index")))
+         (define where (stx->loc c))
+         (define source-local (t-local source-spelling (texpr-type source) where))
+         (values (cons (list source-spelling (texpr-type source) source) sources)
+                 (cons (list index (t-lit 0 (scalar-t 'uint) where) (t-op 'data-count (list source-local) (scalar-t 'uint) where)
+                             (t-lit 1 (scalar-t 'uint) where))
+                       loops)
+                 (hash-set ls name (t-index source-local (t-local index (scalar-t 'uint) where) element where)))]
+        [_ (zgal-error 'malformed c "expected [name (range from to)] or [name data]")])))
+  (define body (settle (check (second positional) ctx inner)))
+  (define t (texpr-type body))
+  ;; Data's elements can be uploaded, so they have a layout: no bools
+  (unless (and (or (scalar-t? t) (vector-t? t) (matrix-t? t) (struct-t? t))
+               (not (memq (component-kind t) '(bool))))
+    (zgal-error 'type-mismatch (second positional) "collect makes data of scalars, vectors, matrices or structs (of numbers), not ~a" (a-type t)))
+  (define condition
+    (let ([c (hash-ref options '#:when #f)])
+      (and c (coerce (check c ctx inner) (scalar-t 'bool) c "collect's #:when"))))
+  (t-collect sources loops condition body (data-t t) (stx->loc stx)))
+
 (define (check-accumulators stx ctx locals)
   (define acc-stxs (or (syntax->list stx) (zgal-error 'malformed stx "expected ([accumulator initial] ...)")))
   (when (null? acc-stxs)
@@ -1003,7 +1058,13 @@
     [(t-store i tx v l) (t-store (go i) (go tx) (go v) l)]
     [(t-write p v l) (t-write (go p) (go v) l)]
     [(t-results fields l) (t-results (for/list ([f (in-list fields)]) (cons (car f) (go (cdr f)))) l)]
-    [(t-with b fields t l) (t-with (go b) (for/list ([f (in-list fields)]) (cons (car f) (go (cdr f)))) t l)]))
+    [(t-with b fields t l) (t-with (go b) (for/list ([f (in-list fields)]) (cons (car f) (go (cdr f)))) t l)]
+    [(t-collect sources loops c body t l)
+     (define sources2 (for/list ([src (in-list sources)])
+                        (define value (go (third src)))
+                        (list (bind! (first src) (second src) l) (second src) value)))
+     (define loops2 (loops! loops l))
+     (t-collect sources2 loops2 (and c (go c)) (go body) t l)]))
 
 ;; ---------------------------------------------------------------------------------------------
 ;; What bodies do with bindings

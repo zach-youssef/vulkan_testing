@@ -1058,6 +1058,12 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL apps run phases: graphs chosen by state, once n
         frame();
         CHECK(app->state().ready);
         CHECK(app->state().seeds.elements() == std::vector<uint32_t>{1, 11, 21, 31});
+
+        // Data collected from data, filtered, and from a range
+        app->handle(zgal::Event{zgal::KeyPressed{zgal::Key::F}});
+        CHECK(app->state().seeds.elements() == std::vector<uint32_t>{22, 42, 62});
+        app->handle(zgal::Event{zgal::KeyPressed{zgal::Key::G}});
+        CHECK(app->state().seeds.elements() == std::vector<uint32_t>{100, 101, 102});
         ctx.waitIdleAll();
     }
     ctx.collectRetired();

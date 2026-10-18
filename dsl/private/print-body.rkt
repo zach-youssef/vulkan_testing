@@ -25,6 +25,7 @@
     [((array-t e n) 'cpp) (format "std::array<~a, ~a>" (spell-type e dialect) n)]
     [((void-t) _) "void"]
     [((data-t e) 'cpp) (format "zgal::Data<~a>" (spell-type e dialect))]
+    [((builder-t e) 'cpp) (format "std::vector<~a>" (spell-type e dialect))]
     [((opaque-t k) 'glsl) (symbol->string k)]
     [((opaque-t 'path) 'cpp) "std::filesystem::path"]
     [((scalar-t k) 'glsl) #:when (small-integer-kind? k) (format "~a_t" k)]
@@ -96,6 +97,8 @@
                  (string-join (for/list ([f (in-list (struct-decl-fields d))] [a (in-list as)])
                                 (format ".~a = ~a" (field-name f) (p a)))
                               ", ")))]
+    ;; collect's elements, made immutable data
+    [(t-construct (list b) (data-t el) _) (format "zgal::Data<~a>(std::move(~a))" (spell-type el dialect) (p b))]
     [(t-construct as (array-t el n) _)
      (if (eq? dialect 'glsl)
          (format "~a[](~a)" (spell-type el dialect) (args as))
@@ -136,6 +139,7 @@
     [(t-effect 'set-frames-in-flight (list n) _) (format "context_->setFramesInFlight(~a)" (p n))]
     [(t-effect 'resize (list w h) _) (format "resize_ = VkExtent2D{~a, ~a}" (p w) (p h))]
     [(t-effect 'quit '() _) "quit_ = true"]
+    [(t-effect 'append (list b v) _) (format "~a.push_back(~a)" (p b) (p v))]
     ;; The app class's function running the node again in each graph that has it
     [(t-effect 'run-once (list (t-lit node _ _)) _) (format "runOnce_~a()" node)]))
 

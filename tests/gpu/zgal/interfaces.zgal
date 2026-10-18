@@ -433,6 +433,9 @@
     (with state #:reads (+ state.reads 1)
                 #:lastTotal (sum ([i (range 0 (count copied))]) (at copied i))))
   (on (key-pressed space) (with state #:seeds (extend state.seeds)))
+  ;; The seeds above 10, doubled, then a seed per step below their count
+  (on (key-pressed f) (with state #:seeds (collect ([x state.seeds]) (* x 2) #:when (> x 10))))
+  (on (key-pressed g) (with state #:seeds (collect ([i (range (uint 0) (count state.seeds))]) (+ i 100))))
   ;; Seeds again: the seed graph's once nodes run in its next frame, which starts again
   (on (key-pressed r)
     (run-once! seed)

@@ -40,6 +40,32 @@
   (check-zgal-error "(app A (on (mouse-pressed thumb p) (quit!)))" 'malformed "left, right or middle")
   (check-zgal-error "(app A (on (wheel p) (quit!)))" 'malformed "expected an event"))
 
+(test-case "Apps collect data from data and ranges, filtering it"
+  (define collecting
+    (string-append
+     "(struct Pair (key uint) (weight float))\n"
+     "(app Collector\n"
+     "  (state (pairs (data Pair) (empty-data Pair)) (heavy (data uint) (empty-data uint)))\n"
+     "  (on (key-pressed a) (with state #:pairs (collect ([i (range (uint 0) 4)]) (Pair i (* 0.5 (float i))))))\n"
+     "  (on (key-pressed b) (with state #:heavy (collect ([p state.pairs]) p.key #:when (> p.weight 1.0))))\n"
+     "  (on (key-pressed c) (with state #:heavy (collect ([p state.pairs] [k (range (uint 0) p.key)]) (+ k p.key)))))\n"))
+  (define h (header collecting))
+  ;; Data clauses go over their source's elements, computed once
+  (check-true (string-contains? h "zgal::Data<Pair> pSource = state.pairs;"))
+  (check-true (string-contains? h "std::vector<uint32_t> zgalCollected"))
+  (check-regexp-match #rx"for [(]uint32_t pIndex = 0u; pIndex < pSource.size[(][)]; [+][+]pIndex[)] {" h)
+  (check-true (string-contains? h "if (pSource[pIndex].weight > 1.0f) {"))
+  (check-regexp-match #rx"zgalCollected[0-9]+.push_back[(]pSource[[]pIndex[]].key[)];" h)
+  (check-regexp-match #rx"zgal::Data<uint32_t>[(]std::move[(]zgalCollected[0-9]+[)][)]" h)
+  ;; A later clause's range can use an earlier clause's element
+  (check-true (string-contains? h "for (uint32_t k = static_cast<uint32_t>(0); k < pSource_2[pIndex_2].key; ++k) {"))
+  (check-zgal-error "(app A (state (x uint 0)) (on (key-pressed a) (with state #:x (count (collect ([i 3]) i)))))"
+                    'type-mismatch "a collect clause goes over (range from to) or data, not an integer literal")
+  (check-zgal-error "(compute-material C (workgroup 1) (compute (count (collect ([i (range 0 2)]) i))))"
+                    'wrong-stage "collect makes data, which is only in apps")
+  (check-zgal-error "(app A (state (x uint 0)) (on (key-pressed a) (with state #:x (count (collect ([i (range 0 2)]) (> i 0))))))"
+                    'type-mismatch "collect makes data of scalars, vectors, matrices or structs (of numbers), not a bool"))
+
 (test-case "Apps' effects are only in apps"
   (check-zgal-error "(define (f [x : float]) : float (begin (print! x) x))" 'bad-effect "only app handlers")
   (check-zgal-error "(compute-material C (workgroup 1) (compute (quit!)))" 'bad-effect "only app handlers")

@@ -114,7 +114,7 @@
 ;; Bodies' forms named like identifiers. A call (count d) is the form, so a function or struct
 ;; with one of these names could never be called; values (locals, fields, constants) can have them.
 (define body-form-names
-  '("array" "at" "begin" "cond" "count" "fetch" "fold" "range" "remainder" "results" "shl" "shr"
+  '("array" "at" "begin" "collect" "cond" "count" "fetch" "fold" "range" "remainder" "results" "shl" "shr"
     "sum" "unless" "values" "when" "with"))
 (define body-form-set (for/hash ([n (in-list body-form-names)]) (values n #t)))
 
