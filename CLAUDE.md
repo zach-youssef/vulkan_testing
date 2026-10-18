@@ -406,9 +406,12 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   Makefiles include `zgal.mk` too. Prefer it to a handwritten `main`.
 - Never edit generated files (under `build/`): change the `.zgal` file (or a GLSL body).
 - The web: `--web-out DIR` writes `FILE.zgal.ts` (structs' interfaces and layouts, materials'
-  descriptions with their WGSL, and a class per graph whose `build(context, graph, inputs)` mirrors
-  the C++ one) and a WGSL module (WebGPU) per material shader. The TypeScript imports the runtime as
-  `./zgal/index.ts`: copy `web/zgal` beside it. Apps and mains are in progress. A material is a bind
+  descriptions with their WGSL, a class per graph whose `build(context, graph, inputs)` mirrors
+  the C++ one, the CPU-capable functions and constants, and a class per app like the C++ one) and a
+  WGSL module (WebGPU) per material shader. The TypeScript imports the runtime as
+  `./zgal/index.ts`: copy `web/zgal` beside it. Bodies keep C++'s arithmetic (floats rounded to 32
+  bits by `math.ts`/`glsl.ts`, integers wrapping); floats passed in must be 32-bit
+  (`Math.fround`). Mains are in progress. A material is a bind
   group (binding i is its i'th binding, push constants a uniform buffer after them); buffers of
   small integers or with atomics are 32-bit words at std430 offsets. GLSL bodies, `extern-glsl`,
   array bindings, and (for now) image files, models, meshes, library kernels and indirect work

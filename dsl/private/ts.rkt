@@ -10,6 +10,8 @@
          "ast.rkt"
          "errors.rkt"
          "layout.rkt"
+         "ts-app.rkt"
+         "ts-body.rkt"
          "ts-common.rkt"
          "ts-graph.rkt"
          "wgsl.rkt")
@@ -40,11 +42,24 @@
                           (format "[~a, ~a]" (ts-string (field-name f)) (ts-layout-type (field-type f))))
                         ", ")))
 
+  ;; Functions and constants the CPU can use too
+  (define cpu-declarations
+    (filter (λ (d) (if (function-decl? d) (function-decl-cpu? d) (constant-decl-cpu? d))) (program-functions prog)))
+  (unless (null? cpu-declarations)
+    (line! "")
+    (line! "// The file's functions and constants, compiled for the CPU too (those using no textures, images")
+    (line! "// or stage variables)")
+    (for ([d (in-list cpu-declarations)])
+      (for ([l (in-list (if (function-decl? d) (ts-function d) (ts-constant d)))]) (line! "~a" l))))
+
   (for ([m (in-list (program-materials prog))])
     (for ([l (in-list (emit-material prog m))]) (line! "~a" l)))
 
   (for ([g (in-list (program-graphs prog))])
     (for ([l (in-list (emit-ts-graph prog g))]) (line! "~a" l)))
+
+  (for ([a (in-list (program-apps prog))])
+    (for ([l (in-list (emit-ts-app prog a))]) (line! "~a" l)))
   (string-append (string-join (reverse out) "\n") "\n"))
 
 ;; A TypeScript template literal of WGSL, with the storage images' formats from `formats`

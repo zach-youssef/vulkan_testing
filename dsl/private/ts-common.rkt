@@ -6,12 +6,16 @@
          "ast.rkt")
 
 (provide ts-string
+         ts-struct-name
          ts-value-type
          ts-layout-type)
 
 ;; A TypeScript string literal
 (define (ts-string s)
   (string-append "'" (regexp-replace* #px"[\\\\'\n]" s (λ (c) (if (string=? c "\n") "\\n" (string-append "\\" c)))) "'"))
+
+;; How a struct's interface is named: by its name, except where a backend renames one (an app's state)
+(define ts-struct-name (make-parameter struct-decl-name))
 
 ;; The TypeScript type of values of type t: numbers, arrays of numbers (vectors), arrays of columns
 ;; (matrices), arrays, and the structs' interfaces
@@ -23,7 +27,7 @@
     [(vector-t _ _) "number[]"]
     [(matrix-t _) "number[][]"]
     [(array-t e _) (format "~a[]" (ts-value-type e))]
-    [(struct-t d) (struct-decl-name d)]
+    [(struct-t d) ((ts-struct-name) d)]
     [(data-t e) (format "readonly ~a[]" (ts-value-type e))]
     [(opaque-t 'path) "string"]
     [(void-t) "void"]))

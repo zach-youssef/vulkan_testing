@@ -586,10 +586,10 @@ export class RenderGraph {
     b.generation++;
   }
 
-  // Records and submits a frame: every enabled node in order. Waits only when two frames are
-  // already in flight.
+  // Records and submits a frame: every enabled node in order. Waits only when the context's frames
+  // in flight already are.
   async execute(): Promise<void> {
-    if (this.inFlight.length >= 2) await this.inFlight.shift();
+    while (this.inFlight.length >= this.context.framesInFlight) await this.inFlight.shift();
     if (this.surface) {
       this.surfaceTexture = this.surface.canvas.getCurrentTexture();
       this.surfaceView = this.surfaceTexture.createView({ format: this.surfaceFormat! });

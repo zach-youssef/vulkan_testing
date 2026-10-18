@@ -25,6 +25,24 @@ export interface Settings {
 }
 export const Settings: zgal.Type<Settings> = zgal.struct<Settings>('Settings', [['target', zgal.uint], ['loop', zgal.float], ['scale', zgal.vec4]]);
 
+// The file's functions and constants, compiled for the CPU too (those using no textures, images
+// or stage variables)
+export function pcgHash(v: number): number {
+  let state: number = (((Math.imul(v, 747796405) >>> 0)) + 2891336453 >>> 0);
+  let word: number = (Math.imul((((((state >>> ((((state >>> 28)) + 4 >>> 0)))) ^ state) >>> 0)), 277803737) >>> 0);
+  return ((((word >>> 22)) ^ word) >>> 0);
+}
+export function unitFloat(random: number): number {
+  return Math.fround(zgal.math.toFloat(random) / 4294967296);
+}
+export const negativeInfinity: number = zgal.glsl.uintBitsToFloat(4286578688);
+export function shade(v: number[], n: number, m: number[][]): number[] {
+  let flipped: number = (-(n >>> 0) >>> 0);
+  let s: Settings = (zgal.math.equal(v, zgal.math.vector<number[]>('float', 3, 0))) ? { target: 1, loop: 0.5, scale: zgal.math.vector<number[]>('float', 4, 1) } : { target: 2, loop: zgal.math.toFloat(flipped), scale: zgal.math.vector<number[]>('float', 4, v, 1) };
+  let w: number[] = zgal.math.mul<number[]>('float', zgal.glsl.inverse(m), s.scale);
+  return zgal.math.vector<number[]>('float', 4, zgal.glsl.mix(zgal.glsl.mod(v, 2), zgal.glsl.min(v, 0.5), zgal.glsl.lessThan(v, zgal.math.vector<number[]>('float', 3, 0.25))), Math.fround((Math.fround((Math.fround((Math.fround(w[0] + s.loop)) + zgal.math.toFloat((1 << n)))) + zgal.math.toFloat(-2147483648))) + zgal.glsl.max(negativeInfinity, 0)));
+}
+
 export const Repack: zgal.ComputeMaterialDesc = {
   kind: 'compute',
   name: 'Repack',
@@ -539,3 +557,209 @@ fn main(@location(0) tint: vec4f, @location(1) @interpolate(linear) screen: vec2
 }
 `,
 };
+
+// graph Tallying: build() adds its resources, materials and nodes to a RenderGraph
+export interface TallyingInputs {
+  size: number;
+  rounds: zgal.FrameSource<number>;
+}
+
+export class Tallying {
+  images: {} = {} as Tallying['images'];
+  buffers: { counts: zgal.GraphBuffer; balances: zgal.GraphBuffer; weights: zgal.GraphBuffer } = {} as Tallying['buffers'];
+  nodes: { zero: zgal.NodeId; tally: zgal.NodeId; readCounts: zgal.NodeId } = {} as Tallying['nodes'];
+
+  // The elements readback readCounts copied in the most recent frame (waiting for it)
+  readCountsContents(graph: zgal.RenderGraph): Promise<number[]> {
+    return graph.node<zgal.BufferReadbackNode>(this.nodes.readCounts).contents<number>();
+  }
+
+  // Adds the graph's resources, materials and nodes to `graph`. Its materials and nodes keep
+  // the inputs' functions, so whatever those use must outlive the graph.
+  static async build(context: zgal.Context, graph: zgal.RenderGraph, inputs: TallyingInputs): Promise<Tallying> {
+    const result = new Tallying();
+    const need = <T>(x: T | undefined, what: string): T => {
+      if (x === undefined) throw new Error(`Tallying: ${what} isn't created (its #:when is false)`);
+      return x;
+    };
+    void need;
+    const buffer_counts = graph.createBuffer('counts', zgal.uint, inputs.size);
+    result.buffers.counts = buffer_counts;
+    const buffer_balances = graph.createBuffer('balances', zgal.int, inputs.size);
+    result.buffers.balances = buffer_balances;
+    const buffer_weights = graph.createBuffer('weights', zgal.float, 1);
+    result.buffers.weights = buffer_weights;
+    const material_tallying = new zgal.MaterialInstance(graph, Tally, { counts: { buffer: buffer_counts }, balances: { buffer: buffer_balances }, weights: { buffer: buffer_weights } }, null, (frame) => [(zgal.math.mul('uint', inputs.rounds(frame), 64) as number)], {});
+    {
+      const node = graph.add(new zgal.ClearNode('zero', graph, buffer_counts, (frame) => 0));
+      result.nodes.zero = node;
+    }
+    {
+      const node = graph.add(new zgal.DispatchNode('tally', material_tallying, null, null));
+      result.nodes.tally = node;
+    }
+    {
+      const node = graph.add(new zgal.BufferReadbackNode('readCounts', graph, buffer_counts));
+      result.nodes.readCounts = node;
+    }
+    return result;
+  }
+}
+
+// app Counter: its state, the handlers computing the next one, and graph Tallying
+export interface CounterState {
+  rounds: number;
+  paused: boolean;
+  tint: number[];
+  counts: readonly number[];
+}
+
+// What the page or Node gives it: the parameters, the clock, and graph inputs the app doesn't compute
+export interface CounterInputs {
+  size: number;
+  // How far the frame handler's clock advances a frame
+  timestep: zgal.Timestep;
+}
+
+export class Counter {
+  readonly context: zgal.Context;
+  private readonly inputs: CounterInputs;
+  private readonly graph0: zgal.RenderGraph;
+  private ids0!: Tallying;
+  private active: zgal.RenderGraph;
+  // The frame being drawn (frameNumber; 0 until the first), and the frames begun
+  private frameNumber = 0;
+  private framesBegun = 0;
+  private current: CounterState;
+  private quit = false;
+  private resize: [number, number] | null = null;
+
+  private constructor(context: zgal.Context, graph: zgal.RenderGraph, inputs: CounterInputs) {
+    this.context = context;
+    this.inputs = inputs;
+    this.graph0 = graph;
+    this.active = graph;
+    this.current = this.initialState();
+  }
+
+  // The app, with its initial state, adding its graph to `graph`. The graphs' callbacks use the app, so it must outlive their use.
+  static async create(context: zgal.Context, graph: zgal.RenderGraph, inputs: CounterInputs): Promise<Counter> {
+    const app = new Counter(context, graph, inputs);
+    app.ids0 = await Tallying.build(context, app.graph0, {
+      size: app.parameter_size(),
+      rounds: () => app.input_rounds(),
+    });
+    return app;
+  }
+
+  get state(): CounterState {
+    return this.current;
+  }
+
+  // Replaces the state, e.g. for tests driving the app
+  setState(state: CounterState): void {
+    this.current = state;
+  }
+
+  // Graph Tallying's ids: its images, buffers and nodes
+  get ids(): Tallying {
+    return this.ids0;
+  }
+
+  // The graph to draw this frame
+  renderGraph(): zgal.RenderGraph {
+    return this.active;
+  }
+
+  // Whether a handler asked to quit (quit!)
+  quitRequested(): boolean {
+    return this.quit;
+  }
+
+  // The size a handler last asked for (resize!), once: the canvas's, or headless, the graphs' surface extent
+  takeResize(): [number, number] | null {
+    const size = this.resize;
+    this.resize = null;
+    return size;
+  }
+
+  // Sets the surface extent of every graph the app runs, headless
+  setSurfaceExtent(extent: [number, number]): void {
+    this.graph0.setSurfaceExtent(extent);
+  }
+
+  // Runs the handler for event, if the app has one
+  handle(event: zgal.Event): void {
+    switch (event.kind) {
+      case 'key-pressed':
+        switch (event.key) {
+          case 'Space':
+            this.current = this.on0(this.current);
+            break;
+          case 'Escape':
+            this.current = this.on1(this.current);
+            break;
+        }
+        break;
+      case 'scrolled':
+        this.current = this.on2(this.current, event.offset);
+        break;
+    }
+  }
+
+  // Each frame, before drawing: the handlers of readbacks' finished copies, the frame handler, then which graph is drawn and which of its nodes are enabled
+  beginFrame(): void {
+    this.frameNumber = this.framesBegun++;
+    { const copied = this.graph0.node<zgal.BufferReadbackNode>(this.ids0.nodes.readCounts).takeFinished<number>(); if (copied) this.current = this.on4(this.current, copied); }
+    this.current = this.on3(this.current, this.inputs.timestep.next());
+    this.graph0.setEnabled(this.ids0.nodes.tally, this.enabled_tally());
+  }
+
+  private initialState(): CounterState {
+    return { rounds: 1, paused: false, tint: shade(zgal.math.vector<number[]>('float', 3, 0.5), 2, zgal.math.matrix(4, 1)), counts: [] };
+  }
+
+  private on0(state: CounterState): CounterState {
+    let zgalUpdated1: CounterState = { ...state };
+    zgalUpdated1.paused = !state.paused;
+    return zgalUpdated1;
+  }
+
+  private on1(state: CounterState): CounterState {
+    this.quit = true;
+    return state;
+  }
+
+  private on2(state: CounterState, by: [number, number]): CounterState {
+    let zgalUpdated1: CounterState = { ...state };
+    zgalUpdated1.rounds = zgal.glsl.max(1, (state.rounds + zgal.math.toUint(by[1]) >>> 0));
+    return zgalUpdated1;
+  }
+
+  private on3(state: CounterState, dt: number): CounterState {
+    if (dt > 1) {
+      zgal.output.line(['slow frame: ', zgal.math.formatFloat(dt)].join(''));
+    }
+    return state;
+  }
+
+  private on4(state: CounterState, copied: readonly number[]): CounterState {
+    let zgalUpdated1: CounterState = { ...state };
+    zgalUpdated1.counts = copied;
+    return zgalUpdated1;
+  }
+
+  private parameter_size(): number {
+    return this.inputs.size;
+  }
+
+  private input_rounds(): number {
+    const state = this.current;
+    return state.rounds;
+  }
+
+  private enabled_tally(): boolean {
+    const state = this.current;
+    return !state.paused;
+  }
+}

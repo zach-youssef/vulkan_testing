@@ -23,7 +23,15 @@ export class Context {
   // WebGPU's validation errors and device loss, which the runtime treats as a validation layer's
   // messages: tests fail on any
   readonly errors: string[] = [];
+  // How many frames graphs submit before waiting for the oldest (frames share their resources on
+  // WebGPU, so this only bounds how far the CPU runs ahead)
+  framesInFlight = 2;
   private readonly assets: AssetLoader;
+
+  setFramesInFlight(count: number): void {
+    if (count < 1) throw new Error(`frames in flight must be at least 1, not ${count}`);
+    this.framesInFlight = count;
+  }
 
   private constructor(gpu: GPU, adapter: GPUAdapter, device: GPUDevice, assets: AssetLoader) {
     this.gpu = gpu;

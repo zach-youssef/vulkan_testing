@@ -2064,7 +2064,7 @@ The generated code checks what the compiler can't, as contract violations:
 
 ZGAL also compiles for the web, to WebGPU: @tt{@literal{--web-out} DIR} writes a TypeScript module,
 @tt{FILE.zgal.ts}, and a WGSL module per material shader, named after it (@tt{Lit.frag.wgsl}).
-Apps and mains are still to come (@secref["roadmap"]). This section describes how the shaders map
+Mains are still to come (@secref["roadmap"]). This section describes how the shaders map
 to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, then the TypeScript.
 
 @subsection{Shaders}
@@ -2128,7 +2128,11 @@ it is, and browsers after @tt{tsc} or a bundler strips the types. The module exp
  @item{per graph, an interface of its inputs (@tt{BrightenInputs}: parameters and data as values,
        per-frame inputs as functions of the frame, cpu and extern inputs as functions) and a class
        whose @tt{build(context, graph, inputs)} adds its resources, materials and nodes to a
-       @tt{RenderGraph}, returning their ids, with an accessor per readback.}
+       @tt{RenderGraph}, returning their ids, with an accessor per readback;}
+ @item{the file's functions and constants the CPU can run (those the C++ has), as functions and
+       constants;}
+ @item{per app, an interface of its state and of its inputs, and a class like the C++ one (see
+       below).}
 ]
 
 @zgal-example[#:web? #t #:show '("example.zgal.ts") #:from #rx"^// graph Brighten"
@@ -2175,8 +2179,46 @@ The runtime follows the C++ graph's behaviour where WebGPU allows, with these di
        linear values as on Vulkan.}
 ]
 
+Functions, constants and apps' bodies compute what the C++ does: JavaScript's numbers are doubles,
+so the runtime (@tt{math.ts}, and @tt{glsl.ts} for the built-in functions, as GLM computes them)
+rounds floats to 32 bits after each operation and wraps integers at 32 bits. Vectors are arrays of
+numbers and matrices arrays of columns. Floats given to generated code (functions' arguments,
+parameters, per-frame inputs) must be 32-bit ones (@tt{Math.fround}), as C++'s @tt{float}
+parameters would make them.
+
+An app's class is created with @tt{await App.create(context, graph, inputs)} (or a graph per
+@racket[run], @tt{AppGraphs}), its @tt{inputs} giving its parameters, @tt{timestep}
+(@tt{zgal.Timestep.realTime(max)} or @tt{fixed(step)}), @tt{mode} (@tt{zgal.RunMode.window(frames)} or
+@tt{headless(frames, capture)}), extern functions and the graph inputs the app doesn't compute. As
+in C++, each frame calls @tt{beginFrame()} then executes @tt{renderGraph()}; @tt{handle(event)} takes
+events (@tt{{kind: 'key-pressed', key: 'Space'}}, keys named as C++'s @tt{zgal::Key}), and
+@tt{state}, @tt{setState}, @tt{quitRequested()} and @tt{takeResize()} are there for pages and tests.
+@racket[print!] writes through @tt{zgal.output.line} (@tt{console.log} unless replaced), formatting
+floats as C++'s streams do.
+
+@zgal-example[#:web? #t #:show '("example.zgal.ts") #:from #rx"^  beginFrame" #:to #rx"^  }$"
+"(compute-material Fill
+  (workgroup 1)
+  (bindings (values (buffer-array uint)))
+  (push (value uint))
+  (compute (write! (at values 0) value)))
+
+(graph Counting
+  (input count (per-frame uint))
+  (buffer counts uint 1 #:frames shared)
+  (material fill Fill (values counts) #:push ((value count)) #:invocations (1))
+  (dispatch filling fill)
+  (readback readCounts counts))
+
+(app Counter
+  (state (count uint 0) (paused bool #f) (seen (data uint) (empty-data uint)))
+  (on (key-pressed space) (with state #:paused (not state.paused)))
+  (on (frame dt) (if state.paused state (with state #:count (+ state.count 1))))
+  (on (read readCounts copied) (with state #:seen copied))
+  (run Counting (count state.count) #:enabled ((filling (not state.paused)))))"]
+
 Graphs on the web can't yet use image files, models, meshes, the compute library's nodes, or
-indirect dispatches and draws. WebGPU's samplers have no border colour, and its buffers can't be
+indirect dispatches and draws, and apps can't yet read images' copies. WebGPU's samplers have no border colour, and its buffers can't be
 mapped while the GPU uses them, so samplers clamping to a border and cpu nodes reading or writing
 imported buffers can't be either. Compiling any of them for the web reports
 @secref["error-not-on-web"].
@@ -2228,8 +2270,8 @@ handlers (track it in the state from press and release events), read files, or c
 ZGAL has grown in stages: interfaces, graphs, shader bodies (with functions shared by the GLSL and
 C++ backends, and bindings' accesses inferred), then apps. The compiler's checked program (@tt{dsl/private/ast.rkt}) describes interfaces
 without assuming a backend, so other backends only add emitters. The web backend (@secref["web"])
-writes WGSL and TypeScript for materials and graphs so far; apps and programs running in browsers
-are next, then what graphs on the web can't use yet.
+writes WGSL and TypeScript for materials, graphs and apps so far; programs (mains) running in
+browsers and under Node are next, then what graphs on the web can't use yet.
 
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "maintaining"]{Working on ZGAL}
@@ -2261,6 +2303,8 @@ are next, then what graphs on the web can't use yet.
   (list @tt{dsl/private/wgsl.rkt} "the WGSL backend (WebGPU)")
   (list @tt{dsl/private/ts.rkt} "the TypeScript backend (WebGPU): structs and materials")
   (list @tt{dsl/private/ts-graph.rkt} "the TypeScript backend for graphs")
+  (list @tt{dsl/private/ts-body.rkt} "printing lowered bodies as TypeScript: functions, constants and apps' bodies")
+  (list @tt{dsl/private/ts-app.rkt} "the TypeScript backend for apps")
   (list @tt{dsl/private/ts-common.rkt} "TypeScript spellings the backend's modules share")
   (list @tt{dsl/private/cpp.rkt} "the C++ backend: structs, vertex formats and materials")
   (list @tt{dsl/private/cpp-graph.rkt} "the C++ backend for graphs")
@@ -2275,7 +2319,7 @@ are next, then what graphs on the web can't use yet.
   (list @tt{include/zgal/Main.h} "what the generated mains use: the command line, validation, captures, running headless")
   (list @tt{include/zgal/Window.h} "running an app in a VulkanApp's window, and windowed programs")
   (list @tt{dsl/docs/} "this document, and the helpers compiling its examples")
-  (list @tt{web/zgal/} "what the generated TypeScript uses at runtime: Context, RenderGraph, nodes, materials, types' layouts; node.ts and png.ts for Node")
+  (list @tt{web/zgal/} "what the generated TypeScript uses at runtime: Context, RenderGraph, nodes, materials, types' layouts, apps' events and clocks, C++'s arithmetic (math.ts) and built-in functions (glsl.ts); node.ts and png.ts for Node")
   (list @tt{web/} "the web backend's packages (npm: TypeScript, and Dawn, WebGPU for Node), tools (tools/check-wgsl.ts compiles WGSL with Dawn) and tests")
   (list @tt{dsl/tests/} "the compiler's tests (make test-dsl)"))]
 
@@ -2310,14 +2354,17 @@ This document is part of the language: change it in the same commit as the compi
        feature, and for the web for @tt{golden/web.zgal}, what the WGSL backend does differently.}
  @item{@tt{dsl/tests/toolchain-test.rkt}: the generated shaders and header through glslc and the C++
        compiler (with the build's flags, from @tt{make test-dsl}), @tt{#line} mapping, the
-       command line, and the golden and examples' WGSL modules through Dawn (@tt{web/}, whose
-       packages @tt{make test-dsl} installs with @tt{npm ci}).}
- @item{@tt{web/tests}: @tt{web.zgal} compiled to TypeScript and WGSL and run on Dawn under Node
+       command line, the golden and examples' WGSL modules through Dawn, and the golden
+       TypeScript through @tt{tsc} (@tt{web/}, whose packages @tt{make test-dsl} installs with
+       @tt{npm ci}).}
+ @item{@tt{web/tests}: @tt{web.zgal} and @tt{apps.zgal} compiled to TypeScript and WGSL and run on Dawn under Node
        (@tt{make test-web}, which type checks it first): the generated WGSL computes what the GLSL
        would (layouts of small integers, shared memory, emulated atomics and subgroup scans,
        expressions WGSL spells differently, draws with depth tests), and generated graphs run as
        the C++ ones do (loops, conditions, enables and once nodes, per-frame inputs, uploads,
-       copies, buffer files, cpu and extern nodes), without WebGPU errors.}
+       copies, buffer files, cpu and extern nodes), functions compute what the GPU and C++ do,
+       and apps handle events, effects, read events, externs and phases as C++ apps do, without
+       WebGPU errors.}
  @item{@tt{tests/gpu/ZgalTest.cpp}: generated materials and graphs on the device: the C++ structs
        and push constants have the layout the shaders write and read (8- and 16-bit integers
        included), a function computes the same on the CPU (as C++) as on the GPU, a reduction

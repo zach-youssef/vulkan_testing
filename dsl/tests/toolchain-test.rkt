@@ -107,6 +107,22 @@
                (path->string (build-path (getenv "ZGAL_WEB") "tools" "check-wgsl.ts"))
                (for/list ([o (in-list outputs)]) (path->string (build-path directory (file-name-from-path (output-path o)))))))
       (with-check-info (['dawn text])
+        (check-equal? status 0))))
+
+  (test-case "The golden TypeScript type checks beside the runtime"
+    (with-temporary-directory (directory)
+      (define web (getenv "ZGAL_WEB"))
+      (write-outputs (filter (λ (o) (regexp-match? #rx"[.]ts$" (output-path o))) (golden-web-outputs)) directory)
+      (copy-directory/files (build-path web "zgal") (build-path directory "zgal"))
+      (make-file-or-directory-link (build-path web "node_modules") (build-path directory "node_modules"))
+      (call-with-output-file (build-path directory "package.json") (λ (out) (write-string "{\"type\": \"module\"}" out)))
+      ;; The runtime's settings, for the generated module
+      (call-with-output-file (build-path directory "tsconfig.json")
+        (λ (out) (write-string (regexp-replace #rx"\"include\": [^\n]*" (file->string (build-path web "tsconfig.json")) "\"include\": [\"*.ts\"]") out)))
+      (define-values (status text)
+        (run (getenv "ZGAL_NODE") (path->string (build-path web "node_modules" "typescript" "bin" "tsc"))
+             "-p" (path->string directory)))
+      (with-check-info (['tsc text])
         (check-equal? status 0)))))
 
 (define (cxx-tests)

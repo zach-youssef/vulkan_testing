@@ -247,14 +247,14 @@ $(WEB_PACKAGES): $(WEB_DIR)/package.json $(WEB_DIR)/package-lock.json
 test-dsl: $(ZGAL_COMPILED) $(WEB_PACKAGES) docs
 	$(ZGAL_TEST_ENV) $(RACO) test $(DSL_DIR)/tests
 
-# The web runtime's tests: web/tests/web.zgal compiled to TypeScript and WGSL beside a copy of the
+# The web runtime's tests: web/tests/*.zgal compiled to TypeScript and WGSL beside a copy of the
 # runtime (as an application would have it), type checked, then run on Dawn
 WEB_TEST_OUT = $(OUT)/web-tests
 
 test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	rm -rf $(WEB_TEST_OUT)
 	@mkdir -p $(WEB_TEST_OUT)
-	$(ZGAL) --web-out $(WEB_TEST_OUT) $(WEB_DIR)/tests/web.zgal
+	for f in $(WEB_DIR)/tests/*.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) $$f || exit 1; done
 	cp -R $(WEB_DIR)/zgal $(WEB_DIR)/tests $(WEB_DIR)/package.json $(WEB_DIR)/tsconfig.json $(WEB_TEST_OUT)/
 	ln -s $(CURDIR)/$(WEB_DIR)/node_modules $(WEB_TEST_OUT)/node_modules
 	cd $(WEB_TEST_OUT) && $(NODE) node_modules/typescript/bin/tsc -p . && $(NODE) --test $(TEST_ARGS) 'tests/*.test.ts'

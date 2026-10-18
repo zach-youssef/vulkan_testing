@@ -136,3 +136,30 @@
      (when (< lit 0.1) (discard!))
      (results #:color (* tint (sample albedo albedoSampler screen) lit (image-load picture (ivec2 fragCoord.xy)))
               #:glow (+ (shade tint.rgb (int id) transform) depth (vec4 (dFdx screen.x) (fwidth screen.y) 0.0 1.0))))))
+
+;; Graphs and apps compile to TypeScript: per-frame inputs and enables from an app's state, its
+;; handlers and effects, and the file's functions the CPU can run
+(graph Tallying
+  (parameter size uint)
+  (input rounds (per-frame uint))
+  (buffer counts uint size #:frames shared)
+  (buffer balances int size #:frames shared)
+  (buffer weights float 1 #:frames shared)
+  (clear zero counts #:value 0)
+  (material tallying Tally (counts counts) (balances balances) (weights weights) #:invocations ((* rounds 64)))
+  (dispatch tally tallying)
+  (readback readCounts counts))
+
+(app Counter
+  (parameter size uint)
+  (state
+   (rounds uint 1)
+   (paused bool #f)
+   (tint vec4 (shade (vec3 0.5) 2 (mat4 1.0)))
+   (counts (data uint) (empty-data uint)))
+  (on (key-pressed space) (with state #:paused (not state.paused)))
+  (on (key-pressed escape) (quit!))
+  (on (scrolled by) (with state #:rounds (max 1 (+ state.rounds (uint by.y)))))
+  (on (frame dt) (when (> dt 1.0) (print! "slow frame: " dt)) state)
+  (on (read readCounts copied) (with state #:counts copied))
+  (run Tallying (size size) (rounds state.rounds) #:enabled ((tally (not state.paused)))))
