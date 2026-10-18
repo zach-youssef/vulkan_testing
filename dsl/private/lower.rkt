@@ -76,6 +76,13 @@
         (cond
           [(void-t? t) (values (append cs (list (s-if cv as bs l))) #f)]
           [(and (null? as) (null? bs) (not (list? av))) (values cs (t-if cv av bv t l))]
+          [(list? av)
+           ;; Several values (a fold's or while's next ones): a temporary each
+           (define tmps (for/list ([ty (in-list (values-t-types t))]) (t-local (fresh "branch") ty l)))
+           (define (assign vs) (for/list ([tmp (in-list tmps)] [v (in-list vs)]) (s-assign tmp v l)))
+           (values (append cs (for/list ([tmp (in-list tmps)]) (s-declare (t-local-name tmp) (t-local-type tmp) #f l))
+                           (list (s-if cv (append as (assign av)) (append bs (assign bv)) l)))
+                   tmps)]
           [else
            ;; Branches with statements assign a temporary
            (define tmp (t-local (fresh "branch") t l))

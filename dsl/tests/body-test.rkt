@@ -146,7 +146,16 @@
   (define shader (generated text "C.comp"))
   (check-regexp-match #rx"if [(]i < 4u[)] {" shader)
   (check-regexp-match #rx"for [(]int k = 0; k < 4; [+][+]k[)] {" shader)
-  (check-regexp-match #rx"zgalBranch" shader))
+  (check-regexp-match #rx"zgalBranch" shader)
+  ;; A branch choosing a fold's next values assigns a temporary each
+  (define chosen (generated (string-append
+                             "(compute-material Pick (workgroup 1) (bindings (result (buffer-array uint)))\n"
+                             "  (compute (let* ([(best where) (fold ([best (uint 0)] [where (uint 0)]) ([i (range 0 4)])\n"
+                             "                                   (if (> (at result i) best) (values (at result i) (uint i)) (values best where)))])\n"
+                             "    (write! (at result 0) (+ best where)))))")
+                            "Pick.comp"))
+  (check-regexp-match #rx"uint zgalBranch[0-9]+;\n[^\n]*\n *uint zgalBranch[0-9]+;" chosen)
+  (check-regexp-match #rx"zgalBranch[0-9]+ = uint[(]i[)];" chosen))
 
 ;; ---------------------------------------------------------------------------------------------
 ;; 8- and 16-bit integers
