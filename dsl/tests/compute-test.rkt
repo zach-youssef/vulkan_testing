@@ -126,8 +126,10 @@
                     "a draw's #:count is an element of a buffer of uints, but draws holds DrawCommand")
   (check-zgal-error (string-replace indirect-program "#:indirect (at draws 2) #:draws 4 #:count (at counts 0)" "3 #:draws 4") 'bad-option
                     "#:draws is for draws with #:indirect")
-  (check-zgal-error (string-replace indirect-program "(buffer dispatches DispatchCommand 2 #:frames shared)" "(import-buffer dispatches DispatchCommand)")
-                    'type-mismatch "dispatches is an imported buffer, not a graph buffer"))
+  ;; Commands can come from C++ (which the graph checks created an indirect buffer) or an upload
+  (check-not-exn (λ () (compile-text (string-replace indirect-program "(buffer dispatches DispatchCommand 2 #:frames shared)" "(import-buffer dispatches DispatchCommand)"))))
+  (check-zgal-error (string-replace indirect-program "#:indirect (at dispatches 1)" "#:indirect (at picture 1)")
+                    'type-mismatch "picture is an image, not a buffer"))
 
 (define model-program
   (string-append

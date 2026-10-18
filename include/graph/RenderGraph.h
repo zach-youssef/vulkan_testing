@@ -45,7 +45,7 @@
     - Misusing the API while building the graph (unknown ids, read() with a writing access, a
       surface-relative image without a surface, ...) is a contract violation.
     - compile() and execute() return Results. A graph that can't be compiled (cycles, missing
-      image usage, format mismatches, undeclared writes, ...) fails with ErrorCode::InvalidGraph,
+      image or imported buffer usage, format mismatches, undeclared writes, ...) fails with ErrorCode::InvalidGraph,
       and so do failures to create its resources or its materials' pipelines (with their own
       codes). These happen before anything is submitted, so the frame can be retried, e.g. after
       fixing a shader. Failures after the frame's work started being submitted (a lost device, a
@@ -268,6 +268,11 @@ public: // Resources
         record.resolveImportedSize = [buffer](uint32_t frame) -> VkDeviceSize {
             auto handle = buffer.get(frame);
             return handle ? handle->getSize() : 0;
+        };
+        record.resolveImportedUsage = [buffer](uint32_t frame) -> VkBufferUsageFlags {
+            auto handle = buffer.get(frame);
+            // An unbound buffer is reported where it's resolved
+            return handle ? handle->getUsage() : ~VkBufferUsageFlags(0);
         };
         record.makeEntry = [buffer](uint32_t frame, DescriptorHeap& heap) {
             return heap.storageBuffer(buffer.get(frame));
@@ -754,6 +759,8 @@ private:
         bool perFrame = false;
         std::function<VkBuffer(uint32_t)> resolveImported;
         std::function<VkDeviceSize(uint32_t)> resolveImportedSize;
+        // What the imported buffer was created for, if known (not for buffers known by their entry)
+        std::function<VkBufferUsageFlags(uint32_t)> resolveImportedUsage;
         // Creates a storage buffer entry for a frame (imported buffers of a known type)
         std::function<Handle<DescriptorEntry>(uint32_t, DescriptorHeap&)> makeEntry;
         VkDeviceSize size = 0;
@@ -1110,6 +1117,17 @@ private:
             }
             for (const auto& use : record.uses) {
                 if (!use.image) {
+                    // Graph-owned buffers' usage is derived from the uses
+                    const auto& buffer = *buffers_[use.index];
+                    if (buffer.kind != BufferKind::Imported || !buffer.resolveImportedUsage) {
+                        continue;
+                    }
+                    const VkBufferUsageFlags required = requiredBufferUsage(use.access);
+                    if ((buffer.resolveImportedUsage(context_->currentFrame()) & required) != required) {
+                        return graphError("Node '" + record.name + "' uses buffer '" + buffer.name + "' with access "
+                                          + accessName(use.access) + ", which needs usage " + string_VkBufferUsageFlags(required)
+                                          + " the buffer wasn't created with");
+                    }
                     continue;
                 }
                 const auto& image = *images_[use.index];

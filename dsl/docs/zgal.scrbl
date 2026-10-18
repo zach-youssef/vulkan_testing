@@ -1250,7 +1250,10 @@ writes commands, the structs of @racket[(import indirect)], which are Vulkan's i
 field for field:
 @(file-excerpt "dsl/lib/indirect.zgal" #:from #rx"^[(]struct DispatchCommand" #:to #rx"[(]firstInstance uint[)][)]$")
 into a graph buffer (the graph gives it indirect usage), and a node names the first,
-@tt{#:indirect (at commands index)}:
+@tt{#:indirect (at commands index)}. Commands can also come from the CPU: an @racket[upload] or
+@racket[buffer-file] (created as indirect buffers), or an imported buffer, which C++ must create
+with @tt{VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT} (the graph fails to compile otherwise, as it does
+for any imported buffer used in a way its usage doesn't allow):
 @itemlist[
  @item{@racket[dispatch] dispatches as many workgroups as its @tt{DispatchCommand} says. Its material
        then needs no @tt{#:invocations}.}

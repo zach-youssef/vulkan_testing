@@ -235,7 +235,7 @@ int main() { return exitStatus(runApp()); }            // prints the error
   Never touch a resource you haven't declared.
 - The graph derives order (insertion order is program order for conflicting uses), queues,
   barriers and semaphores, so there are no edges to add. `addDependency(before, after)` exists for
-  dependencies the graph can't see. Cycles, two surface writers, missing image usage and
+  dependencies the graph can't see. Cycles, two surface writers, missing image (or imported buffer) usage and
   material/target format mismatches fail `compile()`/`execute()` with `ErrorCode::InvalidGraph`.
   Errors before submission leave the frame unstarted, so it can be retried; errors after (a lost
   device, a failed present) are fatal.
@@ -315,7 +315,8 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   `snorm8/16`, `uint8/16`, `int8/16`): shaders read the declared type, and the C++ struct holds
   GLM's sized types (fill them with `glm::packUnorm` etc., as the generated comments say).
 - GPU-driven work: shaders write the commands of `(import indirect)` (`DispatchCommand`,
-  `DrawCommand`, `DrawIndexedCommand`) into graph buffers, and `(dispatch d m #:indirect (at cmds i))`
+  `DrawCommand`, `DrawIndexedCommand`) into graph buffers (or C++ gives them in uploads or imported
+  buffers created with indirect usage), and `(dispatch d m #:indirect (at cmds i))`
   or `(draw d target m #:indirect (at cmds i) #:draws n #:count (at counts j))` read them;
   `draw-meshes` of a model reads `DrawIndexedCommand`s a shader chose from the model's `#:draws` and
   `#:bounds` (model options). Counts

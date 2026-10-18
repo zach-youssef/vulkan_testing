@@ -28,6 +28,12 @@ public:
     VkDeviceSize getSize() {
         return size_;
     }
+
+    // What it was created for (e.g. VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT), which a graph importing it
+    // checks its uses against
+    VkBufferUsageFlags getUsage() const {
+        return usage_;
+    }
     
     // Creates a buffer owned by the context's ResourceManager
     static Result<Handle<Buffer>> create(VulkanContext& context,
@@ -121,6 +127,7 @@ private:
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = size_;
         bufferInfo.usage = usage;
+        usage_ = usage;
         // Usable from any of the context's queues without ownership transfers
         const auto& families = context.queueFamilies();
         bufferInfo.sharingMode = families.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
@@ -145,6 +152,7 @@ private:
     
     VkDevice device_;
     VkDeviceSize size_;
+    VkBufferUsageFlags usage_ = 0;
     std::unique_ptr<VulkanBuffer> buffer_;
     std::unique_ptr<VulkanMemory> memory_;
 };

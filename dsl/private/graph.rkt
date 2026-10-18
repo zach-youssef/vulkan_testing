@@ -1099,12 +1099,13 @@
                          (map (λ (f) (list (first f) (symbol->string (second f)))) expected)))
       (zgal-error 'type-mismatch where "~a holds ~a" what (type-name t))))
 
-  ;; #:indirect (at commands index): the first command, in a graph buffer of the command struct
-  ;; (whose usage the graph derives, so it's an indirect buffer)
+  ;; #:indirect (at commands index): the first command, in a buffer of the command struct: a graph
+  ;; buffer (whose usage the graph derives), an upload or buffer file (created as indirect buffers),
+  ;; or an imported buffer (which the graph checks C++ created as one)
   (define (parse-command stx struct-name)
     (match (syntax->list stx)
       [(list at-stx buffer-stx index-stx) #:when (eq? (syntax-e at-stx) 'at)
-       (define buffer (lookup buffer-stx '(buffer) "a graph buffer"))
+       (define buffer (lookup buffer-stx '(buffer import-buffer upload) "a buffer"))
        (check-command-type! (entry-type (hash-ref env buffer)) struct-name buffer-stx
                             (format "#:indirect reads ~as, (import indirect), but ~a" struct-name buffer))
        (element-ref buffer (build-time index-stx (scalar-t 'uint) "a command's index") (stx->loc stx))]

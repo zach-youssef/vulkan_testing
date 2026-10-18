@@ -510,15 +510,17 @@ inline void copyBufferToImage(RecordContext& record, BufferId source, ImageId de
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 }
 
-// A device-local buffer holding data, for a graph's upload (which the graph imports). what: the
-// upload, for the contract violation an empty one is (a buffer can't be empty)
+// A device-local buffer holding data, for a graph's upload (which the graph imports): shaders and
+// copies read it, and indirect dispatches and draws can read commands from it. what: the upload,
+// for the contract violation an empty one is (a buffer can't be empty)
 template<typename T>
 Result<Handle<Buffer<T>>> upload(VulkanContext& context, const std::vector<T>& data, const char* what) {
     if (data.empty()) {
         contractViolation(std::string(what) + " is given no data");
     }
     return Buffer<T>::createAndInitialize(context, data,
-                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+                                              | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
 }
 
 // upload, of elements laid out as T's (e.g. Vulkan's indirect commands as ZGAL's structs)

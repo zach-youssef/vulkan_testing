@@ -1121,6 +1121,30 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs dispatch and draw what shaders wrote, as
     CHECK(IndirectGraph::requiredFeatures().core.features.multiDrawIndirect == VK_TRUE);
 }
 
+TEST_CASE_FIXTURE(GpuTest, "ZGAL dispatches read commands from imported and uploaded buffers") {
+    auto& ctx = context();
+    auto commands = [&](VkBufferUsageFlags usage) {
+        return Buffer<DispatchCommand>::createAndInitialize(ctx, std::vector<DispatchCommand>{{4, 1, 1}},
+                                                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | usage).value();
+    };
+    {
+        RenderGraph graph(ctx);
+        const GivenCommands given = GivenCommands::build(ctx, graph, GivenCommands::Inputs{
+            .given = commands(VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT),
+            .uploads = {{9, 9, 9}, {3, 1, 1}}}).value();
+        graph.execute().value();
+        // Workgroups 0 to 3, then 0 to 2
+        CHECK(given.readTallyContents(graph).value() == std::vector<uint32_t>{6 + 3});
+        ctx.waitIdleAll();
+    }
+    {
+        // The graph checks an imported buffer was created for how it's used
+        RenderGraph graph(ctx);
+        GivenCommands::build(ctx, graph, GivenCommands::Inputs{.given = commands(0), .uploads = {{1, 1, 1}, {1, 1, 1}}}).value();
+        CHECK_ERROR(graph.execute(), ErrorCode::InvalidGraph, "uses buffer 'given' with access IndirectRead, which needs usage VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT");
+    }
+}
+
 TEST_CASE_FIXTURE(GpuTest, "ZGAL's compute library sorts keys and their values, counted by the CPU or the GPU") {
     auto& ctx = context();
     for (const uint32_t size : {7u, 256u, 4096u, 4097u, 100003u}) {

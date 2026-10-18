@@ -589,6 +589,18 @@
   (readback readTally tally)
   (readback readPicture picture))
 
+;; Dispatches reading their sizes from commands C++ gives: an imported buffer, and an upload
+(graph GivenCommands
+  (import-buffer given DispatchCommand)
+  (input uploads (data DispatchCommand))
+  (upload uploaded uploads)
+  (buffer tally uint 1 #:frames shared)
+  (material counting CountGroups tally)
+  (clear reset tally)
+  (dispatch fromImport counting #:indirect (at given 0))
+  (dispatch fromUpload counting #:indirect (at uploaded 1))
+  (readback readTally tally))
+
 ;; GPU culling: keeps the draws of a model whose bounds' centres are on one side (x's sign: side),
 ;; appending them and counting them, then draws those
 (compute-material Cull
