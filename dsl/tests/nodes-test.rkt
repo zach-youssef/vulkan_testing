@@ -174,6 +174,23 @@
   (check-zgal-error (graph "  (import-buffer keys uint)" "  (for ([s spans]) (sort order keys #:count s.amount))")
                     'type-mismatch "sort's keys keys are an imported buffer, whose size the graph doesn't know, so its #:count can't use the variables of the loop"))
 
+(test-case "Extern nodes give their input's function arguments, e.g. a loop's variables"
+  (define h (header (compile-text
+                     (graph "  (input addSpan (extern uint Span))"
+                            "  (input addOnce extern)"
+                            "  (extern once addOnce)"
+                            "  (for ([s spans] [k (range (uint 0) 2)]) (extern added addSpan (+ k n) s #:when (> s.amount 0)))"))))
+  (check-true (string-contains? h "zgal::ExternNodes<G, uint32_t, Span> addSpan;"))
+  (check-true (string-contains? h "zgal::ExternNodes<G> addOnce;"))
+  (check-true (string-contains? h "result.nodes.once = in->addOnce(graph, result);"))
+  ;; Each iteration's nodes are added to the others'
+  (check-true (string-contains? h "const std::vector<NodeId> added = in->addSpan(graph, result, (loop_k + in->n), loop_s);"))
+  (check-true (string-contains? h "result.nodes.added.insert(result.nodes.added.end(), added.begin(), added.end());"))
+  (check-zgal-error (graph "  (input addSpan (extern uint Span))" "  (extern added addSpan 1)")
+                    'malformed "extern input addSpan takes 2 arguments (uint, Span), but extern added gives 1")
+  (check-zgal-error (graph "  (input addSpan (extern uint))" "  (extern added addSpan 1.5)")
+                    'type-mismatch "argument 1 of addSpan is a uint, not a float"))
+
 (test-case "Loops check what they hold and go over"
   (check-zgal-error (graph "  (for ([i (range 0 2)]) (material filling Fill cells #:invocations (1)))") 'loop-body "a loop's body holds nodes and loops")
   (check-zgal-error (graph "  (material filling Fill cells #:invocations (1))"

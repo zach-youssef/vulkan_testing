@@ -444,9 +444,9 @@ const T& require(const std::optional<T>& value, const char* graph, const char* n
 }
 
 // An extern input: adds nodes to the graph (with the ids of the graph's resources, and of the nodes
-// before it), returning their ids
-template<typename Graph>
-using ExternNodes = std::function<std::vector<NodeId>(RenderGraph& graph, const Graph& ids)>;
+// before it), returning their ids. Args: the arguments extern nodes give it, e.g. a loop's variables.
+template<typename Graph, typename... Args>
+using ExternNodes = std::function<std::vector<NodeId>(RenderGraph& graph, const Graph& ids, const Args&... args)>;
 
 // Records a copy node's copy of count elements of elementSize bytes, from sourceOffset elements into
 // source to destinationOffset elements into destination. Without a count, it copies the rest of the

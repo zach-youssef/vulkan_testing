@@ -191,7 +191,7 @@
                        ['per-frame-data (format "zgal::FrameSource<zgal::Data<~a>>" (cpp-type t))]
                        ['meshes "std::vector<Handle<Mesh>>"]
                        ['cpu "RenderGraph::RunFn"]
-                       ['extern (format "zgal::ExternNodes<~a>" name)]
+                       ['extern (format "zgal::ExternNodes<~a>" (string-join (cons name (map value-cpp-type t)) ", "))]
                        ['path "std::filesystem::path"])
                      n)]
             [(g-import n resting _) (format "FrameBinding<Image> ~a;   // Imported, resting ~a" n (symbol->string resting))]
@@ -819,8 +819,16 @@
          (line "            }")]))
     (cond
       [(eq? (g-node-kind n) 'extern)
-       ;; C++ adds the nodes, with the ids so far (its nodes may use the graph's resources)
-       (line (format "            result.nodes.~a = in->~a(graph, result);" node-name (g-node-subject n)))]
+       ;; C++ adds the nodes, with the ids so far (its nodes may use the graph's resources), and the
+       ;; node's arguments
+       (define types (entry-type (hash-ref env (g-node-subject n))))
+       (define call (format "in->~a(~a)" (g-node-subject n)
+                            (string-join (list* "graph" "result" (for/list ([a (in-list (g-node-extra n))] [t (in-list types)]) (build-expr a t))) ", ")))
+       (cond
+         [(looped? n)
+          (line (format "            const std::vector<NodeId> added = ~a;" call))
+          (line (format "            result.nodes.~a.insert(result.nodes.~a.end(), added.begin(), added.end());" node-name node-name))]
+         [else (line (format "            result.nodes.~a = ~a;" node-name call))])]
       [else
        (line (format "            const NodeId node = ~a;" create))
        (when (g-node-enabled n)

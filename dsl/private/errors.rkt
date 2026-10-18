@@ -139,7 +139,7 @@
          "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64)\n  (push (value float)))\n(graph G\n  (material fill Fill #:invocations (64))\n  (dispatch fill fill))")
    (kind 'loop-body
          "A loop holds what it can't"
-         "A graph's `for` loop repeats nodes (dispatch, draw, draw-meshes, readback, cpu, copy, clear) and loops: declare materials, buffers and other items before it, and give each iteration's values with nodes' options (e.g. `#:push`, `#:invocations`). Extern nodes aren't in loops yet."
+         "A graph's `for` loop repeats nodes (any of them) and loops: declare materials, buffers and other items before it, and give each iteration's values with nodes' options (e.g. `#:push`, `#:invocations`)."
          "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64))\n(graph G\n  (for ([i (range 0 4)])\n    (material fill Fill #:invocations (64))\n    (dispatch fill fill)))")
    (kind 'material-kind
          "A node is given a material of the wrong kind"

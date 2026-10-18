@@ -1268,14 +1268,21 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL's node loops add a node per element or step, wi
     RenderGraph graph(ctx);
     const std::vector<Span> spans{{0, 10, 5}, {20, 0, 9}, {30, 4, 7}};
     const std::vector<glm::vec4> shades{{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 1, 1}};
-    const LoopGraph loops = LoopGraph::build(ctx, graph, LoopGraph::Inputs{.rows = 4, .spans = spans, .shades = shades}).value();
+    // A cpu node per step, noting its step
+    std::vector<uint32_t> noted;
+    auto note = [&noted](RenderGraph& g, const LoopGraph&, const uint32_t& step) {
+        return std::vector<NodeId>{g.addCpu("note " + std::to_string(step), nullptr, [&noted, step](FrameContext&) { noted.push_back(step); })};
+    };
+    const LoopGraph loops = LoopGraph::build(ctx, graph, LoopGraph::Inputs{.rows = 4, .spans = spans, .note = note, .shades = shades}).value();
     // The empty span's fill was skipped
     CHECK(loops.nodes.fill.size() == 2);
     CHECK(loops.nodes.stepping.size() == 3);
     CHECK(loops.nodes.snapshot.size() == 3);
+    CHECK(loops.nodes.noted.size() == 3);
     CHECK(loops.nodes.band.size() == 4);
     graph.execute().value();
 
+    CHECK(noted == std::vector<uint32_t>{1, 2, 3});
     // Each snapshot follows its step: v * 2 + k, in order
     std::vector<uint32_t> expected(64, 0);
     for (const Span& span : spans) {

@@ -453,14 +453,15 @@
          (zgal-error 'type-not-allowed (second args) "a parameter is a bool, int, uint or float, not ~a" (type-name t)))
        (declare! (g-parameter (item-name) t (stx->loc stx)) stx)]
       ['input
-       (args! 2 "(input name (per-frame type)), (input name (data type)), (input name (per-frame (data type))), (input name meshes), (input name cpu), (input name extern) or (input name path)")
+       (args! 2 "(input name (per-frame type)), (input name (data type)), (input name (per-frame (data type))), (input name meshes), (input name cpu), (input name extern), (input name (extern argument-type ...)) or (input name path)")
        (check-known-options options '() form)
        (define kind-stx (second args))
        (define item
          (match (syntax-e kind-stx)
            ['meshes (g-input (item-name) 'meshes #f (stx->loc stx))]
            ['cpu (g-input (item-name) 'cpu #f (stx->loc stx))]
-           ['extern (g-input (item-name) 'extern #f (stx->loc stx))]
+           ;; Its type: the types of the arguments extern nodes give the function
+           ['extern (g-input (item-name) 'extern '() (stx->loc stx))]
            ['path (g-input (item-name) 'path #f (stx->loc stx))]
            [_
             (match (syntax->list kind-stx)
@@ -476,7 +477,15 @@
                (g-input (item-name) 'per-frame t (stx->loc stx))]
               [(list k t-stx) #:when (eq? (syntax-e k) 'data)
                (g-input (item-name) 'data (buffer-element-type t-stx "a data input") (stx->loc stx))]
-              [_ (zgal-error 'malformed kind-stx "an input is (per-frame type), (data type), (per-frame (data type)), meshes, cpu, extern or path, not ~a" (show kind-stx))])]))
+              [(list* k type-stxs) #:when (eq? (syntax-e k) 'extern)
+               (g-input (item-name) 'extern
+                        (for/list ([t-stx (in-list type-stxs)])
+                          (define t (parse-type t-stx))
+                          (when (array-t? t)
+                            (zgal-error 'type-not-allowed t-stx "an extern input's argument isn't an array; use a struct holding one"))
+                          t)
+                        (stx->loc stx))]
+              [_ (zgal-error 'malformed kind-stx "an input is (per-frame type), (data type), (per-frame (data type)), meshes, cpu, extern, (extern argument-type ...) or path, not ~a" (show kind-stx))])]))
        (declare! item stx)]
       ['import-image
        (args! 1 "(import-image name #:resting state)")
@@ -852,8 +861,6 @@
     (define node-name
       (begin (when (null? args) (zgal-error 'malformed stx "a node has a name"))
              (parse-name (first args) "the node's name")))
-    (when (and (pair? current-loops) (memq head '(extern)))
-      (zgal-error 'loop-body stx "~a ~a is in a loop, but ~a nodes aren't yet: declare it outside the loop" form node-name form))
     (node-names node-name (first args))
     (define (material-of stx kind)
       (define m-name (lookup stx '(material) "a material"))
@@ -1013,8 +1020,18 @@
                  #:offsets (cons source-offset
                                  (or (elements '#:destination-offset "a copy's destination offset") zero))))]
       ['extern
-       (shape 2 "(extern name input)")
-       (node 'extern #:subject (lookup (second args) '(extern) "an extern input"))]
+       (when (< (length args) 2) (zgal-error 'malformed stx "expected (extern name input argument ...)"))
+       (define input (lookup (second args) '(extern) "an extern input"))
+       ;; Its arguments, computed when the graph is built (e.g. a loop's variables)
+       (define types (entry-type (hash-ref env input)))
+       (unless (= (length types) (length (cddr args)))
+         (zgal-error 'malformed stx "extern input ~a takes ~a argument~a~a, but extern ~a gives ~a" input (length types)
+                     (if (= (length types) 1) "" "s")
+                     (if (null? types) "" (format " (~a)" (string-join (map type-name types) ", ")))
+                     node-name (length (cddr args))))
+       (node 'extern #:subject input
+             #:extra (for/list ([a (in-list (cddr args))] [t (in-list types)] [k (in-naturals)])
+                       (build-time a t (format "argument ~a of ~a" (add1 k) input))))]
       [(or 'reduce 'inclusive-scan 'exclusive-scan)
        (parse-kernel-node head node-name stx args options node)]
       ['sort (parse-sort-node node-name stx args options node)]))

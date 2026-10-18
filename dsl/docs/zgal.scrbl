@@ -927,7 +927,7 @@ and C++ supplies the meshes.
              (input name (per-frame type))
              (input name meshes)
              (input name cpu)
-             (input name extern)
+             (input name extern) (input name (extern argument-type ...))
              (input name (data type))
              (input name (per-frame (data type)))
              (input name path)
@@ -960,7 +960,7 @@ and C++ supplies the meshes.
        (copy name source-buffer destination-buffer copy-option ... node-option ...)
        (copy name source-buffer destination-image region-option ... node-option ...)
        (clear name buffer maybe-value node-option ...)
-       (extern name extern-input maybe-when)
+       (extern name extern-input argument ... maybe-when)
        (reduce name source-buffer (at buffer index) #:op op #:count count node-option ...)
        (inclusive-scan name source-buffer destination-buffer #:op op #:count count node-option ...)
        (exclusive-scan name source-buffer destination-buffer #:op op #:count count node-option ...)
@@ -1382,8 +1382,8 @@ graph is built (ints, unless one is a @tt{uint}); @tt{[name input]} goes over th
 input (@tt{(input name (data T))}), e.g. structs C++ computed. The variables are names in the
 loop's nodes' expressions: their conditions, sizes and offsets, and their own push constants and
 invocations (@tt{#:push}, @tt{#:invocations}), so the iterations share one material, and pipeline.
-A loop holds nodes and loops; declare materials and resources before it. Extern nodes aren't in
-loops yet.
+A loop holds nodes and loops; declare materials and resources before it. An extern node in a loop
+gives its function the iteration's values as arguments (@secref["extern"]).
 
 The compute library's nodes and draws with a @tt{#:count} declare their own materials and scratch
 buffers; in a loop, its iterations share them, and each iteration's dispatches push its own values
@@ -1442,6 +1442,12 @@ declaring their uses as usual, and returns their ids, which C++ then finds in
 @tt{nodes.name} (a @tt{std::vector<NodeId>}, empty when a @tt{#:when} condition was false). Its
 nodes can use the file's materials, constructed from their generated classes. The graph orders them
 by their uses with the others, so it needs no edges.
+
+An extern input can take arguments, @tt{(input addRow (extern uint Row))}, which each extern node
+using it gives, @racket[(extern rows addRow r row)]: expressions computed when the graph is built,
+such as a loop's variables, so a loop's extern node adds each iteration's nodes. The function is then
+a @tt{zgal::ExternNodes<Graph, uint32_t, Row>}, taking them after the ids (by const reference),
+and a looped extern node's @tt{nodes.name} holds every iteration's nodes, in order.
 
 @subsection{The generated struct}
 
@@ -2001,7 +2007,7 @@ What ZGAL doesn't describe yet:
 Graphs can't yet use storage images other than 2D ones, run a node on a chosen queue, or compute
 anything per frame but push constants, dispatch sizes and uniforms. Loops of nodes are fixed when
 the graph is built (a node list that changes from frame to frame needs a rebuilt graph), go over
-ranges and data inputs (not lists within their elements), and don't hold extern nodes.
+ranges and data inputs (not lists within their elements).
 
 Apps handle events only: they can't ask whether a key is held or where the cursor is outside
 handlers (track it in the state from press and release events), read files, or create resources.

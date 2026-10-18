@@ -743,6 +743,7 @@
 (graph LoopGraph
   (parameter rows uint)
   (input spans (data Span))
+  (input note (extern uint))
   (input shades (data vec4))
   (buffer cells uint 64 #:frames shared)
   (buffer command DispatchCommand 1 #:frames shared)
@@ -760,10 +761,11 @@
   ;; One workgroup, from a command, with its own push constants
   (clear oneGroup command #:value 1)
   (dispatch tail filling #:indirect (at command 0) #:push ((offset 60) (amount 4) (value 3)))
-  ;; Steps in order, each read back after it
+  ;; Steps in order, each read back after it, and C++'s nodes for each, given its step
   (for ([k (range 1 4)])
     (dispatch stepping stepping #:push ((increment (uint k))))
-    (readback snapshot cells))
+    (readback snapshot cells)
+    (extern noted note (uint k)))
   (for ([r (range (uint 0) rows)])
     (draw band canvas banding 3 #:push ((row r) (rows rows) (shade (at shades r)))))
   (readback readPicture picture))
