@@ -9,7 +9,8 @@
          "private/cpp-main.rkt"
          "private/errors.rkt"
          "private/glsl.rkt"
-         "private/parse.rkt")
+         "private/parse.rkt"
+         "private/wgsl.rkt")
 
 (provide compile-zgal
          (struct-out output)
@@ -40,19 +41,29 @@
 ;; returning #f if it doesn't exist. header-dir, shader-dir: where the outputs go. With check-only?,
 ;; stops after checking (so shader bodies aren't read).
 ;;
-;; Returns the program and the outputs: the header, the main (<file>.main.cpp, beside the header)
-;; for a program with one, then a shader per material shader. Raises exn:zgal for errors in the
-;; program.
+;; With native?, returns the program and the outputs for Vulkan: the header, the main
+;; (<file>.main.cpp, beside the header) for a program with one, then a shader per material shader.
+;; With a web-dir, the outputs for the web follow: a WGSL module per material shader. Raises
+;; exn:zgal for errors in the program.
 (define (compile-zgal source
                       #:text [text #f]
                       #:read-body [read-body read-file-or-false]
                       #:header-dir [header-dir "."]
                       #:shader-dir [shader-dir "."]
+                      #:native? [native? #t]
+                      #:web-dir [web-dir #f]
                       #:check-only? [check-only? #f])
   (define forms (read-forms source (open-input-string (or text (file->string source)))))
   (define prog (parse-program forms source))
+  (define web
+    (if (and web-dir (not check-only?))
+        (for*/list ([m (in-list (program-materials prog))]
+                    [s (in-list (material-shaders m))])
+          (output (join web-dir (wgsl-shader-file-name s)) (emit-wgsl prog m s)))
+        '()))
   (cond
     [check-only? (values prog '())]
+    [(not native?) (values prog web)]
     [else
      (define header-path (join header-dir (header-file-name source)))
      ;; The files of the GLSL functions it declares
@@ -80,4 +91,4 @@
            (let ([path (join header-dir (main-file-name source))])
              (list (output path (emit-main prog (program-main prog) (header-file-name source) path))))
            '()))
-     (values prog (append (list (output header-path (emit-header prog header-path))) main shaders))]))
+     (values prog (append (list (output header-path (emit-header prog header-path))) main shaders web))]))

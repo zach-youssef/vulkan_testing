@@ -29,11 +29,12 @@
 (struct exn:zgal exn:fail (id where) #:transparent)
 
 ;; id: a symbol. title: a short description. explanation: what causes it and how to fix it.
-;; example: a program reporting it. bodies: shader bodies the example uses (path -> text).
-(struct error-kind (id title explanation example bodies) #:transparent)
+;; example: a program reporting it. bodies: shader bodies the example uses (path -> text). web?:
+;; whether the example reports it compiled for the web (WebGPU) rather than for Vulkan.
+(struct error-kind (id title explanation example bodies web?) #:transparent)
 
-(define (kind id title explanation example [bodies (hash)])
-  (error-kind id title explanation example bodies))
+(define (kind id title explanation example [bodies (hash)] #:web? [web? #f])
+  (error-kind id title explanation example bodies web?))
 
 (define error-catalog
   (list
@@ -209,7 +210,12 @@
          "A shader body declares what ZGAL generates"
          "ZGAL writes the start of every shader: `#version`, the extensions it needs and `bindless.glsl`, then the material's interface. Bodies start with their own code, so remove the line."
          "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64))"
-         (hash "fill.comp" "#version 450\nvoid main() {}\n"))))
+         (hash "fill.comp" "#version 450\nvoid main() {}\n"))
+   (kind 'not-on-web
+         "WebGPU can't do this"
+         "Compiled for the web, ZGAL generates WGSL and TypeScript for WebGPU, which lacks some of what Vulkan has: shaders written in GLSL (bodies in `shaders`, and `extern-glsl` functions), arrays of bindings (descriptor indexing), push constants other than scalars, vectors and matrices, and a texture both sampled and compared with depths. The message says which; write that part in ZGAL, or another way."
+         "(compute-material Pick\n  (workgroup 1)\n  (bindings (textures (array texture)) (counts (buffer-array uint)))\n  (compute (write! (at counts 0) (array-length textures))))"
+         #:web? #t)))
 
 (define catalog-by-id
   (for/hash ([k (in-list error-catalog)]) (values (error-kind-id k) k)))

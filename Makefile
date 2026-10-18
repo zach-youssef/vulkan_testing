@@ -231,9 +231,20 @@ test-bench: $(BENCH_BIN)
 # The tests compile generated code with the build's tools and flags.
 DOCS_OUT = $(OUT)/docs
 ZGAL_TEST_ENV = ZGAL_GLSLC='glslc' ZGAL_GLSLC_FLAGS='$(GLSLC_FLAGS:-I%=-I$(CURDIR)/%)' \
-                 ZGAL_CXX='$(CXX)' ZGAL_CXXFLAGS='$(subst -I./,-I$(CURDIR)/,$(CXXFLAGS))'
+                 ZGAL_CXX='$(CXX)' ZGAL_CXXFLAGS='$(subst -I./,-I$(CURDIR)/,$(CXXFLAGS))' \
+                 ZGAL_NODE='$(NODE)' ZGAL_WEB='$(CURDIR)/$(WEB_DIR)'
 
-test-dsl: $(ZGAL_COMPILED) docs
+# The web runtime (web/): its npm packages (TypeScript, and Dawn, WebGPU for Node, for tests)
+NODE = node
+NPM = npm
+WEB_DIR = web
+WEB_PACKAGES = $(WEB_DIR)/node_modules/.package-lock.json
+
+$(WEB_PACKAGES): $(WEB_DIR)/package.json $(WEB_DIR)/package-lock.json
+	cd $(WEB_DIR) && $(NPM) ci
+	@touch $@
+
+test-dsl: $(ZGAL_COMPILED) $(WEB_PACKAGES) docs
 	$(ZGAL_TEST_ENV) $(RACO) test $(DSL_DIR)/tests
 
 # build/docs/zgal.html, and zgal.txt for reading in a terminal

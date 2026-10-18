@@ -2,6 +2,7 @@
 ;; The ZGAL compiler's command line. See dsl/docs (make docs) for the language.
 ;;
 ;;   racket dsl/zgal.rkt [--cpp-out DIR] [--glsl-out DIR] [--depfile FILE --dep-target TARGET] FILE.zgal
+;;   racket dsl/zgal.rkt --web-out DIR FILE.zgal
 ;;   racket dsl/zgal.rkt --check FILE.zgal
 
 (require racket/cmdline
@@ -34,18 +35,19 @@
    (string-append* (for/list ([b (in-list bodies)]) (format "~a:\n" b)))))
 
 ;; Removes the shaders in directory (which holds one file's) that weren't just generated: those of
-;; materials since renamed or removed
-(define (remove-stale-shaders directory generated)
+;; materials since renamed or removed. pattern: matches shaders' file names.
+(define (remove-stale-shaders directory generated [pattern #rx"[.](vert|frag|comp)$"])
   (define kept (for/list ([p (in-list generated)]) (path->complete-path (simplify-path p))))
   (when (directory-exists? directory)
     (for ([p (in-list (directory-list directory #:build? #t))]
-          #:when (regexp-match? #rx"[.](vert|frag|comp)$" (path->string p))
+          #:when (regexp-match? pattern (path->string p))
           #:unless (member (path->complete-path (simplify-path p)) kept))
       (delete-file p))))
 
 (module+ main
   (define cpp-out #f)
   (define glsl-out #f)
+  (define web-out #f)
   (define depfile #f)
   (define dep-target #f)
   (define check-only? #f)
@@ -55,6 +57,7 @@
      #:once-each
      [("--cpp-out") dir "Write the C++ header to DIR/<file>.h (and a program's main to DIR/<file>.main.cpp)" (set! cpp-out dir)]
      [("--glsl-out") dir "Write each shader to DIR/<shader name>, removing others there" (set! glsl-out dir)]
+     [("--web-out") dir "Write each shader's WGSL module (WebGPU) to DIR/<shader name>.wgsl, removing others there" (set! web-out dir)]
      [("--depfile") file "Write a Makefile rule listing the inputs to FILE" (set! depfile file)]
      [("--dep-target") target "The target of the --depfile rule (default: the header)" (set! dep-target target)]
      [("--check") "Only check the file" (set! check-only? #t)]
@@ -66,12 +69,20 @@
   (with-handlers ([exn:zgal? (λ (e)
                                 (eprintf "~a\n" (format-zgal-error e))
                                 (exit 1))])
-    (define-values (prog outputs)
+    ;; Only for the web, the native outputs aren't generated (so GLSL bodies needn't exist)
+    (define native? (or cpp-out glsl-out depfile (not web-out)))
+    (define-values (prog all-outputs)
       (compile-zgal source
                     #:header-dir (or cpp-out ".")
                     #:shader-dir (or glsl-out ".")
+                    #:native? native?
+                    #:web-dir web-out
                     #:check-only? check-only?))
-    (unless check-only?
+    (define-values (web outputs) (partition (λ (o) (regexp-match? #rx"[.]wgsl$" (output-path o))) all-outputs))
+    (when (and web-out (not check-only?))
+      (for ([o (in-list web)]) (write-if-changed (output-path o) (output-text o)))
+      (remove-stale-shaders web-out (map output-path web) #rx"[.]wgsl$"))
+    (unless (or check-only? (not native?))
       (define header (first outputs))
       (define-values (cpp shaders)
         (partition (λ (o) (regexp-match? #rx"[.](h|main[.]cpp)$" (output-path o))) outputs))

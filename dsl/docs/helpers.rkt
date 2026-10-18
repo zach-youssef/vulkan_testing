@@ -50,18 +50,20 @@
 
 (define (shown-name o) (path->string (file-name-from-path (output-path o))))
 
-;; Compiles `text` (as example.zgal, with `bodies`) and returns its outputs
-(define (compile-example text bodies)
+;; Compiles `text` (as example.zgal, with `bodies`; also for the web with web?) and returns its
+;; outputs
+(define (compile-example text bodies [web? #f])
   (with-handlers ([exn:zgal? (λ (e) (error 'zgal-example "the example doesn't compile: ~a" (format-zgal-error e)))])
     (define-values (_prog outputs)
       (compile-zgal "example.zgal" #:text text #:read-body (λ (path) (hash-ref bodies path #f))
-                    #:header-dir "generated" #:shader-dir "generated/shaders"))
+                    #:header-dir "generated" #:shader-dir "generated/shaders"
+                    #:web-dir (and web? "generated/web")))
     outputs))
 
 ;; Shows the source, then the generated files named in `show` (file names, e.g. "example.zgal.h"
 ;; or "blur.comp"), optionally only the lines from a line matching `from` to one matching `to`
-(define (zgal-example text #:bodies [bodies (hash)] #:show [show '()] #:from [from #f] #:to [to #f])
-  (define outputs (compile-example text bodies))
+(define (zgal-example text #:bodies [bodies (hash)] #:show [show '()] #:from [from #f] #:to [to #f] #:web? [web? #f])
+  (define outputs (compile-example text bodies web?))
   (define by-name (for/hash ([o (in-list outputs)]) (values (shown-name o) o)))
   (list
    (zgal-source text)
@@ -80,8 +82,8 @@
   (string-join (take after end) "\n"))
 
 ;; A generated file of an example, alone
-(define (generated-file text name #:bodies [bodies (hash)] #:from [from #f] #:to [to #f])
-  (define o (or (for/first ([o (in-list (compile-example text bodies))] #:when (string=? (shown-name o) name)) o)
+(define (generated-file text name #:bodies [bodies (hash)] #:from [from #f] #:to [to #f] #:web? [web? #f])
+  (define o (or (for/first ([o (in-list (compile-example text bodies web?))] #:when (string=? (shown-name o) name)) o)
                 (error 'generated-file "no output named ~a" name)))
   (nested #:style 'code-inset (verbatim (excerpt (output-text o) from to))))
 
@@ -111,7 +113,8 @@
     (define e
       (with-handlers ([exn:zgal? values])
         (compile-zgal "example.zgal" #:text (error-kind-example k)
-                      #:read-body (λ (path) (hash-ref (error-kind-bodies k) path #f)))
+                      #:read-body (λ (path) (hash-ref (error-kind-bodies k) path #f))
+                      #:native? (not (error-kind-web? k)) #:web-dir (and (error-kind-web? k) "web"))
         (error 'error-catalog-section "the example of ~a compiles" (error-kind-id k))))
     (unless (eq? (exn:zgal-id e) (error-kind-id k))
       (error 'error-catalog-section "the example of ~a reports ~a" (error-kind-id k) (exn:zgal-id e)))
@@ -122,6 +125,7 @@
      (for/list ([(path body) (in-hash (error-kind-bodies k))])
        (list (para (italic (format "With the shader body ~a:" path)))
              (nested #:style 'code-inset (verbatim body))))
+     (if (error-kind-web? k) (para (italic "Compiled for the web:")) '())
      (zgal-source (error-kind-example k))
      (nested #:style 'code-inset (verbatim (format-zgal-error e))))))
 

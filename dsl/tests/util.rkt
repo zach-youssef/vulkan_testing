@@ -26,10 +26,13 @@
                   #:header-dir header-dir #:shader-dir shader-dir))
   outputs)
 
-;; The exn:zgal compiling text raises, or #f
-(define (zgal-error-of text #:bodies [bodies (hash)])
+;; The exn:zgal compiling text raises (for the web with web?), or #f
+(define (zgal-error-of text #:bodies [bodies (hash)] #:web? [web? #f])
   (with-handlers ([exn:zgal? values])
-    (compile-text text #:bodies bodies)
+    (if web?
+        (compile-zgal "test.zgal" #:text text #:read-body (λ (path) (hash-ref bodies path #f))
+                      #:native? #f #:web-dir "out/web")
+        (compile-text text #:bodies bodies))
     #f))
 
 ;; Checks compiling text reports error `id`, at line:column if given, with a message containing

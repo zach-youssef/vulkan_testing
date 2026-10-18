@@ -1,7 +1,8 @@
 #lang racket/base
 ;; Generated code through the real tools: glslc and the C++ compiler, with the build's flags (the
 ;; Makefile's test-dsl target passes them in ZGAL_GLSLC, ZGAL_GLSLC_FLAGS, ZGAL_CXX and
-;; ZGAL_CXXFLAGS), and the command line
+;; ZGAL_CXXFLAGS), Dawn (WebGPU, under Node: ZGAL_NODE and ZGAL_WEB, the web directory with its
+;; packages installed), and the command line
 
 (require racket/file
          racket/list
@@ -16,6 +17,7 @@
          "util.rkt")
 
 (define-runtime-path zgal.rkt "../zgal.rkt")
+(define-runtime-path repository "../..")
 
 ;; Runs a program, returning its exit code and what it wrote to stdout and stderr
 (define (run program . arguments)
@@ -79,6 +81,27 @@
                              (path->string (build-path directory "broken.spv"))))))
       (check-not-equal? status 0)
       (check-regexp-match #rx"check/shaders/broken[.]comp:2: error: 'missing'" text))))
+
+(define (dawn-tests)
+  (test-case "Every generated WGSL module compiles: the golden ones, the examples' and the tests'"
+    (with-temporary-directory (directory)
+      (define outputs
+        (append (golden-web-outputs)
+                (for*/list ([source (in-list (list "examples/image_filter/image_filter.zgal"
+                                                   "examples/particles/particles.zgal"
+                                                   "examples/scene/scene.zgal"))]
+                            [o (in-list (let-values ([(_prog outputs)
+                                                      (parameterize ([current-directory repository])
+                                                        (compile-zgal source #:native? #f #:web-dir "web"))])
+                                          outputs))])
+                  o)))
+      (write-outputs outputs directory)
+      (define-values (status text)
+        (apply run (getenv "ZGAL_NODE")
+               (path->string (build-path (getenv "ZGAL_WEB") "tools" "check-wgsl.ts"))
+               (for/list ([o (in-list outputs)]) (path->string (build-path directory (file-name-from-path (output-path o)))))))
+      (with-check-info (['dawn text])
+        (check-equal? status 0)))))
 
 (define (cxx-tests)
   (define (compile-cxx directory source)
@@ -182,4 +205,5 @@ CPP
 (module+ test
   (when-tool "ZGAL_GLSLC" glslc-tests)
   (when-tool "ZGAL_CXX" cxx-tests)
+  (when-tool "ZGAL_NODE" dawn-tests)
   (command-line-tests))

@@ -16,6 +16,7 @@
          (struct-out s-effect)
          (struct-out s-while)
          lower
+         lower-if-as-statements?
          lower-function
          lower-stage)
 
@@ -27,6 +28,11 @@
 (struct s-effect (expression loc) #:transparent)           ; an expression evaluated for its effect
 ;; while: the condition's statements, then it; while it holds, body
 (struct s-while (condition-statements condition body loc) #:transparent)
+
+;; Whether an if expression (a t-if with a value) becomes statements assigning a temporary even
+;; when its branches are expressions: for backends whose conditional expression can't give its type
+;; or evaluates both branches (WGSL's select)
+(define lower-if-as-statements? (make-parameter (λ (e) #f)))
 
 ;; Lowers e: returns statements to run first, then the expression giving its value (a list of
 ;; expressions for several values; #f for no value). fresh: makes a temporary's spelling.
@@ -75,7 +81,7 @@
         (define-values (bs bv) (go b))
         (cond
           [(void-t? t) (values (append cs (list (s-if cv as bs l))) #f)]
-          [(and (null? as) (null? bs) (not (list? av))) (values cs (t-if cv av bv t l))]
+          [(and (null? as) (null? bs) (not (list? av)) (not ((lower-if-as-statements?) e))) (values cs (t-if cv av bv t l))]
           [(list? av)
            ;; Several values (a fold's or while's next ones): a temporary each
            (define tmps (for/list ([ty (in-list (values-t-types t))]) (t-local (fresh "branch") ty l)))

@@ -16,7 +16,7 @@
 (test-case "Every catalogued error's example reports it, at a location"
   (for ([k (in-list error-catalog)])
     (with-check-info (['id (error-kind-id k)])
-      (define e (zgal-error-of (error-kind-example k) #:bodies (error-kind-bodies k)))
+      (define e (zgal-error-of (error-kind-example k) #:bodies (error-kind-bodies k) #:web? (error-kind-web? k)))
       (check-true (exn:zgal? e) "the example compiles")
       (when (exn:zgal? e)
         (check-equal? (exn:zgal-id e) (error-kind-id k) (exn-message e))

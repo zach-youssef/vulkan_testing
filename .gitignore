@@ -4,3 +4,5 @@ tests/**/*.received.png
 tests/**/*.flip.png
 # Racket compiled code (raco make), beside the sources
 compiled/
+# The web runtime's npm packages (npm ci in web/)
+web/node_modules/

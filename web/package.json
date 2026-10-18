@@ -1,0 +1,11 @@
+{
+  "name": "zgal-web",
+  "private": true,
+  "type": "module",
+  "description": "ZGAL's WebGPU runtime and its tests",
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "webgpu": "0.6.2",
+    "@webgpu/types": "0.1.66"
+  }
+}
