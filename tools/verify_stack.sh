@@ -5,7 +5,8 @@
 #
 # Prints one line per commit with the CPU and GPU test exit codes and summaries (and those of the
 # ZGAL tests and example smoke tests where a commit has them); the per-commit
-# build and test logs are kept in the temporary directory printed at the end.
+# build and test logs are kept in the temporary directory printed at the end. Exits 1 if any commit
+# fails to build or fails a test.
 # Each commit is exported to its own directory. All builds and CPU test runs happen in
 # parallel; GPU tests run one commit at a time (they share the device) on a separate worker,
 # starting as soon as each commit's build has finished.
@@ -48,11 +49,13 @@ for c in $commits; do build_and_cpu_test $c & done
 gpu_worker &
 wait
 
+failed=0
 summary() { grep -h 'test cases' $1 2>/dev/null | sed 's/.*test cases: *//; s/ | 0 skipped//'; }
 for c in $commits; do
     d=$out/$c
     line=$(git -C $repo log --oneline -1 $c | cut -c1-64)
-    if [[ $(cat $d/build.status) != ok ]]; then echo "$line: BUILD FAILED ($d/build.log)"; continue; fi
+    if [[ $(cat $d/build.status) != ok ]]; then echo "$line: BUILD FAILED ($d/build.log)"; failed=1; continue; fi
+    for f in $d/*.exit; do [[ $(cat $f) == 0 ]] || failed=1; done
     examples=""
     if [[ -f $d/examples.exit ]]; then examples=", examples exit $(cat $d/examples.exit)"; fi
     dsl=""
@@ -60,3 +63,4 @@ for c in $commits; do
     echo "$line: cpu exit $(cat $d/cpu.exit) [$(summary $d/cpu.log)], gpu exit $(cat $d/gpu.exit) [$(summary $d/gpu.log)]$dsl$examples"
 done
 echo "Logs: $out"
+exit $failed
