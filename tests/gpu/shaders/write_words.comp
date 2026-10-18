@@ -1,0 +1,14 @@
+#version 450
+#include "bindless.glsl"
+
+// Writes the pushed words into a buffer of uints, e.g. an indirect command
+layout(push_constant) uniform Indices { uint target; uint count; uint words[12]; } indices;
+BINDLESS_BUFFER_ARRAY(, Words, uint, words);
+
+layout(local_size_x = 1) in;
+
+void main() {
+    for (uint i = 0; i < indices.count; ++i) {
+        words[indices.target].data[i] = indices.words[i];
+    }
+}

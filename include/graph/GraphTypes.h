@@ -33,6 +33,12 @@ struct BufferId {
     bool operator==(const BufferId&) const = default;
 };
 
+// A place in a graph buffer: e.g. where an indirect command or a count is
+struct BufferOffset {
+    BufferId buffer;
+    VkDeviceSize offset = 0;   // In bytes
+};
+
 enum class NodeKind {
     Graphics,   // Records inside dynamic rendering on the primary queue
     Compute,    // Records on any compute-capable queue

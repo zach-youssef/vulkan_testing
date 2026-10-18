@@ -236,7 +236,8 @@ public: // Accessors
     // What the device's subgroups support: their size, stages and operations (generated ZGAL
     // materials check their shaders' needs against it)
     const VkPhysicalDeviceSubgroupProperties& subgroupProperties() const { return subgroupProperties_; }
-    // The features the device was created with: the wrapper's and VulkanContextConfig::features
+    // The features the device was created with: the wrapper's, VulkanContextConfig::features, and
+    // those of DeviceFeatures::optional() the device supports
     const DeviceFeatures& enabledFeatures() const { return enabledFeatures_; }
     VkDevice device() { return **device_; }
     ResourceManager& resources() { return *resourceManager_; }
@@ -930,7 +931,9 @@ private:
             queueFamilies_.push_back(family);
         }
 
-        // Every feature was checked when picking the physical device
+        // Every feature was checked when picking the physical device; optional ones are enabled
+        // when it has them
+        enabledFeatures_.add(DeviceFeatures::optional().common(DeviceFeatures::supported(physicalDevice_)));
         DeviceFeatures features = enabledFeatures_;
 
         // Those of extensions' features enabled, then the surface's

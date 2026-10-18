@@ -42,7 +42,7 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | `include/descriptors` | `DescriptorHeap`: the universal descriptor set and `DescriptorEntry` |
 | `include/shaders` | `ShaderLibrary` and `Shader` (SPIR-V loading and reloading), `SpirvReflection` (what shaders write) |
 | `include/materials` | `Material`, `ComputeMaterial`, `GraphicsMaterial`, `MaterialBinding`, `Renderable`, `Mesh`, `MeshRenderable`, `AttachmentFormats` |
-| `include/graph` | `RenderGraph` (runtime), `Node`/`NodeBuilder`, the pure compiler (`GraphCompiler.h`) and synchronization state machine (`GraphSync.h`), `nodes/` (`RenderablesNode`, `DispatchNode`, `ReadbackNode`, `BufferReadbackNode`) |
+| `include/graph` | `RenderGraph` (runtime), `Node`/`NodeBuilder`, the pure compiler (`GraphCompiler.h`) and synchronization state machine (`GraphSync.h`), `nodes/` (`RenderablesNode`, `DispatchNode`, `IndirectDrawNode`, `ReadbackNode`, `BufferReadbackNode`) |
 | `include/targets` | `RenderTarget`, `Swapchain` |
 | `include/app` | `VulkanApp` (the only GLFW user) |
 | `include/glsl` | `bindless.glsl`, included by shaders (`glslc -I include/glsl`) |
@@ -135,7 +135,8 @@ int main() { return exitStatus(runApp()); }            // prints the error
 - **Creation:** fallible types have static factories returning `Result<Handle<T>>` (`Image::create*`,
   `Buffer<T>::create`, `Mesh::create`, `VulkanSampler::create`; `VulkanContext::create` returns a
   `std::unique_ptr`). Materials and nodes construct infallibly; see "Descriptors and materials".
-- **Device features:** the wrapper enables what it needs (`DeviceFeatures::required()`). Request
+- **Device features:** the wrapper enables what it needs (`DeviceFeatures::required()`), and what it
+  can do without when the device has it (`DeviceFeatures::optional()`: `drawIndirectCount`). Request
   anything else with `AppConfig::features` (`VulkanContextConfig::features`), e.g.
   `config.features.vulkan12.storageBuffer8BitAccess = VK_TRUE` for 8-bit types in storage buffers.
   Devices lacking a requested feature are rejected by name; `ctx.enabledFeatures()` lists what's on.
@@ -217,7 +218,10 @@ int main() { return exitStatus(runApp()); }            // prints the error
   changes the graph recreates the buffer, discarding its contents, and its entries follow. `graph.sampledEntry(id)`, `storageEntry(id)` and `storageBufferEntry(id)`
   give materials entries for graph resources that follow recreation.
 - **Nodes** declare what they use. `RenderablesNode`, `DispatchNode` and `ReadbackNode` cover common
-  cases. Per-frame work that can fail (creating resources) goes in `Node::prepareFrame`, which runs
+  cases. GPU-driven work reads commands shaders wrote: `DispatchNode(material, BufferOffset{buffer,
+  offset})` dispatches indirectly, and `IndirectDrawNode` draws `VkDraw(Indexed)IndirectCommand`s
+  (from a mesh's buffers for indexed ones), with a count from a buffer where the device has
+  `drawIndirectCount` (`ctx.enabledFeatures()`; the context enables it when it can). Per-frame work that can fail (creating resources) goes in `Node::prepareFrame`, which runs
   before anything is acquired or submitted; `record` and `run` can't fail. For one-offs, use `addGraphics`, `addCompute`, `addTransfer` or `addCpu(name, setup, record/run)`.
   Subclass `GraphicsNode` / `ComputeNode` / `TransferNode` / `CpuNode` for reusable nodes.
   `NodeBuilder::uses(material)` declares the material's resource uses automatically. Declare

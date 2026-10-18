@@ -30,6 +30,10 @@
  Applications needing more (e.g. 8- and 16-bit storage) set them in VulkanContextConfig::features
  (AppConfig::features). Devices lacking any of them aren't used, and the device is created with them
  enabled as well as the wrapper's.
+
+ The wrapper also enables features it can do without when the device has them
+ (DeviceFeatures::optional()), and code using them checks VulkanContext::enabledFeatures():
+    - drawIndirectCount: draws whose count a buffer holds (IndirectDrawNode)
  */
 
 // The names of each feature structure's VkBool32 members, in declaration order. Generated from
@@ -183,6 +187,22 @@ public:
         features.vulkan13.shaderDemoteToHelperInvocation = VK_TRUE;
         features.vulkan13.synchronization2 = VK_TRUE;
         features.vulkan13.dynamicRendering = VK_TRUE;
+        return features;
+    }
+
+    // The features the wrapper enables when the device supports them, adapting where it doesn't
+    static DeviceFeatures optional() {
+        DeviceFeatures features;
+        features.vulkan12.drawIndirectCount = VK_TRUE;
+        return features;
+    }
+
+    // The features enabled in both this set and other
+    DeviceFeatures common(const DeviceFeatures& other) const {
+        DeviceFeatures features = *this;
+        features.forEachField(other, [](VkBool32& mine, VkBool32 theirs, const char*) {
+            mine = mine && theirs;
+        });
         return features;
     }
 

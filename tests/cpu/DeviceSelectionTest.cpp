@@ -119,6 +119,19 @@ TEST_CASE("DeviceFeatures reports the required features a device lacks") {
     CHECK(partial.missingRequired() == std::vector<std::string>{"dynamicRendering"});
 }
 
+TEST_CASE("Optional features are enabled where a device supports them") {
+    DeviceFeatures supported = DeviceFeatures::required();
+    CHECK(DeviceFeatures::optional().common(supported).missing(DeviceFeatures::optional())
+          == std::vector<std::string>{"drawIndirectCount"});
+    supported.vulkan12.drawIndirectCount = VK_TRUE;
+    supported.vulkan12.shaderInt8 = VK_TRUE;
+    const DeviceFeatures enabled = DeviceFeatures::optional().common(supported);
+    CHECK(enabled.missing(DeviceFeatures::optional()).empty());
+    // Only the optional ones
+    CHECK(enabled.vulkan12.shaderInt8 == VK_FALSE);
+    CHECK(enabled.core.features.samplerAnisotropy == VK_FALSE);
+}
+
 TEST_CASE("DeviceFeatures keeps its pNext chain intact when copied") {
     auto features = DeviceFeatures::required();
     features.vulkan11.storageBuffer16BitAccess = VK_TRUE;
