@@ -33,6 +33,16 @@
    (format "~a: ~a\n" target (string-join (cons source bodies) " "))
    (string-append* (for/list ([b (in-list bodies)]) (format "~a:\n" b)))))
 
+;; Removes the shaders in directory (which holds one file's) that weren't just generated: those of
+;; materials since renamed or removed
+(define (remove-stale-shaders directory generated)
+  (define kept (for/list ([p (in-list generated)]) (path->complete-path (simplify-path p))))
+  (when (directory-exists? directory)
+    (for ([p (in-list (directory-list directory #:build? #t))]
+          #:when (regexp-match? #rx"[.](vert|frag|comp)$" (path->string p))
+          #:unless (member (path->complete-path (simplify-path p)) kept))
+      (delete-file p))))
+
 (module+ main
   (define cpp-out #f)
   (define glsl-out #f)
@@ -44,7 +54,7 @@
      #:program "zgal"
      #:once-each
      [("--cpp-out") dir "Write the C++ header to DIR/<file>.h (and a program's main to DIR/<file>.main.cpp)" (set! cpp-out dir)]
-     [("--glsl-out") dir "Write each shader to DIR/<shader name>" (set! glsl-out dir)]
+     [("--glsl-out") dir "Write each shader to DIR/<shader name>, removing others there" (set! glsl-out dir)]
      [("--depfile") file "Write a Makefile rule listing the inputs to FILE" (set! depfile file)]
      [("--dep-target") target "The target of the --depfile rule (default: the header)" (set! dep-target target)]
      [("--check") "Only check the file" (set! check-only? #t)]
@@ -68,6 +78,7 @@
       (when cpp-out
         (for ([o (in-list cpp)]) (write-if-changed (output-path o) (output-text o))))
       (when glsl-out
-        (for ([o (in-list shaders)]) (write-if-changed (output-path o) (output-text o))))
+        (for ([o (in-list shaders)]) (write-if-changed (output-path o) (output-text o)))
+        (remove-stale-shaders glsl-out (map output-path shaders)))
       (when depfile
         (write-if-changed depfile (dependency-rule (or dep-target (output-path header)) source prog))))))

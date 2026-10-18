@@ -237,6 +237,13 @@
   (check-zgal-error (shared-material "(for ([i (range 0 x)]) (barrier!)) (write! result 0.0)") 'bad-barrier "in a loop")
   ;; A value read from a buffer can differ
   (check-zgal-error (shared-material "(let* ([n (at samples x)]) (when (> n 0.0) (barrier!))) (write! result 0.0)") 'bad-barrier "under a condition")
+  ;; A while loop whose condition and accumulators stay uniform runs as often in every invocation
+  (check-not-exn (λ () (program-of (shared-material "(let* ([(n m) (while ([k stride] [m (uint 0)]) (> k 1) (begin (barrier!) (values (/ k 2) (+ m x))))]) (write! result 0.0))"))))
+  (check-zgal-error (shared-material "(let* ([n (while ([k stride]) (> k x) (begin (barrier!) (/ k 2)))]) (write! result 0.0))")
+                    'bad-barrier "in a while loop whose condition can differ")
+  ;; An accumulator taking a divergent value makes a condition on it divergent
+  (check-zgal-error (shared-material "(let* ([n (while ([k stride]) (> k 1) (begin (barrier!) (+ (/ k 2) (uint (at partial x)))))]) (write! result 0.0))")
+                    'bad-barrier "in a while loop whose condition can differ")
   (check-zgal-error "(graphics-material F (outputs (color vec4)) (vertex (results #:position (vec4 0.0))) (fragment (begin (barrier!) (vec4 1.0))))"
                     'bad-barrier "only compute shaders"))
 

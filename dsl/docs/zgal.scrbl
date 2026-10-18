@@ -137,7 +137,8 @@ racket dsl/zgal.rkt --check FILE.zgal
 @itemlist[
  @item{@tt{@literal{--cpp-out} DIR} writes @tt{DIR/FILE.zgal.h}, and for a program
        @tt{DIR/FILE.zgal.main.cpp}.}
- @item{@tt{@literal{--glsl-out} DIR} writes each shader to @tt{DIR/<shader name>}.}
+ @item{@tt{@literal{--glsl-out} DIR} writes each shader to @tt{DIR/<shader name>}, and removes other
+       shaders there (those of materials since renamed or removed), so DIR holds one file's shaders.}
  @item{@tt{@literal{--depfile} FILE} writes a Makefile rule making @tt{TARGET} (by default, the header)
        depend on the @tt{.zgal} file and its shader bodies, with an empty rule per body (like
        @tt{gcc -MP}), so deleting a body doesn't break the build.}
@@ -786,7 +787,9 @@ ZGAL
 Every invocation of a workgroup must reach a barrier, or none, so a @racket[barrier!] can't be
 under a condition, or in a loop, that could differ between invocations. Conditions and ranges
 computed from literals, constants, push constants, @tt{workgroupId} and @tt{workgroupCount} (and
-locals and loop variables computed from them) are the same for the whole workgroup, and so is an
+locals, loop variables and @racket[while] accumulators computed from them) are the same for the
+whole workgroup, so a @racket[while] loop whose condition depends only on them runs as many times
+in every invocation. So is an
 element of a buffer the shader doesn't write at such an index (e.g. a count an earlier pass wrote:
 nothing can change it during the dispatch); anything read from shared memory or a buffer the shader
 writes, or computed from an invocation's id, isn't. Shared variables aren't

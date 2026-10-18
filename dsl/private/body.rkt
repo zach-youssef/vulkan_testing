@@ -1112,9 +1112,38 @@
       [(t-global (or 'constant 'push) _ _ _ _) #t]
       [(t-global 'stage name _ _ _) (and (member name '("workgroupId" "workgroupCount")) #t)]
       [(or (t-call _ _ _ _) (t-user-call _ _ _ _) (t-op _ _ _ _) (t-construct _ _ _) (t-field _ _ _ _)
-           (t-swizzle _ _ _ _) (t-index _ _ _ _) (t-if _ _ _ _ _))
+           (t-swizzle _ _ _ _) (t-index _ _ _ _) (t-if _ _ _ _ _) (t-values _ _ _))
        (andmap (λ (c) (uniform? c locals)) (texpr-children e))]
+      [(t-let bindings body _ _)
+       (uniform? body (for/fold ([ls locals]) ([b (in-list bindings)])
+                        (match-define (list names _ value) b)
+                        (if (uniform? value ls) (for/fold ([ls ls]) ([n (in-list names)]) (set-add ls n)) ls)))]
       [_ #f]))
+  ;; The locals a while loop's body sees as uniform: locals, and the accumulators starting uniform
+  ;; whose next values stay uniform (assuming those that do), found by dropping the others until
+  ;; none changes
+  (define (while-uniform-locals accs body locals)
+    (define names (map first accs))
+    ;; Whether each of the n values e gives is uniform
+    (define (components-uniform e ls n)
+      (match e
+        [(t-values es _ _) (for/list ([c (in-list es)]) (uniform? c ls))]
+        [(t-begin es _ _) (components-uniform (last es) ls n)]
+        [(t-let bindings inner _ _)
+         (components-uniform inner (for/fold ([ls ls]) ([b (in-list bindings)])
+                                     (match-define (list names _ value) b)
+                                     (if (uniform? value ls) (for/fold ([ls ls]) ([n (in-list names)]) (set-add ls n)) ls))
+                             n)]
+        [(t-if c a b _ _) #:when (and b (uniform? c ls))
+         (map (λ (x y) (and x y)) (components-uniform a ls n) (components-uniform b ls n))]
+        [_ (define u (uniform? e ls)) (for/list ([_ (in-range n)]) u)]))
+    (define (next-values-uniform ls) (components-uniform body ls (length names)))
+    (let loop ([candidates (for/list ([a (in-list accs)] #:when (uniform? (third a) locals)) (first a))])
+      (define ls (for/fold ([ls locals]) ([n (in-list candidates)]) (set-add ls n)))
+      (define kept (for/list ([n (in-list names)] [u (in-list (next-values-uniform ls))]
+                              #:when (and u (member n candidates)))
+                     n))
+      (if (= (length kept) (length candidates)) ls (loop kept))))
   (define (loops-uniform? loops locals)
     (for/fold ([ok locals]) ([l (in-list loops)])
       (match-define (list name from to step) l)
@@ -1150,9 +1179,13 @@
        (or (walk body inner (or divergence exited)) exited)]
       [(t-while accs c body _ _)
        (for ([a (in-list accs)]) (go (third a)))
-       ;; Whether it continues depends on its accumulators, which can differ between invocations
-       (define inner (or divergence "in a while loop, which can run a different number of times in each invocation"))
-       (or (walk c locals inner) (walk body locals inner))]
+       ;; Every invocation runs it as many times when its condition depends only on uniform values
+       ;; (and accumulators that stay uniform)
+       (define inner-locals (while-uniform-locals accs body locals))
+       (define inner (or divergence
+                         (and (not (uniform? c inner-locals))
+                              "in a while loop whose condition can differ between invocations")))
+       (or (walk c inner-locals inner) (walk body inner-locals inner))]
       [(or (t-for loops body _) (t-fold _ loops body _ _))
        (for ([c (in-list (texpr-children e))] #:unless (eq? c body)) (go c))
        (define uniform-locals (loops-uniform? loops locals))

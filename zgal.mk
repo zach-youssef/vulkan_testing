@@ -34,16 +34,19 @@ $(ZGAL_COMPILED): $(ZGAL_DSL_SRCS)
 # shaders into <spv> (<spv>/<shader>.spv), with a depfile making the stamp depend on the files it
 # imports and its GLSL bodies:
 #   $(call zgal-rule,<dir>/<name>.zgal,<out>,<spv>)
-# GLSL bodies' includes are found in <dir>/shaders. Any change regenerates and recompiles them all.
+# GLSL bodies' includes are found in <dir>/shaders. The compiler only rewrites the shaders that
+# changed, so only those are recompiled, unless GLSL they include (or a GLSL body) changed: then all.
 define zgal-rule
 $(2)/$(notdir $(1)).stamp: $(1) $(ZGAL_COMPILED) $(ZGAL_GLSL_INCLUDES)
-	@rm -rf $(2)/shaders
 	$(ZGAL) --cpp-out $(2) --glsl-out $(2)/shaders --depfile $(2)/$(notdir $(1)).d --dep-target $$@ $$<
 	@mkdir -p $(3)
-	@for shader in $(2)/shaders/*; do \
+	@all=; for f in $$?; do case $$$$f in *.zgal|$(ZGAL_COMPILED)) ;; *) all=1 ;; esac; done; \
+	for shader in $(2)/shaders/*; do \
 		[ -e "$$$$shader" ] || continue; \
+		spv=$(3)/$$$$(basename $$$$shader).spv; \
+		[ -n "$$$$all" ] || [ ! -e "$$$$spv" ] || [ "$$$$shader" -nt "$$$$spv" ] || continue; \
 		echo glslc $$$$shader; \
-		glslc $(ZGAL_GLSLC_FLAGS) -I$(dir $(1))shaders $$$$shader -o $(3)/$$$$(basename $$$$shader).spv || exit 1; \
+		glslc $(ZGAL_GLSLC_FLAGS) -I$(dir $(1))shaders $$$$shader -o $$$$spv || exit 1; \
 	done
 	@touch $$@
 -include $(2)/$(notdir $(1)).d
