@@ -38,6 +38,23 @@
   ;; The materials leave their push constants to the nodes
   (check-true (string-contains? h "[=](const zgal::FrameInfo& frame, Fill::Push& push) {\n")))
 
+(test-case "Indirect draws and draw-meshes push their own push constants after binding their material"
+  (define h (header (compile-text
+                     (string-append
+                      "(import indirect)\n(vertex-format V (position vec3))\n"
+                      "(graphics-material Shape (vertex-input V) (push (row uint)) (outputs (color vec4)) (vertex (results #:position (vec4 position 1.0))) (fragment (vec4 (float row))))\n"
+                      (graph "  (input shapes meshes)"
+                             "  (buffer draws DrawCommand 2 #:frames shared)"
+                             "  (buffer counts uint 1 #:frames shared)"
+                             "  (material painting Paint)"
+                             "  (material meshing Shape)"
+                             "  (draw d canvas painting #:indirect (at draws 0) #:push ((row 1)))"
+                             "  (draw c canvas painting #:indirect (at draws 0) #:draws 2 #:count (at counts 0) #:push ((row 2)))"
+                             "  (draw-meshes m canvas shapes meshing #:push ((row (+ n 3))))")))))
+  (check-true (string-contains? h ".afterBind = [=, material = material_painting](const RecordContext& record) { zgal::pushOverride(record, *material, [&](const zgal::FrameInfo& frame, Paint::Push& push) { push.row = 1u; }); }}"))
+  (check-true (string-contains? h "push.row = 2u;"))
+  (check-true (string-contains? h "graph.add<RenderablesNode>(\"m\", std::move(renderables), target_canvas, [=, material = material_meshing](const RecordContext& record, Material&) { zgal::pushOverride(record, *material, [&](const zgal::FrameInfo& frame, Shape::Push& push) { push.row = (in->n + 3u); }); })")))
+
 (test-case "Nodes give their own push constants and invocations"
   ;; A push constant the material leaves out, every node using it gives
   (check-zgal-error (graph "  (material filling Fill cells #:push ((offset 0)) #:invocations (1))"
@@ -52,11 +69,6 @@
                                           "  (material filling Fill cells #:push ((offset 0) (amount 1)))"
                                           "  (dispatch a filling #:indirect (at commands 0) #:invocations (1))"))
                     'bad-option "reads its workgroups from #:indirect, so it takes no #:invocations")
-  (check-zgal-error (string-append "(import indirect)\n"
-                                   (graph "  (buffer draws DrawCommand 1 #:frames shared)"
-                                          "  (material painting Paint #:push ((row 0)))"
-                                          "  (draw d canvas painting #:indirect (at draws 0) #:push ((row 1)))"))
-                    'bad-option "#:push is for draws of a vertex count, and dispatches")
   (check-zgal-error (graph "  (material filling Fill cells #:push ((offset 0) (amount 1)) #:invocations (1))"
                            "  (dispatch a filling #:push ((count 1)))")
                     'unknown-name "material Fill has no push constant count"))

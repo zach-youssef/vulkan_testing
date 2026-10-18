@@ -270,7 +270,7 @@
   ;; Array bindings: lists of resources (a uniform among them), and imported images
   (import-images decals #:resting shader-read-only)
   (material pick Pick decals (settings (lightBuffer lightBuffer)) (targets (maskImage copy)) #:invocations (8 8))
-  (draw-meshes drawSurface scene meshes surface #:enabled enabled)
+  (draw-meshes drawSurface scene meshes surface #:enabled enabled #:push ((object 7)))
   (dispatch accumulate accumulate #:when (>= count 2))
   (draw drawPlain screen plain (* 3 size))
   (readback readMask maskImage)

@@ -1441,7 +1441,7 @@ struct Everything {
 #line 273 "dsl/tests/golden/features.zgal"
             }
 #line 273 "dsl/tests/golden/features.zgal"
-            const NodeId node = graph.add<RenderablesNode>("drawSurface", std::move(renderables), target_scene);
+            const NodeId node = graph.add<RenderablesNode>("drawSurface", std::move(renderables), target_scene, [=, material = material_surface](const RecordContext& record, Material&) { zgal::pushOverride(record, *material, [&](const zgal::FrameInfo& frame, Surface::Push& push) { push.object = 7u; }); });
 #line 273 "dsl/tests/golden/features.zgal"
             graph.setEnabled(node, in->enabled);
 #line 273 "dsl/tests/golden/features.zgal"

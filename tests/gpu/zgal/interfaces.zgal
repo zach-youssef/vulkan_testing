@@ -704,14 +704,17 @@
   (fragment shade))
 
 (graph OverrideGraph
+  (input drawCommands (data DrawCommand))
+  (upload draws drawCommands)
+  (buffer drawCount uint 1 #:frames shared)
   (buffer cells uint 64 #:frames shared)
   (buffer command DispatchCommand 1 #:frames shared)
   (image picture rgba8 (fixed 4 4) #:frames shared)
-  ;; Each band keeps what the other drew (the rows cover the whole image)
+  ;; Each band keeps what the others drew (the rows cover the whole image)
   (target canvas (color picture #:load load))
   (material filling FillSpan cells)
   (material stepping Step cells #:push ((increment 1)) #:invocations (64))
-  (material banding Band #:push ((rows 2)))
+  (material banding Band #:push ((rows 4)))
   (clear zero cells)
   (dispatch fillFirst filling #:push ((offset 0) (amount 10) (value 5)) #:invocations (10))
   (dispatch fillSecond filling #:push ((offset 30) (amount 4) (value 7)) #:invocations (4))
@@ -722,7 +725,12 @@
   (dispatch stepOne stepping)
   (dispatch stepTwo stepping #:push ((increment 2)))
   (draw top canvas banding 3 #:push ((row 0) (shade (vec4 1.0 0.0 0.0 1.0))))
-  (draw bottom canvas banding 3 #:push ((row 1) (shade (vec4 0.0 0.0 1.0 1.0))))
+  ;; Drawn from commands C++ gave, and as many of them as a buffer says
+  (draw second canvas banding #:indirect (at draws 0) #:push ((row 1) (shade (vec4 0.0 1.0 0.0 1.0))))
+  (clear countOne drawCount #:value 1)
+  (draw third canvas banding #:indirect (at draws 0) #:draws 2 #:count (at drawCount 0)
+        #:push ((row 2) (shade (vec4 1.0 1.0 0.0 1.0))))
+  (draw bottom canvas banding 3 #:push ((row 3) (shade (vec4 0.0 0.0 1.0 1.0))))
   (readback readCells cells)
   (readback readPicture picture))
 

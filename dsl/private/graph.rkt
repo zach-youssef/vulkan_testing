@@ -795,7 +795,7 @@
                            [(sort) '(#:when #:enabled #:once #:values #:count)]
                            [(dispatch) '(#:when #:enabled #:once #:indirect #:push #:invocations)]
                            [(draw) '(#:when #:enabled #:once #:indirect #:draws #:count #:push)]
-                           [(draw-meshes) '(#:when #:enabled #:once #:indirect #:draws #:count)]
+                           [(draw-meshes) '(#:when #:enabled #:once #:indirect #:draws #:count #:push)]
                            [else '(#:when #:enabled #:once)])
                          form)
     (define (shape n text)
@@ -888,7 +888,8 @@
        (when (and command-stx (not (eq? (entry-kind (hash-ref env meshes)) 'model)))
          (zgal-error 'type-mismatch (third args) "draw-meshes #:indirect draws a model's mesh, but ~a is a meshes input" meshes))
        (node 'draw-meshes #:target target #:material m-name #:subject meshes
-             #:extra (and command-stx (parse-indirect-draw command-stx "DrawIndexedCommand" node-name options stx)))]
+             #:extra (and command-stx (parse-indirect-draw command-stx "DrawIndexedCommand" node-name options stx))
+             #:overrides (overrides-of m #f))]
       ['draw
        (define command-stx (hash-ref options '#:indirect #f))
        (if command-stx
@@ -902,11 +903,10 @@
        (when (material-vertex-input m)
          (zgal-error 'material-kind (third args) "draw reads no vertex buffers, but material ~a (~a) has a vertex-input; draw it with draw-meshes"
                      m-name (material-name m)))
-       (when (and command-stx (hash-ref options '#:push #f))
-         (zgal-error 'bad-option (hash-ref options '#:push) "draw ~a draws #:indirect, so it takes its material's push constants: #:push is for draws of a vertex count, and dispatches" node-name))
        (if command-stx
            (node 'draw #:target target #:material m-name
-                 #:extra (parse-indirect-draw command-stx "DrawCommand" node-name options stx))
+                 #:extra (parse-indirect-draw command-stx "DrawCommand" node-name options stx)
+                 #:overrides (overrides-of m #f))
            (node 'draw #:target target #:material m-name #:count (build-time (fourth args) (scalar-t 'uint) "a vertex count")
                  #:overrides (overrides-of m #f)))]
       ['readback

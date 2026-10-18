@@ -951,10 +951,10 @@ and C++ supplies the meshes.
  [loop-clause [name (range from to)] [name (range from to step)] [name data-input]]
  [loop-body node loop]
  [node (dispatch name material maybe-indirect dispatch-option ... node-option ...)
-       (draw-meshes name target meshes-input-or-model material node-option ...)
-       (draw-meshes name target model material #:indirect (at commands index) draw-option ... node-option ...)
+       (draw-meshes name target meshes-input-or-model material maybe-push node-option ...)
+       (draw-meshes name target model material #:indirect (at commands index) draw-option ... maybe-push node-option ...)
        (draw name target material vertex-count maybe-push node-option ...)
-       (draw name target material #:indirect (at commands index) draw-option ... node-option ...)
+       (draw name target material #:indirect (at commands index) draw-option ... maybe-push node-option ...)
        (readback name image-or-buffer node-option ...)
        (cpu name cpu-input cpu-option ... node-option ...)
        (copy name source-buffer destination-buffer copy-option ... node-option ...)
@@ -1204,11 +1204,12 @@ Nodes:
        material that has a @racket[vertex-input] (a @tt{RenderablesNode}); a model's material reads
        its vertex format. Each draw's first instance is its mesh's instance index
        (@tt{Mesh::create}'s, or the material of a model's primitive). With @tt{#:indirect}, a
-       model's commands shaders chose (@secref["indirect"]).}
+       model's commands shaders chose (@secref["indirect"]). Its own @tt{#:push} replaces its
+       material's push constants, like a dispatch's.}
  @item{@racket[draw]: draws a vertex count with a graphics material without one, e.g. a fullscreen
        triangle or particles pulled from a buffer, or with @tt{#:indirect}, the @tt{DrawCommand}s
-       shaders wrote (@secref["indirect"]). A draw of a vertex count can replace its material's push
-       constants with its own @tt{#:push}, like a dispatch.}
+       shaders wrote (@secref["indirect"]). Its own @tt{#:push} replaces its material's push
+       constants, like a dispatch's.}
  @item{@racket[readback]: copies an image or a buffer to the CPU each frame (a @tt{ReadbackNode}
        or @tt{BufferReadbackNode}). C++ reads the most recent copy through the generated struct:
        @tt{namePixels(graph)} gives an image's bytes, and @tt{nameContents(graph)} a buffer's

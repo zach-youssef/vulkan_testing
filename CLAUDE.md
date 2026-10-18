@@ -330,7 +330,7 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   `DispatchSequenceNode`.
 - Node loops: `(for ([b batches] [pass (range 0 n)]) node ...)` repeats nodes when the graph is
   built, over build-time ranges and `(data T)` inputs' elements (`b.first`, `(at batches i)`).
-  Dispatches and draws give per-node `#:push ((field v))` (and dispatches `#:invocations`), so
+  Dispatches and draws (indirect ones and `draw-meshes` too) give per-node `#:push ((field v))` (and dispatches `#:invocations`), so
   iterations share a material and its pipeline; a material may leave out push constants every node
   using it gives. A looped node's id is a `std::vector<NodeId>` (readback accessors take an index).
   Loops don't hold extern nodes, library nodes or counted draws yet; draws looping into one target

@@ -676,11 +676,16 @@
       (format "BufferOffset{~a, VkDeviceSize(~a) * sizeof(~a)}" (resource-ref (element-ref-buffer ref))
               (build-expr (element-ref-index ref) (scalar-t 'uint)) (cpp-type (entry-type (hash-ref env (element-ref-buffer ref))))))
     (define spec (and (indirect? (g-node-extra n)) (g-node-extra n)))
+    ;; A lambda pushing the node's own push constants after its material is bound, taking `params`
+    (define (after-bind params)
+      (format "[~a, material = ~a](~a) { ~a }" (frame-captures (map cdr (node-overrides-push overrides)) env)
+              (material-ref (g-node-material n)) params (push-override)))
     ;; A draw-meshes' commands draw ranges of its model's mesh
     (define (draw-desc commands)
-      (format "IndirectDrawNode::Desc{.material = ~a, .target = ~a, .commands = ~a, .maxDraws = ~a~a}"
+      (format "IndirectDrawNode::Desc{.material = ~a, .target = ~a, .commands = ~a, .maxDraws = ~a~a~a}"
               (material-ref (g-node-material n)) (target-ref (g-node-target n)) commands (build-expr (indirect-draws spec) (scalar-t 'uint))
-              (if (eq? (g-node-kind n) 'draw-meshes) (format ", .mesh = model_~a.mesh" (g-node-subject n)) "")))
+              (if (eq? (g-node-kind n) 'draw-meshes) (format ", .mesh = model_~a.mesh" (g-node-subject n)) "")
+              (if (has-push?) (format ", .afterBind = ~a" (after-bind "const RecordContext& record")) "")))
     (define counted? (and spec (indirect-count spec) #t))
     (define create
       (match (g-node-kind n)
@@ -710,7 +715,8 @@
         [(or 'draw 'draw-meshes)
          #:when spec
          (format "graph.add<IndirectDrawNode>(~a, ~a)" label (draw-desc (command-offset (indirect-command spec))))]
-        ['draw-meshes (format "graph.add<RenderablesNode>(~a, std::move(renderables), ~a)" label (target-ref (g-node-target n)))]
+        ['draw-meshes (format "graph.add<RenderablesNode>(~a, std::move(renderables), ~a~a)" label (target-ref (g-node-target n))
+                              (if (has-push?) (string-append ", " (after-bind "const RecordContext& record, Material&")) ""))]
         ['draw
          (format "graph.addGraphics(~a, [target = ~a, material = ~a](NodeBuilder& builder) { builder.renderTo(target).uses(material); }, [~amaterial = ~a, count = ~a](RecordContext& record) { material->bind(record.commandBuffer, record.frameIndex); ~avkCmdDraw(record.commandBuffer, count, 1, 0, 0); })"
                  label (target-ref (g-node-target n)) (material-ref (g-node-material n))

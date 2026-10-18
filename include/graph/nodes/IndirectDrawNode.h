@@ -4,6 +4,7 @@
 #include "graph/RenderGraph.h"
 #include "materials/Renderable.h"
 
+#include <functional>
 #include <optional>
 
 /*
@@ -29,6 +30,9 @@ public:
         uint32_t maxDraws = 1;               // Commands, tightly packed
         std::optional<BufferOffset> count;   // A uint32_t: how many commands to draw
         Handle<Mesh> mesh;                   // Indexed draws from its buffers, or null
+        // Called after the material is bound, before drawing, if given: e.g. to push the node's own
+        // push constants over the material's
+        std::function<void(const RecordContext&)> afterBind;
     };
 
     explicit IndirectDrawNode(Desc desc) : desc_(std::move(desc)) {
@@ -56,6 +60,9 @@ public:
     void record(RecordContext& context) override {
         VkCommandBuffer cmd = context.commandBuffer;
         desc_.material->bind(cmd, context.frameIndex);
+        if (desc_.afterBind) {
+            desc_.afterBind(context);
+        }
         const VkBuffer commands = context.graph.buffer(desc_.commands.buffer, context.frameIndex);
         const VkBuffer count = desc_.count ? context.graph.buffer(desc_.count->buffer, context.frameIndex) : VK_NULL_HANDLE;
         if (desc_.mesh) {
