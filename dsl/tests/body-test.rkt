@@ -165,6 +165,13 @@
                  "(compute-material Pack (workgroup 1) (bindings (data (buffer-array Bytes)))\n"
                  "  (compute " body "))"))
 
+(test-case "Structs' arrays are C arrays in C++, which constants initialize from lists"
+  (define header (generated (string-append "(struct Row (cells (array uint8 2)) (count uint))\n"
+                                           "(define blank (Row (array uint8 0 1) 2))")
+                            "test.zgal.h"))
+  (check-true (string-contains? header "uint8_t cells[2];"))
+  (check-true (string-contains? header "inline const Row blank = Row{.cells = {uint8_t(0), uint8_t(1)}, .count = 2u};")))
+
 (test-case "Small integers are widened where they're read, and narrowed explicitly where they're written"
   (define shader
     (generated (bytes-material "(let* ([b (at data 0)]) (write! (at data 1) (with b #:small (uint8 (+ b.small 1)) #:delta (int16 (- b.delta)))))")
