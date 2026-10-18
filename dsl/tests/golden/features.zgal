@@ -336,6 +336,17 @@
                (drawPlain (not state.dragging))
                (drawEach state.dragging))))
 
+;; A program running Explorer: a window, its clock, options setting its parameters (C++ gives the
+;; externs and the graph's other inputs, through MainInputs), and a capture
+(main Explorer
+  (about "Explores everything")
+  (window "Explorer" 800 600)
+  (timestep #:max 0.1 #:fixed 1/60)
+  (capture readMask)
+  (controls "a        brighten" "escape   quit")
+  (option level "--level" "how much there is" #:default 2 #:range (0 8))
+  (option gain "--gain" "the light's gain" #:default 1.5))
+
 ;; Phases: a graph uploading per-frame data and reading it back once, whose copy an app's read event
 ;; keeps in the state until it switches to another graph
 (graph Warmup

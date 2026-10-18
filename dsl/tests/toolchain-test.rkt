@@ -54,7 +54,8 @@
     (with-temporary-directory (directory)
       (define outputs (golden-outputs))
       (write-outputs outputs directory)
-      (for ([o (in-list (rest outputs))])
+      (for ([o (in-list outputs)]
+            #:unless (regexp-match? #rx"[.](h|main[.]cpp)$" (output-path o)))
         (define name (path->string (file-name-from-path (output-path o))))
         (define-values (status text)
           (apply run (getenv "ZGAL_GLSLC")
@@ -86,6 +87,17 @@
     (apply run (getenv "ZGAL_CXX")
            (append (flags "ZGAL_CXXFLAGS")
                    (list (format "-I~a" (path->string directory)) "-fsyntax-only" (path->string file)))))
+
+  (test-case "The generated main compiles"
+    (with-temporary-directory (directory)
+      (write-outputs (golden-outputs) directory)
+      (define-values (status text)
+        (apply run (getenv "ZGAL_CXX")
+               (append (flags "ZGAL_CXXFLAGS")
+                       (list (format "-I~a" (path->string directory)) "-fsyntax-only"
+                             (path->string (build-path directory "features.zgal.main.cpp"))))))
+      (with-check-info (['compiler text])
+        (check-equal? status 0))))
 
   (test-case "The generated header compiles, and materials are abstract only if they push constants"
     (with-temporary-directory (directory)

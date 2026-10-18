@@ -15,7 +15,9 @@
          "print-body.rkt"
          "writer.rkt")
 
-(provide emit-app!)
+(provide emit-app!
+         app-given-members
+         declaration-cpp)
 
 (define (event-struct kind)
   (case kind
@@ -57,10 +59,7 @@
   (define (ids-member r) (format "ids~a_" (run-index r)))
   ;; A function computing something of a run: one run keeps the plain names
   (define (run-name r base) (if single? base (format "~a_~a" base (graph-name (run-graph r)))))
-  (define (passthrough r)
-    (for/list ([m (in-list (graph-input-members (run-graph r)))]
-               #:unless (assoc (graph-item-name (car m)) (graph-run-bindings r)))
-      m))
+  (define passthrough run-passthrough)
   (define (run-of-graph g-name) (findf (λ (r) (equal? (graph-name (run-graph r)) g-name)) runs))
   (define (node-of r node-name) (findf (λ (n) (equal? (g-node-name n) node-name)) (graph-nodes (run-graph r))))
   (define (handler-name i) (format "on~a" i))
@@ -89,13 +88,8 @@
     (gen "        zgal::Timestep timestep;   // How far the frame handler's clock advances a frame"))
   (when (app-run-mode? a)
     (gen "        zgal::RunMode mode;        // How the app is run: headless, capture and frameLimit"))
-  (for ([f (in-list (app-externs a))])
-    (emit! w (format "        std::function<~a(~a)> ~a;" (spell-type (function-decl-result f) 'cpp)
-                     (string-join (for/list ([p (in-list (function-decl-params f))]) (extern-parameter-type (cdr p))) ", ")
-                     (function-decl-name f))
-           #:at (function-decl-loc f)))
-  (for* ([r (in-list runs)] [m (in-list (passthrough r))])
-    (emit! w (string-append "        " (cdr m)) #:at (item-loc (car m))))
+  (for ([m (in-list (app-given-members a))])
+    (emit! w (string-append "        " (second m)) #:at (third m)))
   (gen "    };")
   (gen "")
   (unless single?
@@ -352,6 +346,25 @@
   (for ([r (in-list runs)])
     (gen (format "    std::optional<~a> ~a;" (graph-name (run-graph r)) (ids-member r))))
   (emit! w "};" #:at (app-loc a)))
+
+;; The members of a graph's Inputs that a run of it doesn't compute: (cons item declaration)
+(define (run-passthrough r)
+  (for/list ([m (in-list (graph-input-members (graph-run-graph r)))]
+             #:unless (assoc (graph-item-name (car m)) (graph-run-bindings r)))
+    m))
+
+;; What C++ gives app a besides its parameters, clock and run mode, as (list name declaration loc):
+;; its extern functions, and its graphs' inputs it doesn't compute
+(define (app-given-members a)
+  (append
+   (for/list ([f (in-list (app-externs a))])
+     (list (function-decl-name f)
+           (format "std::function<~a(~a)> ~a;" (spell-type (function-decl-result f) 'cpp)
+                   (string-join (for/list ([p (in-list (function-decl-params f))]) (extern-parameter-type (cdr p))) ", ")
+                   (function-decl-name f))
+           (function-decl-loc f)))
+   (for*/list ([r (in-list (app-runs a))] [m (in-list (run-passthrough r))])
+     (list (graph-item-name (car m)) (cdr m) (item-loc (car m))))))
 
 ;; Whether an app computes a graph's input once, when it's created: parameters and paths
 (define (computed-once? item)

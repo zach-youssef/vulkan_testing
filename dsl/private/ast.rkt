@@ -109,8 +109,9 @@
 (struct glsl-function-decl function-decl (path) #:transparent)
 
 ;; source: the .zgal file's path. Declarations are in file order.
+;; main: the main-decl generating a program's main, or #f.
 ;; imports: the paths of the files it imports (directly or not), as their declarations' locs name them.
-(struct program (source structs vertex-formats materials graphs functions apps imports) #:transparent)
+(struct program (source structs vertex-formats materials graphs functions apps main imports) #:transparent)
 
 ;; ---------------------------------------------------------------------------------------------
 ;; Apps: state, the handlers changing it, and the graph they run. Bodies are typed expressions
@@ -131,6 +132,23 @@
 ;; per-frame inputs (each frame). enables: (cons node-name expression), computed each frame. when:
 ;; whether it's the active graph (an expression computed each frame), or #f for otherwise.
 (struct graph-run (graph bindings enables when loc) #:transparent)
+
+;; ---------------------------------------------------------------------------------------------
+;; A program's main (main.rkt): the command line, window and capture of the app it runs.
+
+;; app: the app. about: what the program does, for its usage (a string, or #f). window: (list title
+;; width height), or #f for a program that's only headless. timestep: (cons max-step fixed-step),
+;; the frame handler's clock interactive and for a number of frames, or #f without a frame handler.
+;; capture: (list graph-name node-name to), the image readback whose last copy is written to a PNG
+;; file: to is the path parameter naming it, or #f for --capture's; #f without. controls: lines
+;; printed when the program runs interactively. options: main-options, in order.
+(struct main-decl (app about window timestep capture controls options loc) #:transparent)
+;; kind: 'flag (a bool parameter, true when given), 'option (a value) or 'positional (a value, in
+;; order). parameter: the app's parameter it sets (a field). flag: e.g. "--blur" (#f for
+;; positionals). help: a string. default: the value when not given (a number or path string), or #f.
+;; range: (cons low high), the values a number may take, or #f. given: the bool parameter's name the
+;; option also sets when given, or #f.
+(struct main-option (kind parameter flag help default range given loc) #:transparent)
 
 
 ;; The C++ namespace of prog's generated code: its file's name without .zgal (scene.zgal: scene)

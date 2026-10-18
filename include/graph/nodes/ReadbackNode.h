@@ -48,6 +48,7 @@ public:
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer->getBuffer(), 1, &region);
         lastFrame_ = context.frameIndex;
         lastSize_ = frameSize(context.frameIndex);
+        lastExtent_ = extent;
     }
 
     // The pixels copied by the most recent frame. Waits for the graph's submitted work. Calling it
@@ -64,6 +65,16 @@ public:
         return pixels;
     }
 
+    // The size of the most recent frame's copy (which pixels() returns), and the image's format,
+    // e.g. to encode the pixels. Calling extent() before the node has run is a contract violation.
+    VkExtent2D extent() const {
+        if (!lastFrame_) {
+            contractViolation("ReadbackNode hasn't run yet");
+        }
+        return lastExtent_;
+    }
+    VkFormat format() const { return graph_->imageFormat(image_); }
+
 private:
     VkDeviceSize frameSize(uint32_t frameIndex) {
         const VkExtent2D extent = graph_->imageExtent(image_, frameIndex);
@@ -75,4 +86,5 @@ private:
     PerFrame<Handle<Buffer<uint8_t>>> buffers_;
     std::optional<uint32_t> lastFrame_;
     VkDeviceSize lastSize_ = 0;
+    VkExtent2D lastExtent_{};
 };

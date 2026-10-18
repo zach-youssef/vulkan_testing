@@ -22,8 +22,10 @@ shaders can share code.
 
 And it can declare apps (@secref["apps"]): an application's state, the handlers computing its next
 state from input events and each frame, and the graph it runs, whose per-frame inputs are computed
-from the state. The compiler generates a class running them, which C++'s @tt{main} creates and
-runs in a window (or headless).
+from the state. The compiler generates a class running them. A @racket[main] makes the file a
+program (@secref["main"]): the compiler writes its @tt{main} too, with a command line, and C++ only
+gives what ZGAL can't; otherwise C++'s @tt{main} creates the app and runs it in a window (or
+headless).
 
 ZGAL is written in Racket (@tt{dsl/}). Shaders can also still be written in GLSL, with only their
 interface in ZGAL (@secref["glsl"]).
@@ -100,6 +102,7 @@ For @tt{name.zgal}, the compiler writes
        struct per graph (@secref["graphs"]) and a class per app (@secref["apps"]), all in
        @tt{namespace name} (e.g. @tt{scene::SceneApp}), so files can declare the same names. The
        file's name must therefore be a valid name.}
+ @item{@tt{name.zgal.main.cpp}, for a program (@secref["main"]): its @tt{main}.}
  @item{one complete shader per material shader, named like its body (e.g. @tt{tonemap.frag}), to
        compile with glslc (@secref["glsl"]).}
 ]
@@ -127,7 +130,8 @@ racket dsl/zgal.rkt [--cpp-out DIR] [--glsl-out DIR] [--depfile FILE [--dep-targ
 racket dsl/zgal.rkt --check FILE.zgal
 }
 @itemlist[
- @item{@tt{@literal{--cpp-out} DIR} writes @tt{DIR/FILE.zgal.h}.}
+ @item{@tt{@literal{--cpp-out} DIR} writes @tt{DIR/FILE.zgal.h}, and for a program
+       @tt{DIR/FILE.zgal.main.cpp}.}
  @item{@tt{@literal{--glsl-out} DIR} writes each shader to @tt{DIR/<shader name>}.}
  @item{@tt{@literal{--depfile} FILE} writes a Makefile rule making @tt{TARGET} (by default, the header)
        depend on the @tt{.zgal} file and its shader bodies, with an empty rule per body (like
@@ -1420,8 +1424,9 @@ An @racket[app] is an application's behaviour: its state, the handlers computing
 from input events and from each frame, and the graph it runs, with per-frame inputs computed from
 the state. Handlers are expressions, like shader bodies, and the state is immutable: a handler's
 value is the next state, usually a copy with some fields changed (@racket[(with state ...)]). The
-compiler generates a C++ class running them. C++ still writes @tt{main}: it creates the window (or
-not), supplies what ZGAL can't (meshes, files, the clock), and runs the app.
+compiler generates a C++ class running them, which a generated @tt{main} runs (@secref["main"]), or
+C++'s: creating the window (or not), supplying what ZGAL can't (meshes, files, the clock), and
+running the app.
 
 The particles example's app:
 
@@ -1657,6 +1662,138 @@ filter), C++ calls @tt{beginFrame()} and executes @tt{renderGraph()} itself. The
 @(file-excerpt "examples/particles/particles.cpp" #:from #rx"TRY_ASSIGN[(]auto particlesApp, particles::ParticlesApp::create" #:to #rx"TRY[(]zgal::run[(]app, [*]particlesApp[)][)];")
 
 @; -----------------------------------------------------------------------------------------------
+@section[#:tag "main"]{Programs}
+
+A @racket[main] makes a file a program: the compiler writes its @tt{main} too
+(@tt{name.zgal.main.cpp}), which reads the command line into the app's parameters, creates the
+context, the window (or not) and the app's graphs, runs the app, and writes its capture. A program
+whose app needs nothing from C++ is the @tt{.zgal} file alone; one that does gives it from a small C++
+file of its own (@secref["main-inputs"]).
+
+@racketgrammar*[
+ #:literals (main about window timestep capture controls flag option positional)
+ [main-form (main App main-clause ...)]
+ [main-clause (about "what the program does")
+              (window "title" width height)
+              (timestep #:max seconds #:fixed seconds)
+              (capture readback maybe-to)
+              (controls "line" ...)
+              (flag parameter "--name" "help")
+              (option parameter "--name" "help" #:default value maybe-range maybe-given)
+              (positional parameter "help" maybe-range)]
+ [maybe-to (code:line) (code:line #:to path-parameter)]
+ [maybe-range (code:line) (code:line #:range (low high))]
+ [maybe-given (code:line) (code:line #:given bool-parameter)]]
+
+@itemlist[
+ @item{@racket[window] gives the program a window, with its title and size. Without one, the
+       program is only headless (it doesn't need a window system), and runs one frame unless told
+       otherwise.}
+ @item{@racket[timestep] chooses the frame handler's clock, required when the app has one: real
+       time interactively, at most @tt{#:max} seconds a frame, and @tt{#:fixed} seconds a frame for
+       a number of frames, so those runs are deterministic.}
+ @item{@racket[capture] names an image readback (of an @tt{rgba8} or @tt{rgba8-srgb} image) whose
+       last frame is written to a PNG file: the one @tt{--capture} names, or with @tt{#:to}, the
+       path parameter an option sets.}
+ @item{@racket[controls] are printed when the program runs interactively.}
+ @item{@racket[flag], @racket[option] and @racket[positional] set the app's parameters from the
+       command line: a flag sets a @tt{bool} parameter when given; an option takes a value
+       (@tt{int}, @tt{uint}, @tt{float} or @tt{path}), with a default and optionally a range, and
+       @tt{#:given} also sets a @tt{bool} parameter when it's given; positionals are required, in
+       order. Paths are relative to the working directory. Each parameter is set by one option at
+       most.}
+]
+
+Every program also has the built-in options:
+@tabular[
+ #:style 'boxed
+ #:sep (hspace 2)
+ #:row-properties '(bottom-border ())
+ (list
+  (list @bold{Option} @bold{What})
+  (list @tt{--frames N} "run N frames, then exit: headless (with a window, unless --window), on the fixed clock")
+  (list @tt{--capture FILE} @elem{write the capture's last frame (with a @racket[capture] without @tt{#:to})})
+  (list @tt{--size WxH} "the window's size, or headless the surface's (with a window)")
+  (list @tt{--window} "with --frames, run in the window")
+  (list @tt{--validation} "enable validation and synchronization validation: any message fails the run")
+  (list @tt{--plan} "print the render graph's plan")
+  (list @tt{--help} "print the usage"))]
+The app reads how it was run as @tt{headless}, @tt{capture} and @tt{frameLimit} (@secref["apps"]),
+e.g. to script a smoke test. The exit status is 0, 1 for an error or validation messages, and 2 for
+a bad command line.
+
+@(define main-source #<<ZGAL
+(compute-material Fill
+  (workgroup 8 8)
+  (bindings (canvas (storage-image write)))
+  (push (level float))
+  (compute (store! canvas (ivec2 globalInvocationId.xy) (vec4 level 0.0 0.0 1.0))))
+
+(graph Painting
+  (parameter level float)
+  (parameter side uint)
+  (image canvas rgba8 (fixed side side) #:frames shared)
+  (material fill Fill canvas #:push ((level level)) #:invocations (side side))
+  (dispatch paint fill)
+  (readback result canvas))
+
+(app Painter
+  (parameter level float)
+  (parameter side uint)
+  (parameter destination path)
+  (run Painting (level level) (side side)))
+
+(main Painter
+  (about "Paints a red square")
+  (option level "--level" "how red" #:default 1.0 #:range (0.0 1.0))
+  (option side "--side" "the square's side, in pixels" #:default 64)
+  (positional destination "the PNG file to write")
+  (capture result #:to destination))
+ZGAL
+)
+@(zgal-source main-source)
+@(generated-file main-source "example.zgal.main.cpp")
+
+@tt{include/zgal/Main.h} holds what generated mains use: the command line (@tt{zgal::CommandLine},
+@tt{Launch}), counting validation messages, captures and running a headless program
+(@tt{zgal::runHeadless}); @tt{include/zgal/Window.h} runs one with a window (@tt{zgal::runWindowed}).
+
+@subsection[#:tag "main-inputs"]{What C++ gives}
+
+What the command line can't give the app (its @racket[extern] functions, its graphs' inputs it
+doesn't compute, such as meshes, and parameters no option sets), the program's own C++ does: the
+header then declares @tt{struct MainInputs}, holding them, and @tt{Result<MainInputs>
+mainInputs(VulkanContext&)}, which a C++ file of the program defines, and which the generated main
+calls once the context exists:
+
+@(define hooked-source #<<ZGAL
+(app Reporter
+  (parameter verbose bool)
+  (parameter limit uint)
+  (extern (report [x : uint]) : void)
+  (state (n uint 0))
+  (on (key-pressed space) (when verbose (report limit)) state))
+
+(main Reporter
+  (flag verbose "--verbose" "report"))
+ZGAL
+)
+@(zgal-source hooked-source)
+@(generated-file hooked-source "example.zgal.h" #:from #rx"^// What the program's C[+][+] gives" #:to #rx"^Result<MainInputs>")
+
+@verbatim{
+#include "example.zgal.h"
+
+Result<example::MainInputs> example::mainInputs(VulkanContext&) {
+    return MainInputs{.limit = 10, .report = [](uint32_t x) { std::cout << x << std::endl; }};
+}
+}
+
+The generated main compiles the wrapper's implementation (@tt{VK_WRAP_UTIL_IMPL}), stb_image's
+and stb_image_write's (and the model loaders', if the program loads models), so the program's
+other files don't.
+
+@; -----------------------------------------------------------------------------------------------
 @section[#:tag "glsl"]{GLSL bodies}
 
 A material's shaders can be written in GLSL instead, listed in its @racket[shaders] clause, with
@@ -1822,10 +1959,14 @@ without assuming a backend, so other backends (e.g. WebGL) only add emitters.
   (list @tt{dsl/private/cpp-graph.rkt} "the C++ backend for graphs")
   (list @tt{dsl/private/app.rkt} "reading and checking apps")
   (list @tt{dsl/private/cpp-app.rkt} "the C++ backend for apps")
+  (list @tt{dsl/private/main.rkt} "reading and checking a program's main")
+  (list @tt{dsl/private/cpp-main.rkt} "the C++ backend for mains")
   (list @tt{dsl/private/cpp-common.rkt} "C++ spellings the backend's modules share")
   (list @tt{include/zgal/Runtime.h} "what the generated graphs use at runtime: FrameInfo, Uniform, Instance, addCountedDraw")
-  (list @tt{include/zgal/App.h} "what the generated apps use: events, Timestep")
-  (list @tt{include/zgal/Window.h} "running an app in a VulkanApp's window")
+  (list @tt{include/zgal/Material.h} "what the generated materials share: their checks and shaders")
+  (list @tt{include/zgal/App.h} "what the generated apps use: events, Timestep, RunMode")
+  (list @tt{include/zgal/Main.h} "what the generated mains use: the command line, validation, captures, running headless")
+  (list @tt{include/zgal/Window.h} "running an app in a VulkanApp's window, and windowed programs")
   (list @tt{dsl/docs/} "this document, and the helpers compiling its examples")
   (list @tt{dsl/tests/} "the compiler's tests (make test-dsl)"))]
 

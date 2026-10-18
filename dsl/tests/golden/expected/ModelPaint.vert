@@ -34,45 +34,45 @@ struct Packed {
     uint wide;
 #line 130 "dsl/tests/golden/features.zgal"
 };
-#line 368 "dsl/tests/golden/features.zgal"
+#line 379 "dsl/tests/golden/features.zgal"
 layout(push_constant) uniform ZgalPush {
-#line 370 "dsl/tests/golden/features.zgal"
+#line 381 "dsl/tests/golden/features.zgal"
     uint colors;
-#line 370 "dsl/tests/golden/features.zgal"
+#line 381 "dsl/tests/golden/features.zgal"
     uint factors;
-#line 370 "dsl/tests/golden/features.zgal"
+#line 381 "dsl/tests/golden/features.zgal"
     uint s;
-#line 368 "dsl/tests/golden/features.zgal"
+#line 379 "dsl/tests/golden/features.zgal"
 } materialPush;
-#line 370 "dsl/tests/golden/features.zgal"
+#line 381 "dsl/tests/golden/features.zgal"
 BINDLESS_BUFFER_ARRAY(readonly, ZGALBufferArray_vec4, vec4, zgalBufferArrays_vec4);
-#line 370 "dsl/tests/golden/features.zgal"
+#line 381 "dsl/tests/golden/features.zgal"
 BINDLESS_BUFFER_ARRAY(readonly, ZGALIndices, uint, zgalIndices);
-#line 370 "dsl/tests/golden/features.zgal"
+#line 381 "dsl/tests/golden/features.zgal"
 #define colors(i) (bindlessTextures[nonuniformEXT(zgalIndices[materialPush.colors].data[1u + uint(i)])])
-#line 370 "dsl/tests/golden/features.zgal"
+#line 381 "dsl/tests/golden/features.zgal"
 #define zgalLength_colors() (zgalIndices[materialPush.colors].data[0])
-#line 370 "dsl/tests/golden/features.zgal"
+#line 381 "dsl/tests/golden/features.zgal"
 #define factors() (zgalBufferArrays_vec4[materialPush.factors].data)
-#line 370 "dsl/tests/golden/features.zgal"
+#line 381 "dsl/tests/golden/features.zgal"
 #define s() (bindlessSamplers[materialPush.s])
-#line 361 "dsl/tests/golden/features.zgal"
+#line 372 "dsl/tests/golden/features.zgal"
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inTexCoord;
 layout(location = 3) in vec4 inTint;
 layout(location = 4) in uint inLayer;
-#line 371 "dsl/tests/golden/features.zgal"
+#line 382 "dsl/tests/golden/features.zgal"
 layout(location = 0) out vec2 uv;
-#line 371 "dsl/tests/golden/features.zgal"
+#line 382 "dsl/tests/golden/features.zgal"
 layout(location = 1) flat out uint m;
-#line 373 "dsl/tests/golden/features.zgal"
+#line 384 "dsl/tests/golden/features.zgal"
 void main() {
-#line 373 "dsl/tests/golden/features.zgal"
+#line 384 "dsl/tests/golden/features.zgal"
     gl_Position = vec4(inPosition, 1.0);
-#line 373 "dsl/tests/golden/features.zgal"
+#line 384 "dsl/tests/golden/features.zgal"
     uv = inTexCoord;
-#line 373 "dsl/tests/golden/features.zgal"
+#line 384 "dsl/tests/golden/features.zgal"
     m = uint(gl_InstanceIndex) + inLayer;
-#line 373 "dsl/tests/golden/features.zgal"
+#line 384 "dsl/tests/golden/features.zgal"
 }

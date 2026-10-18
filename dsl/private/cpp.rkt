@@ -11,6 +11,7 @@
          "cpp-common.rkt"
          "cpp-app.rkt"
          "cpp-graph.rkt"
+         "cpp-main.rkt"
          "features.rkt"
          "print-body.rkt"
          "parse.rkt"
@@ -484,6 +485,8 @@
   (for ([m (in-list materials)]) (emit-material! w prog m))
   (for ([g (in-list graphs)]) (emit-graph! w prog g))
   (for ([a (in-list apps)]) (emit-app! w prog a))
+  (when (program-main prog)
+    (emit-main-inputs! w prog (program-main prog)))
   (gen "")
   (gen (format "} // namespace ~a" (program-namespace prog)))
   (writer-text w))

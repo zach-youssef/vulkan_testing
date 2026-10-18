@@ -6,6 +6,7 @@
          racket/path
          "private/ast.rkt"
          "private/cpp.rkt"
+         "private/cpp-main.rkt"
          "private/errors.rkt"
          "private/glsl.rkt"
          "private/parse.rkt")
@@ -14,7 +15,8 @@
          (struct-out output)
          (struct-out exn:zgal)
          format-zgal-error
-         header-file-name)
+         header-file-name
+         main-file-name)
 
 ;; A generated file: where it goes and its contents
 (struct output (path text) #:transparent)
@@ -26,6 +28,10 @@
 (define (header-file-name source)
   (string-append (path->string (file-name-from-path source)) ".h"))
 
+;; Its main, for a program with one: e.g. scene.zgal.main.cpp
+(define (main-file-name source)
+  (string-append (path->string (file-name-from-path source)) ".main.cpp"))
+
 (define (join directory name)
   (path->string (simplify-path (build-path directory name) #f)))
 
@@ -34,8 +40,9 @@
 ;; returning #f if it doesn't exist. header-dir, shader-dir: where the outputs go. With check-only?,
 ;; stops after checking (so shader bodies aren't read).
 ;;
-;; Returns the program and the outputs: the header, then a shader per material shader. Raises
-;; exn:zgal for errors in the program.
+;; Returns the program and the outputs: the header, the main (<file>.main.cpp, beside the header)
+;; for a program with one, then a shader per material shader. Raises exn:zgal for errors in the
+;; program.
 (define (compile-zgal source
                       #:text [text #f]
                       #:read-body [read-body read-file-or-false]
@@ -68,4 +75,9 @@
                     (zgal-error 'shader-not-found (shader-loc s) "shader body ~a doesn't exist" (shader-path s)))))
          (define out-path (join shader-dir (shader-name s)))
          (output out-path (emit-shader prog m s body out-path #:glsl-files glsl-files))))
-     (values prog (cons (output header-path (emit-header prog header-path)) shaders))]))
+     (define main
+       (if (program-main prog)
+           (let ([path (join header-dir (main-file-name source))])
+             (list (output path (emit-main prog (program-main prog) (header-file-name source) path))))
+           '()))
+     (values prog (append (list (output header-path (emit-header prog header-path))) main shaders))]))

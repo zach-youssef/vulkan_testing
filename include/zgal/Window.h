@@ -2,6 +2,7 @@
 
 #include "app/VulkanApp.h"
 #include "zgal/App.h"
+#include "zgal/Main.h"
 
 #include <optional>
 
@@ -122,6 +123,78 @@ Result<void> run(VulkanApp& vulkanApp, App& app) {
         TRY(drawFrame(vulkanApp, app));
     }
     return vkCheck(vulkanApp.getContext().waitIdleAll(), "Failed to wait for the device");
+}
+
+/*
+ Runs a program with a window (a generated main's): interactively until the window closes or the app
+ quits, or for --frames N headless (or with --window, in the window), then the capture. create and
+ capture are as runHeadless's.
+ */
+template<typename App, typename Create, typename Capture>
+int runWindowed(const CommandLine& commandLine, const Launch& launch, Create&& create, Capture&& capture) {
+    const MainSpec& spec = commandLine.spec();
+    ValidationCounter validation;
+    std::optional<Captured> captured;
+    const Result<void> result = [&]() -> Result<void> {
+        AppConfig config;
+        config.applicationName = spec.program;
+        if (launch.window) {
+            config.window = WindowConfig{spec.window->title, launch.size.width, launch.size.height};
+        } else {
+            config.window = std::nullopt;
+        }
+        config.enableValidation = launch.validation;
+        config.enableSynchronizationValidation = launch.validation;
+        config.onValidationMessage = validation.handler();
+        config.logInstanceInfo = false;
+        config.features = App::requiredFeatures();
+        // Interactively, rebuilding the SPIR-V (make shaders) reloads it
+        config.autoReloadShaders = launch.window && !launch.frames;
+        VulkanApp vulkanApp;
+        TRY(vulkanApp.init(config));
+        VulkanContext& context = vulkanApp.getContext();
+        if (launch.validation && !context.validationEnabled()) {
+            return Error(ErrorCode::Unsupported, "--validation was given, but the validation layer is unavailable");
+        }
+        // Destroyed before the VulkanApp and its graphs
+        TRY_ASSIGN(auto app, create(context, launch, std::function<RenderGraph&()>([&]() -> RenderGraph& {
+            RenderGraph& graph = vulkanApp.createGraph();
+            if (!launch.window) {
+                graph.setSurfaceExtent(launch.size);
+            }
+            return graph;
+        })));
+        vulkanApp.setActiveGraph(app->renderGraph());
+        if (!launch.frames) {
+            for (const auto& line : spec.controls) {
+                std::cout << line << "\n";
+            }
+            std::cout << std::flush;
+            if (launch.plan) {
+                TRY(printPlan(app->renderGraph()));
+            }
+            return run(vulkanApp, *app);
+        }
+        if (launch.window) {
+            connect(vulkanApp, *app);
+        }
+        for (uint32_t frame = 0; frame < *launch.frames; ++frame) {
+            if (!vulkanApp.pollEvents() || app->quitRequested()) {
+                break;
+            }
+            TRY(drawFrame(vulkanApp, *app));
+            if (launch.plan && frame == 0) {
+                TRY(printPlan(app->renderGraph()));
+            }
+        }
+        VK_TRY(context.waitIdleAll(), "Failed to wait for the device");
+        if (launch.capture) {
+            TRY_ASSIGN(auto pixels, capture(*app));
+            captured = std::move(pixels);
+        }
+        return {};
+    }();
+    return finish(spec, launch, result, validation, captured);
 }
 
 } // namespace zgal

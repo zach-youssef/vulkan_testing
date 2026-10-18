@@ -43,7 +43,7 @@
     (command-line
      #:program "zgal"
      #:once-each
-     [("--cpp-out") dir "Write the C++ header to DIR/<file>.h" (set! cpp-out dir)]
+     [("--cpp-out") dir "Write the C++ header to DIR/<file>.h (and a program's main to DIR/<file>.main.cpp)" (set! cpp-out dir)]
      [("--glsl-out") dir "Write each shader to DIR/<shader name>" (set! glsl-out dir)]
      [("--depfile") file "Write a Makefile rule listing the inputs to FILE" (set! depfile file)]
      [("--dep-target") target "The target of the --depfile rule (default: the header)" (set! dep-target target)]
@@ -63,8 +63,11 @@
                     #:check-only? check-only?))
     (unless check-only?
       (define header (first outputs))
-      (when cpp-out (write-if-changed (output-path header) (output-text header)))
+      (define-values (cpp shaders)
+        (partition (λ (o) (regexp-match? #rx"[.](h|main[.]cpp)$" (output-path o))) outputs))
+      (when cpp-out
+        (for ([o (in-list cpp)]) (write-if-changed (output-path o) (output-text o))))
       (when glsl-out
-        (for ([o (in-list (rest outputs))]) (write-if-changed (output-path o) (output-text o))))
+        (for ([o (in-list shaders)]) (write-if-changed (output-path o) (output-text o))))
       (when depfile
         (write-if-changed depfile (dependency-rule (or dep-target (output-path header)) source prog))))))

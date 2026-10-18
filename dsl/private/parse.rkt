@@ -16,6 +16,7 @@
          "builtins.rkt"
          "graph.rkt"
          "layout.rkt"
+         "main.rkt"
          "names.rkt"
          "syntax.rkt")
 
@@ -763,6 +764,7 @@
 
   (define graphs (make-hash))   ; name -> graph
   (define-values (all-forms imports) (expand-imports forms source))
+  (define main-forms '())   ; (main ...) forms, parsed once the apps are
   (define-values (structs-out formats-out materials-out graphs-out apps-out)
     (for/fold ([ss '()] [fs '()] [ms '()] [gs '()] [as '()]
                #:result (values (reverse ss) (reverse fs) (reverse ms) (reverse gs) (reverse as)))
@@ -780,16 +782,23 @@
         ['app
          (values ss fs ms gs (cons (parse-app form parse-type top-level structs functions constants cpu-functions graphs)
                                    as))]
+        ['main (set! main-forms (append main-forms (list form))) (values ss fs ms gs as)]
         ['define (parse-define form items) (values ss fs ms gs as)]
         ['extern-glsl (parse-extern-glsl form items) (values ss fs ms gs as)]
         ['import (values ss fs ms gs as)]
         [_ (zgal-error 'unknown-form form
-                       "expected import, struct, vertex-format, define, extern-glsl, graphics-material, compute-material, graph or app, found ~a"
+                       "expected import, struct, vertex-format, define, extern-glsl, graphics-material, compute-material, graph, app or main, found ~a"
                        (let ([head (head-symbol form)]) (if head (format "(~a ...)" head) (show form))))])))
+  (define main-out
+    (match main-forms
+      ['() #f]
+      [(list f) (parse-main f apps-out)]
+      [(list* _ f _) (zgal-error 'duplicate-clause f "a file has one main")]))
   (program source structs-out formats-out (append materials-out kernel-materials) graphs-out
            (sort (append (hash-values functions) (hash-values constants)) <
                  #:key (λ (d) (hash-ref declaration-order (if (function-decl? d) (function-decl-name d) (constant-decl-name d)))))
            apps-out
+           main-out
            (append imports kernel-files)))
 
 ;; ---------------------------------------------------------------------------------------------

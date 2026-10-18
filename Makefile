@@ -58,6 +58,25 @@ $(2)/$(notdir $(1)).stamp: $(1) $(ZGAL_COMPILED) $(GLSL_INCLUDES)
 -include $(2)/$(notdir $(1)).d
 endef
 
+# A program whose main is generated (a .zgal file with a main): builds <out>/<binary> from the
+# generated <name>.zgal.main.cpp and the program's own C++, the .cpp files beside the .zgal file
+# (defining its MainInputs, if it has any), compiled with <out>/generated on the include path. Its
+# SPIR-V goes in <out>/shaders, beside it, where the shader library finds it. <libraries>: e.g.
+# $(GLFW_LDLIBS) for a program with a window.
+#   $(call zgal-program,<dir>/<name>.zgal,<out>,<binary>,<libraries>)
+define zgal-program
+$(call zgal-rule,$(1),$(2)/generated,$(2)/shaders)
+$(2)/$(notdir $(1)).main.o: $(2)/generated/$(notdir $(1)).stamp $$(HEADERS)
+	@mkdir -p $$(dir $$@)
+	$$(CC) -c -o $$@ $(2)/generated/$(notdir $(1)).main.cpp $$(CFLAGS) -I$(2)/generated
+$(if $(wildcard $(dir $(1))*.cpp),$(patsubst $(dir $(1))%.cpp,$(2)/%.o,$(wildcard $(dir $(1))*.cpp)): $(2)/%.o: $(dir $(1))%.cpp $(2)/generated/$(notdir $(1)).stamp $$(HEADERS)
+	@mkdir -p $$(dir $$@)
+	$$(CC) -c -o $$@ $$< $$(CFLAGS) -I$(2)/generated)
+$(2)/$(3): $(2)/$(notdir $(1)).main.o $(patsubst $(dir $(1))%.cpp,$(2)/%.o,$(wildcard $(dir $(1))*.cpp))
+	$$(CC) $$^ -o $$@ $$(LDFLAGS) $$(LDLIBS) $(4)
+	install_name_tool -add_rpath /usr/local/lib ./$$@
+endef
+
 # ---------------------------------------------------------------------------
 # Examples
 #   make            - build the simple example into build/examples/simple
@@ -179,7 +198,7 @@ test-example-scene: $(SCENE_OUT)/scene_example
 	./$< --frames 60 --size 640x360 --capture $(SCENE_OUT)/smoke.png
 
 # All the examples' smoke tests
-test-examples: test-example-image_filter test-example-particles test-example-scene
+test-examples: test-example-image_filter test-example-particles test-example-scene test-main
 
 examples: $(SIMPLE_OUT)/simple_example $(IMAGE_FILTER_BIN) $(PARTICLES_OUT)/particles $(SCENE_OUT)/scene_example
 
@@ -248,6 +267,22 @@ test-cpu: $(TEST_OUT)/cpu_tests
 test-gpu: $(TEST_OUT)/gpu_tests
 	./$< $(TEST_ARGS)
 
+# A program with a generated main and C++ inputs (tests/main): its command line, exit statuses,
+# hook and capture, with validation. Part of the examples' smoke tests, as it's a program.
+MAIN_TEST_OUT = $(TEST_OUT)/main
+MAIN_TEST_BIN = $(MAIN_TEST_OUT)/painter
+
+$(eval $(call zgal-program,$(TEST_DIR)/main/painter.zgal,$(MAIN_TEST_OUT),painter,))
+
+test-main: $(MAIN_TEST_BIN) $(IMAGE_FILTER_DIFF)
+	./$(MAIN_TEST_BIN) --help > /dev/null
+	./$(MAIN_TEST_BIN) > /dev/null 2>&1; test $$? -eq 2
+	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/out.png --level 2 > /dev/null 2>&1; test $$? -eq 2
+	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/missing.png $(MAIN_TEST_OUT)/out.png > /dev/null 2>&1; test $$? -eq 1
+	@rm -f $(MAIN_TEST_OUT)/out.png
+	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/out.png --level 0.5 --side 6 --frames 3 --validation
+	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/main/painted.approved.png $(MAIN_TEST_OUT)/out.png 0
+
 # The ZGAL compiler's tests, and its documentation, whose examples are compiled as it's built.
 # The tests compile generated code with the build's tools and flags.
 DOCS_OUT = $(OUT)/docs
@@ -274,7 +309,7 @@ approve-screenshots:
 	done
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
-.PHONY: clean examples shaders test test-cpu test-gpu test-dsl docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples
+.PHONY: clean examples shaders test test-cpu test-gpu test-dsl docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main
 
 
 clean:
