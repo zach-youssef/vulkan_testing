@@ -21,7 +21,7 @@
    "  (buffer values uint 1000 #:frames shared)\n"
    "  (buffer sums uint 1000 #:frames shared)\n"
    "  (buffer floats float 1000 #:frames shared)\n"
-   "  (buffer total float 4 #:frames shared)\n"
+   "  (buffer total float 4 #:frames per-frame)\n"
    "  (buffer counts uint 2 #:frames shared)\n"
    "  (inclusive-scan scan values sums #:op add #:count n)\n"
    "  (exclusive-scan before values sums #:op max #:count (at counts 1))\n"
@@ -44,8 +44,10 @@
   (check-true (string-contains? h "ZgalScanReduceUintAdd::workgroupsFor((std::min(std::max(((in->n(frame) + 255u) / 256u), 1u), 256u) * 256u))"))
   (check-true (string-contains? h "ZgalScanReduceUintMaxCounted::workgroupsFor((256u * 256u))"))
   (check-true (string-contains? h ".counts = graph.storageBufferEntry(buffer_counts)"))
-  ;; Their scratch buffers aren't the graph's ids
-  (check-true (string-contains? h "graph.createBuffer(\"zgal_scan_partials\", FrameMode::PerFrame, VkDeviceSize(256u) * sizeof(uint32_t))"))
+  ;; Their scratch buffers aren't the graph's ids. They're per frame only when what the node writes
+  ;; is: shared, each frame's node waits for the last's anyway.
+  (check-true (string-contains? h "graph.createBuffer(\"zgal_scan_partials\", FrameMode::Shared, VkDeviceSize(256u) * sizeof(uint32_t))"))
+  (check-true (string-contains? h "graph.createBuffer(\"zgal_smallest_partials\", FrameMode::PerFrame, VkDeviceSize(256u) * sizeof(float))"))
   (check-false (string-contains? h "BufferId zgal_scan_partials;"))
   ;; Minima and maxima scan with shuffles (Metal scans only sums); sums natively
   (check-true (string-contains? (named outputs "ZgalScanApplyUintMaxCountedExclusive.comp") "subgroupShuffle"))
@@ -163,7 +165,7 @@
    "  (upload uploaded keyData)\n"
    "  (import-buffer imported uint)\n"
    "  (buffer keys uint 1000 #:frames shared)\n"
-   "  (buffer ids float 1000 #:frames shared)\n"
+   "  (buffer ids float 1000 #:frames per-frame)\n"
    "  (buffer counts uint 2 #:frames shared)\n"
    "  (sort byKey keys #:values ids #:count (at counts 0))\n"
    "  (sort plain uploaded #:count n))\n"))
@@ -176,10 +178,11 @@
   (define h (named outputs ".zgal.h"))
   (check-true (string-contains? h "DispatchSequenceNode::withPushedUint(material_zgal_plain_scatter, ZgalSortScatterKeys::kPushOffset + offsetof(ZgalSortScatterKeys::Push, pass), 7u)"))
   (check-equal? (length (regexp-match* #rx"material_zgal_byKey_offsets}" h)) 8)
-  ;; Scratch buffers as large as the keys': the count, or with one on the GPU, the keys' buffer's
+  ;; Scratch buffers as large as the keys': the count, or with one on the GPU, the keys' buffer's.
+  ;; Per frame when the keys or values are (byKey's values), else shared.
   (check-true (string-contains? h "graph.createBuffer(\"zgal_byKey_keys\", FrameMode::PerFrame, VkDeviceSize(1000u) * sizeof(uint32_t))"))
   (check-true (string-contains? h "graph.createBuffer(\"zgal_byKey_values\", FrameMode::PerFrame, VkDeviceSize(1000u) * sizeof(float))"))
-  (check-true (string-contains? h "graph.createBuffer(\"zgal_plain_keys\", FrameMode::PerFrame, [=](const FrameContext& frameContext)")))
+  (check-true (string-contains? h "graph.createBuffer(\"zgal_plain_keys\", FrameMode::Shared, [=](const FrameContext& frameContext)")))
 
 (test-case "Sort nodes check their keys and values"
   (check-zgal-error (string-replace sort-program "(sort plain uploaded" "(sort plain ids") 'type-mismatch

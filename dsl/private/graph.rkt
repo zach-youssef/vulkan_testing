@@ -970,6 +970,19 @@
                          (lit 256))
               where)))
 
+  ;; The frame mode of a library node's scratch buffers, from the buffers it writes: shared when
+  ;; they all are, as then each frame's node waits for the previous frame's to finish writing them,
+  ;; and scratch buffers per frame would only cost memory (a sort's hold as many elements as its
+  ;; keys); else per frame, so frames' nodes can overlap. Imported buffers may be either.
+  (define (scratch-frames written)
+    (if (for/and ([b (in-list written)])
+          (match (entry-item (hash-ref env b))
+            [(g-buffer _ _ _ frames _ _) (eq? frames 'shared)]
+            [(g-upload _ _ _ _) #t]
+            [_ #f]))
+        'shared
+        'per-frame))
+
   ;; (sort name keys #:values values #:count n): sorts a buffer of uint keys in place, ascending (and
   ;; stably), moving the values with them
   (define (parse-sort-node node-name stx args options node)
@@ -1011,10 +1024,11 @@
     (define scratch-keys (internal "keys"))
     (define scratch-values (internal "values"))
     (define histogram (internal "histogram"))
-    (declare-internal! (g-buffer scratch-keys (scalar-t 'uint) capacity 'per-frame created-when where))
+    (define frames (scratch-frames (if values-buffer (list keys values-buffer) (list keys))))
+    (declare-internal! (g-buffer scratch-keys (scalar-t 'uint) capacity frames created-when where))
     (when values-buffer
-      (declare-internal! (g-buffer scratch-values value-type capacity 'per-frame created-when where)))
-    (declare-internal! (g-buffer histogram (scalar-t 'uint) (lit (* 16 256)) 'per-frame created-when where))
+      (declare-internal! (g-buffer scratch-values value-type capacity frames created-when where)))
+    (declare-internal! (g-buffer histogram (scalar-t 'uint) (lit (* 16 256)) frames created-when where))
     (define (instance! what m bindings push invocations)
       (define name (internal what))
       (declare-internal!
@@ -1172,7 +1186,8 @@
     (define (internal what) (format "zgal_~a_~a" node-name what))
     (define (declare-internal! item) (declare! item stx) (set! node-items (append node-items (list item))))
     (define partials (internal "partials"))
-    (declare-internal! (g-buffer partials t (lit 256) 'per-frame created-when where))
+    (declare-internal! (g-buffer partials t (lit 256) (scratch-frames (list (if reduce? (element-ref-buffer destination) destination)))
+                                 created-when where))
     ;; An instance of material m. bindings, push: hashes of names to resources and expressions.
     (define (instance! what m bindings push invocations)
       (define name (internal what))

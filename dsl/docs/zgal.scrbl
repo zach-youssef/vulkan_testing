@@ -1314,6 +1314,11 @@ operations). Keys move between their buffer and a scratch one, and end in their 
 buffers hold as many elements as the count, or with a count on the GPU, as the keys' buffer (a
 graph or uploaded buffer then, whose size the graph knows).
 
+Scratch buffers are shared by the frames in flight when every buffer the node writes is (a graph
+buffer with @racket[#:frames shared], or an uploaded one): each frame's node then waits for the
+previous frame's to finish with them anyway, so scratch buffers per frame would only cost memory.
+Otherwise there's one per frame, so frames' nodes can overlap.
+
 @subsection[#:tag "loops"]{Loops of nodes}
 
 Some graphs have a node per something: per batch of work the application computes, per pass of an
