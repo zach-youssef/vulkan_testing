@@ -19,6 +19,8 @@ Agents migrating code written against the pre-refactor wrapper (the `main` branc
 - `make test-dsl`: builds ZGAL's documentation and runs its compiler's tests (`make test` includes
   it). `make docs` only builds the documentation: `build/docs/zgal.html`, and
   `build/docs/zgal.txt` to read in a terminal.
+- `zgal.mk`: the make rules building ZGAL programs (`zgal-rule`, `zgal-program`), which the Makefile
+  and other projects' Makefiles include.
 - `tools/verify_stack.sh <repo> <base> [head]`: builds and tests every commit in a range (builds and
   CPU and ZGAL tests in parallel, GPU tests and example smoke tests one at a time). Check its exit
   codes, not filtered output.
@@ -268,7 +270,7 @@ int main() { return exitStatus(runApp()); }            // prints the error
 A `.zgal` file declares materials (their interface, declared once instead of in both the shaders
 and C++: bindings, push constants, vertex input, varyings, outputs and the structs their buffers
 hold), their shaders, in ZGAL's expression language, render graphs using them, and apps running a
-graph. The compiler (`dsl/zgal.rkt`, run by the Makefile's `zgal-rule`, which also compiles the
+graph. The compiler (`dsl/zgal.rkt`, run by `zgal.mk`'s `zgal-rule`, which also compiles the
 shaders) generates a header with a class per material, a struct per graph and a class per app (all
 in a namespace named after the file: `scene.zgal` gives `scene::SceneApp`), and the complete GLSL
 shaders. Prefer it
@@ -382,9 +384,9 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   parameters too, passed to graphs' path inputs), a `(window "title" w h)` (without one, headless
   only), the clock `(timestep #:max s #:fixed s)` and `(capture readback [#:to path-param])` written
   to a PNG. What options can't give (externs, meshes, imports, other parameters) the program's own
-  C++ gives by defining `Result<name::MainInputs> name::mainInputs(VulkanContext&)`. The Makefile's
-  `zgal-program` builds one (its own C++ is the `.cpp` files beside the `.zgal` file). Prefer it to a
-  handwritten `main`.
+  C++ gives by defining `Result<name::MainInputs> name::mainInputs(VulkanContext&)`. `zgal.mk`'s
+  `zgal-program` builds one (its own C++ is the `.cpp` files beside the `.zgal` file); other projects'
+  Makefiles include `zgal.mk` too. Prefer it to a handwritten `main`.
 - Never edit generated files (under `build/`): change the `.zgal` file (or a GLSL body).
 
 ### Shaders

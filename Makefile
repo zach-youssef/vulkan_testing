@@ -3,7 +3,7 @@ CC = /usr/bin/g++
 CXX = $(CC)
 
 # Include paths
-CFLAGS = -std=c++20 -Wc++11-extensions -Wc++14-extensions -I/usr/local/include -Ithird_party/stb -Ithird_party/cgltf -Ithird_party/tinyobjloader -I/Users/zyoussef/VulkanSDK/1.4.321.0/macOS/include/
+CFLAGS = -std=c++20 -Wc++11-extensions -Wc++14-extensions -I/usr/local/include -I/Users/zyoussef/VulkanSDK/1.4.321.0/macOS/include/
 CXXFLAGS = $(CFLAGS)
 
 # Library paths
@@ -14,71 +14,23 @@ LDLIBS = -lvulkan
 GLFW_LDLIBS = -lglfw
 
 OUT = build
-INCLUDE_DIR = include
+# The wrapper's include paths (zgal.mk's ZGAL_CFLAGS: include/ and the third-party libraries)
+CFLAGS += $(ZGAL_CFLAGS)
 
-CFLAGS += -I$(INCLUDE_DIR)
-
-HEADERS = $(shell find $(INCLUDE_DIR) -name '*.h')
+HEADERS = $(ZGAL_HEADERS)
 
 # Shaders include the library's GLSL (e.g. bindless.glsl)
-GLSL_INCLUDES = $(wildcard $(INCLUDE_DIR)/glsl/*.glsl)
-GLSLC_FLAGS = -I$(INCLUDE_DIR)/glsl --target-env=vulkan1.3
+GLSL_INCLUDES = $(ZGAL_GLSL_INCLUDES)
+GLSLC_FLAGS = $(ZGAL_GLSLC_FLAGS)
 
 # ---------------------------------------------------------------------------
 # ZGAL (dsl/): the shader interface language. Its compiler, in Racket, generates a C++ header and
-# complete shaders from a .zgal file. make docs builds its documentation.
+# complete shaders from a .zgal file. make docs builds its documentation. zgal.mk has the rules
+# building its programs, which other projects include too.
 # ---------------------------------------------------------------------------
-RACKET = racket
-RACO = raco
-DSL_DIR = dsl
-DSL_SRCS = $(wildcard $(DSL_DIR)/*.rkt $(DSL_DIR)/private/*.rkt)
-# The compiler, compiled (Racket keeps compiled code in compiled/ directories beside the sources)
-ZGAL_COMPILED = $(DSL_DIR)/compiled/zgal_rkt.zo
-ZGAL = $(RACKET) $(DSL_DIR)/zgal.rkt
-
-$(ZGAL_COMPILED): $(DSL_SRCS)
-	$(RACO) make $(DSL_DIR)/zgal.rkt
-
-# Generates <out>/<name>.zgal.h and <out>/shaders/<shader> from <dir>/<name>.zgal, and compiles the
-# shaders into <spv> (<spv>/<shader>.spv), with a depfile making the stamp depend on the files it
-# imports and its GLSL bodies:
-#   $(call zgal-rule,<dir>/<name>.zgal,<out>,<spv>)
-# GLSL bodies' includes are found in <dir>/shaders. Any change regenerates and recompiles them all.
-define zgal-rule
-$(2)/$(notdir $(1)).stamp: $(1) $(ZGAL_COMPILED) $(GLSL_INCLUDES)
-	@rm -rf $(2)/shaders
-	$(ZGAL) --cpp-out $(2) --glsl-out $(2)/shaders --depfile $(2)/$(notdir $(1)).d --dep-target $$@ $$<
-	@mkdir -p $(3)
-	@for shader in $(2)/shaders/*; do \
-		[ -e "$$$$shader" ] || continue; \
-		echo glslc $$$$shader; \
-		glslc $(GLSLC_FLAGS) -I$(dir $(1))shaders $$$$shader -o $(3)/$$$$(basename $$$$shader).spv || exit 1; \
-	done
-	@touch $$@
--include $(2)/$(notdir $(1)).d
-endef
-
-# A program whose main is generated (a .zgal file with a main): builds <out>/<binary> from the
-# generated <name>.zgal.main.cpp and the program's own C++, the .cpp files beside the .zgal file
-# (defining its MainInputs, if it has any), compiled with <out>/generated on the include path. Its
-# SPIR-V goes in <out>/shaders, and the files in <dir>/assets are copied to <out>/assets: beside it,
-# where the context finds them. <libraries>: e.g. $(GLFW_LDLIBS) for a program with a window.
-#   $(call zgal-program,<dir>/<name>.zgal,<out>,<binary>,<libraries>)
-define zgal-program
-$(call zgal-rule,$(1),$(2)/generated,$(2)/shaders)
-$(2)/$(notdir $(1)).main.o: $(2)/generated/$(notdir $(1)).stamp $$(HEADERS)
-	@mkdir -p $$(dir $$@)
-	$$(CC) -c -o $$@ $(2)/generated/$(notdir $(1)).main.cpp $$(CFLAGS) -I$(2)/generated
-$(if $(wildcard $(dir $(1))*.cpp),$(patsubst $(dir $(1))%.cpp,$(2)/%.o,$(wildcard $(dir $(1))*.cpp)): $(2)/%.o: $(dir $(1))%.cpp $(2)/generated/$(notdir $(1)).stamp $$(HEADERS)
-	@mkdir -p $$(dir $$@)
-	$$(CC) -c -o $$@ $$< $$(CFLAGS) -I$(2)/generated)
-$(2)/assets/%: $(dir $(1))assets/%
-	@mkdir -p $$(dir $$@)
-	cp $$< $$@
-$(2)/$(3): $(2)/$(notdir $(1)).main.o $(patsubst $(dir $(1))%.cpp,$(2)/%.o,$(wildcard $(dir $(1))*.cpp)) | $(patsubst $(dir $(1))assets/%,$(2)/assets/%,$(wildcard $(dir $(1))assets/*))
-	$$(CC) $$(filter %.o,$$^) -o $$@ $$(LDFLAGS) $$(LDLIBS) $(4)
-	install_name_tool -add_rpath /usr/local/lib ./$$@
-endef
+ZGAL_ROOT = .
+include zgal.mk
+DSL_DIR = $(ZGAL_DSL_DIR)
 
 # ---------------------------------------------------------------------------
 # Examples
@@ -279,7 +231,7 @@ test-bench: $(BENCH_BIN)
 # The tests compile generated code with the build's tools and flags.
 DOCS_OUT = $(OUT)/docs
 ZGAL_TEST_ENV = ZGAL_GLSLC='glslc' ZGAL_GLSLC_FLAGS='$(GLSLC_FLAGS:-I%=-I$(CURDIR)/%)' \
-                 ZGAL_CXX='$(CXX)' ZGAL_CXXFLAGS='$(subst -Iinclude,-I$(CURDIR)/include,$(subst -Ithird_party,-I$(CURDIR)/third_party,$(CXXFLAGS)))'
+                 ZGAL_CXX='$(CXX)' ZGAL_CXXFLAGS='$(subst -I./,-I$(CURDIR)/,$(CXXFLAGS))'
 
 test-dsl: $(ZGAL_COMPILED) docs
 	$(ZGAL_TEST_ENV) $(RACO) test $(DSL_DIR)/tests
