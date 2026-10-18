@@ -250,6 +250,12 @@
 ;; A step of a kernel node (a library algorithm, e.g. a scan): a dispatch of a material instance
 ;; (its name), with its push constant `pass` replaced by pass (an integer) if pass isn't #f
 (struct k-step (material pass) #:transparent)
+;; An indirect dispatch's or draw's commands: command, the first (an element-ref of a graph buffer
+;; of commands); draws, how many a draw draws (at most, with a count; a build-time expression), or
+;; #f for a dispatch; count, an element-ref of how many to draw, or #f. limit: for a count on devices
+;; without drawIndirectCount, the material instance copying the commands with those past the count
+;; given no instances, and the buffer it copies them into (names), or #f.
+(struct indirect (command draws count limit limited) #:transparent)
 ;; A buffer element, e.g. a count shaders wrote: the buffer's name and the element's index (a
 ;; build-time expression)
 (struct element-ref (buffer index loc) #:transparent)

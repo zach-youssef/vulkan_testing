@@ -953,3 +953,24 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL's compute library scans and reduces, counted by
         ctx.waitIdleAll();
     }
 }
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs dispatch and draw what shaders wrote, as many draws as a buffer says") {
+    auto& ctx = context();
+    // The second draw's first instance (1) draws green; none draws nothing, leaving the clear blue
+    const std::vector<std::pair<uint32_t, std::vector<uint8_t>>> cases{
+        {1, {255, 0, 0, 255}}, {2, {0, 255, 0, 255}}, {0, {0, 0, 255, 255}}};
+    for (const auto& [drawn, color] : cases) {
+        CAPTURE(drawn);
+        RenderGraph graph(ctx);
+        const IndirectGraph indirect = IndirectGraph::build(ctx, graph, IndirectGraph::Inputs{.groups = 5, .drawn = drawn}).value();
+        for (int frame = 0; frame < 3; ++frame) {
+            graph.execute().value();
+        }
+        // Workgroups 0 to 4
+        CHECK(indirect.readTallyContents(graph).value() == std::vector<uint32_t>{10});
+        const auto pixels = indirect.readPicturePixels(graph).value();
+        CHECK(std::vector<uint8_t>(pixels.begin(), pixels.begin() + 4) == color);
+        ctx.waitIdleAll();
+    }
+    CHECK(IndirectGraph::requiredFeatures().core.features.multiDrawIndirect == VK_TRUE);
+}

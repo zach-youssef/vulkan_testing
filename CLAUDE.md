@@ -301,6 +301,11 @@ writing ZGAL: it has the language, what's generated and every error. In short:
 - Vertex attributes can be stored packed, `(color vec4 #:as unorm8)` (`float16`, `unorm8/16`,
   `snorm8/16`, `uint8/16`, `int8/16`): shaders read the declared type, and the C++ struct holds
   GLM's sized types (fill them with `glm::packUnorm` etc., as the generated comments say).
+- GPU-driven work: shaders write the commands of `(import indirect)` (`DispatchCommand`,
+  `DrawCommand`, `DrawIndexedCommand`) into graph buffers, and `(dispatch d m #:indirect (at cmds i))`
+  or `(draw d target m #:indirect (at cmds i) #:draws n #:count (at counts j))` read them. Counts
+  use `drawIndirectCount` where the device has it, else a generated node first gives the commands
+  past the count no instances (MoltenVK lacks it).
 - The compute library: `(reduce n source (at dest i) #:op add|min|max #:count c)`,
   `(inclusive-scan n source dest ...)` and `(exclusive-scan ...)` nodes over buffers of uints, ints
   or floats. `#:count` is an expression or a GPU-written `(at counts i)`. The compiler instantiates

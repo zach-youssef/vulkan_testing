@@ -640,11 +640,11 @@
                         (cons 'depth-write (flag '#:depth-write))
                         (cons 'depth-compare (choice-option options '#:depth-compare compare-ops "material"))))
           '()))
+    ;; Optional: a material only dispatched indirectly has none
     (define invocations
       (and (not graphics?)
-           (let ([s (or (hash-ref options '#:invocations #f)
-                        (zgal-error 'bad-option stx "compute material ~a needs #:invocations (x [y [z]]): how many invocations to dispatch"
-                                    instance-name))])
+           (hash-ref options '#:invocations #f)
+           (let ([s (hash-ref options '#:invocations)])
              (define sizes (syntax->list s))
              (unless (and sizes (<= 1 (length sizes) 3))
                (zgal-error 'bad-option s "#:invocations is (x [y [z]])"))
@@ -718,6 +718,8 @@
                            ;; C++ adds and enables the nodes
                            [(extern) '(#:when)]
                            [(reduce inclusive-scan exclusive-scan) '(#:when #:enabled #:once #:op #:count)]
+                           [(dispatch) '(#:when #:enabled #:once #:indirect)]
+                           [(draw) '(#:when #:enabled #:once #:indirect #:draws #:count)]
                            [else '(#:when #:enabled #:once)])
                          form)
     (define (shape n text)
@@ -767,7 +769,12 @@
       ['dispatch
        (shape 2 "(dispatch name material)")
        (define-values (m-name _m) (material-of (second args) 'compute))
-       (node 'dispatch #:material m-name)]
+       (define command-stx (hash-ref options '#:indirect #f))
+       (unless (or command-stx (g-material-invocations (entry-item (hash-ref env m-name))))
+         (zgal-error 'bad-option (second args) "material ~a has no #:invocations, so dispatch ~a needs them, or dispatches it #:indirect (at commands index)"
+                     m-name node-name))
+       (node 'dispatch #:material m-name
+             #:extra (and command-stx (indirect (parse-command command-stx "DispatchCommand") #f #f #f #f)))]
       ['draw-meshes
        (shape 4 "(draw-meshes name target meshes material)")
        (define target (lookup (second args) '(target) "a target"))
@@ -786,13 +793,22 @@
          [_ (void)])
        (node 'draw-meshes #:target target #:material m-name #:subject meshes)]
       ['draw
-       (shape 4 "(draw name target material vertex-count)")
+       (define command-stx (hash-ref options '#:indirect #f))
+       (if command-stx
+           (shape 3 "(draw name target material #:indirect (at commands index) [#:draws n] [#:count (at counts index)])")
+           (shape 4 "(draw name target material vertex-count), or (draw name target material #:indirect (at commands index))"))
+       (unless command-stx
+         (for ([k (in-list '(#:draws #:count))] #:when (hash-ref options k #f))
+           (zgal-error 'bad-option (hash-ref options k) "~a is for draws with #:indirect" k)))
        (define target (lookup (second args) '(target) "a target"))
        (define-values (m-name m) (material-of (third args) 'graphics))
        (when (material-vertex-input m)
          (zgal-error 'material-kind (third args) "draw reads no vertex buffers, but material ~a (~a) has a vertex-input; draw it with draw-meshes"
                      m-name (material-name m)))
-       (node 'draw #:target target #:material m-name #:count (build-time (fourth args) (scalar-t 'uint) "a vertex count"))]
+       (if command-stx
+           (node 'draw #:target target #:material m-name
+                 #:extra (parse-indirect-draw command-stx "DrawCommand" node-name options stx))
+           (node 'draw #:target target #:material m-name #:count (build-time (fourth args) (scalar-t 'uint) "a vertex count")))]
       ['readback
        (shape 2 "(readback name image-or-buffer)")
        (node 'readback #:subject (lookup (second args) '(image import buffer import-buffer upload) "an image or buffer"))]
@@ -852,6 +868,66 @@
        (node 'extern #:subject (lookup (second args) '(extern) "an extern input"))]
       [(or 'reduce 'inclusive-scan 'exclusive-scan)
        (parse-kernel-node head node-name stx args options node)]))
+
+;; The commands of (import indirect), by name: their fields, which a buffer of commands holds
+  (define command-fields
+    (hash "DispatchCommand" '(("x" uint) ("y" uint) ("z" uint))
+          "DrawCommand" '(("vertexCount" uint) ("instanceCount" uint) ("firstVertex" uint) ("firstInstance" uint))
+          "DrawIndexedCommand" '(("indexCount" uint) ("instanceCount" uint) ("firstIndex" uint) ("vertexOffset" int) ("firstInstance" uint))))
+
+  ;; #:indirect (at commands index): the first command, in a graph buffer of the command struct
+  ;; (whose usage the graph derives, so it's an indirect buffer)
+  (define (parse-command stx struct-name)
+    (match (syntax->list stx)
+      [(list at-stx buffer-stx index-stx) #:when (eq? (syntax-e at-stx) 'at)
+       (define buffer (lookup buffer-stx '(buffer) "a graph buffer"))
+       (define t (entry-type (hash-ref env buffer)))
+       (define expected (hash-ref command-fields struct-name))
+       (unless (and (struct-t? t)
+                    (equal? (struct-decl-name (struct-t-decl t)) struct-name)
+                    (equal? (for/list ([f (in-list (struct-decl-fields (struct-t-decl t)))])
+                              (list (field-name f) (type-name (field-type f))))
+                            (map (λ (f) (list (first f) (symbol->string (second f)))) expected)))
+         (zgal-error 'type-mismatch buffer-stx "#:indirect reads ~as, (import indirect), but ~a holds ~a" struct-name buffer (type-name t)))
+       (element-ref buffer (build-time index-stx (scalar-t 'uint) "a command's index") (stx->loc stx))]
+      [_ (zgal-error 'malformed stx "#:indirect is the first command's place in a buffer, (at commands index), not ~a" (show stx))]))
+
+  ;; An indirect draw's commands: #:draws of them (default 1), or with #:count, as many as a buffer
+  ;; element says. Devices without drawIndirectCount get a node copying the commands with those
+  ;; past the count given no instances (declared here, used only on such devices).
+  (define (parse-indirect-draw command-stx struct-name node-name options stx)
+    (define command (parse-command command-stx struct-name))
+    (define where (stx->loc stx))
+    (define draws
+      (let ([d (hash-ref options '#:draws #f)])
+        (if d (build-time d (scalar-t 'uint) "#:draws") (e-literal 1 where))))
+    (define count-stx (hash-ref options '#:count #f))
+    (cond
+      [(not count-stx) (indirect command draws #f #f #f)]
+      [else
+       (define count (parse-element count-stx "a draw's #:count"))
+       (define t (entry-type (hash-ref env (element-ref-buffer command))))
+       (define limit-material
+         (hash-ref (instantiate-kernel "draws.zgal" (hash 'T (string->symbol struct-name)) '() (if (equal? struct-name "DrawCommand") "Draw" "DrawIndexed"))
+                   "ZgalLimitDraws"))
+       (define limited (format "zgal_~a_commands" node-name))
+       (define limit (format "zgal_~a_limit" node-name))
+       (define (declare-internal! item) (declare! item stx) (set! node-items (append node-items (list item))))
+       (declare-internal! (g-buffer limited t draws 'per-frame (condition options '#:when) where))
+       (declare-internal!
+        (g-material limit limit-material
+                    (for/list ([b (in-list (material-bindings limit-material))])
+                      (cons b (case (binding-name b)
+                                [("commands") (element-ref-buffer command)]
+                                [("limited") limited]
+                                [("counts") (element-ref-buffer count)])))
+                    (for/list ([f (in-list (material-push limit-material))])
+                      (cons f (case (field-name f)
+                                [("first") (element-ref-index command)]
+                                [("countIndex") (element-ref-index count)]
+                                [("draws") draws])))
+                    '() (list draws) where))
+       (indirect command draws count limit limited)]))
 
   ;; (at buffer index): an element of a buffer of uints (or of type), e.g. a count a shader wrote
   (define (parse-element stx what #:type [type (scalar-t 'uint)])
@@ -970,7 +1046,8 @@
   (for ([item (in-list graph-items)] #:when (g-material? item))
     (define users (filter (λ (n) (or (equal? (g-node-material n) (g-material-name item))
                                      (and (eq? (g-node-kind n) 'kernel)
-                                          (for/or ([step (in-list (g-node-extra n))]) (equal? (k-step-material step) (g-material-name item))))))
+                                          (for/or ([step (in-list (g-node-extra n))]) (equal? (k-step-material step) (g-material-name item))))
+                                     (and (indirect? (g-node-extra n)) (equal? (indirect-limit (g-node-extra n)) (g-material-name item)))))
                           nodes))
     (when (null? users)
       (zgal-error 'unused-material (g-material-loc item) "no node uses material ~a" (g-material-name item)))

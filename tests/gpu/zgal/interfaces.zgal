@@ -495,3 +495,53 @@
   (readback readMaxima maxima)
   (readback readResults results)
   (readback readFloatResults floatResults))
+
+;; GPU-driven work: a shader writes a dispatch's size and draws (and how many to draw), which later
+;; nodes read
+(import indirect)
+
+(compute-material WriteCommands
+  (workgroup 1)
+  (bindings
+   (dispatches (buffer-array DispatchCommand))
+   (draws (buffer-array DrawCommand))
+   (drawCounts (buffer-array uint)))
+  (push (groups uint) (drawn uint))
+  (compute
+   (write! (at dispatches 1) (DispatchCommand groups 1 1))
+   (write! (at draws 0) (DrawCommand 3 1 0 0))
+   (write! (at draws 1) (DrawCommand 3 1 0 1))
+   (write! (at drawCounts 0) drawn)))
+
+(compute-material CountGroups
+  (workgroup 1)
+  (bindings (tally (buffer-array uint)))
+  (compute (atomic-add! (at tally 0) workgroupId.x)))
+
+;; A triangle covering the target: red for instance 0, green for the others
+(graphics-material InstanceColor
+  (varyings (instance uint flat))
+  (outputs (color vec4))
+  (vertex
+   (let* ([corner (vec2 (float (bitand vertexIndex 2)) (float (bitand (shl vertexIndex 1) 2)))])
+     (results #:position (vec4 (- (* corner 2.0) 1.0) 0.0 1.0) #:instance (uint instanceIndex))))
+  (fragment (if (= instance 0) (vec4 1.0 0.0 0.0 1.0) (vec4 0.0 1.0 0.0 1.0))))
+
+(graph IndirectGraph
+  (parameter groups uint)
+  (parameter drawn uint)
+  (buffer dispatches DispatchCommand 2 #:frames shared)
+  (buffer draws DrawCommand 2 #:frames per-frame)
+  (buffer drawCounts uint 1 #:frames per-frame)
+  (buffer tally uint 1 #:frames shared)
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  (target canvas (color picture #:clear (0.0 0.0 1.0 1.0)))
+  (material writing WriteCommands dispatches draws drawCounts #:push ((groups groups) (drawn drawn)) #:invocations (1))
+  (material counting CountGroups tally)
+  (material coloring InstanceColor)
+  (dispatch write writing)
+  (clear reset tally)
+  (dispatch count counting #:indirect (at dispatches 1))
+  (draw paint canvas coloring #:indirect (at draws 0) #:draws 2 #:count (at drawCounts 0))
+  (readback readTally tally)
+  (readback readPicture picture))

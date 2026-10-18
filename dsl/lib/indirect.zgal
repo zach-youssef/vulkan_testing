@@ -1,0 +1,25 @@
+;; ZGAL's standard library: indirect commands, which shaders write and graphs' dispatch and draw
+;; nodes read (#:indirect). (import indirect)
+;; They're Vulkan's VkDispatchIndirectCommand, VkDrawIndirectCommand and
+;; VkDrawIndexedIndirectCommand, field for field.
+
+;; How many workgroups to dispatch
+(struct DispatchCommand
+  (x uint)
+  (y uint)
+  (z uint))
+
+;; A draw of vertexCount vertices, instanceCount times; nothing for 0 instances
+(struct DrawCommand
+  (vertexCount uint)
+  (instanceCount uint)
+  (firstVertex uint)
+  (firstInstance uint))
+
+;; An indexed draw: indexCount indices from firstIndex, each added to vertexOffset
+(struct DrawIndexedCommand
+  (indexCount uint)
+  (instanceCount uint)
+  (firstIndex uint)
+  (vertexOffset int)
+  (firstInstance uint))

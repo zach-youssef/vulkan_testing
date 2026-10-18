@@ -281,6 +281,12 @@
   (gen "        DeviceFeatures features;")
   (for ([type (in-list (remove-duplicates (map (λ (mi) (material-name (g-material-material mi))) materials)))])
     (gen (format "        features.add(~a::requiredFeatures());" type)))
+  ;; Indirect draws of more than one command
+  (when (for/or ([n (in-list nodes)])
+          (match (g-node-extra n)
+            [(indirect _ draws _ _ _) (and draws (not (equal? (e-literal-value* draws) 1)))]
+            [_ #f]))
+    (gen "        features.core.features.multiDrawIndirect = VK_TRUE;   // Indirect draws of several commands"))
   (gen "        return features;")
   (gen "    }")
   (gen "")
@@ -508,9 +514,10 @@
                     (and (option 'depth-test) (format ".depthTest = ~a" (if (eq? (option 'depth-test) 'yes) "true" "false")))
                     (and (option 'depth-write) (format ".depthWrite = ~a" (if (eq? (option 'depth-write) 'yes) "true" "false")))
                     (and (option 'depth-compare) (format ".depthCompare = ~a" (compare-op (option 'depth-compare)))))))
-    ;; Graphics materials don't dispatch; compute materials' workgroups are computed each frame
+    ;; Graphics materials don't dispatch, nor do compute materials only dispatched indirectly;
+    ;; others' workgroups are computed each frame
     (define dispatch
-      (if graphics?
+      (if (or graphics? (not (g-material-invocations mi)))
           "nullptr"
           (format "[~a](const zgal::FrameInfo& frame) { return ~a::workgroupsFor(~a); }"
                   (frame-captures (g-material-invocations mi) env) type
@@ -535,9 +542,29 @@
   (for ([n (in-list nodes)])
     (define (line text) (emit! w text #:at (g-node-loc n)))
     (define node-name (g-node-name n))
+    ;; An indirect command's place: a BufferOffset
+    (define (command-offset ref)
+      (format "BufferOffset{~a, VkDeviceSize(~a) * sizeof(~a)}" (resource-ref (element-ref-buffer ref))
+              (build-expr (element-ref-index ref) (scalar-t 'uint)) (cpp-type (entry-type (hash-ref env (element-ref-buffer ref))))))
+    (define spec (and (indirect? (g-node-extra n)) (g-node-extra n)))
+    (define (draw-desc commands)
+      (format "IndirectDrawNode::Desc{.material = material_~a, .target = target_~a, .commands = ~a, .maxDraws = ~a}"
+              (g-node-material n) (g-node-target n) commands (build-expr (indirect-draws spec) (scalar-t 'uint))))
+    (define counted? (and spec (indirect-count spec) #t))
     (define create
       (match (g-node-kind n)
+        ['dispatch
+         #:when spec
+         (format "graph.add<DispatchNode>(~a, material_~a, ~a)" (cpp-string node-name) (g-node-material n) (command-offset (indirect-command spec)))]
         ['dispatch (format "graph.add<DispatchNode>(~a, material_~a)" (cpp-string node-name) (g-node-material n))]
+        ['draw
+         #:when counted?
+         (format "zgal::addCountedDraw(graph, ~a, ~a, ~a, material_~a, ~a)" (cpp-string node-name)
+                 (draw-desc (command-offset (indirect-command spec))) (command-offset (indirect-count spec))
+                 (indirect-limit spec) (resource-ref (indirect-limited spec)))]
+        ['draw
+         #:when spec
+         (format "graph.add<IndirectDrawNode>(~a, ~a)" (cpp-string node-name) (draw-desc (command-offset (indirect-command spec))))]
         ['draw-meshes (format "graph.add<RenderablesNode>(~a, std::move(renderables), target_~a)" (cpp-string node-name) (g-node-target n))]
         ['draw
          (format "graph.addGraphics(~a, [target = target_~a, material = material_~a](NodeBuilder& builder) { builder.renderTo(target).uses(material); }, [material = material_~a, count = ~a](RecordContext& record) { material->bind(record.commandBuffer, record.frameIndex); vkCmdDraw(record.commandBuffer, count, 1, 0, 0); })"
@@ -612,6 +639,17 @@
       [(eq? (g-node-kind n) 'extern)
        ;; C++ adds the nodes, with the ids so far (its nodes may use the graph's resources)
        (line (format "            result.nodes.~a = in->~a(graph, result);" node-name (g-node-subject n)))]
+      [counted?
+       ;; The draw, after the node limiting its commands where the device can't count: both
+       ;; enabled and run alike
+       (line (format "            const zgal::CountedDraw counted = ~a;" create))
+       (line "            for (const NodeId node : counted.nodes()) {")
+       (when (g-node-enabled n)
+         (line (format "                graph.setEnabled(node, ~a);" (build-expr (g-node-enabled n) (scalar-t 'bool)))))
+       (when (g-node-once? n)
+         (line "                graph.runOnce(node);"))
+       (line "            }")
+       (line (format "            result.nodes.~a = counted.draw;" node-name))]
       [else
        (line (format "            const NodeId node = ~a;" create))
        (when (g-node-enabled n)
@@ -623,6 +661,9 @@
   (gen "        return result;")
   (gen "    }")
   (emit! w "};" #:at (graph-loc g)))
+
+;; A literal expression's value, or #f
+(define (e-literal-value* e) (and (e-literal? e) (e-literal-value e)))
 
 (define (item-loc item)
   (match item

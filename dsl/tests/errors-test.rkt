@@ -169,7 +169,7 @@
   (check-zgal-error (string-append fill-material
                                    "(graph G\n  (buffer b Data 4 #:frames shared)\n"
                                    "  (material fill Fill (data b) #:push ((scale 1.0)))\n  (dispatch run fill))")
-                    'bad-option "needs #:invocations"))
+                    'bad-option "has no #:invocations, so dispatch run needs them"))
 
 (test-case "draw-meshes needs a material with vertex input, and draw one without"
   (check-zgal-error (string-append "(graphics-material Flat (shaders \"f.vert\" \"f.frag\") (outputs (color vec4)))\n"

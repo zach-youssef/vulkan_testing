@@ -1,0 +1,19 @@
+;; ZGAL's compute library: draw counts on devices without drawIndirectCount (MoltenVK's), for draw
+;; nodes with #:indirect and #:count. Not a module to import: the compiler instantiates it for the
+;; commands' struct, substituting T (DrawCommand or DrawIndexedCommand, from (import indirect)).
+;;
+;; Copies the draw's commands, giving those past the count no instances, so drawing all of them
+;; draws as many as the count says.
+(compute-material ZgalLimitDraws
+  (workgroup 64)
+  (bindings
+   (commands (buffer-array T))
+   (limited (buffer-array T))
+   (counts (buffer-array uint)))
+  ;; first: the first command's index; draws: how many the node draws at most
+  (push (first uint) (countIndex uint) (draws uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i draws)
+       (let* ([command (at commands (+ first i))])
+         (write! (at limited i) (if (< i (at counts countIndex)) command (with command #:instanceCount 0))))))))

@@ -6,6 +6,7 @@
 #include "graph/RenderGraph.h"
 #include "graph/nodes/DispatchNode.h"
 #include "graph/nodes/DispatchSequenceNode.h"
+#include "graph/nodes/IndirectDrawNode.h"
 #include "graph/nodes/ReadbackNode.h"
 #include "graph/nodes/RenderablesNode.h"
 #include "graph/nodes/BufferReadbackNode.h"
@@ -48,7 +49,7 @@ static_assert(sizeof(Light) == 32, "Light must be 32 bytes, as in the shaders (s
 static_assert(offsetof(Light, direction) == 0, "Light::direction must be at byte 0, as in the shaders (std430)");
 static_assert(offsetof(Light, intensity) == 12, "Light::intensity must be at byte 12, as in the shaders (std430)");
 static_assert(offsetof(Light, color) == 16, "Light::color must be at byte 16, as in the shaders (std430)");
-#line 52 "build/generated/features.zgal.h"
+#line 53 "build/generated/features.zgal.h"
 
 // struct Lights: std430, as the shaders see it
 #line 13 "dsl/tests/golden/features.zgal"
@@ -63,7 +64,7 @@ struct Lights {
 static_assert(sizeof(Lights) == 144, "Lights must be 144 bytes, as in the shaders (std430). Is GLM_FORCE_DEFAULT_ALIGNED_GENTYPES defined?");
 static_assert(offsetof(Lights, count) == 0, "Lights::count must be at byte 0, as in the shaders (std430)");
 static_assert(offsetof(Lights, lights) == 16, "Lights::lights must be at byte 16, as in the shaders (std430)");
-#line 67 "build/generated/features.zgal.h"
+#line 68 "build/generated/features.zgal.h"
 
 // struct Packed: std430, as the shaders see it
 #line 130 "dsl/tests/golden/features.zgal"
@@ -84,7 +85,7 @@ static_assert(offsetof(Packed, level) == 2, "Packed::level must be at byte 2, as
 static_assert(offsetof(Packed, bytes) == 4, "Packed::bytes must be at byte 4, as in the shaders (std430)");
 static_assert(offsetof(Packed, offset) == 7, "Packed::offset must be at byte 7, as in the shaders (std430)");
 static_assert(offsetof(Packed, wide) == 8, "Packed::wide must be at byte 8, as in the shaders (std430)");
-#line 88 "build/generated/features.zgal.h"
+#line 89 "build/generated/features.zgal.h"
 
 // vertex-format MeshVertex: read from vertex buffers as C++ lays it out
 #line 17 "dsl/tests/golden/features.zgal"
@@ -99,7 +100,7 @@ struct MeshVertex {
     alignas(4) glm::u16vec4 joints;   // uint16, read as uvec4
 #line 17 "dsl/tests/golden/features.zgal"
 };
-#line 103 "build/generated/features.zgal.h"
+#line 104 "build/generated/features.zgal.h"
 
 // vertex-format ModelVertex: read from vertex buffers as C++ lays it out
 #line 341 "dsl/tests/golden/features.zgal"
@@ -109,7 +110,7 @@ struct ModelVertex {
     glm::vec2 texCoord;
     alignas(4) glm::u8vec4 tint;   // unorm8, read as vec4; convert with glm::packUnorm<uint8_t>
     uint32_t layer;
-#line 113 "build/generated/features.zgal.h"
+#line 114 "build/generated/features.zgal.h"
 
     // A model primitive's vertices (graphs' models): position from positions, normal from normals, texCoord from uvs, tint from its default, layer from its default
     static Result<std::vector<ModelVertex>> fromModel(const ModelPrimitive& primitive) {
@@ -124,7 +125,7 @@ struct ModelVertex {
             return Error(ErrorCode::InvalidData, "the model has no uvs, which ModelVertex's texCoord reads (or give it a #:default)");
 #line 344 "dsl/tests/golden/features.zgal"
         }
-#line 128 "build/generated/features.zgal.h"
+#line 129 "build/generated/features.zgal.h"
         std::vector<ModelVertex> vertices(primitive.positions.size());
         for (size_t i = 0; i < vertices.size(); ++i) {
 #line 342 "dsl/tests/golden/features.zgal"
@@ -133,13 +134,13 @@ struct ModelVertex {
             vertices[i].texCoord = primitive.uvs[i];
             vertices[i].tint = glm::packUnorm<uint8_t>(glm::vec4(1.0f, 1.0f, 1.0f, 1.0f));
             vertices[i].layer = 0u;
-#line 137 "build/generated/features.zgal.h"
+#line 138 "build/generated/features.zgal.h"
         }
         return vertices;
     }
 #line 341 "dsl/tests/golden/features.zgal"
 };
-#line 143 "build/generated/features.zgal.h"
+#line 144 "build/generated/features.zgal.h"
 
 // The file's functions and constants, compiled for the CPU too (those using no textures,
 // images or stage variables)
@@ -224,12 +225,12 @@ inline glm::vec3 polish(glm::vec3 x, int32_t n) {
     return scaled + glm::vec3(sum, golden, static_cast<float>((1 << n) ^ 3));
 #line 62 "dsl/tests/golden/features.zgal"
 }
-#line 228 "build/generated/features.zgal.h"
+#line 229 "build/generated/features.zgal.h"
 
 // graphics-material Surface (surface.vert, surface.frag)
 #line 24 "dsl/tests/golden/features.zgal"
 class Surface : public GraphicsMaterial {
-#line 233 "build/generated/features.zgal.h"
+#line 234 "build/generated/features.zgal.h"
 public:
     // The descriptor entries the shaders use (an array's: DescriptorArray::create). Their
     // indices are pushed in this order.
@@ -240,7 +241,7 @@ public:
         FrameBinding<DescriptorEntry> albedo;   // texture, fragment shader
         FrameBinding<DescriptorEntry> albedoSampler;   // sampler
         FrameBinding<DescriptorEntry> mask;   // (storage-image read), fragment shader
-#line 244 "build/generated/features.zgal.h"
+#line 245 "build/generated/features.zgal.h"
     };
 
     // Push constants after the binding indices, filled by writePush whenever the material is bound
@@ -258,7 +259,7 @@ public:
 #line 34 "dsl/tests/golden/features.zgal"
     static_assert(offsetof(Push, object) == 0, "Push::object must be at byte 0, as in the shaders (std430)");
     static_assert(offsetof(Push, tint) == 12, "Push::tint must be at byte 12, as in the shaders (std430)");
-#line 262 "build/generated/features.zgal.h"
+#line 263 "build/generated/features.zgal.h"
     // Where Push starts in the push constants, and where they end
     static constexpr uint32_t kPushOffset = 20;
     static constexpr uint32_t kPushEnd = 44;
@@ -285,7 +286,7 @@ public:
         TRY_ASSIGN(auto vertex, context.shaders().get("surface.vert"));
 #line 25 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto fragment, context.shaders().get("surface.frag"));
-#line 289 "build/generated/features.zgal.h"
+#line 290 "build/generated/features.zgal.h"
         return Shaders(std::move(vertex), std::move(fragment));
     }
 
@@ -304,7 +305,7 @@ public:
 #line 20 "dsl/tests/golden/features.zgal"
             {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(MeshVertex, uv)},
             {3, 0, VK_FORMAT_R32_UINT, offsetof(MeshVertex, material)},
-#line 308 "build/generated/features.zgal.h"
+#line 309 "build/generated/features.zgal.h"
         });
     }
 
@@ -340,7 +341,7 @@ private:
             MaterialBinding{std::move(bindings.albedo), Access::SampledRead, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT},
             MaterialBinding{std::move(bindings.albedoSampler), Access::SampledRead, 0},
             MaterialBinding{std::move(bindings.mask), Access::StorageRead, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT},
-#line 344 "build/generated/features.zgal.h"
+#line 345 "build/generated/features.zgal.h"
         };
     }
 
@@ -388,12 +389,12 @@ private:
     }
 #line 24 "dsl/tests/golden/features.zgal"
 };
-#line 392 "build/generated/features.zgal.h"
+#line 393 "build/generated/features.zgal.h"
 
 // compute-material Accumulate (accumulate.comp)
 #line 45 "dsl/tests/golden/features.zgal"
 class Accumulate : public ComputeMaterial {
-#line 397 "build/generated/features.zgal.h"
+#line 398 "build/generated/features.zgal.h"
 public:
     // The descriptor entries the shaders use (an array's: DescriptorArray::create). Their
     // indices are pushed in this order.
@@ -402,7 +403,7 @@ public:
         FrameBinding<DescriptorEntry> lights;   // (buffer Lights read)
         FrameBinding<DescriptorEntry> sums;   // (buffer-array float read-write)
         FrameBinding<DescriptorEntry> target;   // (storage-image write)
-#line 406 "build/generated/features.zgal.h"
+#line 407 "build/generated/features.zgal.h"
     };
 
     // The shaders Accumulate is generated for (loadShaders), so it can't be built from shaders with
@@ -422,7 +423,7 @@ public:
     static Result<Shaders> loadShaders(VulkanContext& context) {
 #line 46 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto compute, context.shaders().get("accumulate.comp"));
-#line 426 "build/generated/features.zgal.h"
+#line 427 "build/generated/features.zgal.h"
         return Shaders(std::move(compute));
     }
 
@@ -460,7 +461,7 @@ private:
             MaterialBinding{std::move(bindings.lights), Access::StorageBufferRead, 0},
             MaterialBinding{std::move(bindings.sums), Access::StorageBufferReadWrite, 0},
             MaterialBinding{std::move(bindings.target), Access::StorageWrite, 0},
-#line 464 "build/generated/features.zgal.h"
+#line 465 "build/generated/features.zgal.h"
         };
     }
 
@@ -493,12 +494,12 @@ private:
 
 #line 45 "dsl/tests/golden/features.zgal"
 };
-#line 497 "build/generated/features.zgal.h"
+#line 498 "build/generated/features.zgal.h"
 
 // graphics-material Plain (plain.vert, plain.frag)
 #line 54 "dsl/tests/golden/features.zgal"
 class Plain : public GraphicsMaterial {
-#line 502 "build/generated/features.zgal.h"
+#line 503 "build/generated/features.zgal.h"
 public:
     // The shaders Plain is generated for (loadShaders), so it can't be built from shaders with
     // another interface
@@ -521,7 +522,7 @@ public:
         TRY_ASSIGN(auto vertex, context.shaders().get("plain.vert"));
 #line 55 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto fragment, context.shaders().get("plain.frag"));
-#line 525 "build/generated/features.zgal.h"
+#line 526 "build/generated/features.zgal.h"
         return Shaders(std::move(vertex), std::move(fragment));
     }
 
@@ -559,12 +560,12 @@ private:
     }
 #line 54 "dsl/tests/golden/features.zgal"
 };
-#line 563 "build/generated/features.zgal.h"
+#line 564 "build/generated/features.zgal.h"
 
 // graphics-material Shaded (Shaded.vert, Shaded.frag)
 #line 87 "dsl/tests/golden/features.zgal"
 class Shaded : public GraphicsMaterial {
-#line 568 "build/generated/features.zgal.h"
+#line 569 "build/generated/features.zgal.h"
 public:
     // The descriptor entries the shaders use (an array's: DescriptorArray::create). Their
     // indices are pushed in this order.
@@ -573,7 +574,7 @@ public:
         FrameBinding<DescriptorEntry> lights;   // (buffer Lights read), fragment shader
         FrameBinding<DescriptorEntry> albedo;   // texture, fragment shader
         FrameBinding<DescriptorEntry> albedoSampler;   // sampler
-#line 577 "build/generated/features.zgal.h"
+#line 578 "build/generated/features.zgal.h"
     };
 
     // Push constants after the binding indices, filled by writePush whenever the material is bound
@@ -587,7 +588,7 @@ public:
     static_assert(sizeof(Push) == 12, "Push must be 12 bytes, as in the shaders (std430). Is GLM_FORCE_DEFAULT_ALIGNED_GENTYPES defined?");
 #line 94 "dsl/tests/golden/features.zgal"
     static_assert(offsetof(Push, tint) == 0, "Push::tint must be at byte 0, as in the shaders (std430)");
-#line 591 "build/generated/features.zgal.h"
+#line 592 "build/generated/features.zgal.h"
     // Where Push starts in the push constants, and where they end
     static constexpr uint32_t kPushOffset = 16;
     static constexpr uint32_t kPushEnd = 28;
@@ -614,7 +615,7 @@ public:
         TRY_ASSIGN(auto vertex, context.shaders().get("Shaded.vert"));
 #line 104 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto fragment, context.shaders().get("Shaded.frag"));
-#line 618 "build/generated/features.zgal.h"
+#line 619 "build/generated/features.zgal.h"
         return Shaders(std::move(vertex), std::move(fragment));
     }
 
@@ -633,7 +634,7 @@ public:
 #line 20 "dsl/tests/golden/features.zgal"
             {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(MeshVertex, uv)},
             {3, 0, VK_FORMAT_R32_UINT, offsetof(MeshVertex, material)},
-#line 637 "build/generated/features.zgal.h"
+#line 638 "build/generated/features.zgal.h"
         });
     }
 
@@ -665,7 +666,7 @@ private:
             MaterialBinding{std::move(bindings.lights), Access::StorageBufferRead, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT},
             MaterialBinding{std::move(bindings.albedo), Access::SampledRead, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT},
             MaterialBinding{std::move(bindings.albedoSampler), Access::SampledRead, 0},
-#line 669 "build/generated/features.zgal.h"
+#line 670 "build/generated/features.zgal.h"
         };
     }
 
@@ -713,12 +714,12 @@ private:
     }
 #line 87 "dsl/tests/golden/features.zgal"
 };
-#line 717 "build/generated/features.zgal.h"
+#line 718 "build/generated/features.zgal.h"
 
 // compute-material Scatter (Scatter.comp)
 #line 112 "dsl/tests/golden/features.zgal"
 class Scatter : public ComputeMaterial {
-#line 722 "build/generated/features.zgal.h"
+#line 723 "build/generated/features.zgal.h"
 public:
     // The descriptor entries the shaders use (an array's: DescriptorArray::create). Their
     // indices are pushed in this order.
@@ -727,7 +728,7 @@ public:
         FrameBinding<DescriptorEntry> sums;   // (buffer-array float read-write)
         FrameBinding<DescriptorEntry> target;   // (storage-image read-write)
         FrameBinding<DescriptorEntry> settings;   // (buffer Lights read)
-#line 731 "build/generated/features.zgal.h"
+#line 732 "build/generated/features.zgal.h"
     };
 
     // The shaders Scatter is generated for (loadShaders), so it can't be built from shaders with
@@ -747,7 +748,7 @@ public:
     static Result<Shaders> loadShaders(VulkanContext& context) {
 #line 118 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto compute, context.shaders().get("Scatter.comp"));
-#line 751 "build/generated/features.zgal.h"
+#line 752 "build/generated/features.zgal.h"
         return Shaders(std::move(compute));
     }
 
@@ -785,7 +786,7 @@ private:
             MaterialBinding{std::move(bindings.sums), Access::StorageBufferReadWrite, 0},
             MaterialBinding{std::move(bindings.target), Access::StorageReadWrite, 0},
             MaterialBinding{std::move(bindings.settings), Access::StorageBufferRead, 0},
-#line 789 "build/generated/features.zgal.h"
+#line 790 "build/generated/features.zgal.h"
         };
     }
 
@@ -818,12 +819,12 @@ private:
 
 #line 112 "dsl/tests/golden/features.zgal"
 };
-#line 822 "build/generated/features.zgal.h"
+#line 823 "build/generated/features.zgal.h"
 
 // compute-material Reduce (Reduce.comp)
 #line 137 "dsl/tests/golden/features.zgal"
 class Reduce : public ComputeMaterial {
-#line 827 "build/generated/features.zgal.h"
+#line 828 "build/generated/features.zgal.h"
 public:
     // The descriptor entries the shaders use (an array's: DescriptorArray::create). Their
     // indices are pushed in this order.
@@ -831,7 +832,7 @@ public:
 #line 140 "dsl/tests/golden/features.zgal"
         FrameBinding<DescriptorEntry> packed;   // (buffer-array Packed read-write)
         FrameBinding<DescriptorEntry> total;   // (buffer uint write)
-#line 835 "build/generated/features.zgal.h"
+#line 836 "build/generated/features.zgal.h"
     };
 
     // The shaders Reduce is generated for (loadShaders), so it can't be built from shaders with
@@ -852,7 +853,7 @@ public:
         requireDevice(context);
 #line 145 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto compute, context.shaders().get("Reduce.comp"));
-#line 856 "build/generated/features.zgal.h"
+#line 857 "build/generated/features.zgal.h"
         return Shaders(std::move(compute));
     }
 
@@ -907,7 +908,7 @@ private:
 #line 140 "dsl/tests/golden/features.zgal"
             MaterialBinding{std::move(bindings.packed), Access::StorageBufferReadWrite, 0},
             MaterialBinding{std::move(bindings.total), Access::StorageBufferWrite, 0},
-#line 911 "build/generated/features.zgal.h"
+#line 912 "build/generated/features.zgal.h"
         };
     }
 
@@ -940,12 +941,12 @@ private:
 
 #line 137 "dsl/tests/golden/features.zgal"
 };
-#line 944 "build/generated/features.zgal.h"
+#line 945 "build/generated/features.zgal.h"
 
 // compute-material Histogram (Histogram.comp)
 #line 162 "dsl/tests/golden/features.zgal"
 class Histogram : public ComputeMaterial {
-#line 949 "build/generated/features.zgal.h"
+#line 950 "build/generated/features.zgal.h"
 public:
     // The descriptor entries the shaders use (an array's: DescriptorArray::create). Their
     // indices are pushed in this order.
@@ -954,7 +955,7 @@ public:
         FrameBinding<DescriptorEntry> samples;   // (buffer-array uint read)
         FrameBinding<DescriptorEntry> bins;   // (buffer-array uint read-write)
         FrameBinding<DescriptorEntry> weights;   // (buffer-array float read-write)
-#line 958 "build/generated/features.zgal.h"
+#line 959 "build/generated/features.zgal.h"
     };
 
     // The shaders Histogram is generated for (loadShaders), so it can't be built from shaders with
@@ -975,7 +976,7 @@ public:
         requireDevice(context);
 #line 170 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto compute, context.shaders().get("Histogram.comp"));
-#line 979 "build/generated/features.zgal.h"
+#line 980 "build/generated/features.zgal.h"
         return Shaders(std::move(compute));
     }
 
@@ -1038,7 +1039,7 @@ private:
             MaterialBinding{std::move(bindings.samples), Access::StorageBufferRead, 0},
             MaterialBinding{std::move(bindings.bins), Access::StorageBufferReadWrite, 0},
             MaterialBinding{std::move(bindings.weights), Access::StorageBufferReadWrite, 0},
-#line 1042 "build/generated/features.zgal.h"
+#line 1043 "build/generated/features.zgal.h"
         };
     }
 
@@ -1071,12 +1072,12 @@ private:
 
 #line 162 "dsl/tests/golden/features.zgal"
 };
-#line 1075 "build/generated/features.zgal.h"
+#line 1076 "build/generated/features.zgal.h"
 
 // graphics-material Cutout (Cutout.vert, Cutout.frag)
 #line 185 "dsl/tests/golden/features.zgal"
 class Cutout : public GraphicsMaterial {
-#line 1080 "build/generated/features.zgal.h"
+#line 1081 "build/generated/features.zgal.h"
 public:
     // The shaders Cutout is generated for (loadShaders), so it can't be built from shaders with
     // another interface
@@ -1099,7 +1100,7 @@ public:
         TRY_ASSIGN(auto vertex, context.shaders().get("Cutout.vert"));
 #line 190 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto fragment, context.shaders().get("Cutout.frag"));
-#line 1103 "build/generated/features.zgal.h"
+#line 1104 "build/generated/features.zgal.h"
         return Shaders(std::move(vertex), std::move(fragment));
     }
 
@@ -1137,12 +1138,12 @@ private:
     }
 #line 185 "dsl/tests/golden/features.zgal"
 };
-#line 1141 "build/generated/features.zgal.h"
+#line 1142 "build/generated/features.zgal.h"
 
 // compute-material Pick (Pick.comp)
 #line 197 "dsl/tests/golden/features.zgal"
 class Pick : public ComputeMaterial {
-#line 1146 "build/generated/features.zgal.h"
+#line 1147 "build/generated/features.zgal.h"
 public:
     // The descriptor entries the shaders use (an array's: DescriptorArray::create). Their
     // indices are pushed in this order.
@@ -1151,7 +1152,7 @@ public:
         Handle<DescriptorArray> decals;   // (array texture)
         Handle<DescriptorArray> settings;   // (array (buffer Lights read))
         Handle<DescriptorArray> targets;   // (array (storage-image read-write))
-#line 1155 "build/generated/features.zgal.h"
+#line 1156 "build/generated/features.zgal.h"
     };
 
     // The shaders Pick is generated for (loadShaders), so it can't be built from shaders with
@@ -1171,7 +1172,7 @@ public:
     static Result<Shaders> loadShaders(VulkanContext& context) {
 #line 203 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto compute, context.shaders().get("Pick.comp"));
-#line 1175 "build/generated/features.zgal.h"
+#line 1176 "build/generated/features.zgal.h"
         return Shaders(std::move(compute));
     }
 
@@ -1209,7 +1210,7 @@ private:
             MaterialBinding::array(std::move(bindings.decals), Access::SampledRead, 0),
             MaterialBinding::array(std::move(bindings.settings), Access::StorageBufferRead, 0),
             MaterialBinding::array(std::move(bindings.targets), Access::StorageReadWrite, 0),
-#line 1213 "build/generated/features.zgal.h"
+#line 1214 "build/generated/features.zgal.h"
         };
     }
 
@@ -1248,12 +1249,12 @@ private:
 
 #line 197 "dsl/tests/golden/features.zgal"
 };
-#line 1252 "build/generated/features.zgal.h"
+#line 1253 "build/generated/features.zgal.h"
 
 // graphics-material ModelPaint (ModelPaint.vert, ModelPaint.frag)
 #line 349 "dsl/tests/golden/features.zgal"
 class ModelPaint : public GraphicsMaterial {
-#line 1257 "build/generated/features.zgal.h"
+#line 1258 "build/generated/features.zgal.h"
 public:
     // The descriptor entries the shaders use (an array's: DescriptorArray::create). Their
     // indices are pushed in this order.
@@ -1264,7 +1265,7 @@ public:
         FrameBinding<DescriptorEntry> factors;   // (buffer-array vec4 read), fragment shader
 #line 351 "dsl/tests/golden/features.zgal"
         FrameBinding<DescriptorEntry> s;   // sampler
-#line 1268 "build/generated/features.zgal.h"
+#line 1269 "build/generated/features.zgal.h"
     };
 
     // The shaders ModelPaint is generated for (loadShaders), so it can't be built from shaders with
@@ -1287,7 +1288,7 @@ public:
 #line 354 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto vertex, context.shaders().get("ModelPaint.vert"));
         TRY_ASSIGN(auto fragment, context.shaders().get("ModelPaint.frag"));
-#line 1291 "build/generated/features.zgal.h"
+#line 1292 "build/generated/features.zgal.h"
         return Shaders(std::move(vertex), std::move(fragment));
     }
 
@@ -1307,7 +1308,7 @@ public:
             {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(ModelVertex, texCoord)},
             {3, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(ModelVertex, tint)},
             {4, 0, VK_FORMAT_R32_UINT, offsetof(ModelVertex, layer)},
-#line 1311 "build/generated/features.zgal.h"
+#line 1312 "build/generated/features.zgal.h"
         });
     }
 
@@ -1334,7 +1335,7 @@ private:
             MaterialBinding{std::move(bindings.factors), Access::StorageBufferRead, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT},
 #line 351 "dsl/tests/golden/features.zgal"
             MaterialBinding{std::move(bindings.s), Access::SampledRead, 0},
-#line 1338 "build/generated/features.zgal.h"
+#line 1339 "build/generated/features.zgal.h"
         };
     }
 
@@ -1388,12 +1389,12 @@ private:
     }
 #line 349 "dsl/tests/golden/features.zgal"
 };
-#line 1392 "build/generated/features.zgal.h"
+#line 1393 "build/generated/features.zgal.h"
 
 // graph Everything: build() adds its resources, materials and nodes to a RenderGraph
 #line 211 "dsl/tests/golden/features.zgal"
 struct Everything {
-#line 1397 "build/generated/features.zgal.h"
+#line 1398 "build/generated/features.zgal.h"
     // What C++ supplies: the parameters, and the inputs. Give every one.
     struct Inputs {
 #line 212 "dsl/tests/golden/features.zgal"
@@ -1415,7 +1416,7 @@ struct Everything {
         zgal::FrameSource<uint32_t> sampleCount;
 #line 261 "dsl/tests/golden/features.zgal"
         std::vector<FrameBinding<Image>> decals;   // Imported, resting shader-read-only
-#line 1419 "build/generated/features.zgal.h"
+#line 1420 "build/generated/features.zgal.h"
     };
 
     struct Images {
@@ -1430,7 +1431,7 @@ struct Everything {
         ImageId depthImage;
         ImageId maskImage;
         std::optional<ImageId> copy;
-#line 1434 "build/generated/features.zgal.h"
+#line 1435 "build/generated/features.zgal.h"
     };
     struct Buffers {
 #line 223 "dsl/tests/golden/features.zgal"
@@ -1446,7 +1447,7 @@ struct Everything {
 #line 257 "dsl/tests/golden/features.zgal"
         BufferId packedCopy;
         BufferId totalBuffer;
-#line 1450 "build/generated/features.zgal.h"
+#line 1451 "build/generated/features.zgal.h"
     };
     struct Nodes {
 #line 263 "dsl/tests/golden/features.zgal"
@@ -1468,7 +1469,7 @@ struct Everything {
         NodeId readSeeds;
         std::optional<NodeId> readTotal;
         NodeId readSamples;
-#line 1472 "build/generated/features.zgal.h"
+#line 1473 "build/generated/features.zgal.h"
     };
     Images images;
 
@@ -1486,7 +1487,7 @@ struct Everything {
     // The elements readback readSamples copied in the most recent frame (waiting for it)
 #line 280 "dsl/tests/golden/features.zgal"
     Result<std::vector<uint32_t>> readSamplesContents(RenderGraph& graph) const { return graph.nodeAs<BufferReadbackNode>(nodes.readSamples).contents<uint32_t>(); }
-#line 1490 "build/generated/features.zgal.h"
+#line 1491 "build/generated/features.zgal.h"
     Buffers buffers;
     Nodes nodes;
 
@@ -1554,11 +1555,11 @@ struct Everything {
             contractViolation("Everything's imported buffer staging isn't given");
 #line 224 "dsl/tests/golden/features.zgal"
         }
-#line 1558 "build/generated/features.zgal.h"
+#line 1559 "build/generated/features.zgal.h"
         Everything result;
 #line 222 "dsl/tests/golden/features.zgal"
         const ImageId image_picture = graph.importImage("picture", in->picture, ImageState::shaderReadOnly());
-#line 1562 "build/generated/features.zgal.h"
+#line 1563 "build/generated/features.zgal.h"
         result.images.picture = image_picture;
 #line 261 "dsl/tests/golden/features.zgal"
         std::vector<ImageId> images_decals;
@@ -1574,21 +1575,21 @@ struct Everything {
             images_decals.push_back(graph.importImage("decals " + std::to_string(i), in->decals[i], ImageState::shaderReadOnly()));
 #line 261 "dsl/tests/golden/features.zgal"
         }
-#line 1578 "build/generated/features.zgal.h"
+#line 1579 "build/generated/features.zgal.h"
         result.images.decals = images_decals;
 #line 223 "dsl/tests/golden/features.zgal"
         const BufferId buffer_packedInput = graph.importBuffer<Packed>("packedInput", in->packedInput);
-#line 1582 "build/generated/features.zgal.h"
+#line 1583 "build/generated/features.zgal.h"
         result.buffers.packedInput = buffer_packedInput;
 #line 224 "dsl/tests/golden/features.zgal"
         const BufferId buffer_staging = graph.importBuffer<Packed>("staging", in->staging);
-#line 1586 "build/generated/features.zgal.h"
+#line 1587 "build/generated/features.zgal.h"
         result.buffers.staging = buffer_staging;
 #line 226 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto upload_seedBuffer, zgal::upload(context, in->seeds, "Everything's upload seedBuffer"));
 #line 226 "dsl/tests/golden/features.zgal"
         const BufferId buffer_seedBuffer = graph.importBuffer<uint32_t>("seedBuffer", upload_seedBuffer);
-#line 1592 "build/generated/features.zgal.h"
+#line 1593 "build/generated/features.zgal.h"
         result.buffers.seedBuffer = buffer_seedBuffer;
 #line 228 "dsl/tests/golden/features.zgal"
         const uint32_t constant_pictureWidth = zgal::extentOf(context, in->picture, "picture").width;
@@ -1600,19 +1601,19 @@ struct Everything {
         TRY_ASSIGN(auto uniform_lightBuffer, zgal::Uniform<Lights>::create(context, in->frameLights));
 #line 227 "dsl/tests/golden/features.zgal"
         const ImageId image_seedImage = graph.createImage("seedImage", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{{2u, 2u}});
-#line 1604 "build/generated/features.zgal.h"
+#line 1605 "build/generated/features.zgal.h"
         result.images.seedImage = image_seedImage;
 #line 235 "dsl/tests/golden/features.zgal"
         const ImageId image_colorImage = graph.createImage("colorImage", FrameMode::PerFrame, VK_FORMAT_R16G16B16A16_SFLOAT, SurfaceRelative{0.5f});
-#line 1608 "build/generated/features.zgal.h"
+#line 1609 "build/generated/features.zgal.h"
         result.images.colorImage = image_colorImage;
 #line 236 "dsl/tests/golden/features.zgal"
         const ImageId image_depthImage = graph.createImage("depthImage", FrameMode::Shared, VK_FORMAT_D32_SFLOAT, SurfaceRelative{0.5f});
-#line 1612 "build/generated/features.zgal.h"
+#line 1613 "build/generated/features.zgal.h"
         result.images.depthImage = image_depthImage;
 #line 237 "dsl/tests/golden/features.zgal"
         const ImageId image_maskImage = graph.createImage("maskImage", FrameMode::Shared, VK_FORMAT_R32_SFLOAT, FixedExtent{{constant_pictureWidth, (in->size + 1u)}});
-#line 1616 "build/generated/features.zgal.h"
+#line 1617 "build/generated/features.zgal.h"
         result.images.maskImage = image_maskImage;
 #line 238 "dsl/tests/golden/features.zgal"
         std::optional<ImageId> image_copy;
@@ -1620,12 +1621,12 @@ struct Everything {
         if (in->enabled) {
 #line 238 "dsl/tests/golden/features.zgal"
             image_copy = graph.createImage("copy", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{zgal::extentOf(context, in->picture, "picture")});
-#line 1624 "build/generated/features.zgal.h"
+#line 1625 "build/generated/features.zgal.h"
         }
         result.images.copy = image_copy;
 #line 239 "dsl/tests/golden/features.zgal"
         const BufferId buffer_sumBuffer = graph.createBuffer("sumBuffer", FrameMode::Shared, VkDeviceSize((in->size * in->size)) * sizeof(float));
-#line 1629 "build/generated/features.zgal.h"
+#line 1630 "build/generated/features.zgal.h"
         result.buffers.sumBuffer = buffer_sumBuffer;
 #line 240 "dsl/tests/golden/features.zgal"
         std::optional<BufferId> buffer_transformBuffer;
@@ -1633,20 +1634,20 @@ struct Everything {
         if ((in->enabled && (in->count > 0))) {
 #line 240 "dsl/tests/golden/features.zgal"
             buffer_transformBuffer = graph.createBuffer("transformBuffer", FrameMode::PerFrame, VkDeviceSize(constant_doubled) * sizeof(glm::mat4));
-#line 1637 "build/generated/features.zgal.h"
+#line 1638 "build/generated/features.zgal.h"
         }
         result.buffers.transformBuffer = buffer_transformBuffer;
 #line 243 "dsl/tests/golden/features.zgal"
         const BufferId buffer_samples = graph.createBuffer("samples", FrameMode::PerFrame, [=](const FrameContext& frameContext) { const zgal::FrameInfo frame = zgal::frameInfo(frameContext); return VkDeviceSize((in->sampleCount(frame) * 2u)) * sizeof(uint32_t); });
-#line 1642 "build/generated/features.zgal.h"
+#line 1643 "build/generated/features.zgal.h"
         result.buffers.samples = buffer_samples;
 #line 257 "dsl/tests/golden/features.zgal"
         const BufferId buffer_packedCopy = graph.createBuffer("packedCopy", FrameMode::Shared, VkDeviceSize(64u) * sizeof(Packed));
-#line 1646 "build/generated/features.zgal.h"
+#line 1647 "build/generated/features.zgal.h"
         result.buffers.packedCopy = buffer_packedCopy;
 #line 258 "dsl/tests/golden/features.zgal"
         const BufferId buffer_totalBuffer = graph.createBuffer("totalBuffer", FrameMode::Shared, VkDeviceSize(1u) * sizeof(uint32_t));
-#line 1650 "build/generated/features.zgal.h"
+#line 1651 "build/generated/features.zgal.h"
         result.buffers.totalBuffer = buffer_totalBuffer;
 #line 244 "dsl/tests/golden/features.zgal"
         RenderTarget target_scene;
@@ -1860,42 +1861,42 @@ struct Everything {
             result.nodes.readSamples = node;
 #line 280 "dsl/tests/golden/features.zgal"
         }
-#line 1864 "build/generated/features.zgal.h"
+#line 1865 "build/generated/features.zgal.h"
         return result;
     }
 #line 211 "dsl/tests/golden/features.zgal"
 };
-#line 1869 "build/generated/features.zgal.h"
+#line 1870 "build/generated/features.zgal.h"
 
 // graph Warmup: build() adds its resources, materials and nodes to a RenderGraph
 #line 322 "dsl/tests/golden/features.zgal"
 struct Warmup {
-#line 1874 "build/generated/features.zgal.h"
+#line 1875 "build/generated/features.zgal.h"
     // What C++ supplies: the parameters, and the inputs. Give every one.
     struct Inputs {
 #line 323 "dsl/tests/golden/features.zgal"
         zgal::FrameSource<zgal::Data<Light>> lights;
-#line 1879 "build/generated/features.zgal.h"
+#line 1880 "build/generated/features.zgal.h"
     };
 
     struct Buffers {
 #line 324 "dsl/tests/golden/features.zgal"
         BufferId lightList;
         BufferId lightCopy;
-#line 1886 "build/generated/features.zgal.h"
+#line 1887 "build/generated/features.zgal.h"
     };
     struct Nodes {
 #line 326 "dsl/tests/golden/features.zgal"
         NodeId copyLights;
         NodeId readLights;
-#line 1892 "build/generated/features.zgal.h"
+#line 1893 "build/generated/features.zgal.h"
     };
 
 #line 327 "dsl/tests/golden/features.zgal"
     // The elements readback readLights copied in the most recent frame (waiting for it)
 #line 327 "dsl/tests/golden/features.zgal"
     Result<std::vector<Light>> readLightsContents(RenderGraph& graph) const { return graph.nodeAs<BufferReadbackNode>(nodes.readLights).contents<Light>(); }
-#line 1899 "build/generated/features.zgal.h"
+#line 1900 "build/generated/features.zgal.h"
     Buffers buffers;
     Nodes nodes;
 
@@ -1916,18 +1917,18 @@ struct Warmup {
             contractViolation("Warmup's input lights isn't given");
 #line 323 "dsl/tests/golden/features.zgal"
         }
-#line 1920 "build/generated/features.zgal.h"
+#line 1921 "build/generated/features.zgal.h"
         Warmup result;
 #line 323 "dsl/tests/golden/features.zgal"
         const auto data_lights = std::make_shared<zgal::FrameCache<zgal::Data<Light>>>(in->lights);
         const BufferId buffer_lightList = graph.createBuffer("lightList", FrameMode::PerFrame, [data = data_lights](const FrameContext& frameContext) { return VkDeviceSize(data->get(zgal::frameInfo(frameContext)).size()) * sizeof(Light); });
 #line 324 "dsl/tests/golden/features.zgal"
         graph.add<zgal::DataUploadNode<Light>>("upload lightList", buffer_lightList, data_lights);
-#line 1927 "build/generated/features.zgal.h"
+#line 1928 "build/generated/features.zgal.h"
         result.buffers.lightList = buffer_lightList;
 #line 325 "dsl/tests/golden/features.zgal"
         const BufferId buffer_lightCopy = graph.createBuffer("lightCopy", FrameMode::PerFrame, [=](const FrameContext& frameContext) { const zgal::FrameInfo frame = zgal::frameInfo(frameContext); return VkDeviceSize(data_lights->get(frame).size()) * sizeof(Light); });
-#line 1931 "build/generated/features.zgal.h"
+#line 1932 "build/generated/features.zgal.h"
         result.buffers.lightCopy = buffer_lightCopy;
 #line 326 "dsl/tests/golden/features.zgal"
         {
@@ -1946,24 +1947,24 @@ struct Warmup {
             result.nodes.readLights = node;
 #line 327 "dsl/tests/golden/features.zgal"
         }
-#line 1950 "build/generated/features.zgal.h"
+#line 1951 "build/generated/features.zgal.h"
         return result;
     }
 #line 322 "dsl/tests/golden/features.zgal"
 };
-#line 1955 "build/generated/features.zgal.h"
+#line 1956 "build/generated/features.zgal.h"
 
 // graph Assets: build() adds its resources, materials and nodes to a RenderGraph
 #line 358 "dsl/tests/golden/features.zgal"
 struct Assets {
-#line 1960 "build/generated/features.zgal.h"
+#line 1961 "build/generated/features.zgal.h"
     // What C++ supplies: the parameters, and the inputs. Give every one.
     struct Inputs {
 #line 359 "dsl/tests/golden/features.zgal"
         std::filesystem::path decalPath;
 #line 362 "dsl/tests/golden/features.zgal"
         zgal::FrameSource<Lights> frameLights;
-#line 1967 "build/generated/features.zgal.h"
+#line 1968 "build/generated/features.zgal.h"
     };
 
     struct Images {
@@ -1976,19 +1977,19 @@ struct Assets {
         ImageId mask;
 #line 369 "dsl/tests/golden/features.zgal"
         ImageId shipImage;
-#line 1980 "build/generated/features.zgal.h"
+#line 1981 "build/generated/features.zgal.h"
     };
     struct Buffers {
 #line 367 "dsl/tests/golden/features.zgal"
         BufferId shipFactors;
-#line 1985 "build/generated/features.zgal.h"
+#line 1986 "build/generated/features.zgal.h"
     };
     struct Nodes {
 #line 366 "dsl/tests/golden/features.zgal"
         NodeId pick;
 #line 372 "dsl/tests/golden/features.zgal"
         NodeId drawShip;
-#line 1992 "build/generated/features.zgal.h"
+#line 1993 "build/generated/features.zgal.h"
     };
     Images images;
     Buffers buffers;
@@ -2013,42 +2014,42 @@ struct Assets {
             contractViolation("Assets's input frameLights isn't given");
 #line 362 "dsl/tests/golden/features.zgal"
         }
-#line 2017 "build/generated/features.zgal.h"
+#line 2018 "build/generated/features.zgal.h"
         Assets result;
 #line 360 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto file_albedoMap, zgal::loadImage(context, std::filesystem::path("textures/albedo.png"), ColorSpace::Srgb, "Assets's image-file albedoMap"));
 #line 360 "dsl/tests/golden/features.zgal"
         const ImageId image_albedoMap = graph.importImage("albedoMap", file_albedoMap, ImageState::shaderReadOnly());
-#line 2023 "build/generated/features.zgal.h"
+#line 2024 "build/generated/features.zgal.h"
         result.images.albedoMap = image_albedoMap;
 #line 361 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto file_decalMap, zgal::loadImage(context, in->decalPath, ColorSpace::Linear, "Assets's image-file decalMap"));
 #line 361 "dsl/tests/golden/features.zgal"
         const ImageId image_decalMap = graph.importImage("decalMap", file_decalMap, ImageState::shaderReadOnly());
-#line 2029 "build/generated/features.zgal.h"
+#line 2030 "build/generated/features.zgal.h"
         result.images.decalMap = image_decalMap;
 #line 367 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto model_ship, zgal::loadModel<ModelVertex>(context, std::filesystem::path("models/ship.glb"), "Assets's model ship"));
 #line 367 "dsl/tests/golden/features.zgal"
         const std::vector<ImageId> images_shipColors = zgal::importImages(graph, "shipColors", model_ship.baseColorTextures, ImageState::shaderReadOnly());
-#line 2035 "build/generated/features.zgal.h"
+#line 2036 "build/generated/features.zgal.h"
         result.images.shipColors = images_shipColors;
 #line 367 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto upload_shipFactors, zgal::upload(context, model_ship.baseColorFactors, "Assets's base colour factors shipFactors"));
 #line 367 "dsl/tests/golden/features.zgal"
         const BufferId buffer_shipFactors = graph.importBuffer<glm::vec4>("shipFactors", upload_shipFactors);
-#line 2041 "build/generated/features.zgal.h"
+#line 2042 "build/generated/features.zgal.h"
         result.buffers.shipFactors = buffer_shipFactors;
 #line 368 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto sampler_linearSampler, VulkanSampler::create(context, SamplerDesc{}));
 #line 363 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto uniform_lightBuffer, zgal::Uniform<Lights>::create(context, in->frameLights));
         const ImageId image_mask = graph.createImage("mask", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{zgal::extentOf(context, file_decalMap, "decalMap")});
-#line 2048 "build/generated/features.zgal.h"
+#line 2049 "build/generated/features.zgal.h"
         result.images.mask = image_mask;
 #line 369 "dsl/tests/golden/features.zgal"
         const ImageId image_shipImage = graph.createImage("shipImage", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{{64u, 64u}});
-#line 2052 "build/generated/features.zgal.h"
+#line 2053 "build/generated/features.zgal.h"
         result.images.shipImage = image_shipImage;
 #line 370 "dsl/tests/golden/features.zgal"
         RenderTarget target_shipTarget;
@@ -2110,17 +2111,17 @@ struct Assets {
             result.nodes.drawShip = node;
 #line 372 "dsl/tests/golden/features.zgal"
         }
-#line 2114 "build/generated/features.zgal.h"
+#line 2115 "build/generated/features.zgal.h"
         return result;
     }
 #line 358 "dsl/tests/golden/features.zgal"
 };
-#line 2119 "build/generated/features.zgal.h"
+#line 2120 "build/generated/features.zgal.h"
 
 // app Explorer: its state, the handlers computing the next one, and graph Everything
 #line 284 "dsl/tests/golden/features.zgal"
 class Explorer {
-#line 2124 "build/generated/features.zgal.h"
+#line 2125 "build/generated/features.zgal.h"
 public:
     // What the handlers compute the next of
 #line 289 "dsl/tests/golden/features.zgal"
@@ -2131,7 +2132,7 @@ public:
         float zoom{};
         uint32_t frames{};
         Light light{};
-#line 2135 "build/generated/features.zgal.h"
+#line 2136 "build/generated/features.zgal.h"
     };
 
     // What C++ supplies: the parameters, the clock, and graph inputs the app doesn't compute
@@ -2139,7 +2140,7 @@ public:
 #line 285 "dsl/tests/golden/features.zgal"
         int32_t level{};
         float gain{};
-#line 2143 "build/generated/features.zgal.h"
+#line 2144 "build/generated/features.zgal.h"
         zgal::Timestep timestep;   // How far the frame handler's clock advances a frame
 #line 287 "dsl/tests/golden/features.zgal"
         std::function<float(glm::vec2)> noise;
@@ -2157,7 +2158,7 @@ public:
         std::vector<uint32_t> seeds;
 #line 261 "dsl/tests/golden/features.zgal"
         std::vector<FrameBinding<Image>> decals;   // Imported, resting shader-read-only
-#line 2161 "build/generated/features.zgal.h"
+#line 2162 "build/generated/features.zgal.h"
     };
 
     // The app, with its initial state, adding its graph to `graph`. The graphs' callbacks
@@ -2168,12 +2169,12 @@ public:
         }
 #line 287 "dsl/tests/golden/features.zgal"
         if (!inputs.noise) {
-#line 2172 "build/generated/features.zgal.h"
+#line 2173 "build/generated/features.zgal.h"
             contractViolation("Explorer's extern function noise isn't given");
         }
 #line 288 "dsl/tests/golden/features.zgal"
         if (!inputs.report) {
-#line 2177 "build/generated/features.zgal.h"
+#line 2178 "build/generated/features.zgal.h"
             contractViolation("Explorer's extern function report isn't given");
         }
         std::unique_ptr<Explorer> app(new Explorer(context, graph, std::move(inputs)));
@@ -2213,7 +2214,7 @@ public:
             .decals = std::move(app->inputs_.decals),
 #line 310 "dsl/tests/golden/features.zgal"
         }));
-#line 2217 "build/generated/features.zgal.h"
+#line 2218 "build/generated/features.zgal.h"
         app->ids0_.emplace(std::move(ids0));
         return app;
     }
@@ -2242,19 +2243,19 @@ public:
                 case zgal::Key::KeypadAdd:
 #line 296 "dsl/tests/golden/features.zgal"
                     state_ = on0(state_);
-#line 2246 "build/generated/features.zgal.h"
+#line 2247 "build/generated/features.zgal.h"
                     break;
 #line 298 "dsl/tests/golden/features.zgal"
                 case zgal::Key::Escape:
 #line 298 "dsl/tests/golden/features.zgal"
                     state_ = on2(state_);
-#line 2252 "build/generated/features.zgal.h"
+#line 2253 "build/generated/features.zgal.h"
                     break;
 #line 299 "dsl/tests/golden/features.zgal"
                 case zgal::Key::Digit3:
 #line 299 "dsl/tests/golden/features.zgal"
                     state_ = on3(state_);
-#line 2258 "build/generated/features.zgal.h"
+#line 2259 "build/generated/features.zgal.h"
                     break;
                 default:
                     break;
@@ -2266,7 +2267,7 @@ public:
                 case zgal::Key::Space:
 #line 297 "dsl/tests/golden/features.zgal"
                     state_ = on1(state_);
-#line 2270 "build/generated/features.zgal.h"
+#line 2271 "build/generated/features.zgal.h"
                     break;
                 default:
                     break;
@@ -2277,7 +2278,7 @@ public:
             if (e->button == zgal::MouseButton::Left) {
 #line 300 "dsl/tests/golden/features.zgal"
                 state_ = on4(state_, e->cursor);
-#line 2281 "build/generated/features.zgal.h"
+#line 2282 "build/generated/features.zgal.h"
             }
         }
         if (const auto* e = std::get_if<zgal::MouseReleased>(&event)) {
@@ -2285,18 +2286,18 @@ public:
             if (e->button == zgal::MouseButton::Right) {
 #line 301 "dsl/tests/golden/features.zgal"
                 state_ = on5(state_, e->cursor);
-#line 2289 "build/generated/features.zgal.h"
+#line 2290 "build/generated/features.zgal.h"
             }
         }
         if (const auto* e = std::get_if<zgal::CursorMoved>(&event)) {
 #line 302 "dsl/tests/golden/features.zgal"
             state_ = on6(state_, e->cursor);
-#line 2295 "build/generated/features.zgal.h"
+#line 2296 "build/generated/features.zgal.h"
         }
         if (const auto* e = std::get_if<zgal::Scrolled>(&event)) {
 #line 303 "dsl/tests/golden/features.zgal"
             state_ = on7(state_, e->offset);
-#line 2300 "build/generated/features.zgal.h"
+#line 2301 "build/generated/features.zgal.h"
         }
     }
 
@@ -2307,7 +2308,7 @@ public:
 #line 317 "dsl/tests/golden/features.zgal"
         if (ids0_->nodes.accumulate) { graph0_->setEnabled(*ids0_->nodes.accumulate, enabled_accumulate()); }
         graph0_->setEnabled(ids0_->nodes.drawPlain, enabled_drawPlain());
-#line 2311 "build/generated/features.zgal.h"
+#line 2312 "build/generated/features.zgal.h"
         return {};
     }
 
@@ -2469,7 +2470,7 @@ private:
         return !state.dragging;
 #line 318 "dsl/tests/golden/features.zgal"
     }
-#line 2473 "build/generated/features.zgal.h"
+#line 2474 "build/generated/features.zgal.h"
     VulkanContext* context_;
     RenderGraph* graph0_;
     RenderGraph* active_;
@@ -2479,12 +2480,12 @@ private:
     std::optional<Everything> ids0_;
 #line 284 "dsl/tests/golden/features.zgal"
 };
-#line 2483 "build/generated/features.zgal.h"
+#line 2484 "build/generated/features.zgal.h"
 
 // app Stages: its state, the handlers computing the next one, and graphs Warmup, Everything, one active each frame
 #line 329 "dsl/tests/golden/features.zgal"
 class Stages {
-#line 2488 "build/generated/features.zgal.h"
+#line 2489 "build/generated/features.zgal.h"
 public:
     // What the handlers compute the next of
 #line 331 "dsl/tests/golden/features.zgal"
@@ -2492,7 +2493,7 @@ public:
         zgal::Data<Light> lights{};
         bool warm{};
         uint32_t seen{};
-#line 2496 "build/generated/features.zgal.h"
+#line 2497 "build/generated/features.zgal.h"
     };
 
     // What C++ supplies: the parameters, the clock, and graph inputs the app doesn't compute
@@ -2517,7 +2518,7 @@ public:
         zgal::FrameSource<uint32_t> sampleCount;
 #line 261 "dsl/tests/golden/features.zgal"
         std::vector<FrameBinding<Image>> decals;   // Imported, resting shader-read-only
-#line 2521 "build/generated/features.zgal.h"
+#line 2522 "build/generated/features.zgal.h"
     };
 
     // The render graphs it adds its graphs to (e.g. VulkanApp::createGraph), one per graph
@@ -2525,7 +2526,7 @@ public:
 #line 337 "dsl/tests/golden/features.zgal"
         RenderGraph* warmup = nullptr;
         RenderGraph* everything = nullptr;
-#line 2529 "build/generated/features.zgal.h"
+#line 2530 "build/generated/features.zgal.h"
     };
 
     // The app, with its initial state, adding each graph to its render graph. The graphs' callbacks
@@ -2533,7 +2534,7 @@ public:
     static Result<std::unique_ptr<Stages>> create(VulkanContext& context, Graphs graphs, Inputs inputs) {
 #line 330 "dsl/tests/golden/features.zgal"
         if (!inputs.brighten) {
-#line 2537 "build/generated/features.zgal.h"
+#line 2538 "build/generated/features.zgal.h"
             contractViolation("Stages's extern function brighten isn't given");
         }
         if (!graphs.warmup) {
@@ -2549,7 +2550,7 @@ public:
             .lights = [self = app.get()](const zgal::FrameInfo&) { return self->input_lights_Warmup(); },
 #line 337 "dsl/tests/golden/features.zgal"
         }));
-#line 2553 "build/generated/features.zgal.h"
+#line 2554 "build/generated/features.zgal.h"
         app->ids0_.emplace(std::move(ids0));
 #line 338 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto ids1, Everything::build(context, *app->graph1_, Everything::Inputs{
@@ -2587,7 +2588,7 @@ public:
             .decals = std::move(app->inputs_.decals),
 #line 338 "dsl/tests/golden/features.zgal"
         }));
-#line 2591 "build/generated/features.zgal.h"
+#line 2592 "build/generated/features.zgal.h"
         app->ids1_.emplace(std::move(ids1));
         return app;
     }
@@ -2631,7 +2632,7 @@ public:
         } else {
 #line 338 "dsl/tests/golden/features.zgal"
             active_ = graph1_;
-#line 2635 "build/generated/features.zgal.h"
+#line 2636 "build/generated/features.zgal.h"
         }
         return {};
     }
@@ -2682,7 +2683,7 @@ private:
         return true;
 #line 338 "dsl/tests/golden/features.zgal"
     }
-#line 2686 "build/generated/features.zgal.h"
+#line 2687 "build/generated/features.zgal.h"
     VulkanContext* context_;
     RenderGraph* graph0_;
     RenderGraph* graph1_;
@@ -2694,6 +2695,6 @@ private:
     std::optional<Everything> ids1_;
 #line 329 "dsl/tests/golden/features.zgal"
 };
-#line 2698 "build/generated/features.zgal.h"
+#line 2699 "build/generated/features.zgal.h"
 
 } // namespace features

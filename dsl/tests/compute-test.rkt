@@ -82,3 +82,47 @@
   ;; But not on what it writes, which can change during the dispatch
   (check-zgal-error (string-replace counted "(write! (at results t) (at s 0))" "(write! (at counts 1) (at s 0))")
                     'bad-barrier "in a loop whose range can differ between invocations"))
+
+(define indirect-program
+  (string-append
+   "(import indirect)\n"
+   "(compute-material Count (workgroup 1) (bindings (tally (buffer-array uint))) (compute (atomic-add! (at tally 0) 1)))\n"
+   "(graphics-material Paint (outputs (color vec4)) (vertex (results #:position (vec4 0.0))) (fragment (vec4 1.0)))\n"
+   "(graph G\n"
+   "  (buffer dispatches DispatchCommand 2 #:frames shared)\n"
+   "  (buffer draws DrawCommand 8 #:frames shared)\n"
+   "  (buffer counts uint 1 #:frames shared)\n"
+   "  (buffer tally uint 1 #:frames shared)\n"
+   "  (image picture rgba8 (fixed 4 4) #:frames shared)\n"
+   "  (target canvas (color picture))\n"
+   "  (material counting Count tally)\n"
+   "  (material painting Paint)\n"
+   "  (dispatch count counting #:indirect (at dispatches 1))\n"
+   "  (draw paint canvas painting #:indirect (at draws 2) #:draws 4 #:count (at counts 0)))\n"))
+
+(test-case "Dispatches and draws read commands shaders wrote"
+  (define outputs (compile-text indirect-program))
+  (define h (named outputs ".zgal.h"))
+  (check-true (string-contains? h "graph.add<DispatchNode>(\"count\", material_counting, BufferOffset{buffer_dispatches, VkDeviceSize(1u) * sizeof(DispatchCommand)})"))
+  ;; A count draws natively where the device can, else after a node limiting the commands
+  (check-true (string-contains? h "zgal::addCountedDraw(graph, \"paint\", IndirectDrawNode::Desc{.material = material_painting, .target = target_canvas, .commands = BufferOffset{buffer_draws, VkDeviceSize(2u) * sizeof(DrawCommand)}, .maxDraws = 4u}, BufferOffset{buffer_counts, VkDeviceSize(0u) * sizeof(uint32_t)}, material_zgal_paint_limit, buffer_zgal_paint_commands)"))
+  (check-true (string-contains? h "features.core.features.multiDrawIndirect = VK_TRUE;"))
+  (check-true (for/or ([o (in-list outputs)]) (string-suffix? (output-path o) "ZgalLimitDrawsDraw.comp")))
+  ;; Without a count, one command by default
+  (define single (named (compile-text (string-replace indirect-program " #:draws 4 #:count (at counts 0)" "")) ".zgal.h"))
+  (check-true (string-contains? single "graph.add<IndirectDrawNode>(\"paint\", IndirectDrawNode::Desc{.material = material_painting, .target = target_canvas, .commands = BufferOffset{buffer_draws, VkDeviceSize(2u) * sizeof(DrawCommand)}, .maxDraws = 1u})"))
+  (check-false (string-contains? single "multiDrawIndirect")))
+
+(test-case "Indirect dispatches and draws check their commands"
+  (check-zgal-error (string-replace indirect-program " #:indirect (at dispatches 1)" "") 'bad-option
+                    "material counting has no #:invocations, so dispatch count needs them, or dispatches it #:indirect")
+  (check-zgal-error (string-replace indirect-program "(at dispatches 1)" "(at draws 1)") 'type-mismatch
+                    "#:indirect reads DispatchCommands, (import indirect), but draws holds DrawCommand")
+  (check-zgal-error (string-replace indirect-program "(at dispatches 1)" "dispatches") 'malformed
+                    "#:indirect is the first command's place in a buffer, (at commands index)")
+  (check-zgal-error (string-replace indirect-program "(at counts 0)))" "(at draws 0)))") 'type-mismatch
+                    "a draw's #:count is an element of a buffer of uints, but draws holds DrawCommand")
+  (check-zgal-error (string-replace indirect-program "#:indirect (at draws 2) #:draws 4 #:count (at counts 0)" "3 #:draws 4") 'bad-option
+                    "#:draws is for draws with #:indirect")
+  (check-zgal-error (string-replace indirect-program "(buffer dispatches DispatchCommand 2 #:frames shared)" "(import-buffer dispatches DispatchCommand)")
+                    'type-mismatch "dispatches is an imported buffer, not a graph buffer"))

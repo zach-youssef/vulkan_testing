@@ -908,9 +908,10 @@ and C++ supplies the meshes.
              (target name target-spec)
              (material name Material binding ... material-option ...)
              node]
- [node (dispatch name material node-option ...)
+ [node (dispatch name material maybe-indirect node-option ...)
        (draw-meshes name target meshes-input-or-model material node-option ...)
        (draw name target material vertex-count node-option ...)
+       (draw name target material #:indirect (at commands index) draw-option ... node-option ...)
        (readback name image-or-buffer node-option ...)
        (cpu name cpu-input cpu-option ... node-option ...)
        (copy name source-buffer destination-buffer copy-option ... node-option ...)
@@ -923,6 +924,8 @@ and C++ supplies the meshes.
  [op add min max]
  [count expression (at uint-buffer index)]
  [maybe-value (code:line) (code:line #:value expression)]
+ [maybe-indirect (code:line) (code:line #:indirect (at commands index))]
+ [draw-option (code:line #:draws expression) (code:line #:count (at uint-buffer index))]
  [region-option (code:line #:source-offset expression) (code:line #:destination-offset (x y))
                 (code:line #:extent (width height))]
  [node-option (code:line #:when expression) (code:line #:enabled expression) (code:line #:once boolean)]
@@ -1109,22 +1112,26 @@ options are
        @tt{premultiplied-alpha}, @tt{additive}), @tt{#:depth-test}, @tt{#:depth-write},
        @tt{#:depth-compare} and @tt{#:topology}, defaulting to @tt{GraphicsPipelineOptions}';}
  @item{compute materials' @tt{#:invocations (x [y [z]])}, the invocations each dispatch covers
-       (rounded up to whole workgroups), which is required. It's computed each frame, so dispatch
-       sizes can follow per-frame inputs (e.g. a reduction over however many elements the CPU has
-       this frame) and images' sizes.}
+       (rounded up to whole workgroups), which is required unless the material is only dispatched
+       @tt{#:indirect}. It's computed each frame, so dispatch sizes can follow per-frame inputs
+       (e.g. a reduction over however many elements the CPU has this frame) and images' sizes.}
 ]
 A graphics material is built for the formats of the one target its nodes draw into, and every
 material is used by a node.
 
 Nodes:
 @itemlist[
- @item{@racket[dispatch]: a compute material (a @tt{DispatchNode}).}
+ @item{@racket[dispatch]: a compute material (a @tt{DispatchNode}). With @tt{#:indirect (at
+       commands index)}, as many workgroups as a @tt{DispatchCommand} (@racket[(import indirect)])
+       in a graph buffer says, which an earlier node's shader wrote: the GPU sizes its own work
+       (@secref["indirect"]).}
  @item{@racket[draw-meshes]: draws each mesh of a meshes input or a @racket[model] with a graphics
        material that has a @racket[vertex-input] (a @tt{RenderablesNode}); a model's material reads
        its vertex format. Each draw's first instance is its mesh's instance index
        (@tt{Mesh::create}'s, or a model mesh's material).}
  @item{@racket[draw]: draws a vertex count with a graphics material without one, e.g. a fullscreen
-       triangle or particles pulled from a buffer.}
+       triangle or particles pulled from a buffer, or with @tt{#:indirect}, the @tt{DrawCommand}s
+       shaders wrote (@secref["indirect"]).}
  @item{@racket[readback]: copies an image or a buffer to the CPU each frame (a @tt{ReadbackNode}
        or @tt{BufferReadbackNode}). C++ reads the most recent copy through the generated struct:
        @tt{namePixels(graph)} gives an image's bytes, and @tt{nameContents(graph)} a buffer's
@@ -1157,6 +1164,61 @@ Nodes:
 C++ can enable them later with @tt{graph.setEnabled}. @tt{#:once #t} runs a node in the graph's
 first frame only (@tt{RenderGraph::runOnce}), e.g. one-time setup, or a readback of its result;
 C++ can run it once more with @tt{graph.runOnce}.
+
+@subsection[#:tag "indirect"]{Indirect dispatches and draws}
+
+GPU-driven work decides on the GPU how much work comes next (how many particles survive, which
+objects are visible), and later nodes read that decision without the CPU waiting for it. A shader
+writes commands, the structs of @racket[(import indirect)], which are Vulkan's indirect commands
+field for field:
+@(file-excerpt "dsl/lib/indirect.zgal" #:from #rx"^[(]struct DispatchCommand" #:to #rx"[(]firstInstance uint[)][)]$")
+into a graph buffer (the graph gives it indirect usage), and a node names the first,
+@tt{#:indirect (at commands index)}:
+@itemlist[
+ @item{@racket[dispatch] dispatches as many workgroups as its @tt{DispatchCommand} says. Its material
+       then needs no @tt{#:invocations}.}
+ @item{@racket[draw] draws @tt{#:draws} @tt{DrawCommand}s (by default 1; more need the device's
+       @tt{multiDrawIndirect}, which the graph's @tt{requiredFeatures()} then lists), e.g.
+       particles a simulation kept, as many instances as there are. A command's
+       @tt{firstInstance} other than 0 needs @tt{drawIndirectFirstInstance}. With @tt{#:count (at
+       counts index)} it draws as many of them as an element of a buffer of @tt{uint}s says (at most
+       @tt{#:draws}): a culling pass can append the commands it keeps and count them.}
+]
+@(define indirect-source #<<ZGAL
+(import indirect)
+
+(compute-material Emit
+  (workgroup 1)
+  (bindings (draws (buffer-array DrawCommand)) (drawCount (buffer-array uint)))
+  (push (visible uint))
+  (compute
+   (write! (at draws 0) (DrawCommand 3 visible 0 0))
+   (write! (at drawCount 0) 1)))
+
+(graphics-material Particle
+  (outputs (color vec4))
+  (vertex (results #:position (vec4 (float instanceIndex) 0.0 0.0 1.0)))
+  (fragment (vec4 1.0)))
+
+(graph Particles
+  (buffer draws DrawCommand 1 #:frames per-frame)
+  (buffer drawCount uint 1 #:frames per-frame)
+  (target screen (surface #:depth none))
+  (material emitting Emit draws drawCount #:push ((visible 100)) #:invocations (1))
+  (material drawing Particle)
+  (dispatch emit emitting)
+  (draw particles screen drawing #:indirect (at draws 0) #:count (at drawCount 0)))
+ZGAL
+)
+@(zgal-example indirect-source)
+
+Counts need the device's @tt{drawIndirectCount}, which the context enables where the device has
+it. Elsewhere (MoltenVK lacks it) the generated code adapts, adding a node before the draw (named
+after it, with @tt{" (limit)"}) that copies the commands with those past the count given no
+instances, and drawing all of them:
+@(generated-file indirect-source "example.zgal.h" #:from #rx"zgal::addCountedDraw" #:to #rx"zgal::addCountedDraw")
+Both nodes are enabled and run once alike; enabling the draw from C++ or an app
+(@tt{nodes.particles}) leaves the small copy running.
 
 @subsection[#:tag "compute-library"]{The compute library}
 
@@ -1594,9 +1656,9 @@ What ZGAL doesn't describe yet:
  @item{a shader used by more than one material.}
 ]
 
-Graphs can't yet use storage images other than 2D ones, run a node on a chosen queue, dispatch
-indirectly (a size an earlier pass writes on the GPU), compute anything per frame but push
-constants, dispatch sizes and uniforms, or describe nodes that depend on the application's data
+Graphs can't yet use storage images other than 2D ones, run a node on a chosen queue, draw
+models' meshes indirectly, compute anything per frame but push constants, dispatch sizes and
+uniforms, or describe nodes that depend on the application's data
 except through @racket[extern] nodes (build-time loops over list inputs could cover some of them).
 
 Apps handle events only: they can't ask whether a key is held or where the cursor is outside
