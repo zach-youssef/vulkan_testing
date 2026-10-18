@@ -110,7 +110,12 @@
   (match e
     [(t-lit v _ l) (t-lit (if (eq? (scalar-t-kind t) 'float) (exact->inexact v) v) t l)]
     [(t-op op args _ l) (t-op op (for/list ([a (in-list args)]) (if (literal? (texpr-type a)) (retype a t) a)) t l)]
-    [(t-if c a b _ l) (t-if c (retype a t) (retype b t) t l)]))
+    [(t-if c a b _ l) (t-if c (retype a t) (retype b t) t l)]
+    ;; A constant of integer literals (see literal-constant?): declared as an int, converted where
+    ;; it's used as anything else
+    [(t-global 'constant name spelling _ l)
+     (define declared (t-global 'constant name spelling (scalar-t 'int) l))
+     (if (equal? t (scalar-t 'int)) declared (t-construct (list declared) t l))]))
 
 ;; e as type t: integer literals take it, and anything else must have it
 (define (coerce e t where what)
@@ -146,6 +151,20 @@
     [(scalar-t k) #:when (small-integer-kind? k)
      (t-construct (list e) (scalar-t (widened-kind k)) (texpr-loc e))]
     [_ e]))
+
+;; Whether constant c's value is an expression of integer literals (and such constants), which
+;; makes it one too wherever it's used: (define tiles 57) compares with uints as 57 does. It's
+;; declared as an int, the type literals settle on. An explicit (int 57) isn't one.
+(define (literal-constant? c constants)
+  (let shaped? ([e (constant-decl-body c)])
+    (match e
+      [(t-lit v (scalar-t 'int) _) (exact-integer? v)]
+      [(t-op op args (scalar-t 'int) _)
+       (and (memq op '(+ - * / remainder bitand bitor bitxor shl shr negate bitnot)) (andmap shaped? args))]
+      [(t-global 'constant name _ (scalar-t 'int) _)
+       (define d (hash-ref constants name #f))
+       (and d (literal-constant? d constants))]
+      [_ #f])))
 
 ;; Integer literals left alone are ints
 (define (settle e) (if (literal? (texpr-type e)) (retype e (scalar-t 'int)) e))
@@ -308,7 +327,9 @@
       [(hash-ref (context-constants ctx) base-name #f)
        => (λ (c)
             (set-add! (context-uses ctx) base-name)
-            (t-global 'constant base-name base-name (constant-decl-type c) here))]
+            (t-global 'constant base-name base-name
+                      (if (literal-constant? c (context-constants ctx)) literal-type (constant-decl-type c))
+                      here))]
       [(hash-ref (hash-ref stage-variables (context-stage ctx) (hash)) base-name #f)
        => (λ (v) (t-global 'stage base-name (first v) (second v) here))]
       [(member base-name stage-variable-names)
@@ -535,7 +556,8 @@
                 (define a (recur (first args)))
                 (unless (or (scalar-t? (texpr-type a)) (literal? (texpr-type a)))
                   (zgal-error 'type-mismatch stx "~a converts a scalar, not ~a" head (a-type (texpr-type a))))
-                (if (and (small-integer-kind? (scalar-t-kind t)) (literal? (texpr-type a)))
+                ;; A literal is range checked; a constant of literals is converted like any int
+                (if (and (small-integer-kind? (scalar-t-kind t)) (literal? (texpr-type a)) (not (t-global? a)))
                     (small-literal a t (first args))
                     (t-construct (list (settle a)) t here)))]
           [(hash-ref (context-structs ctx) head-name #f)

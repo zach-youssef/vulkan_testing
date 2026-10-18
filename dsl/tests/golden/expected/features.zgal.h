@@ -57,7 +57,7 @@ struct Lights {
     uint32_t count;
     uint32_t zgalPadding0_[3]{};
 #line 15 "dsl/tests/golden/features.zgal"
-    Light lights[4];
+    std::array<Light, 4> lights;
 #line 13 "dsl/tests/golden/features.zgal"
 };
 #line 13 "dsl/tests/golden/features.zgal"
@@ -73,7 +73,7 @@ struct Packed {
     uint8_t zgalPadding0_[1]{};
 #line 132 "dsl/tests/golden/features.zgal"
     int16_t level;
-    uint8_t bytes[3];
+    std::array<uint8_t, 3> bytes;
     int8_t offset;
     uint32_t wide;
 #line 130 "dsl/tests/golden/features.zgal"

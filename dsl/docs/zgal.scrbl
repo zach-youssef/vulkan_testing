@@ -336,7 +336,8 @@ initializers (@tt{SceneUniforms{.viewProjection = ..., .cameraPosition = ...}}).
 
 Declares a struct for buffers and push constants, with the std430 layout. Every shader generated
 from the file declares every struct, so bodies can use them whether or not a binding refers to
-them; the header declares it as a C++ struct with that layout.
+them; the header declares it as a C++ struct with that layout. Array fields are @tt{std::array}s,
+so C++ copies and assigns them like any other value.
 
 @subsection{@racket[vertex-format]}
 
@@ -828,7 +829,11 @@ Functions and constants are declared at the top level and used by any shader (an
 declared after them, so functions can't recurse. A function's parameters and result are any type,
 plus @tt{texture2D}, @tt{sampler} and @tt{image2D} parameters and a @tt{void} result for functions
 that only have effects; it can't name bindings or stage variables (pass them). Constants are
-computed from literals, other constants, constructors, operators and built-in functions.
+computed from literals, other constants, constructors, operators and built-in functions. A constant
+computed only from integer literals (and such constants), like @racket[(define tiles 57)], is used as
+a literal would be: it takes the type its context needs, so @racket[(< i tiles)] compares it with a
+@tt{uint}. It's declared as an @tt{int} and converted where it's used as anything else
+(@tt{uint(tiles)}); write @racket[(define tiles (uint 57))] to fix its type.
 
 Shaders get the functions and constants they use. Those that use no textures, images, stage
 variables or effects are also compiled to C++, as @tt{inline} functions and constants over GLM in

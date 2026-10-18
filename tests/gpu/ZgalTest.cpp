@@ -511,6 +511,13 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL functions compute the same on the CPU as on the
     }).value();
 }
 
+TEST_CASE("ZGAL structs' arrays copy in C++") {
+    const Bytes from{.small = 1, .many = {7, 8, 9}};
+    const Bytes copied = withMany(Bytes{.small = 2}, from);
+    CHECK(copied.small == 2);
+    CHECK(copied.many == from.many);
+}
+
 namespace {
 
 // A context with the device features ZGAL materials ask for, and validation, recording errors
@@ -640,7 +647,7 @@ TEST_CASE("ZGAL's 8- and 16-bit integers, shared memory, imported buffers, copie
         CHECK(packed[i].tiny == -elements[i].tiny);
         CHECK(packed[i].level == uint16_t(elements[i].level + 1));
         CHECK(packed[i].wide == elements[i].wide);
-        CHECK(std::memcmp(packed[i].many, elements[i].many, 3) == 0);
+        CHECK(packed[i].many == elements[i].many);
     }
 
     staging.reset();

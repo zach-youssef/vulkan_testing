@@ -165,13 +165,15 @@
 ;; integer part must match exactly, its floating point part to the GPU's precision.
 (import random)
 
+(define hashRange 1000)   ; Of integer literals: used as a uint below
+
 (define (evaluate [i : uint]) : vec4
   (let* ([t (/ (float i) 7.0)]
          [v (normalize (vec3 (sin t) (cos (* 2.0 t)) (+ 1.0 t)))]
          [c (cross v (vec3 0.0 1.0 0.0))]
          [s (sum ([k (range 0 4)]) (pow (+ 1.0 (* 0.1 (float k))) 1.5))]
          [blend (mix c v (smoothstep 0.0 4.0 t))])
-    (vec4 blend.zx (+ s (exp (- t))) (float (remainder (pcgHash i) 1000)))))
+    (vec4 blend.zx (+ s (exp (- t))) (float (remainder (pcgHash i) hashRange)))))
 
 ;; Writes evaluate(i) for each invocation i (a ZGAL body)
 (compute-material Evaluate
@@ -193,6 +195,10 @@
   (tiny int8)                   ; 7
   (wide uint)                   ; 8
   (level uint16))               ; 12; 14 bytes, aligned to 4: 16
+
+;; b with from's array (the C++ copies a std::array field)
+(define (withMany [b : Bytes] [from : Bytes]) : Bytes
+  (with b #:many (.many from)))
 
 ;; Sums each workgroup's elements through shared memory (a reduction, with barriers), and repacks
 ;; the elements: reading small integers widens them, and writing them narrows explicitly

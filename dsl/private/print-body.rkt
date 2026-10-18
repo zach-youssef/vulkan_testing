@@ -94,10 +94,7 @@
          (format "~a(~a)" (struct-decl-name d) (args as))
          (format "~a{~a}" (struct-decl-name d)
                  (string-join (for/list ([f (in-list (struct-decl-fields d))] [a (in-list as)])
-                                ;; Structs' arrays are C arrays, initialized from a list
-                                (match a
-                                  [(t-construct es (array-t _ _) _) (format ".~a = {~a}" (field-name f) (args es))]
-                                  [_ (format ".~a = ~a" (field-name f) (p a))]))
+                                (format ".~a = ~a" (field-name f) (p a)))
                               ", ")))]
     [(t-construct as (array-t el n) _)
      (if (eq? dialect 'glsl)

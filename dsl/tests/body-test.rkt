@@ -165,12 +165,30 @@
                  "(compute-material Pack (workgroup 1) (bindings (data (buffer-array Bytes)))\n"
                  "  (compute " body "))"))
 
-(test-case "Structs' arrays are C arrays in C++, which constants initialize from lists"
+(test-case "Structs' arrays are std::arrays in C++, which copy like other values"
   (define header (generated (string-append "(struct Row (cells (array uint8 2)) (count uint))\n"
-                                           "(define blank (Row (array uint8 0 1) 2))")
+                                           "(define blank (Row (array uint8 0 1) 2))\n"
+                                           "(define (cleared [r : Row]) : Row (with r #:cells (.cells blank)))")
                             "test.zgal.h"))
-  (check-true (string-contains? header "uint8_t cells[2];"))
-  (check-true (string-contains? header "inline const Row blank = Row{.cells = {uint8_t(0), uint8_t(1)}, .count = 2u};")))
+  (check-true (string-contains? header "std::array<uint8_t, 2> cells;"))
+  (check-true (string-contains? header "inline const Row blank = Row{.cells = std::array<uint8_t, 2>{uint8_t(0), uint8_t(1)}, .count = 2u};"))
+  (check-regexp-match #rx"[.]cells = blank[.]cells;" header))
+
+(test-case "Constants of integer literals take the type their use needs"
+  (define material
+    (string-append "(define tiles 57)\n(define doubled (* tiles 2))\n(define three (int 3))\n"
+                   "(compute-material Count (workgroup 1) (bindings (counts (buffer-array uint)) (bytes (buffer-array uint8)))\n"
+                   "  (compute ~a))"))
+  (define shader (generated (format material "(when (< localInvocationId.x doubled) (write! (at counts 0) (+ tiles 1)) (write! (at bytes 0) (uint8 tiles)))")
+                            "Count.comp"))
+  (check-true (string-contains? shader "const int tiles = 57;"))
+  (check-true (string-contains? shader "const int doubled = tiles * 2;"))
+  (check-true (string-contains? shader "gl_LocalInvocationID.x < uint(doubled)"))
+  (check-true (string-contains? shader "uint(tiles) + 1u"))
+  (check-true (string-contains? shader "uint8_t(tiles)"))
+  ;; Fixed by a conversion; small types need one, as for any int
+  (check-zgal-error (format material "(write! (at counts 0) three)") 'type-mismatch "is a uint, not an int")
+  (check-zgal-error (format material "(write! (at bytes 0) tiles)") 'type-mismatch "convert it with (uint8 expression)"))
 
 (test-case "Small integers are widened where they're read, and narrowed explicitly where they're written"
   (define shader

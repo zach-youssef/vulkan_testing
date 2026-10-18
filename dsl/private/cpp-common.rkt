@@ -22,9 +22,11 @@
     [(scalar-t k) (scalar-cpp k)]
     [(vector-t k n) (format "glm::~a" (type-name t))]
     [(matrix-t n) (format "glm::mat~a" n)]
-    [(struct-t d) (struct-decl-name d)]))
+    [(struct-t d) (struct-decl-name d)]
+    ;; std::array rather than a C array, so values (and fields holding them) copy and assign like
+    ;; any other; it adds no padding of its own (the generated static_asserts check)
+    [(array-t e n) (format "std::array<~a, ~a>" (cpp-type e) n)]))
 
 (define (cpp-declaration t name)
   (match t
-    [(array-t e n) (format "~a ~a[~a]" (cpp-type e) name n)]
     [_ (format "~a ~a" (cpp-type t) name)]))
