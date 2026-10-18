@@ -47,7 +47,7 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | `include/app` | `VulkanApp` (the only GLFW user) |
 | `include/glsl` | `bindless.glsl`, included by shaders (`glslc -I include/glsl`) |
 | `include/util` | `StbImageWrite.h`: `stb_image_write` without its deprecation warnings |
-| `include/zgal` | What code generated from ZGAL uses: `Runtime.h` for graphs (`zgal::FrameInfo`, `FrameSource`, `Uniform`, material instances), `App.h` for apps (events, `Timestep`), and `Window.h`, running an app in a `VulkanApp` |
+| `include/zgal` | What code generated from ZGAL uses: `Material.h` for materials (checks and shaders every generated material shares), `Runtime.h` for graphs (`zgal::FrameInfo`, `FrameSource`, `Uniform`, material instances), `App.h` for apps (events, `Timestep`), and `Window.h`, running an app in a `VulkanApp` |
 | `dsl` | ZGAL (Zach's Graphics Application Language), declaring shader interfaces and render graphs: its compiler (Racket), documentation (`dsl/docs`) and tests (`dsl/tests`) |
 
 Include headers relative to `include/`, e.g. `#include "graph/RenderGraph.h"`. Exactly one

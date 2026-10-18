@@ -176,7 +176,7 @@
   (check-true (string-contains? header "features.vulkan12.shaderInt8 = VK_TRUE;"))
   (check-true (string-contains? header "features.core.features.shaderInt16 = VK_TRUE;"))
   ;; Checked before loading the shaders, which use them
-  (check-true (string-contains? header "loadShaders(VulkanContext& context) {\n        requireDevice(context);")))
+  (check-true (string-contains? header "loadShaders(VulkanContext& context) {\n        zgal::requireFeatures(context, requiredFeatures(), ")))
 
 ;; ---------------------------------------------------------------------------------------------
 ;; Shared memory and barriers

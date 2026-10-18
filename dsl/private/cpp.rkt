@@ -249,8 +249,6 @@
   (define name (material-name m))
   (define flags (material-feature-flags m prog))
   (define-values (subgroup-stages subgroup-operations) (material-subgroup-needs m prog))
-  ;; Whether loadShaders checks the device first
-  (define checks? (or (pair? flags) (pair? subgroup-stages)))
   (define graphics? (eq? (material-kind m) 'graphics))
   (define bindings (material-bindings m))
   (define push (material-push m))
@@ -295,25 +293,17 @@
   (gen (format "    // The shaders ~a is generated for (loadShaders), so it can't be built from shaders with"
                name))
   (gen "    // another interface")
-  (gen "    class Shaders {")
-  (gen "    public:")
-  (for ([member (in-list shader-members)])
-    (gen (format "        const Handle<Shader>& ~a() const { return ~a_; }" member member)))
-  (gen "")
-  (gen "    private:")
-  (gen (format "        friend class ~a;" name))
-  (gen (format "        explicit Shaders(~a)"
-               (string-join (for/list ([member (in-list shader-members)]) (format "Handle<Shader> ~a" member)) ", ")))
-  (gen (format "        : ~a {}"
-               (string-join (for/list ([member (in-list shader-members)]) (format "~a_(std::move(~a))" member member)) ", ")))
-  (for ([member (in-list shader-members)])
-    (gen (format "        Handle<Shader> ~a_;" member)))
-  (gen "    };")
+  (gen (format "    using Shaders = zgal::~aShaders<~a>;" (if graphics? "Graphics" "Compute") name))
   (gen "")
   (gen (format "    // Loads ~a from the context's shader library" (string-join (map shader-name shaders) " and ")))
   (gen "    static Result<Shaders> loadShaders(VulkanContext& context) {")
-  (when checks?
-    (gen "        requireDevice(context);"))
+  (when (pair? flags)
+    (gen (format "        zgal::requireFeatures(context, requiredFeatures(), ~a);" (cpp-string name))))
+  (when (pair? subgroup-stages)
+    (gen (format "        zgal::requireSubgroups(context, kSubgroupStages, kSubgroupOperations, ~a);"
+                 (cpp-string (format "~a's shaders use subgroup operations (~a) in stages (~a) the device's subgroups don't support"
+                                     name (string-join (map symbol->string subgroup-operations) ", ")
+                                     (string-join (map symbol->string subgroup-stages) ", "))))))
   (for ([s (in-list shaders)] [member (in-list shader-members)])
     (emit! w (format "        TRY_ASSIGN(auto ~a, context.shaders().get(~a));" member (cpp-string (shader-name s)))
            #:at (shader-loc s)))
@@ -366,9 +356,10 @@
      (gen (format "    ~a(VulkanContext& context, const Shaders& shaders, ~aAttachmentFormats formats," name
                   (if (null? bindings) "" "Bindings bindings, ")))
      (gen "        GraphicsPipelineOptions options)")
-     (gen (format "    : GraphicsMaterial(context, ~a, checkFormats(std::move(formats)), shaders.vertex_,"
-                  (if (null? bindings) "{}" "materialBindings(std::move(bindings))")))
-     (gen "                       shaders.fragment_, withVertexInput(std::move(options))) {}")]
+     (gen (format "    : GraphicsMaterial(context, ~a, zgal::checkFormats(std::move(formats), kColorOutputs, ~a),"
+                  (if (null? bindings) "{}" "materialBindings(std::move(bindings))") (cpp-string name)))
+     (gen (format "                       shaders.vertex_, shaders.fragment_, zgal::withVertexInput(std::move(options), ~a, ~a, ~a)) {}"
+                  (if input "vertexLayout()" "std::nullopt") (cpp-string name) (cpp-string (program-source prog))))]
     [else
      (match-define (list x y z) (material-workgroup m))
      (gen "    // The compute shader's workgroup size")
@@ -397,7 +388,11 @@
     (gen ""))
   (gen "    void writePushConstants(uint32_t frameIndex, std::vector<uint8_t>& data) final {")
   (unless (null? bindings)
-    (gen "        checkDescriptorTypes(frameIndex);"))
+    (gen (format "        static constexpr DescriptorType kTypes[] = {~a};"
+                 (string-join (map descriptor-type bindings) ", ")))
+    (gen (format "        static constexpr const char* kNames[] = {~a};"
+                 (string-join (map (λ (b) (cpp-string (binding-name b))) bindings) ", ")))
+    (gen (format "        zgal::checkDescriptorTypes(bindings(), frameIndex, kTypes, kNames, ~a);" (cpp-string name))))
   (unless (null? push)
     (gen "        Push push{};")
     (gen "        writePush(frameIndex, push);")
@@ -405,35 +400,12 @@
     (gen "        std::memcpy(data.data() + kPushOffset, &push, sizeof(Push));"))
   (gen "    }")
   (gen "")
-  (gen "private:")
-  (when checks?
-    (gen "    // The shaders can't be loaded without what they use, so a context lacking it is a mistake")
-    (gen "    static void requireDevice(VulkanContext& context) {")
-    (when (pair? flags)
-      (gen "        const auto missing = context.enabledFeatures().missing(requiredFeatures());")
-      (gen "        if (!missing.empty()) {")
-      (gen (format "            std::string message = ~a;" (cpp-string (format "~a needs device features the context doesn't enable:" name))))
-      (gen "            for (const auto& feature : missing) {")
-      (gen "                message += \" \" + feature;")
-      (gen "            }")
-      (gen (format "            contractViolation(message + ~a);"
-                   (cpp-string (format ". Add ~a::requiredFeatures() to the context's features." name))))
-      (gen "        }"))
-    (when (pair? subgroup-stages)
-      (gen "        const auto& subgroups = context.subgroupProperties();")
-      (gen "        if ((subgroups.supportedStages & kSubgroupStages) != kSubgroupStages ||")
-      (gen "            (subgroups.supportedOperations & kSubgroupOperations) != kSubgroupOperations) {")
-      (gen (format "            contractViolation(~a);"
-                   (cpp-string (format "~a's shaders use subgroup operations (~a) in stages (~a) the device's subgroups don't support"
-                                       name (string-join (map symbol->string subgroup-operations) ", ")
-                                       (string-join (map symbol->string subgroup-stages) ", ")))))
-      (gen "        }"))
-    (gen "    }")
-    (gen ""))
   (unless (null? bindings)
+    (gen "private:")
     (gen "    static std::vector<MaterialBinding> materialBindings(Bindings bindings) {")
     (for ([b (in-list bindings)])
-      (gen (format "        requireBound(bindings.~a, ~a);" (binding-name b) (cpp-string (binding-name b)))))
+      (gen (format "        zgal::requireBound(bindings.~a, ~a, ~a);" (binding-name b) (cpp-string name)
+                   (cpp-string (binding-name b)))))
     (gen "        return {")
     (for ([b (in-list bindings)])
       (emit! w (if (eq? (binding-kind b) 'array)
@@ -443,66 +415,6 @@
                            (stage-flags (binding-stages b))))
              #:at (binding-loc b)))
     (gen "        };")
-    (gen "    }")
-    (gen "")
-    (gen "    static void requireBound(const FrameBinding<DescriptorEntry>& binding, const char* name) {")
-    (gen "        if (!binding.isPerFrame() && !binding.shared()) {")
-    (gen (format "            contractViolation(std::string(~a) + name + \"' has no descriptor entry\");"
-                 (cpp-string (format "~a's binding '" name))))
-    (gen "        }")
-    (gen "    }")
-    (gen "")
-    (when (ormap (λ (b) (eq? (binding-kind b) 'array)) bindings)
-      (gen "    static void requireBound(const Handle<DescriptorArray>& binding, const char* name) {")
-      (gen "        if (!binding) {")
-      (gen (format "            contractViolation(std::string(~a) + name + \"' has no DescriptorArray\");"
-                   (cpp-string (format "~a's binding '" name))))
-      (gen "        }")
-      (gen "    }")
-      (gen ""))
-    (gen "    // A binding given an entry of the wrong kind would index the wrong descriptor array")
-    (gen "    void checkDescriptorTypes(uint32_t frameIndex) {")
-    (gen (format "        static constexpr DescriptorType kTypes[] = {~a};"
-                 (string-join (map descriptor-type bindings) ", ")))
-    (gen (format "        static constexpr const char* kNames[] = {~a};"
-                 (string-join (map (λ (b) (cpp-string (binding-name b))) bindings) ", ")))
-    (gen "        for (size_t i = 0; i < bindings().size(); ++i) {")
-    (gen "            const auto& binding = bindings()[i];")
-    (gen "            // An array's elements")
-    (gen "            std::vector<FrameBinding<DescriptorEntry>> entries{binding.entry};")
-    (gen "            if (binding.descriptorArray) {")
-    (gen "                entries = binding.descriptorArray->elements();")
-    (gen "            }")
-    (gen "            for (const auto& element : entries) {")
-    (gen "                auto entry = element.get(frameIndex);")
-    (gen "                if (entry && entry->type() != kTypes[i]) {")
-    (gen (format "                    contractViolation(std::string(~a) + kNames[i] + \"' needs a \" + descriptorTypeName(kTypes[i])"
-                 (cpp-string (format "~a's binding '" name))))
-    (gen "                                      + \" entry, but was given a \" + descriptorTypeName(entry->type()) + \" entry\");")
-    (gen "                }")
-    (gen "            }")
-    (gen "        }")
-    (gen "    }")
-    (gen ""))
-  (when graphics?
-    (gen "    static AttachmentFormats checkFormats(AttachmentFormats formats) {")
-    (gen "        if (formats.color.size() != kColorOutputs) {")
-    (gen (format "            contractViolation(~a + std::to_string(kColorOutputs) + \" colour attachments, but its target has \""
-                 (cpp-string (format "~a's fragment shader writes " name))))
-    (gen "                              + std::to_string(formats.color.size()));")
-    (gen "        }")
-    (gen "        return formats;")
-    (gen "    }")
-    (gen "")
-    (gen "    static GraphicsPipelineOptions withVertexInput(GraphicsPipelineOptions options) {")
-    (gen "        if (options.vertexLayout) {")
-    (gen (format "            contractViolation(~a);"
-                 (cpp-string (format "~a's vertex input is declared in ~a: leave GraphicsPipelineOptions::vertexLayout empty"
-                                     name (program-source prog)))))
-    (gen "        }")
-    (when (material-vertex-input m)
-      (gen "        options.vertexLayout = vertexLayout();"))
-    (gen "        return options;")
     (gen "    }"))
   (emit! w "};" #:at (material-loc m)))
 
@@ -516,9 +428,8 @@
   (gen "#pragma once")
   (gen "")
   (define graphs (program-graphs prog))
-  (cond
-    [(ormap (λ (m) (eq? (material-kind m) 'graphics)) materials) (gen "#include \"materials/GraphicsMaterial.h\"")]
-    [(pair? materials) (gen "#include \"materials/Material.h\"")])
+  (when (pair? materials)
+    (gen "#include \"zgal/Material.h\""))
   (define apps (program-apps prog))
   (when (pair? graphs)
     (for ([h (in-list '("graph/RenderGraph.h" "graph/nodes/DispatchNode.h" "graph/nodes/DispatchSequenceNode.h" "graph/nodes/IndirectDrawNode.h" "graph/nodes/ReadbackNode.h"

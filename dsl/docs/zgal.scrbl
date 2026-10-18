@@ -1676,9 +1676,11 @@ with
        one an entry, either shared by every frame or one per frame: a missing entry is a contract
        violation when the material is constructed.}
  @item{@tt{struct Push} (with push constants): the push fields, laid out as in the shaders.}
- @item{@tt{class Shaders} and @tt{static Result<Shaders> loadShaders(VulkanContext&)}, which loads
-       the material's shaders from the shader library. The constructor takes a @tt{Shaders}, so
-       the material can only be built from the shaders generated with its interface.}
+ @item{@tt{Shaders} (@tt{zgal::GraphicsShaders} or @tt{zgal::ComputeShaders} of the material,
+       from @tt{zgal/Material.h}) and @tt{static Result<Shaders> loadShaders(VulkanContext&)},
+       which loads the material's shaders from the shader library. Only the material can make a
+       @tt{Shaders}, and its constructor takes one, so it can only be built from the shaders
+       generated with its interface.}
  @item{Graphics materials: @tt{kColorOutputs}, the number of outputs, and with a
        @racket[vertex-input], @tt{static VertexLayout vertexLayout()}.}
  @item{Compute materials: @tt{kWorkgroupSizeX}, @tt{Y} and @tt{Z}, and
