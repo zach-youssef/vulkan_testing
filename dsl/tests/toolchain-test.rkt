@@ -13,6 +13,8 @@
          racket/system
          rackunit
          "../compile.rkt"
+         "../private/ast.rkt"
+         "../private/wgsl.rkt"
          "golden-test.rkt"
          "util.rkt")
 
@@ -85,16 +87,20 @@
 (define (dawn-tests)
   (test-case "Every generated WGSL module compiles: the golden ones, the examples' and the tests'"
     (with-temporary-directory (directory)
+      ;; The examples' graphs use what the web doesn't have yet (image files, models), so only
+      ;; their materials' shaders are compiled
       (define outputs
-        (append (golden-web-outputs)
+        (append (filter (λ (o) (regexp-match? #rx"[.]wgsl$" (output-path o))) (golden-web-outputs))
                 (for*/list ([source (in-list (list "examples/image_filter/image_filter.zgal"
                                                    "examples/particles/particles.zgal"
                                                    "examples/scene/scene.zgal"))]
-                            [o (in-list (let-values ([(_prog outputs)
-                                                      (parameterize ([current-directory repository])
-                                                        (compile-zgal source #:native? #f #:web-dir "web"))])
-                                          outputs))])
-                  o)))
+                            [prog (in-value (let-values ([(prog _outputs)
+                                                          (parameterize ([current-directory repository])
+                                                            (compile-zgal source #:native? #f #:check-only? #t))])
+                                              prog))]
+                            [m (in-list (program-materials prog))]
+                            [s (in-list (material-shaders m))])
+                  (output (wgsl-shader-file-name s) (emit-wgsl prog m s)))))
       (write-outputs outputs directory)
       (define-values (status text)
         (apply run (getenv "ZGAL_NODE")

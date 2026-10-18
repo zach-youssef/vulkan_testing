@@ -4,7 +4,7 @@
 # e.g. tools/verify_stack.sh . main HEAD
 #
 # Prints one line per commit with the CPU and GPU test exit codes and summaries (and those of the
-# ZGAL tests and example smoke tests where a commit has them); the per-commit
+# ZGAL tests, example smoke tests and web tests where a commit has them); the per-commit
 # build and test logs are kept in the temporary directory printed at the end. Exits 1 if any commit
 # fails to build or fails a test.
 # Each commit is exported to its own directory. All builds and CPU test runs happen in
@@ -41,6 +41,10 @@ gpu_worker() {
             if grep -q '^test-examples:' $d/Makefile; then
                 (cd $d && make test-examples >examples.log 2>&1); echo $? > $d/examples.exit
             fi
+            # The web runtime's tests run on the GPU through Dawn
+            if grep -q '^test-web:' $d/Makefile; then
+                (cd $d && make test-web >web.log 2>&1); echo $? > $d/web.exit
+            fi
         fi
     done
 }
@@ -60,7 +64,9 @@ for c in $commits; do
     if [[ -f $d/examples.exit ]]; then examples=", examples exit $(cat $d/examples.exit)"; fi
     dsl=""
     if [[ -f $d/dsl.exit ]]; then dsl=", zgal exit $(cat $d/dsl.exit)"; fi
-    echo "$line: cpu exit $(cat $d/cpu.exit) [$(summary $d/cpu.log)], gpu exit $(cat $d/gpu.exit) [$(summary $d/gpu.log)]$dsl$examples"
+    web=""
+    if [[ -f $d/web.exit ]]; then web=", web exit $(cat $d/web.exit)"; fi
+    echo "$line: cpu exit $(cat $d/cpu.exit) [$(summary $d/cpu.log)], gpu exit $(cat $d/gpu.exit) [$(summary $d/gpu.log)]$dsl$examples$web"
 done
 echo "Logs: $out"
 exit $failed

@@ -19,10 +19,13 @@ Agents migrating code written against the pre-refactor wrapper (the `main` branc
 - `make test-dsl`: builds ZGAL's documentation and runs its compiler's tests (`make test` includes
   it), installing the web backend's npm packages (`web/`) first. `make docs` only builds the documentation: `build/docs/zgal.html`, and
   `build/docs/zgal.txt` to read in a terminal.
+- `make test-web`: compiles `web/tests/web.zgal` to TypeScript and WGSL in `build/web-tests` beside
+  a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node (`make
+  test` includes it; `TEST_ARGS` go to `node --test`).
 - `zgal.mk`: the make rules building ZGAL programs (`zgal-rule`, `zgal-program`), which the Makefile
   and other projects' Makefiles include.
 - `tools/verify_stack.sh <repo> <base> [head]`: builds and tests every commit in a range (builds and
-  CPU and ZGAL tests in parallel, GPU tests and example smoke tests one at a time). Check its exit
+  CPU and ZGAL tests in parallel, GPU tests, example smoke tests and web tests one at a time). Check its exit
   codes, not filtered output.
 
 Requirements: the Vulkan SDK (path in the Makefile), `glslc`, GLFW, GLM and Racket 8 (`racket` and
@@ -52,7 +55,7 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | `include/util` | `StbImageWrite.h`: `stb_image_write` without its deprecation warnings |
 | `include/zgal` | What code generated from ZGAL uses: `Material.h` for materials (checks and shaders every generated material shares), `Runtime.h` for graphs (`zgal::FrameInfo`, `FrameSource`, `Uniform`, material instances), `App.h` for apps (events, `Timestep`, `RunMode`), `Main.h` for generated mains (command line, validation, captures, headless runs), and `Window.h`, running an app in a `VulkanApp` (and windowed programs) |
 | `dsl` | ZGAL (Zach's Graphics Application Language), declaring shader interfaces and render graphs: its compiler (Racket), documentation (`dsl/docs`) and tests (`dsl/tests`) |
-| `web` | ZGAL's web backend (WebGPU): its npm packages (TypeScript; Dawn, WebGPU for Node, for tests) and tools (`tools/check-wgsl.ts` compiles WGSL with Dawn) |
+| `web` | ZGAL's web backend (WebGPU): the TypeScript runtime generated code uses (`zgal/`: `Context`, `RenderGraph`, nodes, materials, layouts; `node.ts` and `png.ts` for Node), its tests (`tests/`), npm packages (TypeScript; Dawn, WebGPU for Node, for tests) and tools (`tools/check-wgsl.ts` compiles WGSL with Dawn) |
 
 Include headers relative to `include/`, e.g. `#include "graph/RenderGraph.h"`. Exactly one
 translation unit must `#define VK_WRAP_UTIL_IMPL` before including the wrapper and
@@ -402,10 +405,15 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   `zgal-program` builds one (its own C++ is the `.cpp` files beside the `.zgal` file); other projects'
   Makefiles include `zgal.mk` too. Prefer it to a handwritten `main`.
 - Never edit generated files (under `build/`): change the `.zgal` file (or a GLSL body).
-- The web: `--web-out DIR` writes a WGSL module (WebGPU) per material shader; TypeScript for graphs
-  and apps is in progress. A material is a bind group (binding i is its i'th binding, push
-  constants a uniform buffer after them); buffers of small integers or with atomics are 32-bit
-  words at std430 offsets. GLSL bodies, `extern-glsl` and array bindings report `not-on-web`.
+- The web: `--web-out DIR` writes `FILE.zgal.ts` (structs' interfaces and layouts, materials'
+  descriptions with their WGSL, and a class per graph whose `build(context, graph, inputs)` mirrors
+  the C++ one) and a WGSL module (WebGPU) per material shader. The TypeScript imports the runtime as
+  `./zgal/index.ts`: copy `web/zgal` beside it. Apps and mains are in progress. A material is a bind
+  group (binding i is its i'th binding, push constants a uniform buffer after them); buffers of
+  small integers or with atomics are 32-bit words at std430 offsets. GLSL bodies, `extern-glsl`,
+  array bindings, and (for now) image files, models, meshes, library kernels and indirect work
+  report `not-on-web`. Runtime code is erasable TypeScript (no parameter properties or enums), so
+  Node runs it directly.
 
 ### Shaders
 
@@ -466,6 +474,7 @@ writing ZGAL: it has the language, what's generated and every error. In short:
 - The compiler's output is checked against golden files (`dsl/tests/golden/expected`). When it
   changes on purpose, regenerate them (`ZGAL_UPDATE_GOLDEN=1 raco test dsl/tests/golden-test.rkt`)
   and review the difference. Changes to generated C++ or GLSL also need GPU tests
-  (`tests/gpu/ZgalTest.cpp`, with interfaces in `tests/gpu/zgal`).
+  (`tests/gpu/ZgalTest.cpp`, with interfaces in `tests/gpu/zgal`). Changes to generated WGSL or TypeScript, or
+  to the runtime (`web/zgal`), need web tests (`web/tests`, `make test-web`).
 - Keep the checked program (`dsl/private/ast.rkt`) independent of backends: GLSL and C++ are
   emitters, and others (e.g. WebGL) are planned.

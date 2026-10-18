@@ -57,7 +57,7 @@
      #:once-each
      [("--cpp-out") dir "Write the C++ header to DIR/<file>.h (and a program's main to DIR/<file>.main.cpp)" (set! cpp-out dir)]
      [("--glsl-out") dir "Write each shader to DIR/<shader name>, removing others there" (set! glsl-out dir)]
-     [("--web-out") dir "Write each shader's WGSL module (WebGPU) to DIR/<shader name>.wgsl, removing others there" (set! web-out dir)]
+     [("--web-out") dir "Write the TypeScript module (WebGPU) to DIR/<file>.ts and each shader's WGSL to DIR/<shader name>.wgsl, removing other WGSL there" (set! web-out dir)]
      [("--depfile") file "Write a Makefile rule listing the inputs to FILE" (set! depfile file)]
      [("--dep-target") target "The target of the --depfile rule (default: the header)" (set! dep-target target)]
      [("--check") "Only check the file" (set! check-only? #t)]
@@ -78,7 +78,7 @@
                     #:native? native?
                     #:web-dir web-out
                     #:check-only? check-only?))
-    (define-values (web outputs) (partition (λ (o) (regexp-match? #rx"[.]wgsl$" (output-path o))) all-outputs))
+    (define-values (web outputs) (partition (λ (o) (regexp-match? #rx"[.](wgsl|ts)$" (output-path o))) all-outputs))
     (when (and web-out (not check-only?))
       (for ([o (in-list web)]) (write-if-changed (output-path o) (output-text o)))
       (remove-stale-shaders web-out (map output-path web) #rx"[.]wgsl$"))
