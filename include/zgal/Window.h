@@ -162,6 +162,7 @@ int runWindowed(const CommandLine& commandLine, const Launch& launch, Create&& c
             if (!launch.window) {
                 graph.setSurfaceExtent(launch.size);
             }
+            graph.setTimingEnabled(launch.timings);
             return graph;
         })));
         vulkanApp.setActiveGraph(app->renderGraph());
@@ -170,15 +171,13 @@ int runWindowed(const CommandLine& commandLine, const Launch& launch, Create&& c
                 std::cout << line << "\n";
             }
             std::cout << std::flush;
-            if (launch.plan) {
-                TRY(printPlan(app->renderGraph()));
-            }
-            return run(vulkanApp, *app);
         }
         if (launch.window) {
             connect(vulkanApp, *app);
         }
-        for (uint32_t frame = 0; frame < *launch.frames; ++frame) {
+        // Until the window closes or the app quits, or for --frames
+        TimingTable timings;
+        for (uint32_t frame = 0; !launch.frames || frame < *launch.frames; ++frame) {
             if (!vulkanApp.pollEvents() || app->quitRequested()) {
                 break;
             }
@@ -186,8 +185,14 @@ int runWindowed(const CommandLine& commandLine, const Launch& launch, Create&& c
             if (launch.plan && frame == 0) {
                 TRY(printPlan(app->renderGraph()));
             }
+            if (launch.timings) {
+                TRY(timings.add(app->renderGraph()));
+            }
         }
         VK_TRY(context.waitIdleAll(), "Failed to wait for the device");
+        if (launch.timings) {
+            timings.print(std::cout);
+        }
         if (launch.capture) {
             TRY_ASSIGN(auto pixels, capture(*app));
             captured = std::move(pixels);

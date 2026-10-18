@@ -1725,6 +1725,7 @@ Every program also has the built-in options:
   (list @tt{--window} "with --frames, run in the window")
   (list @tt{--validation} "enable validation and synchronization validation: any message fails the run")
   (list @tt{--plan} "print the render graph's plan")
+  (list @tt{--timings} @elem{print each node's GPU time at the end (@tt{RenderGraph::setTimingEnabled}): the median, fastest and slowest frame's})
   (list @tt{--help} "print the usage"))]
 The app reads how it was run as @tt{headless}, @tt{capture} and @tt{frameLimit} (@secref["apps"]),
 e.g. to script a smoke test. The exit status is 0, 1 for an error or validation messages, and 2 for

@@ -256,6 +256,7 @@ test-main: $(MAIN_TEST_BIN) $(IMAGE_FILTER_DIFF)
 	@rm -f $(MAIN_TEST_OUT)/out.png
 	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/out.png --level 0.5 --side 6 --frames 3 --validation
 	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/main/painted.approved.png $(MAIN_TEST_OUT)/out.png 0
+	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/timed.png --frames 2 --timings --validation | grep -q "^painting "
 
 # The ZGAL compiler's tests, and its documentation, whose examples are compiled as it's built.
 # The tests compile generated code with the build's tools and flags.

@@ -7,8 +7,10 @@
 #include "util/StbImageWrite.h"
 #include "zgal/App.h"
 
+#include <algorithm>
 #include <atomic>
 #include <charconv>
+#include <cstdio>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -56,6 +58,7 @@ struct Launch {
     bool window = false;                            // Whether it runs in a window
     bool validation = false;                        // --validation
     bool plan = false;                              // --plan
+    bool timings = false;                           // --timings
 
     // How the app is run (its headless, capture and frameLimit)
     RunMode mode() const {
@@ -161,6 +164,8 @@ public:
                 launch.validation = true;
             } else if (arg == "--plan") {
                 launch.plan = true;
+            } else if (arg == "--timings") {
+                launch.timings = true;
             } else if (arg == "--frames") {
                 const auto v = value();
                 uint32_t frames = 0;
@@ -259,6 +264,7 @@ public:
         }
         lines.emplace_back("--validation", "enable Vulkan validation; any message fails the run");
         lines.emplace_back("--plan", "print the render graph's plan");
+        lines.emplace_back("--timings", "print each node's GPU time at the end (timestamps; each frame is waited for)");
         size_t width = 0;
         for (const auto& [left, _] : lines) {
             width = std::max(width, left.size());
@@ -360,6 +366,52 @@ inline int finish(const MainSpec& spec, const Launch& launch, const Result<void>
     return EXIT_SUCCESS;
 }
 
+/*
+ Each node's GPU times over a run (--timings): the graphs time their nodes (RenderGraph::
+ setTimingEnabled), and each frame's are added, waiting for the frame. Printed by node, in the
+ order nodes were first seen: the median, the fastest and the slowest frame's time.
+ */
+class TimingTable {
+public:
+    Result<void> add(RenderGraph& graph) {
+        TRY_ASSIGN(const auto timings, graph.timings());
+        for (const auto& timing : timings) {
+            auto row = std::find_if(rows_.begin(), rows_.end(), [&](const Row& r) { return r.name == timing.name; });
+            if (row == rows_.end()) {
+                rows_.push_back({timing.name, {}});
+                row = rows_.end() - 1;
+            }
+            row->milliseconds.push_back(timing.milliseconds);
+        }
+        return {};
+    }
+
+    void print(std::ostream& out) const {
+        size_t width = 4;
+        for (const auto& row : rows_) {
+            width = std::max(width, row.name.size());
+        }
+        out << "GPU time per node, in milliseconds:\n"
+            << "node" << std::string(width - 4, ' ') << "     median        min        max  frames\n";
+        for (const auto& row : rows_) {
+            auto sorted = row.milliseconds;
+            std::sort(sorted.begin(), sorted.end());
+            char line[128];
+            std::snprintf(line, sizeof(line), "  %9.4f  %9.4f  %9.4f  %6zu", sorted[sorted.size() / 2], sorted.front(), sorted.back(),
+                          sorted.size());
+            out << row.name << std::string(width - row.name.size(), ' ') << line << "\n";
+        }
+        out << std::flush;
+    }
+
+private:
+    struct Row {
+        std::string name;
+        std::vector<double> milliseconds;
+    };
+    std::vector<Row> rows_;
+};
+
 // Prints the active graph's plan, for --plan
 inline Result<void> printPlan(RenderGraph& graph) {
     TRY_ASSIGN(const std::string plan, graph.dumpPlan());
@@ -391,9 +443,12 @@ int runHeadless(const CommandLine& commandLine, const Launch& launch, Create&& c
         }
         // Destroyed before the context, after the app
         std::list<RenderGraph> graphs;
+        TimingTable timings;
         return [&]() -> Result<void> {
             TRY_ASSIGN(auto app, create(*context, launch, std::function<RenderGraph&()>([&]() -> RenderGraph& {
-                return graphs.emplace_back(*context);
+                RenderGraph& graph = graphs.emplace_back(*context);
+                graph.setTimingEnabled(launch.timings);
+                return graph;
             })));
             for (uint32_t frame = 0; frame < *launch.frames && !app->quitRequested(); ++frame) {
                 TRY(app->beginFrame());
@@ -404,8 +459,14 @@ int runHeadless(const CommandLine& commandLine, const Launch& launch, Create&& c
                 if (launch.plan && frame == 0) {
                     TRY(printPlan(app->renderGraph()));
                 }
+                if (launch.timings) {
+                    TRY(timings.add(app->renderGraph()));
+                }
             }
             VK_TRY(context->waitIdleAll(), "Failed to wait for the device");
+            if (launch.timings) {
+                timings.print(std::cout);
+            }
             if (launch.capture) {
                 TRY_ASSIGN(auto pixels, capture(*app));
                 captured = std::move(pixels);
