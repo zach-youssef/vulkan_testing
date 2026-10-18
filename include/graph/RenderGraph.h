@@ -183,20 +183,50 @@ public: // Nodes
         structureChanged();
     }
 
-    // Disabled nodes drop out of the plan. Plans are cached per set of enabled nodes.
+    // Disabled nodes drop out of the plan. Plans are cached per set of enabled nodes. Nodes
+    // following this one (enableWith) are enabled or disabled with it.
     void setEnabled(NodeId id, bool enabled) {
         auto& record = nodeRecord(id);
         record.enabled = enabled;
         record.once = false;
+        for (const NodeId follower : record.followers) {
+            setEnabled(follower, enabled);
+        }
     }
 
     // Enables a node for the next frame the graph runs, then disables it: one-time work such as
     // precomputing a table, or reading a result back once. Calling it again runs it once more;
     // setEnabled cancels it. A frame skipped before submitting (an out-of-date surface) doesn't count.
+    // Nodes following this one run once with it.
     void runOnce(NodeId id) {
         auto& record = nodeRecord(id);
         record.enabled = true;
         record.once = true;
+        for (const NodeId follower : record.followers) {
+            runOnce(follower);
+        }
+    }
+
+    // Makes `follower` take `leader`'s enabled state, now and whenever setEnabled or runOnce
+    // changes it: for a node that only prepares another's input and is pointless without it, so
+    // whoever toggles the leader (often code that only knows the leader) toggles both. A node
+    // follows at most one leader.
+    void enableWith(NodeId follower, NodeId leader) {
+        auto& following = nodeRecord(follower);
+        auto& leading = nodeRecord(leader);
+        if (following.leader) {
+            contractViolation("Node '" + following.name + "' already follows '" + nodes_[*following.leader].name + "'");
+        }
+        // A cycle of followers would recurse forever
+        for (std::optional<uint32_t> at = leader.index; at; at = nodes_[*at].leader) {
+            if (*at == follower.index) {
+                contractViolation("Node '" + following.name + "' can't follow '" + leading.name + "', which follows it");
+            }
+        }
+        following.leader = leader.index;
+        following.enabled = leading.enabled;
+        following.once = leading.once;
+        leading.followers.push_back(follower);
     }
 
     // Whether the node runs once and hasn't yet
@@ -687,6 +717,8 @@ private:
         std::unique_ptr<Node> node;
         bool enabled = true;
         bool once = false;   // Disabled after the next frame it runs in (runOnce)
+        std::vector<NodeId> followers;   // Enabled with this node (enableWith)
+        std::optional<uint32_t> leader;  // The node this one is enabled with
         bool pinToPrimaryQueue = false;
         std::vector<NodeUse> uses;
         std::optional<RenderTarget> target;

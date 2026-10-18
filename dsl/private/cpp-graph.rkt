@@ -738,17 +738,6 @@
       [(eq? (g-node-kind n) 'extern)
        ;; C++ adds the nodes, with the ids so far (its nodes may use the graph's resources)
        (line (format "            result.nodes.~a = in->~a(graph, result);" node-name (g-node-subject n)))]
-      [counted?
-       ;; The draw, after the node limiting its commands where the device can't count: both
-       ;; enabled and run alike
-       (line (format "            const zgal::CountedDraw counted = ~a;" create))
-       (line "            for (const NodeId node : counted.nodes()) {")
-       (when (g-node-enabled n)
-         (line (format "                graph.setEnabled(node, ~a);" (build-expr (g-node-enabled n) (scalar-t 'bool)))))
-       (when (g-node-once? n)
-         (line "                graph.runOnce(node);"))
-       (line "            }")
-       (line (format "            result.nodes.~a = counted.draw;" node-name))]
       [else
        (line (format "            const NodeId node = ~a;" create))
        (when (g-node-enabled n)

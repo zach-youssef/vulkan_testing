@@ -1049,6 +1049,14 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs dispatch and draw what shaders wrote, as
         CHECK(indirect.readTallyContents(graph).value() == std::vector<uint32_t>{10});
         const auto pixels = indirect.readPicturePixels(graph).value();
         CHECK(std::vector<uint8_t>(pixels.begin(), pixels.begin() + 4) == color);
+        // Without drawIndirectCount, a node limiting the commands runs before the draw, and is
+        // disabled with it
+        const bool limited = !ctx.enabledFeatures().vulkan12.drawIndirectCount;
+        const bool planned = graph.dumpPlan().value().find("paint (limit)") != std::string::npos;
+        CHECK(planned == limited);
+        graph.setEnabled(indirect.nodes.paint, false);
+        CHECK(graph.dumpPlan().value().find("paint (limit)") == std::string::npos);
+        graph.execute().value();
         ctx.waitIdleAll();
     }
     CHECK(IndirectGraph::requiredFeatures().core.features.multiDrawIndirect == VK_TRUE);

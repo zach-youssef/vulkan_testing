@@ -1254,8 +1254,9 @@ it. Elsewhere (MoltenVK lacks it) the generated code adapts, adding a node befor
 after it, with @tt{" (limit)"}) that copies the commands with those past the count given no
 instances, and drawing all of them:
 @(generated-file indirect-source "example.zgal.h" #:from #rx"zgal::addCountedDraw" #:to #rx"zgal::addCountedDraw")
-Both nodes are enabled and run once alike; enabling the draw from C++ or an app
-(@tt{nodes.particles}) leaves the small copy running.
+The node limiting the commands follows the draw (@tt{RenderGraph::enableWith}): enabling,
+disabling or running the draw once, from the graph, an app or C++ (@tt{nodes.particles}), does the
+same to it.
 
 @subsection[#:tag "compute-library"]{The compute library}
 

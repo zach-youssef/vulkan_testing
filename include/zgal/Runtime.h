@@ -548,30 +548,22 @@ inline VkExtent2D extentOf(VulkanContext& context, const FrameBinding<Image>& im
 }
 
 
-// A draw node with #:indirect and #:count, and on devices without drawIndirectCount, the node
-// before it giving the commands past the count no instances
-struct CountedDraw {
-    NodeId draw;
-    std::optional<NodeId> limit;
-
-    std::vector<NodeId> nodes() const {
-        return limit ? std::vector<NodeId>{*limit, draw} : std::vector<NodeId>{draw};
-    }
-};
-
 // Adds an indirect draw of as many of desc's commands as the uint32_t at `count` says (at most
 // desc.maxDraws): natively where the device has drawIndirectCount, else by dispatching `limit` (the
 // library's ZgalLimitDraws), which copies the commands into `limited` with those past the count
-// given no instances, and drawing all of those
-inline CountedDraw addCountedDraw(RenderGraph& graph, const std::string& name, IndirectDrawNode::Desc desc,
+// given no instances, and drawing all of those. The limiting node is enabled with the draw
+// (RenderGraph::enableWith), so the draw's id is all callers need.
+inline NodeId addCountedDraw(RenderGraph& graph, const std::string& name, IndirectDrawNode::Desc desc,
                                   BufferOffset count, Handle<ComputeMaterial> limit, BufferId limited) {
     if (graph.context().enabledFeatures().vulkan12.drawIndirectCount) {
         desc.count = count;
-        return {graph.add<IndirectDrawNode>(name, std::move(desc)), std::nullopt};
+        return graph.add<IndirectDrawNode>(name, std::move(desc));
     }
     const NodeId limitNode = graph.add<DispatchNode>(name + " (limit)", std::move(limit));
     desc.commands = BufferOffset{limited, 0};
-    return {graph.add<IndirectDrawNode>(name, std::move(desc)), limitNode};
+    const NodeId draw = graph.add<IndirectDrawNode>(name, std::move(desc));
+    graph.enableWith(limitNode, draw);
+    return draw;
 }
 
 } // namespace zgal

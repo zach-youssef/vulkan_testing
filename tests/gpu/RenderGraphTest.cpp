@@ -493,6 +493,55 @@ TEST_CASE_FIXTURE(GpuTest, "Materials bind arrays of entries, whose elements a n
     CHECK_THROWS_AS((void)MaterialBinding::array(nullptr, Access::SampledRead), ContractViolation);
 }
 
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph enables and runs once a node's followers with it") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    int leaderRuns = 0;
+    int followerRuns = 0;
+    int lastRuns = 0;
+    NodeId leader = graph.addCpu("leader", nullptr, [&leaderRuns](FrameContext&) { ++leaderRuns; });
+    NodeId follower = graph.addCpu("follower", nullptr, [&followerRuns](FrameContext&) { ++followerRuns; });
+    NodeId last = graph.addCpu("last", nullptr, [&lastRuns](FrameContext&) { ++lastRuns; });
+
+    // A follower takes its leader's state when it starts following
+    graph.setEnabled(leader, false);
+    graph.enableWith(follower, leader);
+    CHECK_FALSE(graph.isEnabled(follower));
+    // Followers of followers follow too
+    graph.enableWith(last, follower);
+    CHECK_FALSE(graph.isEnabled(last));
+    graph.execute().value();
+    CHECK(followerRuns == 0);
+
+    graph.setEnabled(leader, true);
+    CHECK(graph.isEnabled(follower));
+    CHECK(graph.isEnabled(last));
+    graph.execute().value();
+    CHECK(followerRuns == 1);
+    CHECK(lastRuns == 1);
+
+    graph.setEnabled(leader, false);
+    graph.runOnce(leader);
+    CHECK(graph.isPendingOnce(follower));
+    graph.execute().value();
+    graph.execute().value();
+    CHECK(leaderRuns == 2);
+    CHECK(followerRuns == 2);
+    CHECK(lastRuns == 2);
+    CHECK_FALSE(graph.isEnabled(follower));
+
+    // A follower can still be toggled alone
+    graph.setEnabled(follower, true);
+    CHECK_FALSE(graph.isEnabled(leader));
+    CHECK(graph.isEnabled(last));
+
+    // One leader each, and no cycles
+    CHECK_THROWS_AS(graph.enableWith(follower, last), ContractViolation);
+    CHECK_THROWS_AS(graph.enableWith(leader, last), ContractViolation);
+    CHECK_THROWS_AS(graph.enableWith(leader, leader), ContractViolation);
+    graph.waitIdle().value();
+}
+
 TEST_CASE_FIXTURE(GpuTest, "RenderGraph runs a node once, and buffer readbacks give finished copies without waiting") {
     auto& ctx = context();
     {
