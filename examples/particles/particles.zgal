@@ -1,5 +1,12 @@
-;; The particles example's shaders, graph and app, in ZGAL (dsl/; `make docs` for the language).
-;; The build generates particles.zgal.h and the complete shaders.
+;; GPU particles: a compute pass integrates particles attracted to the mouse, and a graphics pass
+;; draws them with additive blending. The render graph orders the two, puts the compute pass on
+;; another queue when it can and synchronizes them; there are no barriers or semaphores anywhere.
+;; The shaders, the graph, the app and its main are all here, in ZGAL (dsl/; `make docs` for the
+;; language): the build generates particles.zgal.h, its main (particles.zgal.main.cpp) and the
+;; complete shaders, and the example has no C++ of its own.
+;;
+;;     particles                                   interactive, in a window
+;;     particles --frames N [--capture out.png]    N frames headless (the smoke test)
 
 ;; From the standard library: pcgHash and unitFloat
 (import random)
@@ -107,12 +114,10 @@
 ;; reads it, so the graph runs them in that order (on different queues if it can) and synchronizes
 ;; them.
 (graph ParticlesGraph
-  ;; Headless, the particles are drawn into an image of this size instead of the window, and with
-  ;; capture the last frame is read back
+  ;; Headless, the particles are drawn into an image the size of the surface instead of the window,
+  ;; and with capture the last frame is read back
   (parameter headless bool)
   (parameter capture bool)
-  (parameter width uint)
-  (parameter height uint)
   (parameter particleCount uint)
   (input params (per-frame SimParams))
 
@@ -122,7 +127,7 @@
   ;; The particles live on the GPU only, in one buffer shared by every frame: each frame's
   ;; simulation continues from the last, and waits for the previous frame's draw
   (buffer particles Particle particleCount #:frames shared)
-  (image offscreen rgba8-srgb (fixed width height) #:frames per-frame #:when headless)
+  (image offscreen rgba8-srgb (surface 1.0) #:frames per-frame #:when headless)
   ;; No depth: additive blending doesn't need it
   (target screen (if headless
                      (color offscreen #:clear (0.0 0.0 0.01 1.0))
@@ -138,15 +143,9 @@
   (draw drawParticles screen drawing (* 6 particleCount))
   (readback readback offscreen #:when capture))
 
-;; Width / height of what's drawn: the surface, or headless, the image
-(define (aspectOf [surface : vec2] [image : vec2]) : float
-  (if (> surface.y 0.0) (/ surface.x surface.y) (/ image.x image.y)))
-
 ;; The app: the controls and the simulation's clock, as state the handlers compute the next of, and
 ;; the parameters each frame's simulation gets from it
 (app ParticlesApp
-  (parameter width uint)
-  (parameter height uint)
   (parameter particleCount uint)
   (state
    (paused bool #f)
@@ -171,18 +170,23 @@
   ;; The cursor is in [-1, 1] across the window: simulation space is as wide as the aspect
   (on (mouse-pressed left cursor)
     (with state #:mouseHeld #t
-                #:mouse (* cursor (vec2 (aspectOf surfaceSize (vec2 (float width) (float height))) 1.0))))
+                #:mouse (* cursor (vec2 (/ surfaceSize.x surfaceSize.y) 1.0))))
   (on (mouse-released left cursor) (with state #:mouseHeld #f))
   (on (cursor-moved cursor)
     (if state.mouseHeld
-        (with state #:mouse (* cursor (vec2 (aspectOf surfaceSize (vec2 (float width) (float height))) 1.0)))
+        (with state #:mouse (* cursor (vec2 (/ surfaceSize.x surfaceSize.y) 1.0)))
         state))
   ;; The clock stands still while paused, and for the first frame. Prints the frame rate every
-  ;; couple of seconds.
+  ;; couple of seconds. A smoke test (--frames N) changes the frames in flight twice, to exercise
+  ;; resizing per-frame resources.
   (on (frame elapsed)
     (let* ([dt (if (or state.paused (= state.steps 0)) 0.0 elapsed)]
            [reportTime (+ state.reportTime elapsed)]
            [report (>= reportTime 2.0)])
+      (when (and (> frameLimit 0) (= frameNumber (/ frameLimit 3)))
+        (set-frames-in-flight! 3))
+      (when (and (> frameLimit 0) (= frameNumber (/ (* 2 frameLimit) 3)))
+        (set-frames-in-flight! 1))
       (when report
         (print! (/ (float (+ state.reportFrames 1)) reportTime) " fps, " framesInFlight " frames in flight"))
       (with state #:dt dt #:time (+ state.time dt) #:steps (+ state.steps 1)
@@ -193,11 +197,9 @@
   (run ParticlesGraph
     (headless headless)
     (capture capture)
-    (width width)
-    (height height)
     (particleCount particleCount)
     ;; Without the mouse, the attractor wanders on a Lissajous curve
-    (params (let* ([aspect (aspectOf surfaceSize (vec2 (float width) (float height)))])
+    (params (let* ([aspect (/ surfaceSize.x surfaceSize.y)])
               (SimParams (if state.mouseHeld
                              state.mouse
                              (vec2 (* 0.6 aspect (sin (* 0.4 state.time))) (* 0.5 (sin (* 0.7 state.time)))))
@@ -209,3 +211,17 @@
                          (if state.resetting 1 0)
                          particleCount
                          0.006)))))
+
+;; The program: a window (headless with --frames), the clock (real time interactively, a fixed step
+;; for a smoke test, so it's deterministic), and the last frame's capture
+(main ParticlesApp
+  (about "GPU particles attracted to the mouse")
+  (window "Particles" 1280 800)
+  (timestep #:max 1/30 #:fixed 1/60)
+  (capture readback)
+  (option particleCount "--particles" "how many particles" #:default 100000 #:range (1 4000000))
+  (controls "Controls:"
+            "  left mouse  attract particles to the cursor"
+            "  space       pause / resume"
+            "  R           reset the particles"
+            "  1, 2, 3     frames in flight"))

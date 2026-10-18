@@ -1656,10 +1656,13 @@ deterministic. So is how it's run: @tt{zgal::RunMode::window(frameLimit)}, or
 nothing of windows. @tt{include/zgal/Window.h} connects an app to a @tt{VulkanApp}:
 @tt{zgal::run(vulkanApp, app)} sends the window's input to the app's handlers and draws frames,
 each after @tt{beginFrame()} (drawing the graph the app chose), until the window closes or the app
-quits; @tt{zgal::drawFrame} draws one, for headless loops. Without a @tt{VulkanApp} (the image
-filter), C++ calls @tt{beginFrame()} and executes @tt{renderGraph()} itself. The particles example's @tt{main}:
+quits; @tt{zgal::drawFrame} draws one, for headless loops. Without a @tt{VulkanApp}, C++ calls
+@tt{beginFrame()} and executes @tt{renderGraph()} itself. A generated @tt{main} does all of this
+(@secref["main"]); the simple example's handwritten one, which builds its graph in C++, creates its
+app and runs it:
 
-@(file-excerpt "examples/particles/particles.cpp" #:from #rx"TRY_ASSIGN[(]auto particlesApp, particles::ParticlesApp::create" #:to #rx"TRY[(]zgal::run[(]app, [*]particlesApp[)][)];")
+@(file-excerpt "examples/simple/simple_example.cpp" #:from #rx"TRY_ASSIGN[(]auto simpleApp, simple::SimpleApp::create" #:to #rx"^    [}][)][)];")
+@(file-excerpt "examples/simple/simple_example.cpp" #:from #rx"return zgal::run[(]app, [*]simpleApp[)];" #:to #rx"return zgal::run")
 
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "main"]{Programs}
@@ -1753,6 +1756,12 @@ ZGAL
 )
 @(zgal-source main-source)
 @(generated-file main-source "example.zgal.main.cpp")
+
+The particles example is a program, without C++ of its own: a window, its clock, an option for
+the number of particles and the smoke test's capture (@tt{--frames 120 --capture smoke.png}), whose
+script (changing the frames in flight) is in its app's frame handler:
+
+@(file-excerpt "examples/particles/particles.zgal" #:from #rx"^[(]main ParticlesApp" #:to #rx"frames in flight\"[)][)]$")
 
 @tt{include/zgal/Main.h} holds what generated mains use: the command line (@tt{zgal::CommandLine},
 @tt{Launch}), counting validation messages, captures and running a headless program

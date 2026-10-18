@@ -110,23 +110,13 @@ $(SIMPLE_OUT)/simple_example: $(SIMPLE_OUT)/simple_example.o
 IMAGE_FILTER_DIR = $(EXAMPLES_DIR)/image_filter
 IMAGE_FILTER_OUT = $(EXAMPLES_OUT)/image_filter
 IMAGE_FILTER_BIN = $(IMAGE_FILTER_OUT)/image_filter
-# The shaders and the graph are in image_filter.zgal
-IMAGE_FILTER_GEN = $(IMAGE_FILTER_OUT)/generated
-IMAGE_FILTER_ZGAL_STAMP = $(IMAGE_FILTER_GEN)/image_filter.zgal.stamp
-IMAGE_FILTER_CFLAGS = $(CFLAGS) -I$(IMAGE_FILTER_GEN)
+# Everything is in image_filter.zgal, main too
+IMAGE_FILTER_ZGAL_STAMP = $(IMAGE_FILTER_OUT)/generated/image_filter.zgal.stamp
 IMAGE_FILTER_TEST_DIR = $(IMAGE_FILTER_DIR)/tests
 IMAGE_FILTER_TEST_OUT = $(IMAGE_FILTER_OUT)/tests
 IMAGE_FILTER_DIFF = $(IMAGE_FILTER_TEST_OUT)/image_diff
 
-$(eval $(call zgal-rule,$(IMAGE_FILTER_DIR)/image_filter.zgal,$(IMAGE_FILTER_GEN),$(IMAGE_FILTER_OUT)/shaders))
-
-$(IMAGE_FILTER_OUT)/image_filter.o : $(IMAGE_FILTER_DIR)/image_filter.cpp $(IMAGE_FILTER_ZGAL_STAMP) $(HEADERS)
-	@mkdir -p $(dir $@)
-	$(CC) -c -o $@ $< $(IMAGE_FILTER_CFLAGS)
-
-$(IMAGE_FILTER_BIN): $(IMAGE_FILTER_OUT)/image_filter.o
-	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
-	install_name_tool -add_rpath /usr/local/lib ./$@
+$(eval $(call zgal-program,$(IMAGE_FILTER_DIR)/image_filter.zgal,$(IMAGE_FILTER_OUT),image_filter,))
 
 $(IMAGE_FILTER_DIFF): $(IMAGE_FILTER_TEST_DIR)/image_diff.cpp
 	@mkdir -p $(dir $@)
@@ -153,23 +143,13 @@ test-example-image_filter: $(IMAGE_FILTER_BIN) $(IMAGE_FILTER_DIFF)
 # ---------------------------------------------------------------------------
 PARTICLES_DIR = $(EXAMPLES_DIR)/particles
 PARTICLES_OUT = $(EXAMPLES_OUT)/particles
-# The shaders and the graph are in particles.zgal
-PARTICLES_GEN = $(PARTICLES_OUT)/generated
-PARTICLES_ZGAL_STAMP = $(PARTICLES_GEN)/particles.zgal.stamp
-PARTICLES_CFLAGS = $(CFLAGS) -I$(PARTICLES_GEN)
+# Everything is in particles.zgal, main too
+PARTICLES_ZGAL_STAMP = $(PARTICLES_OUT)/generated/particles.zgal.stamp
 
-$(eval $(call zgal-rule,$(PARTICLES_DIR)/particles.zgal,$(PARTICLES_GEN),$(PARTICLES_OUT)/shaders))
-
-$(PARTICLES_OUT)/particles.o : $(PARTICLES_DIR)/particles.cpp $(PARTICLES_ZGAL_STAMP) $(HEADERS)
-	@mkdir -p $(dir $@)
-	$(CC) -c -o $@ $< $(PARTICLES_CFLAGS)
-
-$(PARTICLES_OUT)/particles: $(PARTICLES_OUT)/particles.o
-	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
-	install_name_tool -add_rpath /usr/local/lib ./$@
+$(eval $(call zgal-program,$(PARTICLES_DIR)/particles.zgal,$(PARTICLES_OUT),particles,$(GLFW_LDLIBS)))
 
 test-example-particles: $(PARTICLES_OUT)/particles
-	./$< --frames 120 --capture $(PARTICLES_OUT)/smoke.png
+	./$< --frames 120 --size 1024x768 --capture $(PARTICLES_OUT)/smoke.png --validation
 
 # ---------------------------------------------------------------------------
 # Example: scene

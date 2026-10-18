@@ -1,8 +1,30 @@
-;; The image filter's shaders, graph and app, in ZGAL (dsl/; `make docs` for the language). The build
-;; generates image_filter.zgal.h and the complete shaders.
+;; image_filter: a headless command-line GPU image filter, and the example of a program without a
+;; window (no window system: a context and a render graph). Its shaders, graph, app and main are
+;; all here, in ZGAL (dsl/; `make docs` for the language): the build generates image_filter.zgal.h,
+;; its main (image_filter.zgal.main.cpp) and the complete shaders, and the example has no C++ of
+;; its own.
 ;;
-;; Every pass is a compute shader run once per pixel of the working image (16 x 16 workgroups),
-;; which holds linear colour (see image_filter.cpp).
+;;     image_filter <in.png|jpg> <out.png> [--blur <radius>] [--edges] [--threshold <0..1>]
+;;                  [--validation] [--plan]
+;;
+;; Every filter is a compute pass (a dispatch) over the graph's images, run once per pixel of the
+;; working image (16 x 16 workgroups):
+;;
+;;     input (sRGB) -load-> working -blur rows-> scratch -blur columns-> working
+;;                          working -sobel rows-> scratch -sobel columns-> working
+;;                          working -threshold-> working (in place)
+;;                          working -store-> encoded (sRGB bytes) -readback-> PNG
+;;
+;; Each filter takes the working image back to the working image, so the graph contains every pass
+;; and the ones the user didn't ask for are disabled. Their uses still count when the graph sizes
+;; and allocates its images, so toggling passes never reallocates, and plans are cached per set of
+;; enabled nodes: a long-running tool (e.g. an interactive editor) could flip filters between
+;; frames and only compile each combination once.
+;;
+;; Colour: the input is an sRGB texture, so sampling it decodes to linear colour. The working
+;; images hold that linear colour as half floats (8 bits would band in linear space), and blurring
+;; happens in linear light. Storage images can't be sRGB, so the store pass encodes sRGB itself into
+;; a UNORM image. Without filters the output therefore matches the input.
 
 ;; From the standard library: luminance, srgbEncode and srgbDecode
 (import color)
@@ -125,12 +147,13 @@
          (store! encoded texel (vec4 (srgbEncode colour.rgb) (clamp colour.a 0.0 1.0))))))))
 
 ;; Each filter takes the working image back to the working image, so the graph contains every pass
-;; and the ones the user didn't ask for are disabled (see image_filter.cpp)
+;; and the ones the user didn't ask for are disabled
 (graph FilterGraph
   (parameter radius int)          ; Only used if the blur runs, but valid either way
   (parameter level float)         ; The threshold, if it runs
-  ;; createFromFile leaves the input ready for sampling, and the graph keeps it that way
-  (import-image source #:resting shader-read-only)
+  (input file path)
+  ;; The input, decoded from sRGB when sampled
+  (image-file source file #:color srgb)
 
   (constant imageWidth (width source))
   (constant imageHeight (height source))
@@ -177,6 +200,8 @@
 ;; editor would change it between frames, and the graph would only compile each combination of
 ;; passes once
 (app FilterApp
+  (parameter picture path)
+  (parameter destination path)
   (parameter blur bool)
   (parameter radius int)
   (parameter edges bool)
@@ -187,6 +212,7 @@
    (findingEdges bool edges)
    (binarizing bool binarize))
   (run FilterGraph
+    (file picture)
     (radius radius)
     (level level)
     #:enabled ((blurRows state.blurring)
@@ -194,3 +220,15 @@
                (sobelRows state.findingEdges)
                (sobelColumns state.findingEdges)
                (threshold state.binarizing))))
+
+;; The program: headless only, filtering the image the command line names into the PNG it names.
+;; Disabled passes still need valid parameters, hence the defaults.
+(main FilterApp
+  (about "Filters an image on the GPU: blur, then edges, then threshold, as asked. Without any, the image is copied.")
+  (positional picture "the image to filter (PNG, JPEG, ...)")
+  (positional destination "the PNG file to write")
+  (option radius "--blur" "Gaussian blur, radius in pixels" #:default 1 #:range (1 64) #:given blur)
+  (flag edges "--edges" "Sobel edge magnitude, as grey")
+  (option level "--threshold" "black or white by perceived brightness, 0.5 being mid grey" #:default 0.5
+          #:range (0.0 1.0) #:given binarize)
+  (capture readback #:to destination))
