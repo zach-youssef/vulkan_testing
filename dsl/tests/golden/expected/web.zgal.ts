@@ -443,6 +443,7 @@ struct ZgalVertexOutput {
 fn main(@location(0) inPosition: vec3f, @location(1) inColor: vec4f, @builtin(vertex_index) zgalVertexIndex: u32) -> ZgalVertexOutput {
     var zgalOut: ZgalVertexOutput;
     zgalOut.zgalPosition = zgalPush.transform * vec4f(inPosition, 1.0f);
+    zgalOut.zgalPosition.y = -zgalOut.zgalPosition.y;
     zgalOut.tint = inColor;
     zgalOut.screen = inPosition.xy;
     zgalOut.id = u32(i32(zgalVertexIndex)) + zgalPush.layer;

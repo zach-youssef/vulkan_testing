@@ -106,6 +106,10 @@ $(eval $(call zgal-program,$(PARTICLES_DIR)/particles.zgal,$(PARTICLES_OUT),part
 test-example-particles: $(PARTICLES_OUT)/particles
 	./$< --frames 120 --size 1024x768 --capture $(PARTICLES_OUT)/smoke.png --validation
 
+# For the web: build/web/particles (serve it and open particles.zgal.html, or run it under Node)
+PARTICLES_WEB = $(OUT)/web/particles
+$(eval $(call zgal-web-program,$(PARTICLES_DIR)/particles.zgal,$(PARTICLES_WEB)))
+
 # ---------------------------------------------------------------------------
 # Example: scene
 #   A lit 3D scene: shadow map, forward PBR into HDR, tonemap
@@ -234,15 +238,10 @@ ZGAL_TEST_ENV = ZGAL_GLSLC='glslc' ZGAL_GLSLC_FLAGS='$(GLSLC_FLAGS:-I%=-I$(CURDI
                  ZGAL_CXX='$(CXX)' ZGAL_CXXFLAGS='$(subst -I./,-I$(CURDIR)/,$(CXXFLAGS))' \
                  ZGAL_NODE='$(NODE)' ZGAL_WEB='$(CURDIR)/$(WEB_DIR)'
 
-# The web runtime (web/): its npm packages (TypeScript, and Dawn, WebGPU for Node, for tests)
-NODE = node
-NPM = npm
+# The web runtime (web/): its npm packages (TypeScript, and Dawn, WebGPU for Node, for tests),
+# installed by zgal.mk's rule
 WEB_DIR = web
-WEB_PACKAGES = $(WEB_DIR)/node_modules/.package-lock.json
-
-$(WEB_PACKAGES): $(WEB_DIR)/package.json $(WEB_DIR)/package-lock.json
-	cd $(WEB_DIR) && $(NPM) ci
-	@touch $@
+WEB_PACKAGES = $(ZGAL_WEB_PACKAGES)
 
 test-dsl: $(ZGAL_COMPILED) $(WEB_PACKAGES) docs
 	$(ZGAL_TEST_ENV) $(RACO) test $(DSL_DIR)/tests
@@ -258,6 +257,11 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	cp -R $(WEB_DIR)/zgal $(WEB_DIR)/tests $(WEB_DIR)/package.json $(WEB_DIR)/tsconfig.json $(WEB_TEST_OUT)/
 	ln -s $(CURDIR)/$(WEB_DIR)/node_modules $(WEB_TEST_OUT)/node_modules
 	cd $(WEB_TEST_OUT) && $(NODE) node_modules/typescript/bin/tsc -p . && $(NODE) --test $(TEST_ARGS) 'tests/*.test.ts'
+	$(MAKE) web
+	$(NODE) $(PARTICLES_WEB)/particles.zgal.main.js --frames 120 --size 1024x768 --capture $(PARTICLES_WEB)/smoke.png
+
+# The examples whose programs run on the web (the others' graphs load assets the web can't yet)
+web: $(PARTICLES_WEB)
 
 # build/docs/zgal.html, and zgal.txt for reading in a terminal
 docs: $(ZGAL_COMPILED)
@@ -276,7 +280,7 @@ approve-screenshots:
 	done
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
-.PHONY: clean examples shaders test test-cpu test-gpu test-dsl test-web docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main bench run-bench test-bench
+.PHONY: clean examples shaders test test-cpu test-gpu test-dsl test-web web docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main bench run-bench test-bench
 
 
 clean:

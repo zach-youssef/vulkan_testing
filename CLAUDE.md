@@ -19,9 +19,10 @@ Agents migrating code written against the pre-refactor wrapper (the `main` branc
 - `make test-dsl`: builds ZGAL's documentation and runs its compiler's tests (`make test` includes
   it), installing the web backend's npm packages (`web/`) first. `make docs` only builds the documentation: `build/docs/zgal.html`, and
   `build/docs/zgal.txt` to read in a terminal.
-- `make test-web`: compiles `web/tests/web.zgal` to TypeScript and WGSL in `build/web-tests` beside
-  a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node (`make
-  test` includes it; `TEST_ARGS` go to `node --test`).
+- `make test-web`: compiles `web/tests/*.zgal` to TypeScript and WGSL in `build/web-tests` beside
+  a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node, then
+  builds the particles example for the web (`make web`) and runs it under Node (`make test`
+  includes it; `TEST_ARGS` go to `node --test`).
 - `zgal.mk`: the make rules building ZGAL programs (`zgal-rule`, `zgal-program`), which the Makefile
   and other projects' Makefiles include.
 - `tools/verify_stack.sh <repo> <base> [head]`: builds and tests every commit in a range (builds and
@@ -411,7 +412,10 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   WGSL module (WebGPU) per material shader. The TypeScript imports the runtime as
   `./zgal/index.ts`: copy `web/zgal` beside it. Bodies keep C++'s arithmetic (floats rounded to 32
   bits by `math.ts`/`glsl.ts`, integers wrapping); floats passed in must be 32-bit
-  (`Math.fround`). Mains are in progress. A material is a bind
+  (`Math.fround`). A program's main (`FILE.zgal.main.ts`) runs headless under Node with the
+  native options, or in its page (`FILE.zgal.html`); `zgal.mk`'s `zgal-web-program` builds it to
+  JavaScript (`make web`: `build/web/particles`). Vertex positions keep Vulkan's clip space (the
+  WGSL negates y). A material is a bind
   group (binding i is its i'th binding, push constants a uniform buffer after them); buffers of
   small integers or with atomics are 32-bit words at std430 offsets. GLSL bodies, `extern-glsl`,
   array bindings, and (for now) image files, models, meshes, library kernels and indirect work

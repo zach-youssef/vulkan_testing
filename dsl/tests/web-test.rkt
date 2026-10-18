@@ -1,0 +1,97 @@
+#lang racket/base
+;; What compiling for the web reports that Vulkan allows (not-on-web): what WebGPU can't do, and what
+;; the web backend doesn't do yet
+
+(require racket/string
+         rackunit
+         "../compile.rkt"
+         "util.rkt")
+
+;; Checks compiling text for the web reports not-on-web, with a message containing fragment
+(define (check-not-on-web text fragment)
+  (define e (zgal-error-of text #:web? #t))
+  (with-check-info (['program text])
+    (check-true (exn:zgal? e))
+    (when (exn:zgal? e)
+      (check-equal? (exn:zgal-id e) 'not-on-web)
+      (check-true (string-contains? (exn-message e) fragment) (exn-message e)))))
+
+(define fill
+  "(compute-material Fill
+     (workgroup 1)
+     (bindings (values (buffer-array uint)))
+     (compute (write! (at values 0) 1)))\n")
+
+(define corner
+  "(graphics-material Corner
+     (outputs (color vec4))
+     (vertex (results #:position (vec4 0.0 0.0 0.0 1.0)))
+     (fragment (vec4 1.0)))\n")
+
+(test-case "Materials WebGPU can't express"
+  (check-not-on-web
+   "(compute-material Pick
+      (workgroup 1)
+      (bindings (textures (array texture)) (counts (buffer-array uint)))
+      (compute (write! (at counts 0) (array-length textures))))"
+   "array")
+  (check-not-on-web
+   "(struct Pair (a uint) (b uint))
+    (compute-material Fill
+      (workgroup 1)
+      (bindings (values (buffer-array uint)))
+      (push (pair Pair))
+      (compute (write! (at values 0) pair.a)))"
+   "push"))
+
+(test-case "Graphs using what WebGPU lacks"
+  (check-not-on-web
+   (string-append corner
+                  "(graph G
+                     (image picture rgba8 (fixed 4 4) #:frames shared)
+                     (target t (color picture #:clear (0 0 0 1)))
+                     (material m Corner #:cull front-and-back)
+                     (draw d t m 3))")
+   "cull both faces")
+  (check-not-on-web
+   (string-append corner
+                  "(graph G
+                     (image picture rgba8 (fixed 4 4) #:frames shared)
+                     (target t (color picture #:clear (0 0 0 1)))
+                     (sampler border #:address clamp-to-border)
+                     (material m Corner)
+                     (draw d t m 3))")
+   "border")
+  (check-not-on-web
+   (string-append fill
+                  "(graph G
+                     (input write cpu)
+                     (import-buffer staging uint)
+                     (cpu c write #:writes (staging)))")
+   "maps buffers"))
+
+(test-case "Graphs using what the web backend doesn't do yet"
+  (check-not-on-web
+   "(graph G (image-file picture \"picture.png\" #:color srgb))"
+   "image files")
+  (check-not-on-web
+   (string-append fill
+                  "(graph G
+                     (buffer values uint 64 #:frames shared)
+                     (buffer sums uint 1 #:frames shared)
+                     (reduce r values (at sums 0) #:op add #:count 64))")
+   "compute library"))
+
+(test-case "Apps and programs the web backend doesn't run yet"
+  (check-not-on-web
+   (string-append fill
+                  "(graph G
+                     (buffer values uint 1 #:frames shared)
+                     (material m Fill (values values) #:invocations (1))
+                     (dispatch d m))
+                   (app A
+                     (parameter level uint)
+                     (state (x uint 0))
+                     (run G))
+                   (main A)")
+   "level"))

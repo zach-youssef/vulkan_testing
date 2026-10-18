@@ -1121,9 +1121,14 @@
   (define stage (state-stage st))
   (define result-pairs (if (list? results) results '()))
   (define (result-lines target)
-    (for/list ([r (in-list result-pairs)])
-      (format "    ~a.~a = ~a;" target (if (string=? (car r) "position") "zgalPosition" (wgsl-name (car r)))
-              (print-expr st (cdr r)))))
+    (append*
+     (for/list ([r (in-list result-pairs)])
+       (define position? (string=? (car r) "position"))
+       (cons (format "    ~a.~a = ~a;" target (if position? "zgalPosition" (wgsl-name (car r))) (print-expr st (cdr r)))
+             ;; ZGAL's clip space is Vulkan's, whose y points down; WebGPU's points up
+             (if position?
+                 (list (format "    ~a.zgalPosition.y = -~a.zgalPosition.y;" target target))
+                 '())))))
   ;; Results are printed before the parameters are collected: they may use built-ins
   (define (finish header-params return-type output-struct output-lines)
     (define builtin-params

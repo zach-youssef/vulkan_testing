@@ -333,7 +333,10 @@
        (if when
            (line! "    const target_~a: zgal.Target | undefined = ~a ? ~a : undefined;" n (bool-expr when) (spec-text spec))
            (line! "    const target_~a: zgal.Target = ~a;" n (spec-text spec)))]
-      [(g-material n m bindings push options invocations when _)
+      [(g-material n m bindings push options invocations when l)
+       (define (option k) (cond [(assq k options) => cdr] [else #f]))
+       ;; (cond, as this clause's `when` is the instance's condition)
+       (cond [(eq? (option 'cull) 'front-and-back) (web-error l "WebGPU can't cull both faces (material ~a)" n)])
        (define bound
          (for/list ([pair (in-list bindings)])
            (match-define (cons b resource) pair)
@@ -355,11 +358,10 @@
          (if (and (eq? (material-kind m) 'compute) invocations)
              (format "(frame) => [~a]" (string-join (map uint-expr invocations) ", "))
              "null"))
-       (define (option k) (cond [(assq k options) => cdr] [else #f]))
        (define option-fields
          (filter values
-                 (list (and (option 'topology) (format "topology: '~a'" (string-replace (symbol->string (option 'topology)) "triangle-fan" "triangle-list")))
-                       (and (option 'cull) (format "cull: '~a'" (case (option 'cull) [(front-and-back) "none"] [else (option 'cull)])))
+                 (list (and (option 'topology) (format "topology: '~a'" (option 'topology)))
+                       (and (option 'cull) (format "cull: '~a'" (option 'cull)))
                        (and (option 'front-face) (format "frontFace: '~a'" (if (eq? (option 'front-face) 'clockwise) "cw" "ccw")))
                        (and (option 'blend) (format "blend: '~a'" (option 'blend)))
                        (and (option 'depth-test) (format "depthTest: ~a" (if (eq? (option 'depth-test) 'yes) "true" "false")))

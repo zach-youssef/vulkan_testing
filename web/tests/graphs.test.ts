@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
-import { Shapes, type Mixed } from '../web.zgal.ts';
+import { Shapes, Winding, type Mixed } from '../web.zgal.ts';
 
 let context: zgal.Context;
 let graph: zgal.RenderGraph;
@@ -103,6 +103,21 @@ test('draws: a flat varying, a sampled image a copy filled, push constants and a
   const pixels = await shapes.readCanvasPixels(graph);
   assert.equal(pixels.length, 8 * 8 * 4);
   for (let p = 0; p < 64; p++) assert.deepEqual([...pixels.subarray(p * 4, p * 4 + 4)], [192, 128, 32, 255], `pixel ${p}`);
+});
+
+test('clip space and winding are Vulkan\'s: y down, front faces counter-clockwise on the screen', async () => {
+  const winding = new zgal.RenderGraph(context);
+  const ids = await Winding.build(context, winding, {});
+  await winding.execute();
+  const lit = (pixels: Uint8Array) => Array.from({ length: 64 }, (_, p) => pixels[p * 4] > 0);
+  // Clockwise: culled as a back face
+  assert.deepEqual(lit(await ids.readClockwisePixels(winding)), new Array(64).fill(false));
+  // Counter-clockwise: the top left corner (row 0, column 0) is drawn, the bottom right isn't
+  const counter = lit(await ids.readCounterPixels(winding));
+  assert.equal(counter[0], true);
+  assert.equal(counter[63], false);
+  assert.equal(counter[7 * 8], false, 'the bottom left corner');
+  winding.destroy();
 });
 
 test('uniforms hold their per-frame value', async () => {

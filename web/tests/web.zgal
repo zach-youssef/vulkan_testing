@@ -200,6 +200,30 @@
   (dispatch copyUniform copyingUniform)
   (readback readUniform uniformCopy))
 
+;; Clip space and winding: a triangle in the top left quarter (Vulkan's clip space, y down), its
+;; vertices in either order. Right, then down and left is clockwise on the screen.
+(graphics-material Corner
+  (push (reversed uint))
+  (outputs (color vec4))
+  (vertex
+   (let* ([corner (if (= vertexIndex 0)
+                      (vec2 -1.0 -1.0)
+                      (if (= (= vertexIndex 1) (= reversed 0)) (vec2 0.0 -1.0) (vec2 -1.0 0.0)))])
+     (results #:position (vec4 corner 0.5 1.0))))
+  (fragment (vec4 1.0 1.0 1.0 1.0)))
+
+(graph Winding
+  (image clockwise rgba8 (fixed 8 8) #:frames shared)
+  (image counterClockwise rgba8 (fixed 8 8) #:frames shared)
+  (target clockwiseTarget (color clockwise #:clear (0 0 0 1)))
+  (target counterTarget (color counterClockwise #:clear (0 0 0 1)))
+  (material culling Corner #:cull back)
+  (material cullingAgain Corner #:cull back)
+  (draw drawClockwise clockwiseTarget culling 3 #:push ((reversed 0)))
+  (draw drawCounter counterTarget cullingAgain 3 #:push ((reversed 1)))
+  (readback readClockwise clockwise)
+  (readback readCounter counterClockwise))
+
 ;; Adds a push constant to a buffer's elements: one per invocation, as many as the dispatch's
 (compute-material Bump
   (workgroup 1)

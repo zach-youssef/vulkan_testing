@@ -237,6 +237,8 @@ export class MaterialInstance {
           entryPoint: 'main',
           targets: colorFormats.map((format) => (blend ? { format, blend } : { format })),
         },
+        // Shaders flip y (ZGAL's clip space is Vulkan's), keeping triangles where they are on the
+        // screen, which both APIs judge their winding by
         primitive: { topology: o.topology ?? 'triangle-list', cullMode: o.cull ?? 'none', frontFace: o.frontFace ?? 'ccw' },
         depthStencil: depthFormat
           ? {

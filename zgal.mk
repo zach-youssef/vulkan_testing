@@ -4,6 +4,7 @@
 #
 #     include external/vulkan_test/zgal.mk
 #     $(eval $(call zgal-program,game/game.zgal,build/game,game,-lglfw))
+#     $(eval $(call zgal-web-program,game/game.zgal,build/web/game))
 #
 # The including Makefile defines CC, CFLAGS (a C++20 compiler's flags, with the Vulkan SDK's include
 # path), LDFLAGS and LDLIBS (with -lvulkan); ZGAL_CFLAGS adds the wrapper's include paths to the
@@ -72,4 +73,45 @@ $(2)/assets/%: $(dir $(1))assets/%
 $(2)/$(3): $(2)/$(notdir $(1)).main.o $(patsubst $(dir $(1))%.cpp,$(2)/%.o,$(wildcard $(dir $(1))*.cpp)) | $(patsubst $(dir $(1))assets/%,$(2)/assets/%,$(shell find $(dir $(1))assets -type f 2>/dev/null))
 	$$(CC) $$(filter %.o,$$^) -o $$@ $$(LDFLAGS) $$(LDLIBS) $(4)
 	install_name_tool -add_rpath /usr/local/lib ./$$@
+endef
+
+# The web backend's npm packages (TypeScript, and Dawn, WebGPU for Node), which building and running
+# programs for the web uses
+NODE ?= node
+NPM ?= npm
+ZGAL_WEB_DIR = $(ZGAL_ROOT)/web
+ZGAL_WEB_PACKAGES = $(ZGAL_WEB_DIR)/node_modules/.package-lock.json
+ZGAL_WEB_RUNTIME = $(wildcard $(ZGAL_WEB_DIR)/zgal/*.ts)
+
+$(ZGAL_WEB_PACKAGES): $(ZGAL_WEB_DIR)/package.json $(ZGAL_WEB_DIR)/package-lock.json
+	cd $(ZGAL_WEB_DIR) && $(NPM) ci
+	@touch $@
+
+# A program for the web (a .zgal file with a main): generates its TypeScript into <out>/src beside a
+# copy of the runtime (web/zgal), and builds it to JavaScript in <out>: <name>.zgal.main.js, the
+# program, and for one with a window its page, <name>.zgal.html. The files under <dir>/assets are
+# copied to <out>/assets, where it finds them. Serve <out> and open the page, or run it headless
+# under Node: node <out>/<name>.zgal.main.js --frames N.
+#   $(call zgal-web-program,<dir>/<name>.zgal,<out>)
+define zgal-web-program
+$(2)/src/$(notdir $(1)).stamp: $(1) $(ZGAL_COMPILED) $(ZGAL_WEB_RUNTIME) $(ZGAL_WEB_DIR)/program.tsconfig.json
+	rm -rf $(2)/src
+	@mkdir -p $(2)/src
+	$(ZGAL) --web-out $(2)/src --depfile $(2)/src/$(notdir $(1)).d --dep-target $$@ $$<
+	cp -R $(ZGAL_WEB_DIR)/zgal $(2)/src/zgal
+	cp $(ZGAL_WEB_DIR)/program.tsconfig.json $(2)/src/tsconfig.json
+	echo '{"type": "module"}' > $(2)/src/package.json
+	ln -sfn $$(abspath $(ZGAL_WEB_DIR)/node_modules) $(2)/src/node_modules
+	@touch $$@
+-include $(2)/src/$(notdir $(1)).d
+$(2)/$(notdir $(1)).main.js: $(2)/src/$(notdir $(1)).stamp $(ZGAL_WEB_PACKAGES)
+	$(NODE) $(ZGAL_WEB_DIR)/node_modules/typescript/bin/tsc -p $(2)/src --outDir $(2) --rootDir $(2)/src
+	for page in $(2)/src/*.html; do [ -e "$$$$page" ] && cp "$$$$page" $(2)/ || true; done
+	echo '{"type": "module"}' > $(2)/package.json
+	ln -sfn $$(abspath $(ZGAL_WEB_DIR)/node_modules) $(2)/node_modules
+$(2)/assets/%: $(dir $(1))assets/%
+	@mkdir -p $$(dir $$@)
+	cp $$< $$@
+$(2): $(2)/$(notdir $(1)).main.js $(patsubst $(dir $(1))assets/%,$(2)/assets/%,$(shell find $(dir $(1))assets -type f 2>/dev/null))
+.PHONY: $(2)
 endef

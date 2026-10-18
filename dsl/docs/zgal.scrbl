@@ -111,7 +111,7 @@ Shader bodies are paths relative to the @tt{.zgal} file. The shader library find
 by file name (@tt{tonemap.frag.spv}), so each body belongs to one material, and file names are
 unique within a file.
 
-@subsection{The Makefile}
+@subsection[#:tag "building"]{The Makefile}
 
 @tt{zgal.mk}, which the repository's Makefile includes, has the rules; other projects' Makefiles
 include it too (e.g. from the wrapper as a submodule), defining @tt{CC}, @tt{CFLAGS},
@@ -129,6 +129,11 @@ The generated shaders are compiled with @tt{-I} for the bodies' directory, so a 
 generated header. Rebuilding shaders (@tt{make shaders}) regenerates them first, so a running
 example reloads edited bodies as before.
 
+@tt{zgal-web-program} builds a program for the web (@secref["web"]) into a directory: its page,
+its main built to JavaScript with the runtime, and its assets. The particles example's rule:
+
+@(file-excerpt "Makefile" #:from #rx"^PARTICLES_WEB =" #:to #rx"zgal-web-program")
+
 @subsection{The command line}
 
 @verbatim{
@@ -145,7 +150,9 @@ racket dsl/zgal.rkt --check FILE.zgal
        depend on the @tt{.zgal} file and its shader bodies, with an empty rule per body (like
        @tt{gcc -MP}), so deleting a body doesn't break the build.}
  @item{@tt{@literal{--web-out} DIR} writes the TypeScript module (@secref["web"]) to
-       @tt{DIR/FILE.zgal.ts} and each shader's WGSL module to @tt{DIR/<shader name>.wgsl} (the
+       @tt{DIR/FILE.zgal.ts} (for a program its main, @tt{DIR/FILE.zgal.main.ts}, and with a
+       window its page, @tt{DIR/FILE.zgal.html}) and each shader's WGSL module to
+       @tt{DIR/<shader name>.wgsl} (the
        TypeScript holds them too; they're written for tools and reading), and removes other WGSL
        modules there. Given alone, it doesn't generate the C++ and GLSL.}
  @item{@tt{@literal{--check}} only checks the file. Shader bodies aren't read, so a missing body isn't
@@ -2063,8 +2070,8 @@ The generated code checks what the compiler can't, as contract violations:
 @section[#:tag "web"]{The web (WebGPU)}
 
 ZGAL also compiles for the web, to WebGPU: @tt{@literal{--web-out} DIR} writes a TypeScript module,
-@tt{FILE.zgal.ts}, and a WGSL module per material shader, named after it (@tt{Lit.frag.wgsl}).
-Mains are still to come (@secref["roadmap"]). This section describes how the shaders map
+@tt{FILE.zgal.ts}, a WGSL module per material shader, named after it (@tt{Lit.frag.wgsl}), and for
+a program its main, @tt{FILE.zgal.main.ts}, and page, @tt{FILE.zgal.html}. This section describes how the shaders map
 to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, then the TypeScript.
 
 @subsection{Shaders}
@@ -2177,6 +2184,9 @@ The runtime follows the C++ graph's behaviour where WebGPU allows, with these di
  @item{Buffers and images are created with every usage their format allows.}
  @item{A window's surface is drawn through an sRGB view of the canvas's format, so shaders output
        linear values as on Vulkan.}
+ @item{Clip space is Vulkan's (y down) in shaders too: vertex shaders' positions have their y
+       negated for WebGPU's, which keeps triangles, and so their winding, where they are on the
+       screen.}
 ]
 
 Functions, constants and apps' bodies compute what the C++ does: JavaScript's numbers are doubles,
@@ -2217,8 +2227,21 @@ floats as C++'s streams do.
   (on (read readCounts copied) (with state #:seen copied))
   (run Counting (count state.count) #:enabled ((filling (not state.paused)))))"]
 
+A program's main runs headless under Node, @tt{node FILE.zgal.main.ts --frames N}, with the native
+program's options (@secref["main"]) and its own, writing captures (@tt{--capture},
+@tt{--capture-frames}) to PNG files and exiting with 1 for errors or WebGPU's validation errors. A
+program with a window also runs in its page, @tt{FILE.zgal.html}, which loads the main built to
+JavaScript (@tt{zgal-web-program}, @secref["building"]): the app draws into the page's canvas
+each animation frame, at the window's size scaled to fit the page, with the canvas's keyboard,
+mouse and wheel events, and options from the query string (@tt{?frames=60&level=3}, @tt{arg=...}
+for positional arguments). Serve the directory over HTTP (modules don't load from @tt{file:} URLs)
+and open the page in a browser with WebGPU (e.g. Firefox or Safari); headless browsers usually
+have no WebGPU adapter, which the page reports. Assets are found in @tt{assets/} beside the main,
+as native programs find theirs.
+
 Graphs on the web can't yet use image files, models, meshes, the compute library's nodes, or
-indirect dispatches and draws, and apps can't yet read images' copies. WebGPU's samplers have no border colour, and its buffers can't be
+indirect dispatches and draws; apps can't yet read images' copies; and programs whose own code
+gives the app inputs (externs, imports, parameters no option sets) don't run on the web yet. WebGPU's samplers have no border colour, and its buffers can't be
 mapped while the GPU uses them, so samplers clamping to a border and cpu nodes reading or writing
 imported buffers can't be either. Compiling any of them for the web reports
 @secref["error-not-on-web"].
@@ -2270,8 +2293,8 @@ handlers (track it in the state from press and release events), read files, or c
 ZGAL has grown in stages: interfaces, graphs, shader bodies (with functions shared by the GLSL and
 C++ backends, and bindings' accesses inferred), then apps. The compiler's checked program (@tt{dsl/private/ast.rkt}) describes interfaces
 without assuming a backend, so other backends only add emitters. The web backend (@secref["web"])
-writes WGSL and TypeScript for materials, graphs and apps so far; programs (mains) running in
-browsers and under Node are next, then what graphs on the web can't use yet.
+writes WGSL and TypeScript for materials, graphs, apps and programs, which run in browsers and
+under Node; next is what graphs on the web can't use yet.
 
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "maintaining"]{Working on ZGAL}
@@ -2305,6 +2328,7 @@ browsers and under Node are next, then what graphs on the web can't use yet.
   (list @tt{dsl/private/ts-graph.rkt} "the TypeScript backend for graphs")
   (list @tt{dsl/private/ts-body.rkt} "printing lowered bodies as TypeScript: functions, constants and apps' bodies")
   (list @tt{dsl/private/ts-app.rkt} "the TypeScript backend for apps")
+  (list @tt{dsl/private/ts-main.rkt} "the TypeScript backend for mains, and programs' pages")
   (list @tt{dsl/private/ts-common.rkt} "TypeScript spellings the backend's modules share")
   (list @tt{dsl/private/cpp.rkt} "the C++ backend: structs, vertex formats and materials")
   (list @tt{dsl/private/cpp-graph.rkt} "the C++ backend for graphs")
@@ -2319,7 +2343,7 @@ browsers and under Node are next, then what graphs on the web can't use yet.
   (list @tt{include/zgal/Main.h} "what the generated mains use: the command line, validation, captures, running headless")
   (list @tt{include/zgal/Window.h} "running an app in a VulkanApp's window, and windowed programs")
   (list @tt{dsl/docs/} "this document, and the helpers compiling its examples")
-  (list @tt{web/zgal/} "what the generated TypeScript uses at runtime: Context, RenderGraph, nodes, materials, types' layouts, apps' events and clocks, C++'s arithmetic (math.ts) and built-in functions (glsl.ts); node.ts and png.ts for Node")
+  (list @tt{web/zgal/} "what the generated TypeScript uses at runtime: Context, RenderGraph, nodes, materials, types' layouts, apps' events and clocks, C++'s arithmetic (math.ts) and built-in functions (glsl.ts), mains (main.ts, main-node.ts, main-browser.ts); node.ts and png.ts for Node")
   (list @tt{web/} "the web backend's packages (npm: TypeScript, and Dawn, WebGPU for Node), tools (tools/check-wgsl.ts compiles WGSL with Dawn) and tests")
   (list @tt{dsl/tests/} "the compiler's tests (make test-dsl)"))]
 
@@ -2357,6 +2381,7 @@ This document is part of the language: change it in the same commit as the compi
        command line, the golden and examples' WGSL modules through Dawn, and the golden
        TypeScript through @tt{tsc} (@tt{web/}, whose packages @tt{make test-dsl} installs with
        @tt{npm ci}).}
+ @item{@tt{dsl/tests/web-test.rkt}: what compiling for the web reports that Vulkan allows.}
  @item{@tt{web/tests}: @tt{web.zgal} and @tt{apps.zgal} compiled to TypeScript and WGSL and run on Dawn under Node
        (@tt{make test-web}, which type checks it first): the generated WGSL computes what the GLSL
        would (layouts of small integers, shared memory, emulated atomics and subgroup scans,
@@ -2364,7 +2389,8 @@ This document is part of the language: change it in the same commit as the compi
        the C++ ones do (loops, conditions, enables and once nodes, per-frame inputs, uploads,
        copies, buffer files, cpu and extern nodes), functions compute what the GPU and C++ do,
        and apps handle events, effects, read events, externs and phases as C++ apps do, without
-       WebGPU errors.}
+       WebGPU errors. @tt{make test-web} then builds the particles example for the web and runs it
+       under Node.}
  @item{@tt{tests/gpu/ZgalTest.cpp}: generated materials and graphs on the device: the C++ structs
        and push constants have the layout the shaders write and read (8- and 16-bit integers
        included), a function computes the same on the CPU (as C++) as on the GPU, a reduction
