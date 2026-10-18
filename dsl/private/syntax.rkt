@@ -11,6 +11,7 @@
          expect-list
          camel-case
          parse-name
+         parse-called-name
          make-namespace
          split-options
          check-known-options
@@ -35,6 +36,14 @@
     [_ s]))
 
 ;; A declared name: a symbol that is a valid, unreserved identifier. Returns it as a string.
+;; A name that's called, (name argument ...): a function's or a struct's
+(define (parse-called-name stx what)
+  (define s (parse-name stx what))
+  (define reason (form-name-reason s))
+  (when reason
+    (zgal-error 'reserved-name stx "~a can't be used as a function's or struct's name: it ~a" s reason))
+  s)
+
 (define (parse-name stx what)
   (define d (syntax-e stx))
   (unless (symbol? d)

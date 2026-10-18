@@ -59,6 +59,13 @@
   (check-zgal-error "(struct A (materialPush uint))" 'reserved-name "generated code")
   (check-zgal-error "(struct A (a__b uint))" 'bad-identifier "__"))
 
+(test-case "Functions and structs can't be named after bodies' forms, which calls would mean"
+  (check-zgal-error "(define (count [x : uint]) : uint x)" 'reserved-name "form of ZGAL's bodies")
+  (check-zgal-error "(struct with (x uint))" 'reserved-name "form of ZGAL's bodies")
+  (check-zgal-error "(app A (extern (sum [x : uint]) : uint))" 'reserved-name "form of ZGAL's bodies")
+  ;; Values can: they're never called
+  (check-not-exn (λ () (compile-text "(struct A (count uint))\n(define sum 3)"))))
+
 (test-case "Material names share the shaders' global scope, and structs' names"
   (check-zgal-error "(struct A (x float))\n(struct A (y float))" 'duplicate-name "already declared")
   (check-zgal-error

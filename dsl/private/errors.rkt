@@ -55,7 +55,7 @@
          "(struct Light (light-direction vec3))")
    (kind 'reserved-name
          "The name is reserved"
-         "The name is a GLSL or C++ keyword, a GLSL built-in function (binding accessors are function-like macros, so a binding named `texture` would replace GLSL's `texture()`), a type, a name the wrapper's C++ uses (e.g. `Material`), or one the generated code uses (`main`, `materialPush`, anything starting with `zgal` or `gl_`)."
+         "The name is a GLSL or C++ keyword, a GLSL built-in function (binding accessors are function-like macros, so a binding named `texture` would replace GLSL's `texture()`), a type, a name the wrapper's C++ uses (e.g. `Material`), or one the generated code uses (`main`, `materialPush`, anything starting with `zgal` or `gl_`). Functions and structs also can't be named after a form of bodies (`count`, `sum`, `with`, `at`...), as a call to one would mean the form; values (fields, locals, constants) can be."
          "(struct Light (sampler uint))")
    (kind 'duplicate-name
          "A name is declared twice"

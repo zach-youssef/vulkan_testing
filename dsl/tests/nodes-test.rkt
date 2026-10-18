@@ -155,6 +155,15 @@
   (check-zgal-error (graph "  (for ([s spans]) (readback r cells #:when (> s.offset.x 0)))") 'type-mismatch "x is a uint, which has no fields")
   (check-zgal-error (graph "  (for ([i (range 0 2)]) (readback r cells #:when (> (.offset (at cells i)) 0)))") 'type-mismatch "takes a data input, and cells isn't one"))
 
+(test-case "Graph expressions take swizzles of vectors"
+  (define h (header (compile-text
+                     (graph "  (material filling Fill cells)"
+                            "  (dispatch fill filling #:push ((offset (.y (+ (.xy (uvec3 n 2 3)) (.bg (uvec3 n 2 3))))) (amount (.z (uvec3 n 2 3)))) #:invocations (1))"))))
+  (check-true (string-contains? h "push.offset = ([](const auto& v) { return glm::uvec2(v.x, v.y); }(glm::uvec3(in->n, 2u, 3u)) + [](const auto& v) { return glm::uvec2(v.z, v.y); }(glm::uvec3(in->n, 2u, 3u))).y;"))
+  (check-true (string-contains? h "push.amount = glm::uvec3(in->n, 2u, 3u).z;"))
+  (check-zgal-error (graph "  (readback r cells #:when (> (.x (.xz (uvec2 n 1))) 0))")
+                    'unknown-name "xz isn't a swizzle of a uvec2"))
+
 (test-case "Read events take readbacks outside loops"
   (check-zgal-error (string-append
                      (graph "  (for ([i (range 0 2)]) (readback r cells))")

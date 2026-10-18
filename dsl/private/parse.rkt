@@ -139,7 +139,7 @@
   (define (parse-struct stx items)
     (match items
       [(list* _ name-stx fields)
-       (define name (parse-name name-stx "the struct's name"))
+       (define name (parse-called-name name-stx "the struct's name"))
        (top-level name name-stx)
        (when (null? fields)
          (zgal-error 'malformed stx "struct ~a has no fields" name))
@@ -357,7 +357,7 @@
       ;; A function
       [(list* _ signature-stx rest) #:when (syntax->list signature-stx)
        (match-define (cons name-stx param-stxs) (syntax->list signature-stx))
-       (define name (parse-name name-stx "the function's name"))
+       (define name (parse-called-name name-stx "the function's name"))
        (top-level name name-stx)
        (define-values (result-type body-stxs)
          (match rest
@@ -428,7 +428,7 @@
          (match (syntax->list sig)
            [(list signature colon result) #:when (and (syntax->list signature) (eq? (syntax-e colon) ':))
             (match-define (cons name-stx param-stxs) (syntax->list signature))
-            (define name (parse-name name-stx "the function's name"))
+            (define name (parse-called-name name-stx "the function's name"))
             (top-level name name-stx)
             (define param-names (make-namespace (format "as a parameter of ~a" name)))
             (define params

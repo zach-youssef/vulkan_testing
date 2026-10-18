@@ -92,7 +92,7 @@
       (match (syntax->list c)
         [(list _ signature colon result) #:when (and (syntax->list signature) (eq? (syntax-e colon) ':))
          (match-define (cons n params) (syntax->list signature))
-         (define f-name (parse-name n "an extern function's name"))
+         (define f-name (parse-called-name n "an extern function's name"))
          (names f-name n)
          (when (hash-ref functions f-name #f)
            (zgal-error 'duplicate-name n "~a is already a function of the file" f-name))

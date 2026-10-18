@@ -1359,7 +1359,7 @@ struct Everything {
             [=](const zgal::FrameInfo& frame, Surface::Push& push) {
 #line 34 "dsl/tests/golden/features.zgal"
                 push.object = (in->enabled ? std::max(in->size, 1u) : 0u);
-                push.tint = (in->tintNow(frame) * glm::vec3(constant_halfScale, 1.0f, static_cast<float>(constant_pictureWidth)));
+                push.tint = (in->tintNow(frame) * [](const auto& v) { return glm::vec3(v.z, v.y, v.x); }(glm::vec3(constant_halfScale, 1.0f, static_cast<float>(constant_pictureWidth))));
 #line 257 "dsl/tests/golden/features.zgal"
             },
 #line 257 "dsl/tests/golden/features.zgal"

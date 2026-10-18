@@ -194,17 +194,6 @@
 ;; ---------------------------------------------------------------------------------------------
 ;; Checking
 
-(define swizzle-sets '("xyzw" "rgba" "stpq"))
-
-(define (swizzle-components s size)
-  (and (<= 1 (string-length s) 4)
-       (for/or ([set (in-list swizzle-sets)])
-         (and (for/and ([c (in-string s)])
-                (define i (for/first ([d (in-string set)] [k (in-naturals)] #:when (char=? c d)) k))
-                (and i (< i size)))
-              (list->string (for/list ([c (in-string s)])
-                              (string-ref "xyzw" (for/first ([d (in-string set)] [k (in-naturals)] #:when (char=? c d)) k))))))))
-
 ;; Field or swizzle `name` of typed e
 (define (member-of e name where)
   (match (texpr-type e)

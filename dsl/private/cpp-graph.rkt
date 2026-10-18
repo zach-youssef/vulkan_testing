@@ -72,9 +72,20 @@
        ['per-frame (format "in->~a(frame)" name)]
        ['loop (format "loop_~a" name)])]
     [(e-field base field _)
-     ;; std430 structs hold bools as uint32_t
-     (define access (format "~a.~a" (cpp-expr base env #f) field))
-     (if (equal? (type-of e) (scalar-t 'bool)) (format "static_cast<bool>(~a)" access) access)]
+     (define base-cpp (cpp-expr base env #f))
+     (match (type-of base)
+       [(vector-t _ n)
+        (define components (swizzle-components field n))
+        (if (= (string-length components) 1)
+            (format "~a.~a" base-cpp components)
+            ;; GLM has no swizzles without GLM_FORCE_SWIZZLE: build the vector, evaluating the
+            ;; base once (it can call per-frame inputs)
+            (format "[](const auto& v) { return ~a(~a); }(~a)" (cpp-type (type-of e))
+                    (string-join (for/list ([c (in-string components)]) (format "v.~a" c)) ", ") base-cpp))]
+       [_
+        ;; std430 structs hold bools as uint32_t
+        (define access (format "~a.~a" base-cpp field))
+        (if (equal? (type-of e) (scalar-t 'bool)) (format "static_cast<bool>(~a)" access) access)])]
     [(e-op op args _)
      (define t (resolve (type-of e) want))
      (case op

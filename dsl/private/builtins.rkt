@@ -7,6 +7,7 @@
          "ast.rkt")
 
 (provide literal-type
+         swizzle-components
          literal?
          numeric-kind?
          component-kind
@@ -221,3 +222,15 @@
 
 (define stage-variable-names
   (remove-duplicates (for*/list ([(stage vars) (in-hash stage-variables)] [name (in-hash-keys vars)]) name)))
+
+(define swizzle-sets '("xyzw" "rgba" "stpq"))
+
+;; Swizzle s of a vector of `size` components, in xyzw letters ("rg" -> "xy"), or #f if it isn't one
+(define (swizzle-components s size)
+  (and (<= 1 (string-length s) 4)
+       (for/or ([set (in-list swizzle-sets)])
+         (and (for/and ([c (in-string s)])
+                (define i (for/first ([d (in-string set)] [k (in-naturals)] #:when (char=? c d)) k))
+                (and i (< i size)))
+              (list->string (for/list ([c (in-string s)])
+                              (string-ref "xyzw" (for/first ([d (in-string set)] [k (in-naturals)] #:when (char=? c d)) k))))))))

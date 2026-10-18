@@ -256,7 +256,7 @@
   (target screen (if (not enabled) (surface #:clear (0 0 0 1) #:depth d32) (attachments (color copy))))
   (material surface Surface (lights lightBuffer) (transforms transformBuffer) (albedo picture)
             (albedoSampler basic) (mask maskImage)
-            #:push ((object (if enabled (max size 1) 0)) (tint (* tintNow (vec3 halfScale 1 (float pictureWidth)))))
+            #:push ((object (if enabled (max size 1) 0)) (tint (* tintNow (.zyx (vec3 halfScale 1 (float pictureWidth))))))
             #:cull none #:front-face clockwise #:blend alpha #:depth-test #t #:depth-write #f
             #:depth-compare greater-or-equal #:topology triangle-list)
   ;; Invocations are computed each frame, so they can use graph images' current sizes. Created

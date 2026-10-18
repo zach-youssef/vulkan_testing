@@ -142,10 +142,10 @@
           (zgal-error 'type-not-allowed where "field ~a of ~a is an array, which graphs' expressions don't take" field (type-name t)))
         (field-type f)]
        [(vector-t k n)
-        (define components (take '("x" "y" "z" "w") n))
-        (unless (member field components)
-          (zgal-error 'unknown-name where "a ~a's components are ~a, one at a time" (type-name t) (string-join components ", ")))
-        (scalar-t k)]
+        (define components (or (swizzle-components field n)
+                               (zgal-error 'unknown-name where "~a isn't a swizzle of a ~a (use up to four of xyzw, rgba or stpq)"
+                                           field (type-name t))))
+        (if (= (string-length components) 1) (scalar-t k) (vector-t k (string-length components)))]
        [_ (zgal-error 'type-mismatch where "~a is ~a, which has no fields" field (a-type t))])]
     [(e-op op args where)
      (define (args-types) (map recur args))

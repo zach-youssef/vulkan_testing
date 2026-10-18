@@ -8,6 +8,7 @@
 
 (provide valid-identifier?
          reserved-name-reason
+         form-name-reason
          library-names-allowed?)
 
 ;; Whether names starting with zgal may be declared: true while reading the compiler's own library
@@ -109,3 +110,14 @@
     [(string-prefix? s "gl_") "starts with gl_, which GLSL reserves"]
     [(and (regexp-match? #px"^(?i:zgal)" s) (not (library-names-allowed?))) "starts with zgal, which the generated code uses"]
     [else #f]))
+
+;; Bodies' forms named like identifiers. A call (count d) is the form, so a function or struct
+;; with one of these names could never be called; values (locals, fields, constants) can have them.
+(define body-form-names
+  '("array" "at" "begin" "cond" "count" "fetch" "fold" "range" "remainder" "results" "shl" "shr"
+    "sum" "unless" "values" "when" "with"))
+(define body-form-set (for/hash ([n (in-list body-form-names)]) (values n #t)))
+
+;; Why a function's or struct's name can't be s, or #f if it can be
+(define (form-name-reason s)
+  (and (hash-ref body-form-set s #f) "is a form of ZGAL's bodies, so calls to it would mean the form"))

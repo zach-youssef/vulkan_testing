@@ -1098,8 +1098,8 @@ with the wrapper's loaders (@tt{resources/Model.h}).
 Expressions are typed like GLSL: arithmetic operands share a type (scalars or vectors), and
 conditions are bools. Integer literals take the type their context needs, so @tt{(* 6 count)} is a
 @tt{uint} when @tt{count} is. A name is a parameter, constant, per-frame input or loop variable
-(@secref["loops"]). Fields of structs and components of vectors (one at a time) follow names after
-dots, @tt{batch.first}, or are functions on other expressions, @racket[(.first (at batches 0))];
+(@secref["loops"]). Fields of structs and swizzles of vectors (@tt{size.x}, @tt{size.xy}) follow names
+after dots, @tt{batch.first}, or are functions on other expressions, @racket[(.first (at batches 0))];
 @racket[(at input index)] is an element of a data input, checked to exist when it's computed.
 
 Most expressions are computed once, when the graph is built: conditions, constants, extents and
