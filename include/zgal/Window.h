@@ -188,12 +188,15 @@ int runWindowed(const CommandLine& commandLine, const Launch& launch, Create&& c
             if (launch.timings) {
                 TRY(timings.add(app->renderGraph()));
             }
+            if (std::binary_search(launch.captureFrames.begin(), launch.captureFrames.end(), frame + 1)) {
+                TRY(captureFrame(*launch.capture, frame + 1, capture(*app)));
+            }
         }
         VK_TRY(context.waitIdleAll(), "Failed to wait for the device");
         if (launch.timings) {
             timings.print(std::cout);
         }
-        if (launch.capture) {
+        if (launch.capture && launch.captureFrames.empty()) {
             TRY_ASSIGN(auto pixels, capture(*app));
             captured = std::move(pixels);
         }

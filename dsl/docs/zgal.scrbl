@@ -1763,6 +1763,7 @@ Every program also has the built-in options:
   (list @bold{Option} @bold{What})
   (list @tt{--frames N} "run N frames, then exit: headless (with a window, unless --window), on the fixed clock")
   (list @tt{--capture FILE} @elem{write the capture's last frame (with a @racket[capture] without @tt{#:to})})
+  (list @tt{--capture-frames N,...} @elem{write those frames' captures instead, as @tt{FILE/N.png} (@tt{FILE} a directory), running as many frames as the last needs unless @tt{--frames} says more})
   (list @tt{--size WxH} "the window's size, or headless the surface's (with a window)")
   (list @tt{--window} "with --frames, run in the window")
   (list @tt{--validation} "enable validation and synchronization validation: any message fails the run")

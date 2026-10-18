@@ -377,7 +377,7 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   it with `handle(zgal::Event{...})`, `state()` and `setState()`.
 - A `(main App ...)` makes the file a program: the compiler writes `name.zgal.main.cpp` too, with
   the built-in options (`--frames N`, `--capture FILE`, `--size WxH`, `--window`, `--validation`,
-  `--plan`, `--timings` (per-node GPU time), `--help`) and the app's `(flag p "--x" "help")`, `(option p "--x" "help" #:default v
+  `--plan`, `--timings` (per-node GPU time), `--capture-frames 1,2,60` (each to `<capture>/<frame>.png`), `--help`) and the app's `(flag p "--x" "help")`, `(option p "--x" "help" #:default v
   #:range (lo hi) #:given flag)` and `(positional p "help")` setting its parameters (`path`
   parameters too, passed to graphs' path inputs), a `(window "title" w h)` (without one, headless
   only), the clock `(timestep #:max s #:fixed s)` and `(capture readback [#:to path-param])` written

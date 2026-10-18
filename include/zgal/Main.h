@@ -54,6 +54,8 @@ struct MainSpec {
 struct Launch {
     std::optional<uint32_t> frames;                 // --frames N, else until the window closes
     std::optional<std::filesystem::path> capture;   // Where the last frame's capture goes
+    // --capture-frames: the frames (from 1, ascending) captured instead, to <capture>/<frame>.png
+    std::vector<uint32_t> captureFrames;
     VkExtent2D size{};                              // --size, or the window's
     bool window = false;                            // Whether it runs in a window
     bool validation = false;                        // --validation
@@ -182,6 +184,22 @@ public:
                     return fail("--capture needs a value");
                 }
                 launch.capture = commandLinePath(*v);
+            } else if (arg == "--capture-frames" && spec_.captureOption) {
+                const auto v = value();
+                if (!v) {
+                    return fail("--capture-frames needs a value");
+                }
+                std::stringstream frames(*v);
+                for (std::string frame; std::getline(frames, frame, ',');) {
+                    uint32_t number = 0;
+                    if (const auto error = parseNumber<uint32_t>(frame, number, 1u)) {
+                        return fail("--capture-frames takes frame numbers separated by commas, e.g. 1,2,60: " + *error);
+                    }
+                    launch.captureFrames.push_back(number);
+                }
+                std::sort(launch.captureFrames.begin(), launch.captureFrames.end());
+                launch.captureFrames.erase(std::unique(launch.captureFrames.begin(), launch.captureFrames.end()),
+                                           launch.captureFrames.end());
             } else if (arg == "--size" && spec_.window) {
                 const auto v = value();
                 const size_t x = v ? v->find('x') : std::string::npos;
@@ -222,6 +240,18 @@ public:
         if (positional < positionals_.size()) {
             return fail("expected " + positionals_[positional].metavar);
         }
+        // Capturing several frames runs as many frames as the last one needs
+        if (!launch.captureFrames.empty()) {
+            if (!launch.capture) {
+                return fail("--capture-frames writes into the directory --capture DIRECTORY names");
+            }
+            if (!launch.frames) {
+                launch.frames = launch.captureFrames.back();
+            } else if (*launch.frames < launch.captureFrames.back()) {
+                return fail("--capture-frames needs " + std::to_string(launch.captureFrames.back()) + " frames, but --frames is "
+                            + std::to_string(*launch.frames));
+            }
+        }
         // A number of frames is a smoke test: headless, unless asked otherwise. Without a window, it's
         // one frame unless asked otherwise.
         if (spec_.window) {
@@ -261,6 +291,7 @@ public:
                                                       : "run N frames (default 1)");
         if (spec_.captureOption) {
             lines.emplace_back("--capture FILE", "write the last frame to a PNG file (with --frames)");
+            lines.emplace_back("--capture-frames N,...", "write those frames instead, to <FILE>/<frame>.png (FILE a directory)");
         }
         lines.emplace_back("--validation", "enable Vulkan validation; any message fails the run");
         lines.emplace_back("--plan", "print the render graph's plan");
@@ -354,7 +385,7 @@ inline int finish(const MainSpec& spec, const Launch& launch, const Result<void>
         std::cerr << spec.program << ": " << validation.count() << " validation message(s)" << std::endl;
         return EXIT_FAILURE;
     }
-    if (captured && launch.capture) {
+    if (captured && launch.capture && launch.captureFrames.empty()) {
         if (auto written = writePng(*launch.capture, *captured); !written) {
             std::cerr << spec.program << ": " << written.error() << std::endl;
             return EXIT_FAILURE;
@@ -364,6 +395,17 @@ inline int finish(const MainSpec& spec, const Launch& launch, const Result<void>
         }
     }
     return EXIT_SUCCESS;
+}
+
+// Writes frame's capture (--capture-frames) to <directory>/<frame>.png, creating the directory
+inline Result<void> captureFrame(const std::filesystem::path& directory, uint32_t frame, Result<Captured> captured) {
+    TRY_ASSIGN(auto pixels, std::move(captured));
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error) {
+        return Error(ErrorCode::NotFound, "Can't create " + directory.string() + ": " + error.message());
+    }
+    return writePng(directory / (std::to_string(frame) + ".png"), pixels);
 }
 
 /*
@@ -462,12 +504,15 @@ int runHeadless(const CommandLine& commandLine, const Launch& launch, Create&& c
                 if (launch.timings) {
                     TRY(timings.add(app->renderGraph()));
                 }
+                if (std::binary_search(launch.captureFrames.begin(), launch.captureFrames.end(), frame + 1)) {
+                    TRY(captureFrame(*launch.capture, frame + 1, capture(*app)));
+                }
             }
             VK_TRY(context->waitIdleAll(), "Failed to wait for the device");
             if (launch.timings) {
                 timings.print(std::cout);
             }
-            if (launch.capture) {
+            if (launch.capture && launch.captureFrames.empty()) {
                 TRY_ASSIGN(auto pixels, capture(*app));
                 captured = std::move(pixels);
             }
