@@ -7,7 +7,9 @@
 #include "descriptors/DescriptorHeap.h"
 #include "resources/Buffer.h"
 
+#include <algorithm>
 #include <cstring>
+#include <memory>
 #include <vector>
 
 /*
@@ -23,7 +25,10 @@
 
  Elements are FrameBindings, so they can be per frame (e.g. a render graph's entries, which follow
  recreated resources): before a material binds the array for a frame, update() writes the frame's
- indices into the frame's buffer, only when they changed. The number of elements is fixed.
+ indices into the frame's buffer, only when they changed. setElements() replaces the elements, any
+ number of them: each frame's buffer grows when that frame next updates it (its previous work has
+ finished), and render graphs using the array declare the new elements' uses before their next
+ frame (version() tells them it changed).
 
  Create it with create(); it's managed (a Handle), and the buffers follow the number of frames in
  flight.
@@ -32,26 +37,57 @@ class DescriptorArray {
 public:
     using Mapping = Buffer<uint32_t>::Mapping;
 
-    DescriptorArray(std::vector<FrameBinding<DescriptorEntry>> elements, Handle<PerFrameHandles<Buffer<uint32_t>>> buffers,
+    DescriptorArray(VulkanContext& context, std::vector<FrameBinding<DescriptorEntry>> elements,
+                    std::shared_ptr<size_t> capacity, Handle<PerFrameHandles<Buffer<uint32_t>>> buffers,
                     Handle<PerFrameHandles<DescriptorEntry>> entries, PerFrame<Mapping> mappings)
-    : elements_(std::move(elements)), buffers_(std::move(buffers)), entries_(std::move(entries)),
-      mappings_(std::move(mappings)) {}
+    : context_(&context), elements_(std::move(elements)), capacity_(std::move(capacity)), buffers_(std::move(buffers)),
+      entries_(std::move(entries)), mappings_(std::move(mappings)) {}
 
     static Result<Handle<DescriptorArray>> create(VulkanContext& context, std::vector<FrameBinding<DescriptorEntry>> elements) {
-        const size_t words = 1 + elements.size();
+        // The words each buffer holds: frames added later (more frames in flight) get as many
+        auto capacity = std::make_shared<size_t>(1 + elements.size());
         // Written by the CPU when the indices change, read by shaders
         const VkMemoryPropertyFlags memory = mappedMemoryFor(context);
         // Created in this order, so resized in this order: buffers, then their entries and mappings
-        TRY_ASSIGN(auto buffers, PerFrameHandles<Buffer<uint32_t>>::createManaged(context, [&context, words, memory](uint32_t) {
-            return Buffer<uint32_t>::create(context, words, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, memory);
+        TRY_ASSIGN(auto buffers, PerFrameHandles<Buffer<uint32_t>>::createManaged(context, [&context, capacity, memory](uint32_t) {
+            return Buffer<uint32_t>::create(context, *capacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, memory);
         }));
         auto entries = context.resources().create<PerFrameHandles<DescriptorEntry>>(
             context, [ctx = &context, buffers](uint32_t frame) { return ctx->descriptors().storageBuffer((*buffers)[frame]); });
-        TRY_ASSIGN(auto mappings, PerFrame<Mapping>::create(context, [buffers, words](uint32_t frame) {
-            return (*buffers)[frame]->getPersistentMapping(0, words * sizeof(uint32_t));
+        TRY_ASSIGN(auto mappings, PerFrame<Mapping>::create(context, [buffers](uint32_t frame) {
+            return (*buffers)[frame]->getPersistentMapping(0, (*buffers)[frame]->getSize());
         }));
-        return context.resources().create<DescriptorArray>(std::move(elements), std::move(buffers), std::move(entries),
-                                                           std::move(mappings));
+        return context.resources().create<DescriptorArray>(context, std::move(elements), std::move(capacity), std::move(buffers),
+                                                           std::move(entries), std::move(mappings));
+    }
+
+    // Replaces the elements (any number of them), from the next frame each binds the array
+    void setElements(std::vector<FrameBinding<DescriptorEntry>> elements) {
+        elements_ = std::move(elements);
+        *capacity_ = std::max(*capacity_, 1 + elements_.size());
+        ++version_;
+    }
+
+    // Makes the frame's buffer hold the elements' indices, replacing it by a larger one (and its
+    // entry) if it can't. Call it when the frame slot's previous work has finished (render graphs
+    // do, before submitting a frame); update() does otherwise, as a contract violation on failure.
+    Result<void> reserve(uint32_t frameIndex) {
+        if (holdsElements(frameIndex)) {
+            return {};
+        }
+        TRY_ASSIGN(auto buffer, Buffer<uint32_t>::create(*context_, *capacity_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                         mappedMemoryFor(*context_)));
+        TRY_ASSIGN(auto mapping, buffer->getPersistentMapping(0, buffer->getSize()));
+        // The frame's previous buffer is released once nothing holds it
+        mappings_[frameIndex] = std::move(mapping);
+        (*entries_)[frameIndex] = context_->descriptors().storageBuffer(buffer);
+        (*buffers_)[frameIndex] = std::move(buffer);
+        return {};
+    }
+
+    // Changes with every setElements, e.g. for a render graph to know its uses changed
+    uint64_t version() const {
+        return version_;
     }
 
     // The entries of the buffers holding the indices, one per frame: what the binding pushes
@@ -68,8 +104,16 @@ public:
     }
 
     // Writes the frame's element indices into the frame's buffer, unless it holds them. Every
-    // element must have an entry for the frame. Called when a material binding the array binds.
+    // element must have an entry for the frame. Called when a material binding the array binds,
+    // when the frame slot's previous work has finished, so its buffer can be replaced by a larger
+    // one (and its entry with it) when there are more elements than it holds. Fails (a contract
+    // violation, as binding can't fail) only when the device can't create that buffer.
     void update(uint32_t frameIndex) {
+        if (!holdsElements(frameIndex)) {
+            if (auto grown = reserve(frameIndex); !grown) {
+                contractViolation("Descriptor array couldn't grow its buffer of indices: " + grown.error().describe());
+            }
+        }
         std::vector<uint32_t> words(1 + elements_.size());
         words[0] = static_cast<uint32_t>(elements_.size());
         for (size_t i = 0; i < elements_.size(); ++i) {
@@ -101,13 +145,20 @@ public:
     }
 
 private:
+    bool holdsElements(uint32_t frameIndex) {
+        return (*buffers_)[frameIndex]->getSize() >= (1 + elements_.size()) * sizeof(uint32_t);
+    }
+
     // What a frame's buffer holds
     struct Written {
         const Buffer<uint32_t>* buffer = nullptr;
         std::vector<uint32_t> words;
     };
 
+    VulkanContext* context_;
     std::vector<FrameBinding<DescriptorEntry>> elements_;
+    std::shared_ptr<size_t> capacity_;
+    uint64_t version_ = 0;
     Handle<PerFrameHandles<Buffer<uint32_t>>> buffers_;
     Handle<PerFrameHandles<DescriptorEntry>> entries_;
     PerFrame<Mapping> mappings_;

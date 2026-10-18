@@ -402,6 +402,11 @@ public:
         return (*perFrame)[frameIndex];
     }
 
+    // The same handle or the same collection
+    friend bool operator==(const FrameBinding& lhs, const FrameBinding& rhs) {
+        return lhs.source_ == rhs.source_;
+    }
+
 private:
     std::variant<Handle<T>, Handle<PerFrameHandles<T>>> source_;
 };

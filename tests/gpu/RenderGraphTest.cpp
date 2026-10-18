@@ -401,7 +401,7 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph recreates buffers sized each frame when 
     BufferId buffer = graph.createBuffer("values", FrameMode::Shared, [&count, &sized](const FrameContext&) {
         ++sized;
         return VkDeviceSize(count) * sizeof(uint32_t);
-    }, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);   // For its entries, which no node uses here
+    });   // Its entries, which no node uses here, give it storage usage
     auto entries = graph.storageBufferEntry(buffer);
     graph.addTransfer("fill", [buffer](NodeBuilder& builder) { builder.write(buffer, Access::TransferDst); },
                       [buffer](RecordContext& record) {
@@ -482,6 +482,76 @@ TEST_CASE_FIXTURE(GpuTest, "Materials bind arrays of entries, whose elements a n
         CHECK(array->writes() == ctx.framesInFlight());
         CHECK(graph.nodeAs<BufferReadbackNode>(readback).contents<uint32_t>().value() == std::vector<uint32_t>{301, 302, 301});
         ctx.waitIdleAll();
+    }
+    {
+        // Elements changed at runtime: more of them than the buffers held, including a buffer only
+        // the new elements use, which the graph synchronizes with its fill (its uses are declared
+        // again; synchronization validation would report the hazard otherwise)
+        RenderGraph graph(ctx);
+        std::vector<BufferId> sources;
+        std::vector<FrameBinding<DescriptorEntry>> entries;
+        for (uint32_t i = 0; i < 3; ++i) {
+            sources.push_back(graph.createBuffer("source" + std::to_string(i), FrameMode::Shared, sizeof(uint32_t)));
+            entries.push_back(graph.storageBufferEntry(sources.back()));
+            graph.addTransfer("fill" + std::to_string(i), [source = sources[i]](NodeBuilder& builder) {
+                builder.write(source, Access::TransferDst);
+            }, [source = sources[i], value = i + 1](RecordContext& record) {
+                vkCmdFillBuffer(record.commandBuffer, record.graph.buffer(source, record.frameIndex), 0, VK_WHOLE_SIZE, value);
+            });
+        }
+        BufferId target = graph.createBuffer("target", FrameMode::Shared, 8 * sizeof(uint32_t));
+        auto array = DescriptorArray::create(ctx, {entries[0]}).value();
+        auto material = ctx.resources().create<FixedComputeMaterial>(ctx, std::vector<MaterialBinding>{
+            MaterialBinding::array(array, Access::StorageBufferRead),
+            MaterialBinding::storageBuffer(graph.storageBufferEntry(target), Access::StorageBufferWrite),
+        }, testShader(ctx, "descriptor_array.comp"), glm::vec3{1, 1, 1});
+        graph.add<DispatchNode>("read", material);
+        NodeId readback = graph.add<BufferReadbackNode>("readback", target);
+        auto contents = [&]() {
+            auto values = graph.nodeAs<BufferReadbackNode>(readback).contents<uint32_t>().value();
+            values.resize(array->size());
+            return values;
+        };
+
+        graph.execute().value();
+        CHECK(contents() == std::vector<uint32_t>{101});
+
+        const uint64_t version = array->version();
+        array->setElements({entries[2], entries[0], entries[1], entries[2]});
+        CHECK(array->version() != version);
+        for (uint32_t frame = 0; frame < ctx.framesInFlight() + 1; ++frame) {
+            graph.execute().value();
+            CHECK(contents() == std::vector<uint32_t>{403, 401, 402, 403});
+        }
+
+        // Fewer again: the buffers keep their size
+        array->setElements({entries[1]});
+        graph.execute().value();
+        CHECK(contents() == std::vector<uint32_t>{102});
+
+        // Chosen each frame: the array changes (its version with it) only when the choice does
+        std::vector<uint32_t> chosen{0, 2};
+        graph.setElementSource(array, [&](const FrameContext&) {
+            std::vector<FrameBinding<DescriptorEntry>> elements;
+            for (uint32_t i : chosen) {
+                elements.push_back(entries[i]);
+            }
+            return elements;
+        });
+        graph.execute().value();
+        CHECK(contents() == std::vector<uint32_t>{201, 203});
+        const uint64_t chosenVersion = array->version();
+        graph.execute().value();
+        CHECK(array->version() == chosenVersion);
+        chosen = {1, 1, 0, 2, 2};
+        graph.execute().value();
+        CHECK(contents() == std::vector<uint32_t>{502, 502, 501, 503, 503});
+        chosen = {};
+        graph.execute().value();
+        CHECK(array->size() == 0);
+        CHECK_THROWS_AS(graph.setElementSource(array, nullptr), ContractViolation);
+        ctx.waitIdleAll();
+        ctx.collectRetired();
     }
     {
         // An empty array holds a count of 0

@@ -268,11 +268,14 @@
 (struct t-target-if (condition then else loc) #:transparent)
 ;; An instance of a material declared in the file. bindings: (cons binding resource) in the
 ;; material's order, where resource is a name, or for an array binding a list of names or the name
-;; of imported images. push: (cons field expression) in the material's order. options: an
+;; of imported images, or a g-selection of them. push: (cons field expression) in the material's order. options: an
 ;; association list of pipeline options. invocations: expressions (compute) or #f. A push constant
 ;; every node using the instance gives (#:push on the node) may be left out: its expression is #f.
 ;; when: a build-time condition or #f.
 (struct g-material (name material bindings push options invocations when loc) #:transparent)
+;; An array binding's elements chosen each frame from resources (a list of names, or imported
+;; images' name) by the indices in a per-frame data input of uints (its name)
+(struct g-selection (resources indices) #:transparent)
 ;; kind: 'dispatch 'draw-meshes 'draw 'readback 'cpu 'copy 'clear 'extern. target, material,
 ;; subject (the meshes, image, cpu or extern input): names or #f. count: an expression or #f (a
 ;; draw's vertices, a copy's elements, a clear's value), or for a copy into an image its region's

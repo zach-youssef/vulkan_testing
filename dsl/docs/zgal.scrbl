@@ -1174,8 +1174,39 @@ texture or storage image binding takes an image, a sampler binding a sampler, a 
 a uniform or (graph or imported) buffer of its type, and a @tt{buffer-array} binding a buffer of its
 element type. An @racket[array] binding takes a list of resources of its elements' kind,
 @tt{(layers (albedo normals albedo))}, or (for arrays of images) imported images, and the graph
-makes its @tt{DescriptorArray}. Its
-options are
+makes its @tt{DescriptorArray}. With @tt{(binding resources #:select indices)}, the elements are
+chosen each frame: @tt{indices}, a per-frame data input of uints (@tt{(input indices (per-frame
+(data uint)))}), lists the resources' positions, as many as it holds, in any order and repeating
+any. The array's buffers grow as needed and nodes using the material declare the chosen elements'
+uses before the graph plans the frame (@tt{RenderGraph::setElementSource}), so the number of
+elements changes without rebuilding the graph; an index past the resources is a contract
+violation. An app chooses them from its state, e.g. with @racket[collect]:
+
+@(zgal-example
+  (string-append
+   "(compute-material Sum (workgroup 64)\n"
+   "  (bindings (sources (array (buffer-array uint))) (total (buffer-array uint)))\n"
+   "  (compute (when (= globalInvocationId.x 0)\n"
+   "    (write! (at total 0) (sum ([i (range 0 (array-length sources))]) (at (at sources i) 0))))))\n"
+   "(graph Sums\n"
+   "  (input shown (per-frame (data uint)))\n"
+   "  (buffer a uint 1 #:frames shared)\n"
+   "  (buffer b uint 1 #:frames shared)\n"
+   "  (buffer total uint 1 #:frames shared)\n"
+   "  (clear fillA a #:value 1)\n"
+   "  (clear fillB b #:value 10)\n"
+   "  (material summing Sum (sources (a b) #:select shown) total #:invocations (1))\n"
+   "  (dispatch run summing))\n"
+   "(app Toggles\n"
+   "  (state (showA bool #t) (showB bool #f))\n"
+   "  (on (key-pressed a) (with state #:showA (not state.showA)))\n"
+   "  (on (key-pressed b) (with state #:showB (not state.showB)))\n"
+   "  (run Sums (shown (collect ([i (range (uint 0) 2)]) i\n"
+   "                     #:when (if (= i 0) state.showA state.showB)))))\n")
+  #:show '("example.zgal.h")
+  #:from #rx"elements_summing_sources" #:to #rx"setElementSource")
+
+Its options are
 @itemlist[
  @item{@tt{#:push ((field expression) ...)}: a value for every push constant, except those every
        node using the material gives itself (@tt{#:push} on dispatches and draws);}

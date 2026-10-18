@@ -423,7 +423,8 @@ public: // Resources
 public: // Descriptor entries for graph resources
     // Entries of the universal descriptor set for a resource, one per frame, kept up to date as the
     // graph creates and recreates its images and buffers. Give them to materials (MaterialBinding):
-    // a node using the material then declares the matching use automatically.
+    // a node using the material then declares the matching use automatically. A resource the graph
+    // creates gets the usage its entries need.
     FrameBinding<DescriptorEntry> sampledEntry(ImageId image) {
         imageRecord(image);
         return graphEntry(true, image.index, DescriptorType::SampledImage);
@@ -437,6 +438,18 @@ public: // Descriptor entries for graph resources
     FrameBinding<DescriptorEntry> storageBufferEntry(BufferId buffer) {
         bufferRecord(buffer);
         return graphEntry(false, buffer.index, DescriptorType::StorageBuffer);
+    }
+
+    // Elements of a descriptor array chosen each frame, e.g. from what an application shows: the
+    // function runs at the start of every frame, before the graph plans it, and when what it
+    // returns differs from the array's elements the array takes them (DescriptorArray::setElements),
+    // and nodes using the array declare their new uses. The function must outlive the graph.
+    using ElementSource = std::function<std::vector<FrameBinding<DescriptorEntry>>(const FrameContext&)>;
+    void setElementSource(Handle<DescriptorArray> array, ElementSource source) {
+        if (!array || !source) {
+            contractViolation("setElementSource needs an array and a function");
+        }
+        elementSources_.push_back({std::move(array), std::move(source)});
     }
 
 public: // Surface
@@ -519,6 +532,14 @@ public: // Compiling and running
             auto& record = nodes_[node];
             if (record.node->kind() != NodeKind::Cpu) {
                 TRY(record.node->prepareFrame(frameContext).withContext("preparing node '" + record.name + "'"));
+            }
+            // Descriptor arrays whose elements grew need larger buffers of indices
+            for (const auto& material : record.materials) {
+                for (const auto& binding : material->bindings()) {
+                    if (binding.descriptorArray) {
+                        TRY(binding.descriptorArray->reserve(frame).withContext("growing an array of node '" + record.name + "'"));
+                    }
+                }
             }
         }
 
@@ -718,6 +739,8 @@ private:
         Access access;
         VkPipelineStageFlags2 shaderStages;
         bool discard;
+        // The material whose binding declared it (NodeBuilder::uses), if one did
+        const Material* material = nullptr;
     };
 
     struct NodeRecord {
@@ -731,6 +754,9 @@ private:
         std::vector<NodeUse> uses;
         std::optional<RenderTarget> target;
         std::vector<Handle<Material>> materials;
+        // Per material: the versions of its descriptor arrays when its uses were declared, so
+        // they're declared again when an array's elements change
+        std::vector<uint64_t> arrayVersions;
     };
 
     struct ImageRecord {
@@ -926,6 +952,55 @@ private:
         }
     }
 
+    // The sum of the versions of a material's descriptor arrays (each only grows)
+    static uint64_t arrayVersion(const Material& material) {
+        uint64_t version = 0;
+        for (const auto& binding : material.bindings()) {
+            if (binding.descriptorArray) {
+                version += binding.descriptorArray->version();
+            }
+        }
+        return version;
+    }
+
+    // Declares node's uses of material's resources, as its bindings declare them (an array's
+    // elements, not its buffer of indices, which only the CPU writes)
+    void declareMaterialUses(uint32_t node, const Handle<Material>& material) {
+        auto& record = nodes_[node];
+        const auto& bindings = material->bindings();
+        for (size_t i = 0; i < bindings.size(); ++i) {
+            const VkPipelineStageFlags2 stages = bindings[i].stages ? bindings[i].stages : material->defaultStages();
+            std::vector<FrameBinding<DescriptorEntry>> entries{bindings[i].entry};
+            if (bindings[i].descriptorArray) {
+                entries = bindings[i].descriptorArray->elements();
+            }
+            for (const auto& entry : entries) {
+                auto resource = resolveBinding(MaterialBinding{entry, bindings[i].access, stages}, record.name, i);
+                if (resource) {
+                    nodes_[node].uses.push_back({resource->first, resource->second, bindings[i].access, stages, false, material.get()});
+                }
+            }
+        }
+        structureChanged();
+    }
+
+    // Declares again the uses of materials whose descriptor arrays' elements changed
+    void refreshArrayUses() {
+        for (uint32_t n = 0; n < nodes_.size(); ++n) {
+            auto& record = nodes_[n];
+            for (size_t m = 0; m < record.materials.size(); ++m) {
+                const uint64_t version = arrayVersion(*record.materials[m]);
+                if (version == record.arrayVersions[m]) {
+                    continue;
+                }
+                const Material* material = record.materials[m].get();
+                std::erase_if(record.uses, [material](const NodeUse& use) { return use.material == material; });
+                declareMaterialUses(n, record.materials[m]);
+                nodes_[n].arrayVersions[m] = version;
+            }
+        }
+    }
+
     // Creates (or recreates) graph-owned resources whose usage or size changed. If creating one
     // fails, the next call tries again.
     Result<void> prepare() {
@@ -939,9 +1014,17 @@ private:
         } else if (headlessSurfaceExtent_) {
             surfaceExtent_ = *headlessSurfaceExtent_;
         }
+        const FrameContext frame{*context_, *this, context_->currentFrame(), context_->frameNumber(), surfaceExtent_};
+        // Arrays' elements chosen each frame, then the uses of the arrays that changed
+        for (auto& [array, source] : elementSources_) {
+            auto elements = source(frame);
+            if (elements != array->elements()) {
+                array->setElements(std::move(elements));
+            }
+        }
+        refreshArrayUses();
         // Buffers sized each frame
         bool resized = false;
-        const FrameContext frame{*context_, *this, context_->currentFrame(), context_->frameNumber(), surfaceExtent_};
         for (auto& record : buffers_) {
             if (record->sizeSource) {
                 record->size = record->sizeSource(frame);
@@ -1167,6 +1250,15 @@ private:
             if (entries.image == image && entries.index == index && entries.type == type) {
                 return entries.collection;
             }
+        }
+        // A created resource gets the usage its entries describe it with, though no node may use
+        // it through them yet (e.g. a descriptor array's elements, which can change)
+        if (image && images_[index]->kind == ImageKind::Created) {
+            images_[index]->extraUsage |= type == DescriptorType::SampledImage ? VK_IMAGE_USAGE_SAMPLED_BIT : VK_IMAGE_USAGE_STORAGE_BIT;
+            structureChanged();
+        } else if (!image && buffers_[index]->kind == BufferKind::Created) {
+            buffers_[index]->extraUsage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            structureChanged();
         }
         auto collection = context_->resources().create<PerFrameHandles<DescriptorEntry>>(*context_, [](uint32_t) {
             return Handle<DescriptorEntry>();
@@ -1638,6 +1730,11 @@ private:
     std::vector<std::unique_ptr<BufferRecord>> buffers_;
     std::vector<std::pair<uint32_t, uint32_t>> dependencies_;
     std::vector<GraphEntries> graphEntries_;
+    struct ElementSourceRecord {
+        Handle<DescriptorArray> array;
+        ElementSource source;
+    };
+    std::vector<ElementSourceRecord> elementSources_;
     // Resources imported automatically for materials' per-frame entries, by entry collection
     std::map<const void*, std::pair<bool, uint32_t>> entryImports_;
 
@@ -1725,24 +1822,9 @@ inline NodeBuilder& NodeBuilder::uses(Handle<Material> material) {
     if (std::find(record.materials.begin(), record.materials.end(), material) != record.materials.end()) {
         return *this;
     }
-    // The material's resources, as its bindings declare them
-    const auto& bindings = material->bindings();
-    for (size_t i = 0; i < bindings.size(); ++i) {
-        const VkPipelineStageFlags2 stages = bindings[i].stages ? bindings[i].stages : material->defaultStages();
-        // An array's elements, not its buffer of indices (which only the CPU writes)
-        std::vector<FrameBinding<DescriptorEntry>> entries{bindings[i].entry};
-        if (bindings[i].descriptorArray) {
-            entries = bindings[i].descriptorArray->elements();
-        }
-        for (const auto& entry : entries) {
-            auto resource = graph_->resolveBinding(MaterialBinding{entry, bindings[i].access, stages}, record.name, i);
-            if (resource) {
-                graph_->nodes_[node_].uses.push_back({resource->first, resource->second, bindings[i].access, stages, false});
-            }
-        }
-    }
+    graph_->declareMaterialUses(node_, material);
+    graph_->nodes_[node_].arrayVersions.push_back(RenderGraph::arrayVersion(*material));
     graph_->nodes_[node_].materials.push_back(std::move(material));
-    graph_->structureChanged();
     return *this;
 }
 

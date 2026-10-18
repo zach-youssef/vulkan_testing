@@ -186,7 +186,9 @@ int main() { return exitStatus(runApp()); }            // prints the error
   For a set of entries a shader chooses between (e.g. textures), `DescriptorArray::create(ctx,
   {entry, ...})` keeps their indices in a small buffer per frame (the count, then the indices) and
   `MaterialBinding::array(array, access)` pushes its index; shaders index the universal arrays with
-  `nonuniformEXT`, and a node using the material uses every element.
+  `nonuniformEXT`, and a node using the material uses every element. `array->setElements(...)`
+  changes them (any number; buffers grow, and graphs declare the new uses before their next frame),
+  and `graph.setElementSource(array, fn)` chooses them each frame.
   Give every `BINDLESS_BUFFER` in a shader the same qualifiers: MoltenVK can't alias a `readonly`
   block with a writable one (pipeline creation fails).
 - **Declare every binding's access accurately.** The graph synchronizes only on declared accesses,
@@ -220,7 +222,7 @@ int main() { return exitStatus(runApp()); }            // prints the error
   from the declared uses. A buffer's size can be a function of the frame (`createBuffer(name, mode,
   [](const FrameContext&) { return bytes; })`), computed at the start of every frame: when it
   changes the graph recreates the buffer, discarding its contents, and its entries follow. `graph.sampledEntry(id)`, `storageEntry(id)` and `storageBufferEntry(id)`
-  give materials entries for graph resources that follow recreation.
+  give materials entries for graph resources that follow recreation (and give them the usage).
 - **Nodes** declare what they use. `RenderablesNode`, `DispatchNode` and `ReadbackNode` cover common
   cases. GPU-driven work reads commands shaders wrote: `DispatchNode(material, BufferOffset{buffer,
   offset})` dispatches indirectly, and `IndirectDrawNode` draws `VkDraw(Indexed)IndirectCommand`s
@@ -300,7 +302,8 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   checked against the device when shaders load) and derivatives (`fwidth`, fragment only).
 - `(name (array texture))` (or of storage images or buffers) binds any number of entries:
   bodies choose with `(at name i)` and count with `(array-length name)`, and graphs give a list of
-  resources, `(name (a b c))`, or `(import-images name #:resting ...)` images C++ gives.
+  resources, `(name (a b c))`, or `(import-images name #:resting ...)` images C++ gives;
+  `(name (a b c) #:select picks)` chooses elements each frame by a `(per-frame (data uint))` input.
 - `uint8`, `int8`, `uint16` and `int16` pack buffers and shared memory. Bodies read them widened to
   `uint`/`int` and narrow explicitly to write them (`(uint8 x)`). A material using them needs device
   features: add its (or its graph's) `requiredFeatures()` to the context's features.

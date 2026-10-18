@@ -712,17 +712,19 @@
     ;; Bindings: (binding resource), or binding alone when the resource has its name
     (define given (make-hash))
     (for ([b-stx (in-list (drop args 2))])
-      (define-values (binding-stx resource-stx)
+      (define-values (binding-stx resource-stx select-stx)
         (match (syntax->list b-stx)
-          [(list b r) (values b r)]
-          [#f #:when (symbol? (syntax-e b-stx)) (values b-stx b-stx)]
-          [_ (zgal-error 'malformed b-stx "expected a binding (binding resource), or a binding named like its resource")]))
+          [(list b r) (values b r #f)]
+          [(list b r kw indices) #:when (eq? (syntax-e kw) '#:select) (values b r indices)]
+          [#f #:when (symbol? (syntax-e b-stx)) (values b-stx b-stx #f)]
+          [_ (zgal-error 'malformed b-stx "expected a binding (binding resource), (binding resources #:select indices) for an array, or a binding named like its resource")]))
       (define b-name (format "~a" (syntax-e binding-stx)))
       (define b (or (for/first ([b (in-list (material-bindings m))] #:when (string=? (binding-name b) b-name)) b)
                     (zgal-error 'unknown-name binding-stx "material ~a has no binding ~a" (material-name m) b-name)))
       (when (hash-ref given b-name #f)
         (zgal-error 'duplicate-name binding-stx "binding ~a is given twice" b-name))
-      (hash-set! given b-name (check-binding b resource-stx)))
+      (define resource (check-binding b resource-stx))
+      (hash-set! given b-name (if select-stx (g-selection resource (check-selection b select-stx)) resource)))
     (define bindings
       (for/list ([b (in-list (material-bindings m))])
         (cons b (or (hash-ref given (binding-name b) #f)
@@ -802,6 +804,17 @@
        (symbol->string (syntax-e stx))]
       [else (zgal-error 'binding-mismatch stx "binding ~a is an array, so it takes a list of resources, e.g. (~a (a b)), or imported images, not ~a"
                         (binding-name b) (binding-name b) (show stx))]))
+
+  ;; The per-frame data input of uints an array binding b's #:select names: its name
+  (define (check-selection b stx)
+    (unless (eq? (binding-kind b) 'array)
+      (zgal-error 'binding-mismatch stx "binding ~a isn't an array, so it has no elements to #:select" (binding-name b)))
+    (define r (syntax-e stx))
+    (define e (and (symbol? r) (hash-ref env (symbol->string r) #f)))
+    (unless (and e (eq? (entry-kind e) 'per-frame-data) (equal? (entry-type e) (scalar-t 'uint)))
+      (zgal-error 'binding-mismatch stx "binding ~a's #:select is the elements' indices, a per-frame data input of uints ((input ~a (per-frame (data uint)))), not ~a"
+                  (binding-name b) (if (symbol? r) r "indices") (show stx)))
+    (symbol->string r))
 
   ;; array: the array binding b is an element of, or #f
   (define (check-resource b stx #:array [array #f])

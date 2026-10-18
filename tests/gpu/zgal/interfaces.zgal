@@ -396,6 +396,24 @@
   (readback readEvens evens)
   (readback readOdds odds))
 
+;; Arrays whose elements are chosen each frame, any number of them
+(graph SelectGraph
+  (input picks (per-frame (data uint)))
+  (import-images layers #:resting shader-read-only)
+  (buffer one uint 1 #:frames shared)
+  (buffer two uint 1 #:frames shared)
+  (buffer three uint 1 #:frames shared)
+  (buffer evens uint 4 #:frames shared)
+  (buffer odds uint 4 #:frames shared)
+  (buffer gathered uint 8 #:frames shared)
+  (clear fillOne one #:value 5)
+  (clear fillTwo two #:value 9)
+  (clear fillThree three #:value 7)
+  (material gather Gather (layers layers #:select picks) (sources (one two three) #:select picks) (halves (evens odds)) gathered
+            #:invocations ((count picks)))
+  (dispatch run gather)
+  (readback readGathered gathered))
+
 ;; Phases: a graph computes seeds once and reads them back; the app keeps them in its state, then
 ;; runs a graph uploading them whenever they change (and an extern function grows them)
 (compute-material Seed

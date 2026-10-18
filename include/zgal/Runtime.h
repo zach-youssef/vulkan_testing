@@ -261,6 +261,25 @@ private:
     uint64_t copies_ = 0;
 };
 
+// An array binding's elements chosen each frame (RenderGraph::setElementSource) from elements by the
+// indices in a per-frame data input. An index past the elements is a contract violation.
+inline RenderGraph::ElementSource selectElements(std::vector<FrameBinding<DescriptorEntry>> elements,
+                                                 std::shared_ptr<FrameCache<Data<uint32_t>>> indices, std::string what) {
+    return [elements = std::move(elements), indices = std::move(indices), what = std::move(what)](const FrameContext& context) {
+        const Data<uint32_t>& chosen = indices->get(frameInfo(context));
+        std::vector<FrameBinding<DescriptorEntry>> selected;
+        selected.reserve(chosen.size());
+        for (size_t i = 0; i < chosen.size(); ++i) {
+            if (chosen[i] >= elements.size()) {
+                contractViolation(what + " selects element " + std::to_string(chosen[i]) + ", but it has "
+                                  + std::to_string(elements.size()));
+            }
+            selected.push_back(elements[chosen[i]]);
+        }
+        return selected;
+    };
+}
+
 // What a graph's material does each frame before recording: e.g. writing its uniforms
 using Updates = std::vector<std::function<void(const FrameInfo&)>>;
 

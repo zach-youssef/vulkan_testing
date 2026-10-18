@@ -543,7 +543,8 @@
     ;; The uniforms it binds (alone or in arrays) are written before it records
     (define bound
       (remove-duplicates
-       (append-map (λ (pair) (match (cdr pair) [(list rs ...) rs] [r (list r)])) (g-material-bindings mi))))
+       (append-map (λ (pair) (match (cdr pair) [(g-selection (list rs ...) _) rs] [(g-selection r _) (list r)] [(list rs ...) rs] [r (list r)]))
+                   (g-material-bindings mi))))
     (define updates
       (for/list ([r (in-list bound)] #:when (eq? (entry-kind (hash-ref env r)) 'uniform))
         (format "[uniform = uniform_~a](const zgal::FrameInfo& frame) { uniform->update(frame); }" r)))
@@ -568,22 +569,32 @@
       (emit! w (format "        if (~a) {" (build-expr created-if (scalar-t 'bool))) #:at (g-material-loc mi)))
     ;; Arrays' entries
     (for ([pair (in-list (g-material-bindings mi))] #:when (eq? (binding-kind (car pair)) 'array))
-      (match-define (cons b resource) pair)
+      (match-define (cons b given) pair)
       (define kind (binding-resource-kind b))
       (define variable (format "array_~a_~a" instance (binding-name b)))
+      (define elements (format "elements_~a_~a" instance (binding-name b)))
+      (define-values (resource indices) (match given [(g-selection r i) (values r i)] [r (values r #f)]))
+      (define listed (and (list? resource) (string-join (for/list ([r (in-list resource)]) (entry-of kind r)) ", ")))
       (cond
-        [(list? resource)
-         (line (format "        TRY_ASSIGN(auto ~a, DescriptorArray::create(context, {~a}));" variable
-                       (string-join (for/list ([r (in-list resource)]) (entry-of kind r)) ", ")))]
+        [(and listed (not indices))
+         (line (format "        TRY_ASSIGN(auto ~a, DescriptorArray::create(context, {~a}));" variable listed))]
+        [listed
+         (line (format "        std::vector<FrameBinding<DescriptorEntry>> ~a{~a};" elements listed))]
         [else
          ;; Imported images: as many as C++ gives
-         (line (format "        std::vector<FrameBinding<DescriptorEntry>> elements_~a_~a;" instance (binding-name b)))
+         (line (format "        std::vector<FrameBinding<DescriptorEntry>> ~a;" elements))
          (line (format "        for (const ImageId image : images_~a) {" resource))
-         (line (format "            elements_~a_~a.push_back(graph.~a(image));" instance (binding-name b)
-                       (if (eq? kind 'texture) "sampledEntry" "storageEntry")))
-         (line "        }")
-         (line (format "        TRY_ASSIGN(auto ~a, DescriptorArray::create(context, std::move(elements_~a_~a)));"
-                       variable instance (binding-name b)))]))
+         (line (format "            ~a.push_back(graph.~a(image));" elements (if (eq? kind 'texture) "sampledEntry" "storageEntry")))
+         (line "        }")])
+      (cond
+        [indices
+         ;; Chosen each frame by the indices, so it starts with none
+         (line (format "        TRY_ASSIGN(auto ~a, DescriptorArray::create(context, {}));" variable))
+         (line (format "        graph.setElementSource(~a, zgal::selectElements(std::move(~a), data_~a, ~a));" variable elements indices
+                       (cpp-string (format "~a's material ~a's binding ~a" name instance (binding-name b)))))]
+        [(not listed)
+         (line (format "        TRY_ASSIGN(auto ~a, DescriptorArray::create(context, std::move(~a)));" variable elements))]
+        [else (void)]))
     (define target
       (for/first ([n (in-list nodes)] #:when (and (equal? (g-node-material n) instance) (g-node-target n)))
         (g-node-target n)))

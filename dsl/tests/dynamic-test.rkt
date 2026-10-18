@@ -61,6 +61,26 @@
   (check-zgal-error (string-replace graph "(layers pictures)" "(layers (a))") 'binding-mismatch
                     "binding layers is an array of texture, so it takes an image, but a is a buffer"))
 
+(test-case "Graphs choose array bindings' elements each frame with #:select"
+  (define graph
+    (string-append
+     gather
+     "(graph G (input picks (per-frame (data uint))) (import-images pictures #:resting shader-read-only)\n"
+     "  (buffer a uint 1 #:frames shared) (buffer b uint 1 #:frames shared)\n"
+     "  (material gather Gather (layers pictures #:select picks) (sources (a b) #:select picks) (sums a) #:invocations ((count picks)))\n"
+     "  (dispatch run gather))\n"))
+  (define h (named (compile-text graph) ".zgal.h"))
+  (check-true (string-contains? h "std::vector<FrameBinding<DescriptorEntry>> elements_gather_sources{graph.storageBufferEntry(buffer_a), graph.storageBufferEntry(buffer_b)};"))
+  (check-true (string-contains? h "TRY_ASSIGN(auto array_gather_sources, DescriptorArray::create(context, {}));"))
+  (check-true (string-contains? h "graph.setElementSource(array_gather_sources, zgal::selectElements(std::move(elements_gather_sources), data_picks, \"G's material gather's binding sources\"));"))
+  (check-true (string-contains? h "graph.setElementSource(array_gather_layers, zgal::selectElements(std::move(elements_gather_layers), data_picks,"))
+  (check-zgal-error (string-replace graph "(sums a)" "(sums a #:select picks)") 'binding-mismatch
+                    "binding sums isn't an array, so it has no elements to #:select")
+  (check-zgal-error (string-replace graph "(input picks (per-frame (data uint)))" "(input picks (per-frame (data int)))") 'binding-mismatch
+                    "binding layers's #:select is the elements' indices, a per-frame data input of uints ((input picks (per-frame (data uint)))), not picks")
+  (check-zgal-error (string-replace graph "(sources (a b) #:select picks)" "(sources (a b) #:pick picks)") 'malformed
+                    "expected a binding (binding resource), (binding resources #:select indices) for an array, or a binding named like its resource"))
+
 (test-case "Arrays hold textures, storage images and buffers, and only they have a length"
   (check-zgal-error "(compute-material C (workgroup 1) (bindings (s (array sampler))) (compute))" 'bad-binding
                     "binding s: an array holds textures, storage images or buffers, not samplers")

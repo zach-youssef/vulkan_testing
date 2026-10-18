@@ -1000,6 +1000,37 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL array bindings choose textures and buffers per 
         ctx.waitIdleAll();
     }
     {
+        // Elements chosen each frame: any number of them, in any order, repeated
+        std::vector<FrameBinding<Image>> layers;
+        for (uint32_t width : {2u, 4u, 6u}) {
+            layers.emplace_back(Image::createEmptyRGBA(ctx, width, 1).value());
+        }
+        std::vector<uint32_t> picks{1};
+        RenderGraph graph(ctx);
+        const SelectGraph select = SelectGraph::build(ctx, graph, SelectGraph::Inputs{
+            .picks = [&picks](const zgal::FrameInfo&) { return zgal::Data<uint32_t>(picks); },
+            .layers = layers,
+        }).value();
+        auto gathered = [&]() {
+            auto values = select.readGatheredContents(graph).value();
+            values.resize(picks.size());
+            return values;
+        };
+        graph.execute().value();
+        CHECK(gathered() == std::vector<uint32_t>{9004});
+        picks = {2, 0, 0, 1};
+        for (uint32_t frame = 0; frame <= ctx.framesInFlight(); ++frame) {
+            graph.execute().value();
+            CHECK(gathered() == std::vector<uint32_t>{7006, 5002, 5002, 9004});
+        }
+        picks = {};
+        graph.execute().value();
+        picks = {3};
+        CHECK_THROWS_WITH_AS((void)graph.execute(), doctest::Contains("SelectGraph's material gather's binding layers selects element 3, but it has 3"),
+                             ContractViolation);
+        ctx.waitIdleAll();
+    }
+    {
         // Every image must be given
         RenderGraph graph(ctx);
         CHECK_THROWS_WITH_AS((void)GatherGraph::build(ctx, graph, GatherGraph::Inputs{.layers = {FrameBinding<Image>()}}),
