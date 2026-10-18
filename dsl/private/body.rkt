@@ -975,9 +975,11 @@
 ;; Inlining
 
 ;; Functions taking storage images are inlined where they're called: Metal (through MoltenVK)
-;; can't pass storage images to functions
+;; can't pass storage images to functions. So are materials' functions, so what their shaders do to
+;; bindings through them is inferred and checked like the rest of their bodies.
 (define (inline-function? f)
-  (ormap (λ (p) (equal? (cdr p) (opaque-t 'image2D))) (function-decl-params f)))
+  (or (material-function-decl? f)
+      (ormap (λ (p) (equal? (cdr p) (opaque-t 'image2D))) (function-decl-params f))))
 
 ;; f's body in place of a call with typed args: image arguments are substituted for their
 ;; parameters, other arguments bound to fresh locals, and the body's locals respelled in the

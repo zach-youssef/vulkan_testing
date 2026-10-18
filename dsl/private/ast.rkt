@@ -109,6 +109,9 @@
 ;; A function written in GLSL, in the file at path (as given, relative to the working directory),
 ;; which shaders include. It has no body (#f), and no C++ version.
 (struct glsl-function-decl function-decl (path) #:transparent)
+;; A function of a material (named material), which reads its bindings and push constants: it's
+;; inlined where its shaders call it, so it has no GLSL or C++ version of its own
+(struct material-function-decl function-decl (material) #:transparent)
 
 ;; source: the .zgal file's path. Declarations are in file order.
 ;; main: the main-decl generating a program's main, or #f.

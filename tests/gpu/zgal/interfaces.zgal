@@ -866,3 +866,22 @@
       (when halfway (resize! 4 1))
       (if halfway (with state #:resizedAt frameNumber) state)))
   (run ScriptGraph (withCapture capture) (marked (min (+ frameNumber 1) 4))))
+
+;; A material's functions read its bindings and push constants
+(compute-material ScaleWith
+  (workgroup 64)
+  (bindings (sources (buffer-array uint)) (scaled (buffer-array uint)))
+  (push (factor uint) (total uint))
+  (define (scaledAt [i : uint]) : uint (* (at sources i) factor))
+  (define (put [i : uint]) : void (write! (at scaled i) (+ (scaledAt i) (scaledAt 0))))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i total) (put i)))))
+
+(graph ScaleGraph
+  (input values (data uint))
+  (upload sources values)
+  (buffer scaled uint 4 #:frames shared)
+  (material scaling ScaleWith sources scaled #:push ((factor 3) (total 4)) #:invocations (4))
+  (dispatch run scaling)
+  (readback readScaled scaled))

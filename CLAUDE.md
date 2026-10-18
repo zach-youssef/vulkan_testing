@@ -343,7 +343,8 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   need `#:load load`. Prefer loops to `extern` nodes where ZGAL has the nodes.
 - Top-level `(define (f [x : vec3]) : vec3 ...)` functions and `(define name value)` constants are
   shared by the shaders, and those without textures, images or effects also compile to C++
-  (`sunDirection` in the scene example), so the CPU computes the same thing.
+  (`sunDirection` in the scene example), so the CPU computes the same thing. A material's own
+  `(define (f ...) ...)` clauses read its bindings and push constants, and are inlined in its shaders.
 - GLSL bodies (a `(shaders "x.frag" ...)` clause) still work: they use bindings and push constants
   through accessors, `name()`, and vertex inputs as `inName`. Prefer ZGAL bodies.
 - A `(graph Name ...)` declares parameters and inputs, samplers, uniforms (per-frame buffers the

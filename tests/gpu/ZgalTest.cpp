@@ -1038,6 +1038,17 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL array bindings choose textures and buffers per 
     }
 }
 
+TEST_CASE_FIXTURE(GpuTest, "ZGAL materials' functions read their bindings and push constants") {
+    auto& ctx = context();
+    {
+        RenderGraph graph(ctx);
+        const ScaleGraph scale = ScaleGraph::build(ctx, graph, ScaleGraph::Inputs{.values = {1, 2, 5, 7}}).value();
+        graph.execute().value();
+        CHECK(scale.readScaledContents(graph).value() == std::vector<uint32_t>{6, 9, 18, 24});
+        ctx.waitIdleAll();
+    }
+}
+
 TEST_CASE_FIXTURE(GpuTest, "ZGAL apps run phases: graphs chosen by state, once nodes, readback events and data uploads") {
     auto& ctx = context();
     {

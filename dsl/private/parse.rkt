@@ -208,9 +208,11 @@
   (define (parse-material stx items kind)
     (define form-name (if (eq? kind 'graphics) "graphics-material" "compute-material"))
     (match items
-      [(list* _ name-stx clause-stxs)
+      [(list* _ name-stx all-clause-stxs)
        (define name (parse-name name-stx "the material's name"))
        (top-level name name-stx)
+       ;; Its functions, (define ...) clauses, can repeat
+       (define-values (define-stxs clause-stxs) (partition (λ (c) (eq? (head-symbol c) 'define)) all-clause-stxs))
        (define clauses (parse-clauses clause-stxs kind form-name))
        (define (clause key) (hash-ref clauses key #f))
        (define (require-clause key)
@@ -256,10 +258,24 @@
                  (declare! (field-name f) s))
                fields)
              '()))
+       ;; Its functions, which see its bindings and push constants, then its shaders, which see them
+       (define scope-functions (hash-copy functions))
+       (for ([d (in-list define-stxs)])
+         (match (syntax->list d)
+           [(list* _ signature-stx rest) #:when (and (syntax->list signature-stx) (pair? (syntax->list signature-stx)))
+            (define f-name-stx (car (syntax->list signature-stx)))
+            (define f-name (parse-called-name f-name-stx "the function's name"))
+            (when (hash-ref functions f-name #f)
+              (zgal-error 'duplicate-name f-name-stx "~a is already a function of the file; material ~a's functions need their own names" f-name name))
+            (declare! f-name f-name-stx)
+            (define decl (check-function d signature-stx rest f-name-stx #:scope scope-functions
+                                         #:globals (material-globals bindings push) #:material name))
+            (hash-set! scope-functions f-name decl)]
+           [_ (zgal-error 'malformed d "a material's (define ...) is a function, (define (name [parameter : type] ...) : result-type body ...), which its shaders call")]))
        (define zgal-shaders
          (for/list ([stage (in-list (if (eq? kind 'graphics) '(vertex fragment) '(compute)))]
                     #:when (clause stage))
-           (parse-stage-body (clause stage) stage name bindings push input varyings outputs shared)))
+           (parse-stage-body (clause stage) stage name bindings push input varyings outputs shared scope-functions)))
        (define shaders (append glsl-shaders zgal-shaders))
        (check-stages stx kind name shaders)
        (define m (material kind name shaders (infer-accesses bindings shaders kind) push input varyings outputs
@@ -352,19 +368,18 @@
                  [(constant-decl _ _ _ _ uses _) uses]))))
     (sort (set->list seen) < #:key (λ (n) (hash-ref declaration-order n))))
 
-  (define (parse-define stx items)
-    (match items
-      ;; A function
-      [(list* _ signature-stx rest) #:when (syntax->list signature-stx)
-       (match-define (cons name-stx param-stxs) (syntax->list signature-stx))
+  ;; A function's declaration, checked: (define (name [parameter : type] ...) : result body ...).
+  ;; A material's functions (material: its name) see its bindings and push constants (globals) and
+  ;; earlier functions of it (scope: the functions bodies see), and are inlined where they're called.
+  (define (check-function stx signature-stx rest name-stx #:scope [scope functions] #:globals [globals (hash)] #:material [material #f])
+       (define param-stxs (cdr (syntax->list signature-stx)))
        (define name (parse-called-name name-stx "the function's name"))
-       (top-level name name-stx)
        (define-values (result-type body-stxs)
          (match rest
            [(list* colon result-stx body) #:when (and (eq? (syntax-e colon) ':) (pair? body))
             (values (parse-value-type result-stx #:void? #t) body)]
            [_ (zgal-error 'malformed stx "expected (define (~a [parameter : type] ...) : result-type body ...)" name)]))
-       (define ctx (make-context structs functions constants (hash) 'function))
+       (define ctx (make-context structs scope constants globals 'function))
        (define param-names (make-namespace (format "as a parameter of ~a" name)))
        (define-values (params locals)
          (for/fold ([params '()] [locals (hash)] #:result (values (reverse params) locals))
@@ -386,14 +401,25 @@
                  b)
                (coerce (settle-unless-literal b result-type) result-type stx (format "~a's body" name)))))
        (define uses (uses-closure (context-uses ctx)))
-       (define cpu? (and (not (void-t? result-type))
-                         (not (ormap (λ (p) (opaque-t? (cdr p))) params))
-                         (cpu-expression? body cpu-functions cpu-constants)))
-       (when cpu? (set-add! cpu-functions name))
-       (hash-set! summaries name (parameter-accesses params body summaries))
-       (define decl (function-decl name params result-type body cpu? uses (stx->loc stx)))
-       (hash-set! declaration-order name (hash-count declaration-order))
-       (hash-set! functions name decl)
+       (cond
+         [material (material-function-decl name params result-type body #f uses (stx->loc stx) material)]
+         [else
+          (define cpu? (and (not (void-t? result-type))
+                            (not (ormap (λ (p) (opaque-t? (cdr p))) params))
+                            (cpu-expression? body cpu-functions cpu-constants)))
+          (when cpu? (set-add! cpu-functions name))
+          (hash-set! summaries name (parameter-accesses params body summaries))
+          (function-decl name params result-type body cpu? uses (stx->loc stx))]))
+
+  (define (parse-define stx items)
+    (match items
+      ;; A function
+      [(list* _ signature-stx rest) #:when (and (syntax->list signature-stx) (pair? (syntax->list signature-stx)))
+       (define name-stx (car (syntax->list signature-stx)))
+       (top-level (parse-called-name name-stx "the function's name") name-stx)
+       (define decl (check-function stx signature-stx rest name-stx))
+       (hash-set! declaration-order (function-decl-name decl) (hash-count declaration-order))
+       (hash-set! functions (function-decl-name decl) decl)
        decl]
       ;; A constant
       [(list _ name-stx value-stx) #:when (symbol? (syntax-e name-stx))
@@ -452,14 +478,8 @@
       [(or (t-op _ args _ _) (t-construct args _ _) (t-call _ args _ _)) (andmap constant-expression? args)]
       [_ #f]))
 
-  ;; A stage's body: checked with the material's names in scope
-  (define (parse-stage-body stx stage material-name bindings push input varyings outputs shared)
-    (define body-stxs (cdr (syntax->list stx)))
-    (define globals (make-hash))
-    (define (global! name g where)
-      (when (hash-ref globals name #f)
-        (zgal-error 'duplicate-name where "~a names two things in material ~a's ~a shader" name material-name stage))
-      (hash-set! globals name g))
+  ;; The names of a material's bindings and push constants, which its functions and shaders see
+  (define (material-globals bindings push)
     (define (binding-type b)
       (case (binding-kind b)
         [(texture) (opaque-t 'texture2D)]
@@ -468,10 +488,22 @@
         [(buffer) (binding-element b)]
         [(buffer-array) (runtime-array-t (binding-element b))]
         [(array) (binding-array-t (binding-type (binding-element b)))]))
-    (for ([b (in-list bindings)])
-      (global! (binding-name b) (global 'binding (binding-name b) (binding-name b) (binding-type b) b) stx))
-    (for ([f (in-list push)])
-      (global! (field-name f) (global 'push (field-name f) (field-name f) (field-type f) f) stx))
+    (for/fold ([globals (hash)]) ([g (in-list (append (for/list ([b (in-list bindings)])
+                                                         (global 'binding (binding-name b) (binding-name b) (binding-type b) b))
+                                                       (for/list ([f (in-list push)])
+                                                         (global 'push (field-name f) (field-name f) (field-type f) f))))])
+      (hash-set globals (global-name g) g)))
+
+  ;; A stage's body: checked with the material's names in scope
+  (define (parse-stage-body stx stage material-name bindings push input varyings outputs shared scope-functions)
+    (define body-stxs (cdr (syntax->list stx)))
+    (define globals (make-hash))
+    (define (global! name g where)
+      (when (hash-ref globals name #f)
+        (zgal-error 'duplicate-name where "~a names two things in material ~a's ~a shader" name material-name stage))
+      (hash-set! globals name g))
+    (for ([(n g) (in-hash (material-globals bindings push))])
+      (global! n g stx))
     (when (and (eq? stage 'vertex) input)
       (for ([entry (in-list (vertex-input-attributes input))])
         (define a (cdr entry))
@@ -486,7 +518,7 @@
     (when (eq? stage 'vertex)
       (for ([v (in-list varyings)])
         (global! (varying-name v) (global 'output (varying-name v) (varying-name v) (varying-type v) v) stx)))
-    (define ctx (make-context structs functions constants (for/hash ([(k v) (in-hash globals)]) (values k v)) stage))
+    (define ctx (make-context structs scope-functions constants (for/hash ([(k v) (in-hash globals)]) (values k v)) stage))
     ;; What a stage's results must name
     (define expected
       (case stage

@@ -138,6 +138,49 @@
   (check-regexp-match #rx"ivec2 t_[0-9]+ = clamp" shader)
   (check-equal? (binding-access (binding-named (material-named (program-of text) "C") "img")) 'read-write))
 
+(test-case "Materials' functions read their bindings and push constants, and are inlined"
+  (define material
+    (string-append
+     "(define (halved [x : float]) : float (* x 0.5))\n"
+     "(compute-material Scale (workgroup 64)\n"
+     "  (bindings (sources (buffer-array float)) (results (buffer-array float)))\n"
+     "  (push (factor float) (n uint))\n"
+     "  (define (scaled [i : uint]) : float (halved (* (at sources i) factor)))\n"
+     "  (define (put [i : uint] [v : float]) : void (write! (at results i) (+ v (scaled 0))))\n"
+     "  (compute (let* ([i globalInvocationId.x]) (when (< i n) (put i (scaled i))))))\n"))
+  (define shader (generated material "Scale.comp"))
+  (check-false (regexp-match? #rx"float scaled[(]" shader) "scaled isn't emitted")
+  ;; The file's functions they call are
+  (check-regexp-match #rx"float halved[(]float x[)]" shader)
+  (check-true (string-contains? shader "results()[i_3] = v + halved(sources()[i_4] * factor());"))
+  ;; What shaders do to bindings through them is inferred
+  (define m (material-named (program-of material) "Scale"))
+  (check-equal? (binding-access (binding-named m "sources")) 'read)
+  (check-equal? (binding-access (binding-named m "results")) 'write)
+  ;; They're the material's own: other materials and the file's functions don't see them, and names
+  ;; are its own
+  (check-zgal-error (string-append material "(compute-material Other (workgroup 1) (compute (scaled 0)))")
+                    'unknown-name "scaled isn't a function")
+  (check-zgal-error (string-replace material "(define (scaled" "(define (halved") 'duplicate-name
+                    "halved is already a function of the file; material Scale's functions need their own names")
+  (check-zgal-error (string-replace material "(define (scaled" "(define (factor") 'duplicate-name "factor")
+  ;; Only functions: stage variables are arguments
+  (check-zgal-error (string-replace material "(* (at sources i) factor)" "(* (at sources globalInvocationId.x) factor)")
+                    'unknown-name "functions can't use stage variables")
+  (check-zgal-error (string-replace material "(define (put" "(define put 1.0) (define (put") 'malformed
+                    "a material's (define ...) is a function"))
+
+(test-case "Graphics materials' functions are shared by both stages"
+  (define text
+    (string-append
+     "(graphics-material Tint (bindings (tex texture) (smp sampler)) (push (tint vec4))\n"
+     "  (varyings (uv vec2)) (outputs (color vec4))\n"
+     "  (define (tinted [c : vec4]) : vec4 (* c tint))\n"
+     "  (vertex (results #:position (tinted (vec4 0 0 0 1)) #:uv (vec2 0)))\n"
+     "  (fragment (tinted (sample tex smp uv))))\n"))
+  (check-true (string-contains? (generated text "Tint.vert") "* tint()"))
+  (check-true (string-contains? (generated text "Tint.frag") "* tint()")))
+
 (test-case "Effectful branches and folds lower to statements"
   (define text (string-append
                 "(compute-material C (workgroup 1) (bindings (result (buffer-array float)))\n"

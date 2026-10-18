@@ -377,7 +377,7 @@ vector like @racket[(vec4 1 1 1 1)]) when its file doesn't (@secref["assets"]).
 @subsection{@racket[graphics-material]}
 
 @racketgrammar*[
- #:literals (graphics-material shaders vertex fragment vertex-input bindings push varyings outputs flat noperspective smooth)
+ #:literals (graphics-material shaders vertex fragment vertex-input bindings push varyings outputs define : flat noperspective smooth)
  [graphics-material-form (graphics-material Name graphics-clause ...)]
  [graphics-clause (vertex body ...)
                   (fragment body ...)
@@ -386,11 +386,12 @@ vector like @racket[(vec4 1 1 1 1)]) when its file doesn't (@secref["assets"]).
                   (bindings binding ...)
                   (push (name type) ...)
                   (varyings varying ...)
-                  (outputs (name type) ...)]
+                  (outputs (name type) ...)
+                  (define (name [parameter : type] ...) : result-type body ...+)]
  [varying (name type) (name type flat) (name type noperspective) (name type smooth)]]
 
-A material drawing with a vertex and a fragment shader. Each clause appears at most once, and
-@racket[outputs] is required.
+A material drawing with a vertex and a fragment shader. Each clause but @racket[define] appears at
+most once, and @racket[outputs] is required.
 @itemlist[
  @item{@racket[vertex], @racket[fragment]: the shaders, written in ZGAL (@secref["bodies"]).}
  @item{@racket[shaders]: shaders written in GLSL instead (@secref["glsl"]): paths of @tt{.vert}
@@ -411,6 +412,8 @@ A material drawing with a vertex and a fragment shader. Each clause appears at m
  @item{@racket[outputs]: the fragment shader's colour outputs, one per colour attachment of the
        targets it draws into. Write @racket[(outputs)] for depth-only materials: the number is
        checked against the target's formats when the material is created.}
+ @item{@racket[define]: functions of the material, which its shaders call and which read its
+       bindings and push constants (@secref["material-functions"]).}
 ]
 
 The scene example's lit material uses most of them:
@@ -420,7 +423,7 @@ The scene example's lit material uses most of them:
 @subsection{@racket[compute-material]}
 
 @racketgrammar*[
- #:literals (compute-material compute shaders workgroup bindings push shared)
+ #:literals (compute-material compute shaders workgroup bindings push shared define :)
  [compute-material-form (compute-material Name compute-clause ...)]
  [compute-clause (compute body ...)
                  (shaders glsl-path)
@@ -429,14 +432,15 @@ The scene example's lit material uses most of them:
                  (workgroup x y z)
                  (bindings binding ...)
                  (push (name type) ...)
-                 (shared (name type) ...)]]
+                 (shared (name type) ...)
+                 (define (name [parameter : type] ...) : result-type body ...+)]]
 
 A material dispatching a compute shader: a @racket[compute] clause (in ZGAL) or a @tt{.comp} in
 @racket[shaders] (in GLSL). @racket[workgroup] is required.
 @racket[workgroup] is the shader's local size (omitted dimensions are 1): the generated shader
 declares it, and the C++ class exposes it, with @tt{workgroupsFor(x, y, z)} giving the
 workgroups covering that many invocations for @tt{getDispatchDimensions}. Bindings and push
-constants are as for graphics materials, without stages. @racket[shared] declares workgroup shared
+constants are as for graphics materials, without stages, and so are functions (@racket[define]). @racket[shared] declares workgroup shared
 variables, which a workgroup's invocations share (@secref["shared"]); GLSL bodies use them by name
 too.
 
@@ -832,7 +836,8 @@ GLSL's, with its overloads (scalars and vectors, and a scalar where GLSL takes o
 Functions and constants are declared at the top level and used by any shader (and function)
 declared after them, so functions can't recurse. A function's parameters and result are any type,
 plus @tt{texture2D}, @tt{sampler} and @tt{image2D} parameters and a @tt{void} result for functions
-that only have effects; it can't name bindings or stage variables (pass them). Constants are
+that only have effects; it can't name bindings or stage variables (pass them, or declare it in the
+material: @secref["material-functions"]). Constants are
 computed from literals, other constants, constructors, operators and built-in functions. A constant
 computed only from integer literals (and such constants), like @racket[(define tiles 57)], is used as
 a literal would be: it takes the type its context needs, so @racket[(< i tiles)] compares it with a
@@ -848,6 +853,27 @@ the GPU's precision, and integer arithmetic exactly.
 Metal (through MoltenVK) can't pass storage images to functions, so a function with an
 @tt{image2D} parameter is inlined where it's called, its locals renamed so they can't clash with
 the caller's.
+
+@subsubsection[#:tag "material-functions"]{Materials' functions}
+
+A material's @racket[(define (name [parameter : type] ...) : result-type body ...+)] clauses
+declare functions of its own, which name its bindings and push constants as its shaders do, and
+which its shaders (of every stage) and its later functions call. Like the file's functions they
+can't name stage variables (pass them), and their names are the material's: no binding, push
+constant or file function has them. Other materials don't see them. They're inlined where they're
+called, so what a shader does to bindings through them is inferred like the rest of its body, and
+they have no C++ version.
+
+@(zgal-example
+  (string-append
+   "(compute-material Scale (workgroup 64)\n"
+   "  (bindings (sources (buffer-array float)) (results (buffer-array float)))\n"
+   "  (push (factor float) (n uint))\n"
+   "  (define (scaled [i : uint]) : float (* (at sources i) factor))\n"
+   "  (compute (let* ([i globalInvocationId.x])\n"
+   "    (when (< i n) (write! (at results i) (+ (scaled i) (scaled 0)))))))\n")
+  #:show '("Scale.comp")
+  #:from #rx"^void main" #:to #rx"^}")
 
 @subsubsection[#:tag "extern-glsl"]{Functions written in GLSL}
 
