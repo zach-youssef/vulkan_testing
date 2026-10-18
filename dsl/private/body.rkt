@@ -44,7 +44,7 @@
 (struct t-results (fields loc) #:transparent)                 ; (cons output-name expression)
 (struct t-with (base fields type loc) #:transparent)          ; fields: (cons name expression)
 (struct t-barrier (buffers? loc) #:transparent)               ; a compute shader's workgroup barrier (also ordering buffer writes)
-(struct t-effect (op args loc) #:transparent)                 ; an app's effect: 'print 'set-frames-in-flight 'quit
+(struct t-effect (op args loc) #:transparent)                 ; an app's effect: 'print 'set-frames-in-flight 'resize 'quit
 ;; An atomic operation on a place (as t-write's), giving its previous value. op: 'add 'min 'max 'and
 ;; 'or 'xor 'exchange 'compare-exchange (whose args are the comparand, then the value).
 (struct t-atomic (op place args type loc) #:transparent)
@@ -89,6 +89,10 @@
     [(t-store i t v _) (list i t v)] [(t-write p v _) (list p v)]
     [(t-results fields _) (map cdr fields)] [(t-with b fields _ _) (cons b (map cdr fields))]
     [(t-effect _ args _) args]))
+
+;; Everything in e, including itself
+(define (subexpressions e)
+  (cons e (append-map subexpressions (texpr-children e))))
 
 (define (describe t)
   (cond [(literal? t) "integer literal"]
@@ -465,7 +469,7 @@
         (t-write place (coerce (recur (second args)) (texpr-type place) (second args) "the written value") here)]
        [(sample sample-lod fetch sample-compare texture-size image-load image-size)
         (check-texture head stx args ctx locals)]
-       [(print! set-frames-in-flight! quit!)
+       [(print! set-frames-in-flight! resize! quit!)
         (unless (eq? (context-stage ctx) 'app)
           (zgal-error 'bad-effect stx "~a is an effect of apps, so only app handlers use it" head))
         (case head
@@ -484,6 +488,11 @@
           [(set-frames-in-flight!)
            (arity 1 1)
            (t-effect 'set-frames-in-flight (list (coerce (recur (first args)) (scalar-t 'uint) (first args) "the number of frames in flight")) here)]
+          [(resize!)
+           (arity 2 2)
+           (t-effect 'resize (for/list ([a (in-list args)] [what (in-list '("the width" "the height"))])
+                               (coerce (recur a) (scalar-t 'uint) a what))
+                     here)]
           [(quit!)
            (arity 0 0)
            (t-effect 'quit '() here)])]

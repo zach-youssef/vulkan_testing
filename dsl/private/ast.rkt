@@ -120,7 +120,7 @@
 ;; which bodies call. state: a struct-decl (named State) and the fields' initial values, in order.
 ;; handlers: list of handler. runs: the graphs it runs (graph-runs), the active one the first whose
 ;; condition holds (the last has none); empty for none.
-(struct app (name parameters externs state initial handlers runs loc) #:transparent)
+(struct app (name parameters externs state initial handlers runs run-mode? loc) #:transparent)
 ;; event: kind 'key-pressed 'key-released (keys: key name symbols), 'mouse-pressed 'mouse-released
 ;; (button: 'left 'right 'middle), 'cursor-moved 'scrolled 'frame, or 'read: a buffer readback's
 ;; copy has finished (readback: (list graph node element-type)). binding: the name the event's

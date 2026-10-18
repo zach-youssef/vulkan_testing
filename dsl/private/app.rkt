@@ -34,7 +34,14 @@
 (define host-values
   (list (global 'host "framesInFlight" "context_->framesInFlight()" (scalar-t 'uint) #f)
         (global 'host "surfaceSize" "glm::vec2(float(active_->surfaceExtent().width), float(active_->surfaceExtent().height))"
-                (vector-t 'float 2) #f)))
+                (vector-t 'float 2) #f)
+        (global 'host "frameNumber" "frameNumber_" (scalar-t 'uint) #f)
+        (global 'host "headless" "inputs_.mode.headless()" (scalar-t 'bool) #f)
+        (global 'host "capture" "inputs_.mode.capture()" (scalar-t 'bool) #f)
+        (global 'host "frameLimit" "inputs_.mode.frameLimit()" (scalar-t 'uint) #f)))
+
+;; The host values that come from how the app is run (zgal::RunMode, in its Inputs)
+(define run-mode-values '("headless" "capture" "frameLimit"))
 
 ;; stx: the (app Name clause ...) form. structs, functions, constants: the file's, by name (hashes).
 ;; cpu-functions: the names of those compiled to C++ (a set). graphs: the file's graphs so far, by
@@ -205,7 +212,17 @@
       (when (hash-ref seen g-name #f)
         (zgal-error 'duplicate-name (graph-run-loc r) "app ~a runs graph ~a twice" name g-name))
       (hash-set! seen g-name #t)))
-  (app name parameters externs state initial handlers runs (stx->loc stx)))
+  ;; Whether any body reads how the app is run, which C++ then gives
+  (define run-mode?
+    (for*/or ([e (in-list (append initial (map handler-body handlers)
+                                  (append-map (λ (r) (append (map cdr (graph-run-bindings r)) (map cdr (graph-run-enables r))
+                                                             (if (graph-run-when r) (list (graph-run-when r)) '())))
+                                              runs)))]
+              [x (in-list (subexpressions e))])
+      (match x
+        [(t-global 'host n _ _ _) (and (member n run-mode-values) #t)]
+        [_ #f])))
+  (app name parameters externs state initial handlers runs run-mode? (stx->loc stx)))
 
 (define (parse-event stx claim! find-readback)
   (define parts (syntax->list stx))

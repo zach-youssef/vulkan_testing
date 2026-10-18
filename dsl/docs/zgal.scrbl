@@ -1461,10 +1461,28 @@ The particles example's app:
        a buffer's (@secref["app-data"]).}
  @item{@racket[on] handles an event. Its body names @tt{state}, the event's value (bound to the
        name in the event), the parameters, the file's constants and functions, and the app's
-       values @tt{framesInFlight} (a @tt{uint}) and @tt{surfaceSize} (the graph's surface extent,
-       a @tt{vec2}). Its value is the next state. A body may run effects before it, and a body of
-       only effects leaves the state as it is.}
+       values (below). Its value is the next state. A body may run effects before it, and a body
+       of only effects leaves the state as it is.}
 ]
+
+The app's values, which every body can read:
+@tabular[
+ #:style 'boxed
+ #:sep (hspace 2)
+ #:row-properties '(bottom-border ())
+ (list
+  (list @bold{Value} @bold{Type} @bold{What})
+  (list @tt{framesInFlight} @tt{uint} "the number of frames in flight")
+  (list @tt{surfaceSize} @tt{vec2} "the active graph's surface extent")
+  (list @tt{frameNumber} @tt{uint} "the frame being drawn, counting the frames the app begins from 0")
+  (list @tt{headless} @tt{bool} "whether the app runs without a window")
+  (list @tt{capture} @tt{bool} "whether the last frame is captured (headless only)")
+  (list @tt{frameLimit} @tt{uint} "the frames the app runs, or 0 until the window closes or it quits"))]
+@tt{headless}, @tt{capture} and @tt{frameLimit} are how the app is run, which C++ gives as a
+@tt{zgal::RunMode} in the app's @tt{Inputs} (only when a body reads them), and a generated
+@racket[main] chooses from the command line. With them an app can script a smoke test, e.g. change
+the frames in flight a third of the way through: @racket[(when (= frameNumber (/ frameLimit 3))
+(set-frames-in-flight! 3))].
 
 Events:
 @tabular[
@@ -1491,6 +1509,9 @@ Effects, which only handlers have:
  @item{@racket[(print! value ...)] prints strings and scalars, then a newline.}
  @item{@racket[(set-frames-in-flight! n)] changes the number of frames in flight, at the next
        frame boundary.}
+ @item{@racket[(resize! width height)] (@tt{uint}s) resizes the window, or headless, the graphs'
+       surface extent (@tt{zgal::drawFrame} applies it after the handlers), which surface-relative
+       images follow.}
  @item{@racket[(quit!)] asks the app to stop: @tt{zgal::run} returns.}
 ]
 
@@ -1599,7 +1620,8 @@ A class @tt{Name} has
 @itemlist[
  @item{@tt{struct State}, and @tt{state()} and @tt{setState()} (for tests driving the app);}
  @item{@tt{struct Inputs}: the parameters, a @tt{zgal::Timestep timestep} (with a frame handler),
-       the extern functions, and the graph's inputs the app doesn't compute;}
+       a @tt{zgal::RunMode mode} (when a body reads how the app is run), the extern functions, and
+       the graph's inputs the app doesn't compute;}
  @item{@tt{static Result<std::unique_ptr<Name>> create(context, graph, inputs)}, which computes the
        initial state and builds the graph into the @tt{RenderGraph} (without @racket[run], the app
        has no graph of its own: C++ builds one, and reads the state). An app running several graphs
@@ -1609,17 +1631,21 @@ A class @tt{Name} has
        beginFrame()}, running the handlers of readbacks' finished copies and the frame handler,
        choosing the graph and computing the enables (it fails if reading a copy does);}
  @item{@tt{ids()} (the graph's ids; with several graphs, @tt{precomputeIds()} and so on),
-       @tt{renderGraph()} (the graph to draw this frame), @tt{context()} and @tt{quitRequested()}.}
+       @tt{renderGraph()} (the graph to draw this frame), @tt{context()} and @tt{quitRequested()};}
+ @item{@tt{takeResize()}, the size a handler last asked for with @racket[resize!] (once), and
+       @tt{setSurfaceExtent(extent)}, setting every graph's, for headless loops applying it;}
+ @item{@tt{static DeviceFeatures requiredFeatures()}, what its graphs need of the device.}
 ]
 
 The clock is C++'s choice, made explicit: @tt{zgal::Timestep::realTime(maxStep)} advances by the
 time since the last frame (at most @tt{maxStep}, so a stall doesn't make the app jump; 0 on the
 first frame), and @tt{zgal::Timestep::fixed(step)} by a fixed step, so headless runs are
-deterministic.
+deterministic. So is how it's run: @tt{zgal::RunMode::window(frameLimit)}, or
+@tt{zgal::RunMode::headless(frameLimit, capture)}.
 
 @subsection{Running an app}
 
-@tt{include/zgal/App.h} holds what the generated class uses (events, @tt{Timestep}) and knows
+@tt{include/zgal/App.h} holds what the generated class uses (events, @tt{Timestep}, @tt{RunMode}) and knows
 nothing of windows. @tt{include/zgal/Window.h} connects an app to a @tt{VulkanApp}:
 @tt{zgal::run(vulkanApp, app)} sends the window's input to the app's handlers and draws frames,
 each after @tt{beginFrame()} (drawing the graph the app chose), until the window closes or the app

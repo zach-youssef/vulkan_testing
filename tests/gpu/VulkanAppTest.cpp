@@ -394,3 +394,31 @@ TEST_CASE("zgal::connect turns a window's input into an app's events, and pollEv
         FAIL_CHECK("Vulkan validation error: " << error);
     }
 }
+
+namespace {
+
+// An app asking for a size (resize!) in its first frame, as a generated app's handlers can
+struct ResizingApp {
+    RenderGraph* graph;
+    std::optional<VkExtent2D> resize = VkExtent2D{4, 2};
+    Result<void> beginFrame() { return {}; }
+    RenderGraph& renderGraph() { return *graph; }
+    std::optional<VkExtent2D> takeResize() { return std::exchange(resize, std::nullopt); }
+    void setSurfaceExtent(VkExtent2D extent) { graph->setSurfaceExtent(extent); }
+};
+
+} // namespace
+
+TEST_CASE("zgal::drawFrame applies an app's resize to a headless VulkanApp's graphs") {
+    HeadlessApp headless;
+    RenderGraph& graph = headless.app->createGraph();
+    graph.setSurfaceExtent({8, 8});
+    ResizingApp app{&graph};
+    zgal::drawFrame(*headless.app, app).value();
+    CHECK(graph.surfaceExtent().width == 4);
+    CHECK(graph.surfaceExtent().height == 2);
+    // Asked for once
+    zgal::drawFrame(*headless.app, app).value();
+    CHECK(graph.surfaceExtent().width == 4);
+    headless.app->getContext().waitIdleAll();
+}

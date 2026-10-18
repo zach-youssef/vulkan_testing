@@ -1959,6 +1959,19 @@ public:
     VulkanContext& context() { return *context_; }
     // Whether a handler asked to quit (quit!)
     bool quitRequested() const { return quit_; }
+    // The size a handler last asked for (resize!), once: the window's (zgal/Window.h applies it), or
+    // headless, the graphs' surface extent (setSurfaceExtent)
+    std::optional<VkExtent2D> takeResize() { return std::exchange(resize_, std::nullopt); }
+    // Sets the surface extent of every graph the app runs, headless (RenderGraph::setSurfaceExtent)
+    void setSurfaceExtent(VkExtent2D extent) {
+        graph0_->setSurfaceExtent(extent);
+    }
+    // The device features the app's graphs need beyond the wrapper's (see their requiredFeatures)
+    static DeviceFeatures requiredFeatures() {
+        DeviceFeatures features;
+        features.add(Everything::requiredFeatures());
+        return features;
+    }
 
     // Runs the handler for event, if the app has one
     void handle(const zgal::Event& event) {
@@ -1974,19 +1987,19 @@ public:
                 case zgal::Key::KeypadAdd:
 #line 314 "dsl/tests/golden/features.zgal"
                     state_ = on0(state_);
-#line 1978 "build/generated/features.zgal.h"
+#line 1991 "build/generated/features.zgal.h"
                     break;
 #line 316 "dsl/tests/golden/features.zgal"
                 case zgal::Key::Escape:
 #line 316 "dsl/tests/golden/features.zgal"
                     state_ = on2(state_);
-#line 1984 "build/generated/features.zgal.h"
+#line 1997 "build/generated/features.zgal.h"
                     break;
 #line 317 "dsl/tests/golden/features.zgal"
                 case zgal::Key::Digit3:
 #line 317 "dsl/tests/golden/features.zgal"
                     state_ = on3(state_);
-#line 1990 "build/generated/features.zgal.h"
+#line 2003 "build/generated/features.zgal.h"
                     break;
                 default:
                     break;
@@ -1998,7 +2011,7 @@ public:
                 case zgal::Key::Space:
 #line 315 "dsl/tests/golden/features.zgal"
                     state_ = on1(state_);
-#line 2002 "build/generated/features.zgal.h"
+#line 2015 "build/generated/features.zgal.h"
                     break;
                 default:
                     break;
@@ -2009,7 +2022,7 @@ public:
             if (e->button == zgal::MouseButton::Left) {
 #line 318 "dsl/tests/golden/features.zgal"
                 state_ = on4(state_, e->cursor);
-#line 2013 "build/generated/features.zgal.h"
+#line 2026 "build/generated/features.zgal.h"
             }
         }
         if (const auto* e = std::get_if<zgal::MouseReleased>(&event)) {
@@ -2017,30 +2030,31 @@ public:
             if (e->button == zgal::MouseButton::Right) {
 #line 319 "dsl/tests/golden/features.zgal"
                 state_ = on5(state_, e->cursor);
-#line 2021 "build/generated/features.zgal.h"
+#line 2034 "build/generated/features.zgal.h"
             }
         }
         if (const auto* e = std::get_if<zgal::CursorMoved>(&event)) {
 #line 320 "dsl/tests/golden/features.zgal"
             state_ = on6(state_, e->cursor);
-#line 2027 "build/generated/features.zgal.h"
+#line 2040 "build/generated/features.zgal.h"
         }
         if (const auto* e = std::get_if<zgal::Scrolled>(&event)) {
 #line 321 "dsl/tests/golden/features.zgal"
             state_ = on7(state_, e->offset);
-#line 2032 "build/generated/features.zgal.h"
+#line 2045 "build/generated/features.zgal.h"
         }
     }
 
     // Each frame, before drawing: the frame handler, then which graph is drawn and which of its nodes are enabled
     Result<void> beginFrame() {
+        frameNumber_ = framesBegun_++;
 #line 322 "dsl/tests/golden/features.zgal"
         state_ = on8(state_, inputs_.timestep.next());
 #line 335 "dsl/tests/golden/features.zgal"
         if (ids0_->nodes.accumulate) { graph0_->setEnabled(*ids0_->nodes.accumulate, enabled_accumulate()); }
         graph0_->setEnabled(ids0_->nodes.drawPlain, enabled_drawPlain());
         for (const NodeId node : ids0_->nodes.drawEach) { graph0_->setEnabled(node, enabled_drawEach()); }
-#line 2044 "build/generated/features.zgal.h"
+#line 2058 "build/generated/features.zgal.h"
         return {};
     }
 
@@ -2209,22 +2223,27 @@ private:
         return state.dragging;
 #line 337 "dsl/tests/golden/features.zgal"
     }
-#line 2213 "build/generated/features.zgal.h"
+#line 2227 "build/generated/features.zgal.h"
     VulkanContext* context_;
     RenderGraph* graph0_;
     RenderGraph* active_;
     Inputs inputs_;
+    // The frame being drawn (frameNumber; 0 until the first), and the frames begun. Before state_,
+    // which may read them.
+    uint32_t frameNumber_ = 0;
+    uint32_t framesBegun_ = 0;
     State state_;
     bool quit_ = false;
+    std::optional<VkExtent2D> resize_;
     std::optional<Everything> ids0_;
 #line 302 "dsl/tests/golden/features.zgal"
 };
-#line 2223 "build/generated/features.zgal.h"
+#line 2242 "build/generated/features.zgal.h"
 
 // app Stages: its state, the handlers computing the next one, and graphs Warmup, Everything, one active each frame
 #line 348 "dsl/tests/golden/features.zgal"
 class Stages {
-#line 2228 "build/generated/features.zgal.h"
+#line 2247 "build/generated/features.zgal.h"
 public:
     // What the handlers compute the next of
 #line 350 "dsl/tests/golden/features.zgal"
@@ -2232,7 +2251,7 @@ public:
         zgal::Data<Light> lights{};
         bool warm{};
         uint32_t seen{};
-#line 2236 "build/generated/features.zgal.h"
+#line 2255 "build/generated/features.zgal.h"
     };
 
     // What C++ supplies: the parameters, the clock, and graph inputs the app doesn't compute
@@ -2257,7 +2276,7 @@ public:
         zgal::FrameSource<uint32_t> sampleCount;
 #line 270 "dsl/tests/golden/features.zgal"
         std::vector<FrameBinding<Image>> decals;   // Imported, resting shader-read-only
-#line 2261 "build/generated/features.zgal.h"
+#line 2280 "build/generated/features.zgal.h"
     };
 
     // The render graphs it adds its graphs to (e.g. VulkanApp::createGraph), one per graph
@@ -2265,7 +2284,7 @@ public:
 #line 356 "dsl/tests/golden/features.zgal"
         RenderGraph* warmup = nullptr;
         RenderGraph* everything = nullptr;
-#line 2269 "build/generated/features.zgal.h"
+#line 2288 "build/generated/features.zgal.h"
     };
 
     // The app, with its initial state, adding each graph to its render graph. The graphs' callbacks
@@ -2273,7 +2292,7 @@ public:
     static Result<std::unique_ptr<Stages>> create(VulkanContext& context, Graphs graphs, Inputs inputs) {
 #line 349 "dsl/tests/golden/features.zgal"
         if (!inputs.brighten) {
-#line 2277 "build/generated/features.zgal.h"
+#line 2296 "build/generated/features.zgal.h"
             contractViolation("Stages's extern function brighten isn't given");
         }
         if (!graphs.warmup) {
@@ -2289,7 +2308,7 @@ public:
             .lights = [self = app.get()](const zgal::FrameInfo&) { return self->input_lights_Warmup(); },
 #line 356 "dsl/tests/golden/features.zgal"
         }));
-#line 2293 "build/generated/features.zgal.h"
+#line 2312 "build/generated/features.zgal.h"
         app->ids0_.emplace(std::move(ids0));
 #line 357 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto ids1, Everything::build(context, *app->graph1_, Everything::Inputs{
@@ -2327,7 +2346,7 @@ public:
             .decals = std::move(app->inputs_.decals),
 #line 357 "dsl/tests/golden/features.zgal"
         }));
-#line 2331 "build/generated/features.zgal.h"
+#line 2350 "build/generated/features.zgal.h"
         app->ids1_.emplace(std::move(ids1));
         return app;
     }
@@ -2344,6 +2363,21 @@ public:
     VulkanContext& context() { return *context_; }
     // Whether a handler asked to quit (quit!)
     bool quitRequested() const { return quit_; }
+    // The size a handler last asked for (resize!), once: the window's (zgal/Window.h applies it), or
+    // headless, the graphs' surface extent (setSurfaceExtent)
+    std::optional<VkExtent2D> takeResize() { return std::exchange(resize_, std::nullopt); }
+    // Sets the surface extent of every graph the app runs, headless (RenderGraph::setSurfaceExtent)
+    void setSurfaceExtent(VkExtent2D extent) {
+        graph0_->setSurfaceExtent(extent);
+        graph1_->setSurfaceExtent(extent);
+    }
+    // The device features the app's graphs need beyond the wrapper's (see their requiredFeatures)
+    static DeviceFeatures requiredFeatures() {
+        DeviceFeatures features;
+        features.add(Warmup::requiredFeatures());
+        features.add(Everything::requiredFeatures());
+        return features;
+    }
 
     // Runs the handler for event, if the app has one
     void handle(const zgal::Event& event) {
@@ -2352,6 +2386,7 @@ public:
 
     // Each frame, before drawing: the handlers of readbacks' finished copies, the frame handler, then which graph is drawn and which of its nodes are enabled
     Result<void> beginFrame() {
+        frameNumber_ = framesBegun_++;
 #line 354 "dsl/tests/golden/features.zgal"
         {
 #line 354 "dsl/tests/golden/features.zgal"
@@ -2371,7 +2406,7 @@ public:
         } else {
 #line 357 "dsl/tests/golden/features.zgal"
             active_ = graph1_;
-#line 2375 "build/generated/features.zgal.h"
+#line 2410 "build/generated/features.zgal.h"
         }
         return {};
     }
@@ -2422,18 +2457,23 @@ private:
         return true;
 #line 357 "dsl/tests/golden/features.zgal"
     }
-#line 2426 "build/generated/features.zgal.h"
+#line 2461 "build/generated/features.zgal.h"
     VulkanContext* context_;
     RenderGraph* graph0_;
     RenderGraph* graph1_;
     RenderGraph* active_;
     Inputs inputs_;
+    // The frame being drawn (frameNumber; 0 until the first), and the frames begun. Before state_,
+    // which may read them.
+    uint32_t frameNumber_ = 0;
+    uint32_t framesBegun_ = 0;
     State state_;
     bool quit_ = false;
+    std::optional<VkExtent2D> resize_;
     std::optional<Warmup> ids0_;
     std::optional<Everything> ids1_;
 #line 348 "dsl/tests/golden/features.zgal"
 };
-#line 2438 "build/generated/features.zgal.h"
+#line 2478 "build/generated/features.zgal.h"
 
 } // namespace features

@@ -15,10 +15,6 @@
          material-feature-flags
          material-subgroup-needs)
 
-;; Everything in e, including itself
-(define (subexpressions e)
-  (cons e (append-map subexpressions (texpr-children e))))
-
 ;; The types of e and everything in it, including locals and accumulators
 (define (texpr-types e)
   (append*

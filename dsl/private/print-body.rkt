@@ -133,6 +133,7 @@
                                 (p a)))
                           " << "))]
     [(t-effect 'set-frames-in-flight (list n) _) (format "context_->setFramesInFlight(~a)" (p n))]
+    [(t-effect 'resize (list w h) _) (format "resize_ = VkExtent2D{~a, ~a}" (p w) (p h))]
     [(t-effect 'quit '() _) "quit_ = true"]))
 
 (define (declaration name t dialect)

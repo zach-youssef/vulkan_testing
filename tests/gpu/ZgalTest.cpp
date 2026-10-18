@@ -652,6 +652,56 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL apps compute their state from events and frames
                          ContractViolation);
 }
 
+TEST_CASE_FIXTURE(GpuTest, "ZGAL apps read how they're run, count frames and resize the surface") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    graph.setSurfaceExtent({8, 1});
+    auto app = Scripted::create(ctx, graph, Scripted::Inputs{
+        .timestep = zgal::Timestep::fixed(0.25f),
+        .mode = zgal::RunMode::headless(6, true),
+    }).value();
+    // Marked pixels, and the row's width, after each frame
+    std::vector<std::pair<int, uint32_t>> frames;
+    for (uint32_t frame = 0; frame < 6; ++frame) {
+        app->beginFrame().value();
+        if (const auto size = app->takeResize()) {
+            app->setSurfaceExtent(*size);
+        }
+        CHECK_FALSE(app->takeResize());
+        graph.execute().value();
+        const auto pixels = app->ids().capturedPixels(graph).value();
+        int marked = 0;
+        for (size_t i = 0; i < pixels.size() / 4; ++i) {
+            marked += pixels[4 * i] == 255 ? 1 : 0;
+        }
+        frames.emplace_back(marked, uint32_t(pixels.size() / 4));
+    }
+    // frameNumber counts from 0, in the handlers and the inputs alike; the surface shrank at frame 3
+    // (frameLimit / 2), and the marks were clipped to it
+    CHECK(app->state().resizedAt == 3);
+    const std::vector<std::pair<int, uint32_t>> expected{{1, 8}, {2, 8}, {3, 8}, {4, 4}, {4, 4}, {4, 4}};
+    CHECK(frames == expected);
+    ctx.waitIdleAll();
+
+    // In a window, it doesn't capture or resize
+    RenderGraph windowed(ctx);
+    windowed.setSurfaceExtent({8, 1});
+    auto interactive = Scripted::create(ctx, windowed, Scripted::Inputs{
+        .timestep = zgal::Timestep::fixed(0.25f),
+        .mode = zgal::RunMode::window(6),
+    }).value();
+    CHECK_FALSE(interactive->ids().nodes.captured);
+    for (int frame = 0; frame < 6; ++frame) {
+        interactive->beginFrame().value();
+        CHECK_FALSE(interactive->takeResize());
+    }
+
+    // How it's run is a required choice, as it reads it
+    RenderGraph other(ctx);
+    CHECK_THROWS_WITH_AS((void)Scripted::create(ctx, other, Scripted::Inputs{.timestep = zgal::Timestep::fixed(0.25f)}),
+                         doctest::Contains("run mode isn't given"), ContractViolation);
+}
+
 TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs upload data, clear buffers, copy buffers into images and read buffers back") {
     auto& ctx = context();
     const std::vector<uint32_t> values{1, 2, 3, 100, 12345};

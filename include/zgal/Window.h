@@ -95,11 +95,19 @@ void connect(VulkanApp& vulkanApp, App& app) {
     });
 }
 
-// One frame: the app's frame handler, then the VulkanApp draws the graph the app chose. For headless
-// apps and loops of their own; run() is the loop for windows.
+// One frame: the app's frame handler, then the VulkanApp draws the graph the app chose. A size the
+// handlers asked for (resize!) resizes the window, or headless, the graphs' surface extent. For
+// headless apps and loops of their own; run() is the loop for windows.
 template<typename App>
 Result<void> drawFrame(VulkanApp& vulkanApp, App& app) {
     TRY(app.beginFrame());
+    if (const auto size = app.takeResize()) {
+        if (vulkanApp.hasWindow()) {
+            vulkanApp.setWindowSize(size->width, size->height);
+        } else {
+            app.setSurfaceExtent(*size);
+        }
+    }
     vulkanApp.setActiveGraph(app.renderGraph());
     return vulkanApp.drawFrame();
 }

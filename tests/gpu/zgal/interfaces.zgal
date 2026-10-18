@@ -704,3 +704,24 @@
   (for ([r (range (uint 0) rows)])
     (draw band canvas banding 3 #:push ((row r) (rows rows) (shade (at shades r)))))
   (readback readPicture picture))
+
+;; For the run-mode test: an app scripting its frames from how it's run, as a smoke test would. It
+;; marks one more pixel of the row each frame (up to 4), and headless, halfway, shrinks the surface
+;; the row follows.
+(graph ScriptGraph
+  (parameter withCapture bool)
+  (input marked (per-frame uint))
+  (image canvas rgba8 (surface 1.0) #:frames shared)
+  (material clear Mark (row canvas) #:push ((value 0.0)) #:invocations ((width canvas)))
+  (material mark Mark (row canvas) #:push ((value 1.0)) #:invocations (marked))
+  (dispatch clearCanvas clear)
+  (dispatch markCanvas mark)
+  (readback captured canvas #:when withCapture))
+
+(app Scripted
+  (state (resizedAt uint 0))
+  (on (frame dt)
+    (let* ([halfway (and headless (= frameNumber (/ frameLimit 2)))])
+      (when halfway (resize! 4 1))
+      (if halfway (with state #:resizedAt frameNumber) state)))
+  (run ScriptGraph (withCapture capture) (marked (min (+ frameNumber 1) 4))))

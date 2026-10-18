@@ -42,7 +42,22 @@
 
 (test-case "Apps' effects are only in apps"
   (check-zgal-error "(define (f [x : float]) : float (begin (print! x) x))" 'bad-effect "only app handlers")
-  (check-zgal-error "(compute-material C (workgroup 1) (compute (quit!)))" 'bad-effect "only app handlers"))
+  (check-zgal-error "(compute-material C (workgroup 1) (compute (quit!)))" 'bad-effect "only app handlers")
+  (check-zgal-error "(compute-material C (workgroup 1) (compute (resize! 1 1)))" 'bad-effect "only app handlers"))
+
+(test-case "Apps read how they're run, which C++ gives only when they do, and count frames"
+  (define scripted (header "(app A (state (n uint 0)) (on (frame dt) (when headless (resize! 4 (+ frameLimit 1))) (with state #:n frameNumber)))"))
+  (check-true (string-contains? scripted "zgal::RunMode mode;"))
+  (check-true (string-contains? scripted "run mode isn't given"))
+  (check-true (string-contains? scripted "resize_ = VkExtent2D{4u, inputs_.mode.frameLimit() + 1u};"))
+  (check-true (string-contains? scripted "frameNumber_ = framesBegun_++;"))
+  ;; Counting frames doesn't need it
+  (check-false (string-contains? (header "(app A (state (n uint frameNumber)) (on (frame dt) (with state #:n frameNumber)))")
+                                 "RunMode"))
+  (check-false (string-contains? (header counter) "RunMode"))
+  (check-zgal-error "(app A (on (frame dt) (resize! 4)))" 'malformed "resize!")
+  (check-zgal-error "(app A (on (frame dt) (resize! 4.5 2)))" 'type-mismatch "the width")
+  (check-zgal-error "(app A (parameter headless bool))" 'duplicate-name "headless"))
 
 (define graph
   (string-append

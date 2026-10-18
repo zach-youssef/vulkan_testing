@@ -81,12 +81,12 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
     // image instead of the window, and its clock advances a fixed step each frame.
     RenderGraph& graph = app.createGraph();
     TRY_ASSIGN(auto particlesApp, particles::ParticlesApp::create(context, graph, particles::ParticlesApp::Inputs{
-        .headless = headless,
-        .capture = options.capturePath.has_value(),
         .width = kHeadlessExtent.width,
         .height = kHeadlessExtent.height,
         .particleCount = kParticleCount,
         .timestep = headless ? zgal::Timestep::fixed(1.0f / 60.0f) : zgal::Timestep::realTime(1.0f / 30.0f),
+        .mode = headless ? zgal::RunMode::headless(*options.headlessFrames, options.capturePath.has_value())
+                         : zgal::RunMode::window(0),
     }));
 
     if (headless) {

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <variant>
 
@@ -83,6 +84,46 @@ private:
     Mode mode_ = Mode::None;
     float step_ = 0.0f;
     std::optional<std::chrono::steady_clock::time_point> last_;
+};
+
+/*
+ How an app is run, which its bodies read as headless, capture and frameLimit: in a window, or
+ headless (drawing into images, which a capture reads back), for a number of frames or until it
+ quits. A required choice for apps reading them: their Inputs take one. Generated mains (ZGAL's
+ main) choose it from the command line.
+ */
+class RunMode {
+public:
+    RunMode() = default;
+
+    // frameLimit: the frames it runs (e.g. a smoke test's), or 0 until the window closes
+    static RunMode window(uint32_t frameLimit) {
+        RunMode m;
+        m.given_ = true;
+        m.frameLimit_ = frameLimit;
+        return m;
+    }
+
+    // capture: whether the last frame's image is read back (e.g. to a file)
+    static RunMode headless(uint32_t frameLimit, bool capture) {
+        RunMode m;
+        m.given_ = true;
+        m.headless_ = true;
+        m.capture_ = capture;
+        m.frameLimit_ = frameLimit;
+        return m;
+    }
+
+    bool given() const { return given_; }
+    bool headless() const { return headless_; }
+    bool capture() const { return capture_; }
+    uint32_t frameLimit() const { return frameLimit_; }
+
+private:
+    bool given_ = false;
+    bool headless_ = false;
+    bool capture_ = false;
+    uint32_t frameLimit_ = 0;
 };
 
 } // namespace zgal

@@ -162,8 +162,8 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
     }
     TRY_ASSIGN(auto sceneApp, scene::SceneApp::create(ctx, graph, scene::SceneApp::Inputs{
         .timestep = options.frames ? zgal::Timestep::fixed(1.0f / 60.0f) : zgal::Timestep::realTime(0.25f),
-        .headless = headless,
-        .capture = options.capture.has_value(),
+        .mode = headless ? zgal::RunMode::headless(uint32_t(*options.frames), options.capture.has_value())
+                         : zgal::RunMode::window(uint32_t(options.frames.value_or(0))),
         .meshes = std::move(meshes),
     }));
     app.setActiveGraph(graph);

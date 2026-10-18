@@ -145,8 +145,6 @@
 ;; The app: the controls and the simulation's clock, as state the handlers compute the next of, and
 ;; the parameters each frame's simulation gets from it
 (app ParticlesApp
-  (parameter headless bool)
-  (parameter capture bool)
   (parameter width uint)
   (parameter height uint)
   (parameter particleCount uint)

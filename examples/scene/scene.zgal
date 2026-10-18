@@ -221,6 +221,8 @@
     (if state.animated (with state #:azimuth (+ state.azimuth (* 0.4 dt))) state))
 
   (run SceneGraph
+    (headless headless)
+    (capture capture)
     (uniforms
      (let* ([aspect (/ surfaceSize.x surfaceSize.y)]
             [eye (orbit cameraTarget state.yaw state.pitch state.orbitRadius)]
