@@ -31,13 +31,20 @@
   (write! "loop.zgal" "(import \"program.zgal\")")
   (write! "program.zgal" "(import \"loop.zgal\")")
   (check-exn #rx"imports itself" (λ () (compile-zgal main #:check-only? #t)))
-  ;; Materials too, which the importing file compiles; not graphs or apps
-  (write! "program.zgal" "(import \"material.zgal\")")
-  (write! "material.zgal" "(compute-material C (workgroup 1) (compute))")
+  ;; Materials, graphs and apps too, which the importing file compiles (in its namespace); a main
+  ;; is a program's own
+  (write! "program.zgal" "(import \"material.zgal\")\n(main A (window \"a\" 4 4) (timestep #:max 1/30 #:fixed 1/60))")
+  (write! "material.zgal" (string-append "(compute-material C (workgroup 1) (bindings (b (buffer-array uint))) (compute (write! (at b 0) 1)))\n"
+                                         "(graph G (buffer b uint 1 #:frames shared) (material c C b #:invocations (1)) (dispatch d c))\n"
+                                         "(app A (state (n uint 0)) (on (frame dt) (with state #:n (+ state.n 1))) (run G))"))
   (define-values (_with-material outputs) (compile-zgal main #:header-dir "out" #:shader-dir "out"))
   (check-true (for/or ([o (in-list outputs)]) (string-suffix? (output-path o) "C.comp")))
-  (write! "material.zgal" "(graph G)")
-  (check-exn #rx"declares structs, vertex formats, functions, constants, GLSL functions, materials and imports, not [(]graph" (λ () (compile-zgal main #:check-only? #t)))
+  (define imported-header (output-text (for/first ([o (in-list outputs)] #:when (string-suffix? (output-path o) "program.zgal.h")) o)))
+  (check-true (string-contains? imported-header "namespace program {"))
+  (check-true (string-contains? imported-header "struct G {"))
+  (check-true (string-contains? imported-header "class A {"))
+  (write! "material.zgal" "(main A)")
+  (check-exn #rx"declares structs, vertex formats, functions, constants, GLSL functions, materials, graphs, apps and imports, not [(]main" (λ () (compile-zgal main #:check-only? #t)))
   ;; By absolute path
   (write! "program.zgal" (format "(import ~s)" (path->string (build-path directory "units.zgal"))))
   (check-true (string-contains? (header (file->string main) #:source main) "inline float scaled("))

@@ -196,10 +196,11 @@ use them (@tt{shadowMap}, not @tt{shadow-map}). A name can't be
 
 @racket[(import module)] imports a module of the standard library, and
 @racket[(import "file.zgal")] a file, relative to the importing one (or by an absolute path). An
-imported file holds structs, vertex formats, functions, constants, materials and imports, which
-become declarations of the importing file, as if written where it imports them: so they're in its
-namespace, compile to its shaders and header, and their names can't be declared again. Programs
-share materials this way, each compiling its own copy. A file imported twice (even through other
+imported file holds structs, vertex formats, functions, constants, materials, graphs, apps and
+imports (not a @racket[main]: a program is its own file), which become declarations of the
+importing file, as if written where it imports them: so they're in its namespace, compile to its
+shaders and header, and their names can't be declared again. Programs share materials, graphs and
+apps this way, each compiling its own copy, e.g. a program per platform running one app. A file imported twice (even through other
 imports) is read once, and a file can't import itself.
 
 @subsubsection[#:tag "library"]{The standard library}

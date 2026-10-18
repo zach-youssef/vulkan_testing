@@ -854,8 +854,8 @@
              (define shown (display-path complete))
              (define imported-forms (read-forms shown (open-input-string (file->string complete))))
              (for ([f (in-list imported-forms)])
-               (unless (memq (head-symbol f) '(import struct vertex-format define extern-glsl graphics-material compute-material))
-                 (zgal-error 'bad-import f "an imported file declares structs, vertex formats, functions, constants, GLSL functions, materials and imports, not ~a"
+               (unless (memq (head-symbol f) '(import struct vertex-format define extern-glsl graphics-material compute-material graph app))
+                 (zgal-error 'bad-import f "an imported file declares structs, vertex formats, functions, constants, GLSL functions, materials, graphs, apps and imports, not ~a (a program's main is in its own file)"
                              (let ([h (head-symbol f)]) (if h (format "(~a ...)" h) (show f))))))
              (define expanded
                (expand imported-forms (let-values ([(dir _f _d) (split-path complete)]) dir) (cons complete chain)))
