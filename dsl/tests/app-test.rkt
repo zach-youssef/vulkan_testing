@@ -59,6 +59,15 @@
   (check-zgal-error "(app A (on (frame dt) (resize! 4.5 2)))" 'type-mismatch "the width")
   (check-zgal-error "(app A (parameter headless bool))" 'duplicate-name "headless"))
 
+(test-case "Apps pass path parameters to graphs' path inputs"
+  (define g "(graph Files (input file path) (image-file picture file #:color srgb))\n")
+  (define h (header (string-append g "(app A (parameter chosen path) (run Files (file chosen)))")))
+  (check-true (string-contains? h "std::filesystem::path chosen{};"))
+  (check-true (string-contains? h ".file = app->parameter_file(),"))
+  (check-true (string-contains? h "std::filesystem::path parameter_file() {"))
+  (check-zgal-error (string-append g "(app A (parameter chosen path) (run Files (file (+ chosen 1))))") 'type-mismatch "")
+  (check-zgal-error (string-append g "(app A (parameter chosen uint) (run Files (file chosen)))") 'type-mismatch "path file"))
+
 (define graph
   (string-append
    "(struct Tint (color vec4))\n"

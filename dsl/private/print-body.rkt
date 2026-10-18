@@ -26,6 +26,7 @@
     [((void-t) _) "void"]
     [((data-t e) 'cpp) (format "zgal::Data<~a>" (spell-type e dialect))]
     [((opaque-t k) 'glsl) (symbol->string k)]
+    [((opaque-t 'path) 'cpp) "std::filesystem::path"]
     [((scalar-t k) 'glsl) #:when (small-integer-kind? k) (format "~a_t" k)]
     [((scalar-t 'bool) 'cpp) "bool"]
     [((vector-t 'bool n) 'cpp) (format "glm::bvec~a" n)]

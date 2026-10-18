@@ -73,14 +73,14 @@
     (when (> (length (clauses-of key)) 1)
       (zgal-error 'duplicate-clause (second (clauses-of key)) "app ~a has two (~a ...) clauses" name key)))
 
-  ;; Parameters, given by C++
+  ;; Parameters, given by C++. They may also be paths, which graphs' path inputs take.
   (define parameters
     (for/list ([c (in-list (clauses-of 'parameter))])
       (match (syntax->list c)
         [(list _ n t)
          (define p-name (parse-name n "a parameter's name"))
          (names p-name n)
-         (field p-name (parse-type t) (stx->loc c))]
+         (field p-name (if (eq? (syntax-e t) 'path) (opaque-t 'path) (parse-type t)) (stx->loc c))]
         [_ (zgal-error 'malformed c "expected (parameter name type)")])))
   (define globals
     (for/fold ([h (for/hash ([g (in-list host-values)]) (values (global-name g) g))])
@@ -305,13 +305,14 @@
            (match (hash-ref env input #f)
              ;; Computed once, from the app's parameters
              [(entry 'parameter t _) (coerce (check v ctx (hash)) t v (format "parameter ~a" input))]
+             [(entry 'path _ _) (coerce (check v ctx (hash)) (opaque-t 'path) v (format "path ~a" input))]
              ;; Computed each frame, from the state too
              [(entry 'per-frame t _) (coerce (check v ctx (state-locals b)) t v (format "input ~a" input))]
              [(entry 'per-frame-data t _) (coerce (check v ctx (state-locals b)) (data-t t) v (format "input ~a" input))]
              [#f (zgal-error 'unknown-name n "graph ~a has no parameter or input ~a" (graph-name g) input)]
              [(entry kind _ _)
               (zgal-error 'type-mismatch n "~a is ~a, which C++ gives (through the app's inputs); apps compute parameters and per-frame inputs"
-                          input (case kind [(meshes) "a meshes input"] [(cpu) "a cpu input"] [(extern) "an extern input"] [(path) "a path input"]
+                          input (case kind [(meshes) "a meshes input"] [(cpu) "a cpu input"] [(extern) "an extern input"]
                                   [(import import-images import-buffer) "an imported resource"] [(data) "a data input"] [else "not an input"]))]))
          (cons input (cpu-only e))]
         [_ (zgal-error 'malformed b "expected (input expression)")])))

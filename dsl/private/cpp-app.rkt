@@ -141,7 +141,7 @@
       (append
        (for/list ([b (in-list (graph-run-bindings r))])
          (match-define (cons input e) b)
-         (if (g-parameter? (findf (λ (i) (equal? (graph-item-name i) input)) (graph-items g)))
+         (if (computed-once? (findf (λ (i) (equal? (graph-item-name i) input)) (graph-items g)))
              (format ".~a = app->~a()" input (run-name r (format "parameter_~a" input)))
              (format ".~a = [self = app.get()](const zgal::FrameInfo&) { return self->~a(); }" input (run-name r (format "input_~a" input)))))
        (for/list ([m (in-list (passthrough r))])
@@ -327,7 +327,7 @@
     (for ([b (in-list (graph-run-bindings r))])
       (match-define (cons input e) b)
       (define item (findf (λ (i) (equal? (graph-item-name i) input)) (graph-items g)))
-      (if (g-parameter? item)
+      (if (computed-once? item)
           (emit-body-function! w (format "~a ~a()" (value-type-cpp (texpr-type e)) (run-name r (format "parameter_~a" input))) e (texpr-loc e))
           (emit-body-function! w (format "~a ~a()" (value-type-cpp (texpr-type e)) (run-name r (format "input_~a" input))) e (texpr-loc e)
                                #:state "[[maybe_unused]] const State& state = state_;")))
@@ -352,6 +352,10 @@
   (for ([r (in-list runs)])
     (gen (format "    std::optional<~a> ~a;" (graph-name (run-graph r)) (ids-member r))))
   (emit! w "};" #:at (app-loc a)))
+
+;; Whether an app computes a graph's input once, when it's created: parameters and paths
+(define (computed-once? item)
+  (or (g-parameter? item) (and (g-input? item) (eq? (g-input-kind item) 'path))))
 
 ;; How extern functions take a parameter: data by reference, as it's shared anyway
 (define (extern-parameter-type t)

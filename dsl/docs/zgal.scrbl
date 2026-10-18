@@ -1432,6 +1432,7 @@ The particles example's app:
              cursor-moved scrolled frame read left right middle data)
  [app-form (app Name app-clause ...)]
  [app-clause (parameter name type)
+             (parameter name path)
              (extern (name [parameter : type] ...) : result-type)
              (state (field type initial-value) ...)
              (on event body ...+)
@@ -1451,7 +1452,8 @@ The particles example's app:
 @subsection{State and handlers}
 
 @itemlist[
- @item{@racket[parameter]s are values C++ gives when it creates the app, of any type.}
+ @item{@racket[parameter]s are values C++ gives when it creates the app, of any type, or
+       @racket[path]s (@tt{std::filesystem::path}), which the app passes to graphs' path inputs.}
  @item{@racket[extern] declares a function C++ gives (a @tt{std::function} in the app's
        @tt{Inputs}), which bodies call like the file's functions: for what ZGAL can't do itself,
        e.g. reading a dataset or saving results. Its result may be @tt{void}, for effects.}
@@ -1527,11 +1529,11 @@ filter results. A graph's @tt{(input name (per-frame (data T)))} takes them each
 
 @subsection{The graph}
 
-@racket[run] names a graph of the file and computes its inputs: a parameter's expression once, when
-the app is created, from the app's parameters; a per-frame input's each frame, from the state too.
+@racket[run] names a graph of the file and computes its inputs: a parameter's or path input's
+expression once, when the app is created, from the app's parameters; a per-frame input's each frame, from the state too.
 @tt{#:enabled} computes, each frame, whether nodes run, e.g. a pass the user toggles. Whatever the
-app doesn't compute (meshes, cpu and extern inputs, imported images and buffers, and any parameter
-or per-frame input it leaves alone) C++ gives, through the app's inputs.
+app doesn't compute (meshes, cpu and extern inputs, imported images and buffers, and any parameter,
+path or per-frame input it leaves alone) C++ gives, through the app's inputs.
 
 @subsubsection[#:tag "phases"]{Phases}
 

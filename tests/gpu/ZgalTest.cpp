@@ -181,6 +181,14 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL image files load from the asset search paths in
     RenderGraph missing(ctx);
     CHECK_ERROR(ImageFiles::build(ctx, missing, ImageFiles::Inputs{.chosen = "missing.png"}), ErrorCode::NotFound,
                 "Asset 'missing.png' not found");
+
+    // An app's path parameter is the graph's path input
+    RenderGraph picked(ctx);
+    auto app = PickFile::create(ctx, picked, PickFile::Inputs{.picked = "quadrants.png"}).value();
+    app->beginFrame().value();
+    picked.execute().value();
+    CHECK(app->ids().linearReadContents(picked).value() == linear);
+    ctx.waitIdleAll();
 }
 
 TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs draw models with their materials' base colours") {

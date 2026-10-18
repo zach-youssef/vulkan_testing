@@ -436,6 +436,11 @@
   (readback srgbRead srgbTexels)
   (readback linearRead linearTexels))
 
+;; An app choosing ImageFiles' file from its parameter, as a generated main's option would
+(app PickFile
+  (parameter picked path)
+  (run ImageFiles (chosen picked)))
+
 ;; Vertices models fill by name: packed, and a colour that's white when a file has none
 (vertex-format ModelVertex
   (position vec3)
