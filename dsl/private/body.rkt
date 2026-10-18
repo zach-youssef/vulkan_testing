@@ -479,7 +479,7 @@
         (t-write place (coerce (recur (second args)) (texpr-type place) (second args) "the written value") here)]
        [(sample sample-lod fetch sample-compare texture-size image-load image-size)
         (check-texture head stx args ctx locals)]
-       [(print! set-frames-in-flight! resize! quit!)
+       [(print! set-frames-in-flight! resize! quit! run-once!)
         (unless (eq? (context-stage ctx) 'app)
           (zgal-error 'bad-effect stx "~a is an effect of apps, so only app handlers use it" head))
         (case head
@@ -505,7 +505,13 @@
                      here)]
           [(quit!)
            (arity 0 0)
-           (t-effect 'quit '() here)])]
+           (t-effect 'quit '() here)]
+          ;; A node's name, which the app checks is a #:once node of a graph it runs
+          [(run-once!)
+           (arity 1 1)
+           (unless (symbol? (syntax-e (first args)))
+             (zgal-error 'malformed (first args) "run-once! takes a node's name, not ~a" (show (first args))))
+           (t-effect 'run-once (list (t-lit (symbol->string (syntax-e (first args))) (opaque-t 'string) (stx->loc (first args)))) here)])]
        [(atomic-add! atomic-min! atomic-max! atomic-and! atomic-or! atomic-xor! atomic-exchange! atomic-compare-exchange!)
         (define op (string->symbol (regexp-replace #px"^atomic-(.*)!$" (symbol->string head) "\\1")))
         (define compare? (eq? op 'compare-exchange))

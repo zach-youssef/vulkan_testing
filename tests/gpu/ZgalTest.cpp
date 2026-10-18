@@ -1047,6 +1047,17 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL apps run phases: graphs chosen by state, once n
         CHECK(app->useGraphIds().readDoubledContents(useGraph).value() == std::vector<uint32_t>{2, 22, 42, 62, 200});
         frame();
         CHECK(app->state().lastTotal == 328);
+
+        // run-once! runs the seed graph's once nodes again, whose copy arrives as before
+        app->handle(zgal::Event{zgal::KeyPressed{zgal::Key::R}});
+        CHECK(seedGraph.isPendingOnce(app->seedGraphIds().nodes.seed));
+        frame();
+        CHECK(&app->renderGraph() == &seedGraph);
+        CHECK_FALSE(seedGraph.isPendingOnce(app->seedGraphIds().nodes.seed));
+        ctx.waitIdleAll();
+        frame();
+        CHECK(app->state().ready);
+        CHECK(app->state().seeds.elements() == std::vector<uint32_t>{1, 11, 21, 31});
         ctx.waitIdleAll();
     }
     ctx.collectRetired();

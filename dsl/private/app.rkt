@@ -168,6 +168,25 @@
            [_ (zgal-error 'type-mismatch node-stx "readback ~a reads an imported image, whose format the graph doesn't know; read events give buffers' elements and graph images' texels" node-name)]))
        (list (graph-name g) node-name element (pair? (g-node-loops n)) (not (memq (entry-kind subject) '(buffer import-buffer upload))))]))
 
+  ;; Checks the nodes run-once! effects in e name are #:once nodes of graphs the app runs
+  (define (check-run-once e)
+    (let walk ([e e])
+      (match e
+        [(t-effect 'run-once (list (t-lit node _ where)) _)
+         (define found
+           (for*/list ([c (in-list (clauses-of 'run))]
+                       [g (in-value (let ([g-stx (and (pair? (cdr (syntax->list c))) (second (syntax->list c)))])
+                                      (and g-stx (symbol? (syntax-e g-stx)) (hash-ref graphs (symbol->string (syntax-e g-stx)) #f))))]
+                       #:when g
+                       [n (in-list (graph-nodes g))]
+                       #:when (equal? (g-node-name n) node))
+             n))
+         (when (null? found)
+           (zgal-error 'unknown-name where "no graph app ~a runs has a node ~a" name node))
+         (for ([n (in-list found)] #:unless (g-node-once? n))
+           (zgal-error 'type-mismatch where "node ~a isn't #:once #t, so run-once! doesn't run it again (the app enables nodes with #:enabled)" node))]
+        [_ (for-each walk (texpr-children e))])))
+
   ;; Handlers
   (define handled (make-hash))   ; (list kind key-or-button) -> loc
   (define (claim! key where)
@@ -195,6 +214,7 @@
            (for/fold ([ls (state-locals c)]) ([b (in-list bound)])
              (hash-set ls (car b) (t-local (spell! ctx (car b)) (cdr b) (stx->loc event-stx)))))
          (define body (check-sequence body-stxs c ctx locals))
+         (check-run-once body)
          (define next
            (if (void-t? (texpr-type body))
                ;; Only effects: the state doesn't change

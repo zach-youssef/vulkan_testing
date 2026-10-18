@@ -305,6 +305,22 @@
                   (lower-first (graph-name (run-graph (last runs))))))])
   (gen "")
   (emit-initial-state! w a)
+  ;; What run-once! runs again: the node in each graph the app runs that has it
+  (define run-once-nodes
+    (remove-duplicates
+     (for*/list ([h (in-list (app-handlers a))]
+                 [e (in-list (let walk ([e (handler-body h)]) (cons e (append-map walk (texpr-children e)))))]
+                 #:when (and (t-effect? e) (eq? (t-effect-op e) 'run-once)))
+       (t-lit-value (first (t-effect-args e))))))
+  (for ([node (in-list run-once-nodes)])
+    (gen (format "    void runOnce_~a() {" node))
+    (for* ([r (in-list runs)] [n (in-value (node-of r node))] #:when n)
+      (define ids (format "~a->nodes.~a" (ids-member r) node))
+      (gen (cond
+             [(pair? (g-node-loops n)) (format "        for (const NodeId node : ~a) { ~a->runOnce(node); }" ids (graph-member r))]
+             [(g-node-when n) (format "        if (~a) { ~a->runOnce(*~a); }" ids (graph-member r) ids)]
+             [else (format "        ~a->runOnce(~a);" (graph-member r) ids)])))
+    (gen "    }"))
   ;; The extern functions, as bodies call them
   (for ([f (in-list (app-externs a))])
     (define params (function-decl-params f))

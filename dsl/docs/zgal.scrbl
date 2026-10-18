@@ -1610,6 +1610,9 @@ Effects, which only handlers have:
        surface extent (@tt{zgal::drawFrame} applies it after the handlers), which surface-relative
        images follow.}
  @item{@racket[(quit!)] asks the app to stop: @tt{zgal::run} returns.}
+ @item{@racket[(run-once! node)] runs a @tt{#:once #t} node again, in the next frame its graph
+       draws (in each graph the app runs that has it; @tt{RenderGraph::runOnce}), e.g. to compute
+       a phase's results again.}
 ]
 
 @subsection[#:tag "app-data"]{Data}

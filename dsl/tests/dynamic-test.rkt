@@ -94,6 +94,15 @@
   (check-zgal-error (string-replace phases "(run Setup #:when" "(run Setup #:enabled ((fill #t)) #:when")
                     'type-mismatch "fill runs once (#:once), so the app doesn't enable it"))
 
+(test-case "Apps run #:once nodes again with run-once!"
+  (define rerun (string-replace phases "(run Setup #:when" "(on (key-pressed r) (run-once! readCells) state)\n  (run Setup #:when"))
+  (define h (named (compile-text rerun) ".zgal.h"))
+  (check-true (string-contains? h "void runOnce_readCells() {\n        graph0_->runOnce(ids0_->nodes.readCells);\n    }"))
+  (check-true (string-contains? h "runOnce_readCells();"))
+  (check-zgal-error (string-replace rerun "(run-once! readCells)" "(run-once! fill)") 'type-mismatch "node fill isn't #:once #t")
+  (check-zgal-error (string-replace rerun "(run-once! readCells)" "(run-once! nothing)") 'unknown-name "no graph app Phased runs has a node nothing")
+  (check-zgal-error "(compute-material C (workgroup 1) (compute (run-once! x)))" 'bad-effect "run-once! is an effect of apps"))
+
 (test-case "Apps run one of several graphs each frame, chosen from their state"
   (define h (named (compile-text phases) ".zgal.h"))
   (check-true (string-contains? h "RenderGraph* setup = nullptr;"))

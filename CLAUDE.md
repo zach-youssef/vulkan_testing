@@ -365,8 +365,8 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   `(on event body)` handlers whose value is the next state (usually `(with state #:field v)`):
   events are `key-pressed`/`key-released` (key names like `space`, `a`, `1`), `mouse-pressed`/
   `mouse-released`, `cursor-moved` (positions in [-1, 1]), `scrolled` and `(frame dt)`. Handlers'
-  effects are `print!`, `set-frames-in-flight!`, `resize!` (the window, or headless the surface) and
-  `quit!`. Bodies read `frameNumber`, and how the app is run: `headless`, `capture` and `frameLimit`
+  effects are `print!`, `set-frames-in-flight!`, `resize!` (the window, or headless the surface),
+  `quit!` and `run-once!` (a `#:once` node again). Bodies read `frameNumber`, and how the app is run: `headless`, `capture` and `frameLimit`
   (C++ gives a `zgal::RunMode` in `Inputs`), e.g. to script a smoke test. `(on (read readback xs) ...)`
   receives a readback's finished copy (a buffer's elements, or an image's texels with `#:size s`; a
   looped readback's with `#:index i`) as `(data T)` (immutable shared elements,

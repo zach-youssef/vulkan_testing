@@ -135,7 +135,9 @@
                           " << "))]
     [(t-effect 'set-frames-in-flight (list n) _) (format "context_->setFramesInFlight(~a)" (p n))]
     [(t-effect 'resize (list w h) _) (format "resize_ = VkExtent2D{~a, ~a}" (p w) (p h))]
-    [(t-effect 'quit '() _) "quit_ = true"]))
+    [(t-effect 'quit '() _) "quit_ = true"]
+    ;; The app class's function running the node again in each graph that has it
+    [(t-effect 'run-once (list (t-lit node _ _)) _) (format "runOnce_~a()" node)]))
 
 (define (declaration name t dialect)
   (match* (t dialect)

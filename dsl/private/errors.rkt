@@ -203,7 +203,7 @@
          "(import geometry)")
    (kind 'bad-effect
          "An app's effect outside an app"
-         "`print!`, `set-frames-in-flight!`, `resize!` and `quit!` act on the running program, so only an app's handlers use them; shaders and functions compute values (and shaders write buffers and images)."
+         "`print!`, `set-frames-in-flight!`, `resize!`, `quit!` and `run-once!` act on the running program, so only an app's handlers use them; shaders and functions compute values (and shaders write buffers and images)."
          "(define (shout [x : float]) : float\n  (begin (print! x) x))")
    (kind 'version-in-body
          "A shader body declares what ZGAL generates"
