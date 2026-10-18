@@ -1462,6 +1462,8 @@ private:
                 vkCmdResetQueryPool(commandBuffer, **slot.timestamps, 2 * node, 2);
                 vkCmdWriteTimestamp2(commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, **slot.timestamps, 2 * node);
             }
+            // Named for profilers and GPU captures
+            context_->beginLabel(commandBuffer, nodes_[node].name.c_str());
             RecordContext recordContext{frameContext, commandBuffer, {0, 0}};
             if (record.node->kind() == NodeKind::Graphics) {
                 recordContext.renderExtent = beginRendering(commandBuffer, *record.target, frame, acquired);
@@ -1470,6 +1472,7 @@ private:
             } else {
                 record.node->record(recordContext);
             }
+            context_->endLabel(commandBuffer);
             if (timed) {
                 vkCmdWriteTimestamp2(commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, **slot.timestamps, 2 * node + 1);
                 slot.timed.emplace_back(node, queue);

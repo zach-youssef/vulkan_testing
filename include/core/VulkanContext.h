@@ -282,6 +282,23 @@ public: // Accessors
 
     bool validationEnabled() { return messenger_ != VK_NULL_HANDLE; }
 
+    // Names the commands recorded between beginLabel and endLabel (which nest) for debuggers and
+    // profilers, e.g. GPU captures and Instruments' Metal traces. Does nothing where the instance
+    // lacks VK_EXT_debug_utils (labelsEnabled()).
+    void beginLabel(VkCommandBuffer commandBuffer, const char* name) {
+        if (beginLabel_) {
+            VkDebugUtilsLabelEXT label{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
+            label.pLabelName = name;
+            beginLabel_(commandBuffer, &label);
+        }
+    }
+    void endLabel(VkCommandBuffer commandBuffer) {
+        if (endLabel_) {
+            endLabel_(commandBuffer);
+        }
+    }
+    bool labelsEnabled() const { return beginLabel_ != nullptr; }
+
     std::string deviceName() {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
@@ -753,8 +770,13 @@ private:
                 extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
             }
         }
-        if (useValidation) {
+        // Debug utils name spans of commands for debuggers and profilers (labelCommands), and
+        // deliver validation messages
+        const bool useDebugUtils = hasInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        if (useDebugUtils) {
             extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
+        if (useValidation) {
             layers.push_back(validationLayer);
         }
 
@@ -796,6 +818,16 @@ private:
         createInfo.ppEnabledLayerNames = layers.data();
 
         VK_TRY(VulkanInstance::create(instance_, createInfo), "Failed to create instance");
+        if (useDebugUtils) {
+            beginLabel_ = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
+                vkGetInstanceProcAddr(**instance_, "vkCmdBeginDebugUtilsLabelEXT"));
+            endLabel_ = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
+                vkGetInstanceProcAddr(**instance_, "vkCmdEndDebugUtilsLabelEXT"));
+            if (!beginLabel_ || !endLabel_) {
+                beginLabel_ = nullptr;
+                endLabel_ = nullptr;
+            }
+        }
 
         if (useValidation) {
             VkDebugUtilsMessengerCreateInfoEXT messengerInfo{};
@@ -1010,6 +1042,8 @@ private:
 
     std::unique_ptr<VulkanInstance> instance_;
     VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
+    PFN_vkCmdBeginDebugUtilsLabelEXT beginLabel_ = nullptr;   // Null without VK_EXT_debug_utils
+    PFN_vkCmdEndDebugUtilsLabelEXT endLabel_ = nullptr;
     std::unique_ptr<VulkanSurface> surface_;
 
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;

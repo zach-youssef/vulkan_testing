@@ -254,7 +254,9 @@ int main() { return exitStatus(runApp()); }            // prints the error
   `graph.timings()` returns the last timed frame's per-node GPU milliseconds (waiting for it).
   Timestamps serialize work around timed nodes on their queue, so compare timings with each other;
   other queues' work runs alongside and inflates a node's time, so time a node alone (disable the
-  others) for its own cost. `make run-bench` times ZGAL's library kernels (`tools/bench`).
+  others) for its own cost. `make run-bench` times ZGAL's library kernels (`tools/bench`). The graph
+  labels each node's commands with its name (`ctx.beginLabel`/`endLabel`, VK_EXT_debug_utils), so
+  GPU captures and Instruments' Metal System Trace show node names.
 - `VulkanApp` owns graphs: `createGraph()`, `setActiveGraph()`, `destroyGraph()`. Headless code can
   construct `RenderGraph(ctx)` directly and call `execute()`.
 - Input: `app.setInputHandlers({.key = ..., .mouseButton = ..., .cursorPos = ..., .scroll = ...})`
