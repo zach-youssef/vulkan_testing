@@ -252,7 +252,9 @@ int main() { return exitStatus(runApp()); }            // prints the error
   finished copy without waiting, for polling between frames.
 - Profiling: `graph.setTimingEnabled(true)` writes timestamps around every GPU node, and
   `graph.timings()` returns the last timed frame's per-node GPU milliseconds (waiting for it).
-  Timestamps serialize work around timed nodes, so compare timings with each other.
+  Timestamps serialize work around timed nodes on their queue, so compare timings with each other;
+  other queues' work runs alongside and inflates a node's time, so time a node alone (disable the
+  others) for its own cost. `make run-bench` times ZGAL's library kernels (`tools/bench`).
 - `VulkanApp` owns graphs: `createGraph()`, `setActiveGraph()`, `destroyGraph()`. Headless code can
   construct `RenderGraph(ctx)` directly and call `execute()`.
 - Input: `app.setInputHandlers({.key = ..., .mouseButton = ..., .cursorPos = ..., .scroll = ...})`

@@ -172,7 +172,7 @@ test-example-scene: $(SCENE_OUT)/scene_example
 	./$< --frames 60 --size 640x360 --capture $(SCENE_OUT)/smoke.png --validation
 
 # All the examples' smoke tests
-test-examples: test-example-image_filter test-example-particles test-example-scene test-main
+test-examples: test-example-image_filter test-example-particles test-example-scene test-main test-bench
 
 examples: $(SIMPLE_OUT)/simple_example $(IMAGE_FILTER_BIN) $(PARTICLES_OUT)/particles $(SCENE_OUT)/scene_example
 
@@ -258,6 +258,23 @@ test-main: $(MAIN_TEST_BIN) $(IMAGE_FILTER_DIFF)
 	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/main/painted.approved.png $(MAIN_TEST_OUT)/out.png 0
 	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/timed.png --frames 2 --timings --validation | grep -q "^painting "
 
+# The benchmark (tools/bench): ZGAL's library kernels and fallbacks at a size the command line gives.
+#   make bench                         - builds build/tools/bench/bench
+#   make run-bench BENCH_ARGS='...'    - runs it with --timings (e.g. BENCH_ARGS='--count 16777216')
+#   make test-bench                    - a small run with validation (part of test-examples)
+BENCH_OUT = $(OUT)/tools/bench
+BENCH_BIN = $(BENCH_OUT)/bench
+
+$(eval $(call zgal-program,tools/bench/bench.zgal,$(BENCH_OUT),bench,))
+
+bench: $(BENCH_BIN)
+
+run-bench: $(BENCH_BIN)
+	./$(BENCH_BIN) --frames 60 --timings $(BENCH_ARGS)
+
+test-bench: $(BENCH_BIN)
+	./$(BENCH_BIN) --count 100000 --draws 64 --frames 3 --timings --validation | grep -q "^sortCounted "
+
 # The ZGAL compiler's tests, and its documentation, whose examples are compiled as it's built.
 # The tests compile generated code with the build's tools and flags.
 DOCS_OUT = $(OUT)/docs
@@ -284,7 +301,7 @@ approve-screenshots:
 	done
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
-.PHONY: clean examples shaders test test-cpu test-gpu test-dsl docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main
+.PHONY: clean examples shaders test test-cpu test-gpu test-dsl docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main bench run-bench test-bench
 
 
 clean:

@@ -638,6 +638,9 @@ public: // Compiling and running
     // Measures each GPU node's time, with timestamps written before and after it, for profiling. A
     // timestamp waits for the work recorded before it on its queue, so work that would overlap
     // serializes around timed nodes: compare timings with each other, not with untimed frames.
+    // Work on other queues still runs alongside, and a node's time includes it slowing the node
+    // down (on MoltenVK, a small node beside a large one can take as long as the large one): for a
+    // node's own cost, time it with the others disabled (tools/bench's --only).
     // Nodes on queues without timestamps, or without graphics or compute (transfer-only queues
     // can't reset queries), aren't timed.
     void setTimingEnabled(bool enabled) { timing_ = enabled; }

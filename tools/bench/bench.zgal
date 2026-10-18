@@ -1,0 +1,100 @@
+;; A benchmark of ZGAL's compute library and its fallbacks (make bench): reductions, scans and sorts
+;; over --count elements, each with a count the graph computes (a dispatch sized to the elements)
+;; and with a count only the GPU knows (a fixed grid of 256 workgroups), a copy of the elements as a
+;; bandwidth baseline, and indirect draws with and without a count (where the device lacks
+;; drawIndirectCount, the counted draw first runs a node limiting the commands).
+;;
+;;     bench --count N --frames F --timings             each node's GPU time over F frames
+;;     bench --count N --frames F --timings --only K    the same for one family of nodes alone
+
+(import random)
+(import indirect)
+
+;; Random elements, the same each frame
+(compute-material Fill
+  (workgroup 256)
+  (bindings (values (buffer-array uint)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count) (write! (at values i) (pcgHash i))))))
+
+;; Commands drawing a triangle each, of which the counted draw draws half
+(compute-material WriteDraws
+  (workgroup 64)
+  (bindings (draws (buffer-array DrawCommand)) (drawCounts (buffer-array uint)))
+  (push (total uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i total)
+       (write! (at draws i) (DrawCommand 3 1 0 i))
+       (when (= i 0) (write! (at drawCounts 0) (/ total 2)))))))
+
+;; A small triangle per instance
+(graphics-material Dot
+  (outputs (color vec4))
+  (vertex
+   (let* ([corner (vec2 (float (bitand vertexIndex 1)) (float (shr vertexIndex 1)))]
+          [cell (vec2 (float (bitand instanceIndex 15)) (float (bitand (shr instanceIndex 4) 15)))])
+     (results #:position (vec4 (- (* (+ cell (* corner 0.5)) 0.125) 1.0) 0.0 1.0))))
+  (fragment (vec4 1.0 1.0 1.0 1.0)))
+
+(graph Bench
+  (parameter n uint)
+  (parameter draws uint)
+  (buffer values uint n #:frames shared)
+  (buffer copied uint n #:frames shared)
+  (buffer counts uint 1 #:frames shared)
+  (buffer results uint 2 #:frames shared)
+  (buffer scanned uint n #:frames shared)
+  (buffer scannedCounted uint n #:frames shared)
+  (buffer sorted uint n #:frames shared)
+  (buffer sortedCounted uint n #:frames shared)
+  (buffer commands DrawCommand draws #:frames shared)
+  (buffer drawCounts uint 1 #:frames shared)
+  (image picture rgba8 (fixed 128 128) #:frames shared)
+  (target canvas (color picture #:clear (0.0 0.0 0.0 1.0) #:load load))
+  (material filling Fill values #:push ((count n)) #:invocations (n))
+  (material writing WriteDraws (draws commands) drawCounts #:push ((total draws)) #:invocations (draws))
+  (material dots Dot)
+  (dispatch fill filling)
+  (clear setCount counts #:value n)
+  (copy copy values copied)
+  (reduce reduce values (at results 0) #:op add #:count n)
+  (reduce reduceCounted values (at results 1) #:op add #:count (at counts 0))
+  (inclusive-scan scan values scanned #:op add #:count n)
+  (inclusive-scan scanCounted values scannedCounted #:op add #:count (at counts 0))
+  (copy toSorted values sorted)
+  (sort sort sorted #:count n)
+  (copy toSortedCounted values sortedCounted)
+  (sort sortCounted sortedCounted #:count (at counts 0))
+  (dispatch write writing)
+  (draw drawAll canvas dots #:indirect (at commands 0) #:draws draws)
+  (draw drawCounted canvas dots #:indirect (at commands 0) #:draws draws #:count (at drawCounts 0)))
+
+(app Bencher
+  (parameter count uint)
+  (parameter draws uint)
+  (parameter only uint)
+  ;; With --only, one family of nodes runs alone: nodes on other queues would overlap it, and
+  ;; timestamps around a node measure whatever runs beside it too
+  (run Bench (n count) (draws draws)
+    #:enabled ((copy (or (= only 0) (= only 1)))
+               (reduce (or (= only 0) (= only 2)))
+               (reduceCounted (or (= only 0) (= only 2)))
+               (scan (or (= only 0) (= only 3)))
+               (scanCounted (or (= only 0) (= only 3)))
+               (toSorted (or (= only 0) (= only 4)))
+               (sort (or (= only 0) (= only 4)))
+               (toSortedCounted (or (= only 0) (= only 4)))
+               (sortCounted (or (= only 0) (= only 4)))
+               (write (or (= only 0) (= only 5)))
+               (drawAll (or (= only 0) (= only 5)))
+               (drawCounted (or (= only 0) (= only 5))))))
+
+(main Bencher
+  (about "Times ZGAL's library kernels and fallbacks (with --timings)")
+  (option count "--count" "elements reduced, scanned and sorted" #:default 1048576 #:range (1 67108864))
+  (option draws "--draws" "commands the indirect draws read" #:default 4096 #:range (2 65536))
+  (option only "--only" "run one family of nodes: 1 the copy, 2 reductions, 3 scans, 4 sorts, 5 draws (0: all)"
+          #:default 0 #:range (0 5)))

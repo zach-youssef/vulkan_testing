@@ -1319,6 +1319,9 @@ buffer with @racket[#:frames shared], or an uploaded one): each frame's node the
 previous frame's to finish with them anyway, so scratch buffers per frame would only cost memory.
 Otherwise there's one per frame, so frames' nodes can overlap.
 
+The benchmark in @tt{tools/bench} (@tt{make run-bench}) times these nodes and draws counted without
+@tt{drawIndirectCount} at the size its @tt{--count} gives.
+
 @subsection[#:tag "loops"]{Loops of nodes}
 
 Some graphs have a node per something: per batch of work the application computes, per pass of an
