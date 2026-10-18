@@ -60,7 +60,6 @@ struct HeadlessApp {
         config.window = std::nullopt;
         config.enableValidation = true;
         config.logInstanceInfo = false;
-        config.shaderSearchPaths = {testShaderDir()};
         config.onValidationMessage = [this](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
             if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
                 std::lock_guard<std::mutex> lock(mutex);

@@ -56,8 +56,9 @@ struct AppConfig {
     uint32_t framesInFlight = 2;
     // Device features the application needs beyond the wrapper's; see VulkanContextConfig::features
     DeviceFeatures features;
-    // Directories the shader library loads SPIR-V from (see ShaderLibrary)
-    std::vector<std::string> shaderSearchPaths;
+    // Directories the shader library loads SPIR-V from (see ShaderLibrary). By default, the
+    // directory "shaders" beside the executable.
+    std::vector<std::string> shaderSearchPaths = defaultShaderSearchPaths();
     // Directories assets loaded by relative path are found in (see VulkanContext::findAsset)
     std::vector<std::string> assetSearchPaths;
     // Reload shaders whose SPIR-V files change on disk, checking between frames (errors are printed

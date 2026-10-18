@@ -25,13 +25,9 @@
 
 
 // Defined by the Makefile
-#ifndef SIMPLE_EXAMPLE_SHADER_DIR
-#error "SIMPLE_EXAMPLE_SHADER_DIR must be defined to the directory containing the compiled shaders"
-#endif
 #ifndef SIMPLE_EXAMPLE_TEXTURE_DIR
 #error "SIMPLE_EXAMPLE_TEXTURE_DIR must be defined to the directory containing the example's textures"
 #endif
-const std::string shaderDir = SIMPLE_EXAMPLE_SHADER_DIR;
 const std::string textureDir = SIMPLE_EXAMPLE_TEXTURE_DIR;
 
 // Draws a texture with a rotating camera (Tutorial in simple.zgal), at the app's angle. Owns the
@@ -159,8 +155,8 @@ Result<void> runExample() {
     config.applicationName = "Simple example";
     config.window = WindowConfig{"Simple example", 800, 600};
     config.enableValidation = true;
-    // SPIR-V compiled by the Makefile; rebuilding it (make shaders) while the example runs reloads it
-    config.shaderSearchPaths = {shaderDir};
+    // The SPIR-V the Makefile compiles is found beside the executable (shaders/, the default search
+    // path); rebuilding it (make shaders) while the example runs reloads it
     config.autoReloadShaders = true;
 
     VulkanApp app;

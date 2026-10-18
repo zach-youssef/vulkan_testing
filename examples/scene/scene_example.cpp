@@ -51,11 +51,6 @@
 #include <optional>
 #include <string>
 
-// Defined by the Makefile
-#ifndef SCENE_EXAMPLE_SHADER_DIR
-#error "SCENE_EXAMPLE_SHADER_DIR must be defined to the directory containing the compiled shaders"
-#endif
-const std::string shaderDir = SCENE_EXAMPLE_SHADER_DIR;
 
 // ---------------------------------------------------------------------------------------------------
 // Geometry
@@ -144,8 +139,8 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
         std::cerr << "Validation: " << message << std::endl;
     };
     config.logInstanceInfo = false;
-    // SPIR-V compiled by the Makefile; rebuilding it (make shaders) while the example runs reloads it
-    config.shaderSearchPaths = {shaderDir};
+    // The SPIR-V the Makefile compiles is found beside the executable (shaders/, the default search
+    // path); rebuilding it (make shaders) while the example runs reloads it
     config.autoReloadShaders = !headless;
 
     VulkanApp app;

@@ -56,7 +56,6 @@ private:
 
         VulkanContextConfig config;
         config.applicationName = "vulkan_test GPU tests";
-        config.shaderSearchPaths = {TEST_SHADER_DIR};
         config.assetSearchPaths = {TEST_ASSET_DIR};   // Models and images (tests/gpu/assets)
         // Indirect draws of several commands, whose firstInstance chooses a material (IndirectTest)
         config.features.core.features.multiDrawIndirect = VK_TRUE;

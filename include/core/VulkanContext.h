@@ -8,6 +8,7 @@
 #include "core/DeviceSelection.h"
 #include "core/DeviceFeatures.h"
 #include "core/FrameResources.h"
+#include "core/Platform.h"
 #include "descriptors/UniversalSet.h"
 
 #include <array>
@@ -166,8 +167,9 @@ struct VulkanContextConfig {
     // Size of the universal descriptor set (see DescriptorHeap)
     DescriptorCapacities descriptorCapacities;
 
-    // Directories the shader library looks for SPIR-V in (see ShaderLibrary)
-    std::vector<std::string> shaderSearchPaths;
+    // Directories the shader library looks for SPIR-V in (see ShaderLibrary). By default, the
+    // directory "shaders" beside the executable.
+    std::vector<std::string> shaderSearchPaths = defaultShaderSearchPaths();
 
     // Directories assets (models, images) loaded by relative path are found in, in order (see
     // VulkanContext::findAsset). Without any, relative paths are relative to the working directory.

@@ -78,7 +78,8 @@ Result<void> runApp() {
     AppConfig config;
     config.window = WindowConfig{"My app", 1280, 720};   // std::nullopt for headless
     config.enableValidation = true;
-    config.shaderSearchPaths = {MY_SHADER_DIR};            // where <name>.spv files are
+    // SPIR-V (<name>.<stage>.spv) is found in shaders/ beside the executable by default
+    // (config.shaderSearchPaths)
     config.assetSearchPaths = {MY_ASSET_DIR};              // where ctx.findAsset(path) looks
     config.autoReloadShaders = true;                       // optional
     VulkanApp app;

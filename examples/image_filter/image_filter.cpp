@@ -47,11 +47,6 @@
 #include <string>
 #include <vector>
 
-// Defined by the Makefile
-#ifndef IMAGE_FILTER_SHADER_DIR
-#error "IMAGE_FILTER_SHADER_DIR must be defined to the directory containing the compiled shaders"
-#endif
-
 namespace {
 
 const char* kUsage =
@@ -195,7 +190,6 @@ int main(int argc, char** argv) {
     {
         VulkanContextConfig config;
         config.applicationName = "image_filter";
-        config.shaderSearchPaths = {IMAGE_FILTER_SHADER_DIR};
         config.enableValidation = options.validation;
         config.enableSynchronizationValidation = options.validation;
         config.onValidationMessage = [&validationMessages](VkDebugUtilsMessageSeverityFlagBitsEXT severity,

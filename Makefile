@@ -71,7 +71,6 @@ SIMPLE_OUT = $(EXAMPLES_OUT)/simple
 SIMPLE_GEN = $(SIMPLE_OUT)/generated
 SIMPLE_ZGAL_STAMP = $(SIMPLE_GEN)/simple.zgal.stamp
 SIMPLE_CFLAGS = $(CFLAGS) -I$(SIMPLE_GEN) \
-                -DSIMPLE_EXAMPLE_SHADER_DIR='"$(abspath $(SIMPLE_OUT)/shaders)"' \
                 -DSIMPLE_EXAMPLE_TEXTURE_DIR='"$(abspath $(SIMPLE_DIR)/textures)"'
 
 $(eval $(call zgal-rule,$(SIMPLE_DIR)/simple.zgal,$(SIMPLE_GEN),$(SIMPLE_OUT)/shaders))
@@ -95,7 +94,7 @@ IMAGE_FILTER_BIN = $(IMAGE_FILTER_OUT)/image_filter
 # The shaders and the graph are in image_filter.zgal
 IMAGE_FILTER_GEN = $(IMAGE_FILTER_OUT)/generated
 IMAGE_FILTER_ZGAL_STAMP = $(IMAGE_FILTER_GEN)/image_filter.zgal.stamp
-IMAGE_FILTER_CFLAGS = $(CFLAGS) -I$(IMAGE_FILTER_GEN) -DIMAGE_FILTER_SHADER_DIR='"$(abspath $(IMAGE_FILTER_OUT)/shaders)"'
+IMAGE_FILTER_CFLAGS = $(CFLAGS) -I$(IMAGE_FILTER_GEN)
 IMAGE_FILTER_TEST_DIR = $(IMAGE_FILTER_DIR)/tests
 IMAGE_FILTER_TEST_OUT = $(IMAGE_FILTER_OUT)/tests
 IMAGE_FILTER_DIFF = $(IMAGE_FILTER_TEST_OUT)/image_diff
@@ -138,7 +137,7 @@ PARTICLES_OUT = $(EXAMPLES_OUT)/particles
 # The shaders and the graph are in particles.zgal
 PARTICLES_GEN = $(PARTICLES_OUT)/generated
 PARTICLES_ZGAL_STAMP = $(PARTICLES_GEN)/particles.zgal.stamp
-PARTICLES_CFLAGS = $(CFLAGS) -I$(PARTICLES_GEN) -DPARTICLES_SHADER_DIR='"$(abspath $(PARTICLES_OUT)/shaders)"'
+PARTICLES_CFLAGS = $(CFLAGS) -I$(PARTICLES_GEN)
 
 $(eval $(call zgal-rule,$(PARTICLES_DIR)/particles.zgal,$(PARTICLES_GEN),$(PARTICLES_OUT)/shaders))
 
@@ -163,7 +162,7 @@ SCENE_OUT = $(EXAMPLES_OUT)/scene
 # The shaders and the graph are in scene.zgal
 SCENE_GEN = $(SCENE_OUT)/generated
 SCENE_ZGAL_STAMP = $(SCENE_GEN)/scene.zgal.stamp
-SCENE_CFLAGS = $(CFLAGS) -I$(SCENE_GEN) -DSCENE_EXAMPLE_SHADER_DIR='"$(abspath $(SCENE_OUT)/shaders)"'
+SCENE_CFLAGS = $(CFLAGS) -I$(SCENE_GEN)
 
 $(eval $(call zgal-rule,$(SCENE_DIR)/scene.zgal,$(SCENE_GEN),$(SCENE_OUT)/shaders))
 
@@ -205,7 +204,6 @@ TEST_GEN = $(TEST_OUT)/generated
 TEST_ZGAL_DIR = $(TEST_DIR)/gpu/zgal
 TEST_ZGAL_STAMP = $(TEST_GEN)/interfaces.zgal.stamp
 TEST_CFLAGS = $(CFLAGS) -Ithird_party -Ithird_party/approvaltests -Ithird_party/flip -I$(TEST_DIR) -I$(TEST_GEN) \
-              -DTEST_SHADER_DIR='"$(abspath $(TEST_SHADER_OUT))"' \
               -DTEST_TEXTURE_DIR='"$(abspath $(SIMPLE_DIR)/textures)"' \
               -DTEST_ASSET_DIR='"$(abspath $(TEST_DIR)/gpu/assets)"'
 TEST_HEADERS = $(HEADERS) $(wildcard $(TEST_DIR)/*/*.h)

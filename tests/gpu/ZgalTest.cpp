@@ -458,7 +458,6 @@ struct FeatureContext {
     explicit FeatureContext(const DeviceFeatures& features) {
         VulkanContextConfig config;
         config.applicationName = "ZGAL feature tests";
-        config.shaderSearchPaths = {TEST_SHADER_DIR};
         config.enableValidation = true;
         config.enableSynchronizationValidation = true;
         config.features = features;

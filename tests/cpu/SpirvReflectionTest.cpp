@@ -1,3 +1,4 @@
+#include "core/Platform.h"
 #include "shaders/SpirvReflection.h"
 
 #include "common/ResultChecks.h"
@@ -7,15 +8,11 @@
 #include <filesystem>
 #include <fstream>
 
-#ifndef TEST_SHADER_DIR
-#error "TEST_SHADER_DIR must be defined to the directory containing the compiled test shaders"
-#endif
-
 namespace {
 
-// A compiled GPU test shader (the CPU tests depend on them being built)
+// A compiled GPU test shader (the CPU tests depend on them being built, beside the executable)
 std::vector<char> testSpirv(const std::string& name) {
-    const auto path = std::filesystem::path(TEST_SHADER_DIR) / (name + ".spv");
+    const auto path = executableDirectory() / "shaders" / (name + ".spv");
     std::ifstream file(path, std::ios::ate | std::ios::binary);
     REQUIRE_MESSAGE(file.is_open(), "Missing " << path);
     std::vector<char> code(static_cast<size_t>(file.tellg()));

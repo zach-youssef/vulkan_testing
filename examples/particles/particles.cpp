@@ -28,11 +28,6 @@
 #include <iostream>
 #include <utility>
 
-// Defined by the Makefile
-#ifndef PARTICLES_SHADER_DIR
-#error "PARTICLES_SHADER_DIR must be defined to the directory containing the compiled shaders"
-#endif
-
 constexpr uint32_t kParticleCount = 100'000;
 // The size of the headless image
 constexpr VkExtent2D kHeadlessExtent{1024, 768};
@@ -71,7 +66,6 @@ Result<std::optional<std::vector<uint8_t>>> run(const Options& options, std::ato
     config.enableValidation = true;
     config.enableSynchronizationValidation = true;
     config.logInstanceInfo = false;
-    config.shaderSearchPaths = {PARTICLES_SHADER_DIR};
     config.autoReloadShaders = !headless;
     config.onValidationMessage = [&validationMessages](VkDebugUtilsMessageSeverityFlagBitsEXT, const char* message) {
         ++validationMessages;

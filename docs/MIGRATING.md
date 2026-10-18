@@ -127,7 +127,7 @@ direct equivalents.
 
 | Old | New |
 |---|---|
-| `readFile(absolutePath + "/x.spv")` (`FileUtil.h`) | `TRY_ASSIGN(auto shader, ctx.shaders().get("x.vert"))`, with `AppConfig::shaderSearchPaths` (or `VulkanContextConfig::shaderSearchPaths`) pointing at the SPIR-V directory. Name SPIR-V files `<name>.<stage>.spv`. |
+| `readFile(absolutePath + "/x.spv")` (`FileUtil.h`) | `TRY_ASSIGN(auto shader, ctx.shaders().get("x.vert"))`, which finds SPIR-V in `shaders/` beside the executable, or in `AppConfig::shaderSearchPaths` (`VulkanContextConfig::shaderSearchPaths`) if set. Name SPIR-V files `<name>.<stage>.spv`. |
 | Restart to pick up shader changes | `app.reloadShaders()` or `AppConfig::autoReloadShaders = true` |
 
 ### Render graph
