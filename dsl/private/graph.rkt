@@ -337,6 +337,55 @@
     (names (graph-item-name item) stx)
     (hash-set! env (graph-item-name item) (item-entry item))
     item)
+  ;; Whether expression e uses the variables of the loops the node being read is in
+  (define (loop-dependent? e)
+    (define variables (for*/list ([l (in-list current-loops)] [c (in-list (g-loop-clauses l))]) (loop-clause-name c)))
+    (let walk ([e e])
+      (match e
+        [(e-ref n _) (and (member n variables) #t)]
+        [(e-op _ args _) (ormap walk args)]
+        [(e-field base _ _) (walk base)]
+        [(element-ref _ index _) (walk index)]
+        [_ #f])))
+  ;; An item a node declares for itself (a library node's scratch buffers and materials)
+  (define (declare-internal! item stx) (declare! item stx) (set! node-items (append node-items (list item))))
+  ;; The #:when of the items a node declares: the node's, unless it uses a loop's variables (then
+  ;; they're created whatever the iterations' conditions, as the iterations share them)
+  (define (internal-condition options)
+    (define c (condition options '#:when))
+    (and c (not (loop-dependent? c)) c))
+  ;; The push constants and invocations of the material instances library nodes in loops declare,
+  ;; which their steps give (by instance name)
+  (define internal-overrides (make-hash))
+  ;; Declares instance `name` of a library material m, with bindings and push (hashes of names to
+  ;; resources and expressions) and invocations. In a loop, where they can use its variables, the
+  ;; instance computes no push constants or invocations: the iterations' steps give them
+  ;; (make-step), so they share the instance, and its pipeline.
+  (define (internal-instance! name m bindings push invocations created-when stx)
+    (define where (stx->loc stx))
+    (define pairs (for/list ([f (in-list (material-push m))]) (cons f (hash-ref push (field-name f)))))
+    (define bound (for/list ([b (in-list (material-bindings m))]) (cons b (hash-ref bindings (binding-name b)))))
+    (cond
+      [(pair? current-loops)
+       (hash-set! internal-overrides name (node-overrides pairs invocations))
+       (declare-internal! (g-material name m bound (for/list ([p (in-list pairs)]) (cons (car p) #f)) '() #f created-when where) stx)]
+      [else (declare-internal! (g-material name m bound pairs '() invocations created-when where) stx)])
+    name)
+  ;; A step dispatching instance m (with its push constant pass replaced by pass, unless #f)
+  (define (make-step m pass where)
+    (match (hash-ref internal-overrides m #f)
+      [#f (k-step m pass #f)]
+      [(node-overrides pairs invocations)
+       (k-step m #f (node-overrides (for/list ([p (in-list pairs)])
+                                      (if (and pass (equal? (field-name (car p)) "pass")) (cons (car p) (e-literal pass where)) p))
+                                    invocations))]))
+  ;; How many elements buffer holds, as an expression, for scratch buffers sized like it; when the
+  ;; graph doesn't know, (unknown what-it-is): "read from files" or "an imported buffer"
+  (define (buffer-capacity buffer where unknown)
+    (match (entry-item (hash-ref env buffer))
+      [(g-buffer _ _ c _ _ _) c]
+      [(g-upload _ source _ _) (e-op 'count (list (e-ref source where)) where)]
+      [item (unknown (if (g-buffer-file? item) "read from files" "an imported buffer"))]))
   (define (lookup stx kinds what)
     (define n (syntax-e stx))
     (unless (symbol? n)
@@ -803,7 +852,7 @@
     (define node-name
       (begin (when (null? args) (zgal-error 'malformed stx "a node has a name"))
              (parse-name (first args) "the node's name")))
-    (when (and (pair? current-loops) (memq head '(extern reduce inclusive-scan exclusive-scan sort)))
+    (when (and (pair? current-loops) (memq head '(extern)))
       (zgal-error 'loop-body stx "~a ~a is in a loop, but ~a nodes aren't yet: declare it outside the loop" form node-name form))
     (node-names node-name (first args))
     (define (material-of stx kind)
@@ -863,7 +912,7 @@
          (zgal-error 'bad-option (second args) "material ~a has no #:invocations, so dispatch ~a needs them (#:invocations on the material or the dispatch), or dispatches it #:indirect (at commands index)"
                      m-name node-name))
        (node 'dispatch #:material m-name
-             #:extra (and command-stx (indirect (parse-command command-stx "DispatchCommand") #f #f #f #f))
+             #:extra (and command-stx (indirect (parse-command command-stx "DispatchCommand") #f #f #f #f #f))
              #:overrides (overrides-of m (and invocations-stx (parse-invocations invocations-stx))))]
       ['draw-meshes
        (shape 4 "(draw-meshes name target meshes material)")
@@ -1017,16 +1066,13 @@
     (define count (parse-kernel-count (hash-ref options '#:count #f) "sort" stx))
     (define gpu? (element-ref? count))
     ;; The scratch buffers hold as many elements as are sorted: the count, or with a count only the
-    ;; GPU knows, as many as the keys' buffer holds
+    ;; GPU knows (or that a loop's iterations change), as many as the keys' buffer holds
     (define capacity
       (cond
-        [(not gpu?) count]
-        [else
-         (match (entry-item (hash-ref env keys))
-           [(g-buffer _ _ c _ _ _) c]
-           [(g-upload _ source _ _) (e-op 'count (list (e-ref source where)) where)]
-           [_ (zgal-error 'type-mismatch (second args) "sort's keys ~a are ~a, whose size the graph doesn't know, so its #:count is an expression, not an element of a buffer" keys
-                       (if (g-buffer-file? (entry-item (hash-ref env keys))) "read from files" "an imported buffer"))])]))
+        [gpu? (buffer-capacity keys where (λ (what) (zgal-error 'type-mismatch (second args) "sort's keys ~a are ~a, whose size the graph doesn't know, so its #:count is an expression, not an element of a buffer" keys what)))]
+        [(loop-dependent? count)
+         (buffer-capacity keys where (λ (what) (zgal-error 'type-mismatch (second args) "sort's keys ~a are ~a, whose size the graph doesn't know, so its #:count can't use the variables of the loop it's in (the iterations share its scratch buffers, sized by its count)" keys what)))]
+        [else count]))
     (define groups (grid-groups count where))
     ;; With a count the CPU knows, up to small-sort-keys keys are sorted by one workgroup in one
     ;; dispatch, as the 24 dispatches of the passes take longer than sorting them
@@ -1036,25 +1082,20 @@
     (define flags (append (if gpu? '(gpu-count) '()) (if values-buffer '(values) '())))
     (define suffix (format "~a~a" (if value-type (string-titlecase (type-name value-type)) "Keys") (if gpu? "Counted" "")))
     (define kernel (instantiate-kernel "sort.zgal" (hash 'T (if value-type (scalar-t-kind value-type) 'uint)) flags suffix))
-    (define created-when (condition options '#:when))
+    (define created-when (internal-condition options))
     (define (internal what) (format "zgal_~a_~a" node-name what))
-    (define (declare-internal! item) (declare! item stx) (set! node-items (append node-items (list item))))
+    (define (declare-scratch! item) (declare-internal! item stx))
     (define scratch-keys (internal "keys"))
     (define scratch-values (internal "values"))
     (define histogram (internal "histogram"))
     (define frames (scratch-frames (if values-buffer (list keys values-buffer) (list keys))))
-    (declare-internal! (g-buffer scratch-keys (scalar-t 'uint) capacity frames created-when where))
+    (declare-scratch! (g-buffer scratch-keys (scalar-t 'uint) capacity frames created-when where))
     (when values-buffer
-      (declare-internal! (g-buffer scratch-values value-type capacity frames created-when where)))
-    (declare-internal! (g-buffer histogram (scalar-t 'uint) (lit (* 16 256)) frames created-when where))
+      (declare-scratch! (g-buffer scratch-values value-type capacity frames created-when where)))
+    (declare-scratch! (g-buffer histogram (scalar-t 'uint) (lit (* 16 256)) frames created-when where))
     (define (instance! what m bindings push invocations)
-      (define name (internal what))
-      (declare-internal!
-       (g-material name m
-                   (for/list ([b (in-list (material-bindings m))]) (cons b (hash-ref bindings (binding-name b))))
-                   (for/list ([f (in-list (material-push m))]) (cons f (hash-ref push (field-name f))))
-                   '() invocations #f where))
-      name)
+      (internal-instance! (internal what) m bindings push invocations created-when stx))
+    (define (step m pass) (make-step m pass where))
     (define-values (counted-bindings counted-push)
       (if gpu?
           (values (hash "counts" (element-ref-buffer count)) (hash "countIndex" (element-ref-index count)))
@@ -1073,13 +1114,13 @@
                  (with-push (hash "pass" (lit 0) "passes" (lit 1))) invocations))
     (define passes
       (append* (for/list ([pass (in-range 8)])
-                 (list (k-step counter pass) (k-step offsets #f) (k-step scatter pass)))))
+                 (list (step counter pass) (step offsets #f) (step scatter pass)))))
     (node 'kernel #:extra
           (if small
-              (cons (k-step (instance! "small" (hash-ref kernel "ZgalSortScatter") scatter-bindings
-                                       (with-push (hash "pass" (lit 0) "passes" (lit 8)))
-                                       (list (e-op 'if (list small (lit 256) (lit 0)) where)))
-                            #f)
+              (cons (step (instance! "small" (hash-ref kernel "ZgalSortScatter") scatter-bindings
+                                     (with-push (hash "pass" (lit 0) "passes" (lit 8)))
+                                     (list (e-op 'if (list small (lit 256) (lit 0)) where)))
+                          #f)
                     passes)
               passes)))
 
@@ -1122,33 +1163,29 @@
         (if d (build-time d (scalar-t 'uint) "#:draws") (e-literal 1 where))))
     (define count-stx (hash-ref options '#:count #f))
     (cond
-      [(not count-stx) (indirect command draws #f #f #f)]
+      [(not count-stx) (indirect command draws #f #f #f #f)]
       [else
-       (when (pair? current-loops)
-         (zgal-error 'loop-body count-stx "draw ~a is in a loop, but draws with a #:count aren't yet: declare it outside the loop" node-name))
        (define count (parse-element count-stx "a draw's #:count"))
-       (define t (entry-type (hash-ref env (element-ref-buffer command))))
+       (define commands (element-ref-buffer command))
+       (define t (entry-type (hash-ref env commands)))
        (define limit-material
          (hash-ref (instantiate-kernel "draws.zgal" (hash 'T (string->symbol struct-name)) '() (if (equal? struct-name "DrawCommand") "Draw" "DrawIndexed"))
                    "ZgalLimitDraws"))
        (define limited (format "zgal_~a_commands" node-name))
        (define limit (format "zgal_~a_limit" node-name))
-       (define (declare-internal! item) (declare! item stx) (set! node-items (append node-items (list item))))
-       (declare-internal! (g-buffer limited t draws 'per-frame (condition options '#:when) where))
-       (declare-internal!
-        (g-material limit limit-material
-                    (for/list ([b (in-list (material-bindings limit-material))])
-                      (cons b (case (binding-name b)
-                                [("commands") (element-ref-buffer command)]
-                                [("limited") limited]
-                                [("counts") (element-ref-buffer count)])))
-                    (for/list ([f (in-list (material-push limit-material))])
-                      (cons f (case (field-name f)
-                                [("first") (element-ref-index command)]
-                                [("countIndex") (element-ref-index count)]
-                                [("draws") draws])))
-                    '() (list draws) (condition options '#:when) where))
-       (indirect command draws count limit limited)]))
+       ;; The copies of the commands: #:draws of them, or in a loop whose variables #:draws uses, as
+       ;; many as the commands' buffer holds (the iterations share it)
+       (define capacity
+         (if (loop-dependent? draws)
+             (buffer-capacity commands where
+                              (λ (what) (zgal-error 'type-mismatch command-stx "draw ~a's commands ~a are ~a, whose size the graph doesn't know, so its #:draws can't use the variables of the loop it's in (the iterations share the copies of the commands it counts, sized by #:draws)" node-name commands what)))
+             draws))
+       (declare-internal! (g-buffer limited t capacity 'per-frame (internal-condition options) where) stx)
+       (internal-instance! limit limit-material
+                           (hash "commands" commands "limited" limited "counts" (element-ref-buffer count))
+                           (hash "first" (element-ref-index command) "countIndex" (element-ref-index count) "draws" draws)
+                           (list draws) (internal-condition options) stx)
+       (indirect command draws count limit limited (hash-ref internal-overrides limit #f))]))
 
   ;; (at buffer index): an element of a buffer of uints (or of type), e.g. a count a shader wrote
   (define (parse-element stx what #:type [type (scalar-t 'uint)])
@@ -1211,21 +1248,15 @@
     (define suffix (format "~a~a~a" (capitalized (type-name t)) (capitalized (symbol->string op)) (if gpu? "Counted" "")))
     (define flags (append (if gpu? '(gpu-count) '()) (if (eq? op 'add) '(native-scan) '())))
     (define reduce-materials (instantiate-kernel "reduce.zgal" (operator-substitutions op t) flags suffix))
-    (define created-when (condition options '#:when))
+    (define created-when (internal-condition options))
     (define (internal what) (format "zgal_~a_~a" node-name what))
-    (define (declare-internal! item) (declare! item stx) (set! node-items (append node-items (list item))))
     (define partials (internal "partials"))
     (declare-internal! (g-buffer partials t (lit 256) (scratch-frames (list (if reduce? (element-ref-buffer destination) destination)))
-                                 created-when where))
+                                 created-when where)
+                       stx)
     ;; An instance of material m. bindings, push: hashes of names to resources and expressions.
     (define (instance! what m bindings push invocations)
-      (define name (internal what))
-      (declare-internal!
-       (g-material name m
-                   (for/list ([b (in-list (material-bindings m))]) (cons b (hash-ref bindings (binding-name b))))
-                   (for/list ([f (in-list (material-push m))]) (cons f (hash-ref push (field-name f))))
-                   '() invocations #f where))
-      name)
+      (internal-instance! (internal what) m bindings push invocations created-when stx))
     (define (counted bindings push)
       (if gpu?
           (values (hash-set bindings "counts" (element-ref-buffer count)) (hash-set push "countIndex" (element-ref-index count)))
@@ -1250,7 +1281,7 @@
          (list reduce-step
                (instance! "scanPartials" (hash-ref reduce-materials "ZgalScanPartials") (hash "partials" partials) (hash "groups" groups) one-group)
                (instance! "apply" (hash-ref apply-materials "ZgalScanApply") apply-bindings apply-push invocations))]))
-    (node 'kernel #:extra (for/list ([m (in-list steps)]) (k-step m #f))))
+    (node 'kernel #:extra (for/list ([m (in-list steps)]) (make-step m #f where))))
 
   ;; (for (clause ...) node-or-loop ...): the nodes it declares, each in the loop (and those around it)
   (define (parse-loop stx)
@@ -1325,9 +1356,11 @@
          (let ([n (parse-node item-stx)])
            (begin0 (values (append (reverse node-items) items) (cons n nodes))
                    (set! node-items '())))]
-        ;; A loop's nodes (which declare no items)
+        ;; A loop's nodes, and the items they declare (which the iterations share)
         [(eq? (head-symbol item-stx) 'for)
-         (values items (append (reverse (parse-loop item-stx)) nodes))]
+         (let ([looped (parse-loop item-stx)])
+           (begin0 (values (append (reverse node-items) items) (append (reverse looped) nodes))
+                   (set! node-items '())))]
         [else
          ;; An item, or the items a model declares
          (let ([parsed (parse-item item-stx)])
@@ -1345,8 +1378,19 @@
     ;; Push constants it leaves out, every node using it gives
     (for ([pair (in-list (g-material-push item))] #:unless (cdr pair))
       (define f (car pair))
-      (define gives? (λ (n) (and (g-node-overrides n)
-                                 (for/or ([p (in-list (node-overrides-push (g-node-overrides n)))]) (equal? (field-name (car p)) (field-name f))))))
+      ;; The overrides of n's uses of the material: its own, its steps' or its limiting dispatch's
+      (define (overrides-of n)
+        (define m (g-material-name item))
+        (append (if (and (equal? (g-node-material n) m) (g-node-overrides n)) (list (g-node-overrides n)) '())
+                (if (eq? (g-node-kind n) 'kernel)
+                    (for/list ([s (in-list (g-node-extra n))] #:when (and (equal? (k-step-material s) m) (k-step-overrides s)))
+                      (k-step-overrides s))
+                    '())
+                (match (g-node-extra n)
+                  [(indirect _ _ _ (== m) _ (? values o)) (list o)]
+                  [_ '()])))
+      (define gives? (λ (n) (for*/or ([o (in-list (overrides-of n))] [p (in-list (node-overrides-push o))])
+                              (equal? (field-name (car p)) (field-name f)))))
       (define lacking (findf (λ (n) (not (gives? n))) users))
       (when lacking
         (zgal-error 'incomplete-material (g-material-loc item)

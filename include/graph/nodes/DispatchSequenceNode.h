@@ -5,6 +5,7 @@
 #include "materials/Material.h"
 
 #include <cstring>
+#include <functional>
 #include <vector>
 
 /*
@@ -14,7 +15,10 @@
  step's reads and writes, so a step may read what earlier ones wrote to any buffer or image.
 
  A step can replace part of its material's push constants for its own dispatch (e.g. a pass index,
- so passes share a material and its pipeline): `push` overwrites the bytes from `pushOffset`.
+ so passes share a material and its pipeline): `push` overwrites the bytes from `pushOffset`. For
+ what's only known each frame, `afterBind` is called after the material is bound (and `push`
+ pushed), e.g. to push the step's own push constants, and `workgroups` gives the step's workgroups
+ instead of its material's (so nodes, e.g. a loop's, can share materials and size their own work).
 
  A step whose material dispatches no workgroups this frame is skipped, barrier and all, so a node
  can hold alternative algorithms and size the one it uses (e.g. one workgroup for few elements).
@@ -25,13 +29,15 @@ public:
         Handle<ComputeMaterial> material;
         uint32_t pushOffset = 0;
         std::vector<uint8_t> push;
+        std::function<void(const RecordContext&)> afterBind;
+        std::function<glm::vec3(const RecordContext&)> workgroups;
     };
 
     // A step dispatching material with the uint32_t at pushOffset replaced by value
     static Step withPushedUint(Handle<ComputeMaterial> material, uint32_t pushOffset, uint32_t value) {
         std::vector<uint8_t> bytes(sizeof(value));
         std::memcpy(bytes.data(), &value, sizeof(value));
-        return {std::move(material), pushOffset, std::move(bytes)};
+        return {std::move(material), pushOffset, std::move(bytes), nullptr, nullptr};
     }
 
     explicit DispatchSequenceNode(std::vector<Step> steps) : steps_(std::move(steps)) {
@@ -58,7 +64,7 @@ public:
         VkCommandBuffer cmd = context.commandBuffer;
         bool dispatched = false;
         for (const Step& step : steps_) {
-            const glm::vec3 groups = step.material->getDispatchDimensions();
+            const glm::vec3 groups = step.workgroups ? step.workgroups(context) : step.material->getDispatchDimensions();
             if (groups.x < 1.0f || groups.y < 1.0f || groups.z < 1.0f) {
                 continue;
             }
@@ -77,6 +83,9 @@ public:
             if (!step.push.empty()) {
                 vkCmdPushConstants(cmd, step.material->getPipelineLayout(), VK_SHADER_STAGE_ALL, step.pushOffset,
                                    static_cast<uint32_t>(step.push.size()), step.push.data());
+            }
+            if (step.afterBind) {
+                step.afterBind(context);
             }
             vkCmdDispatch(cmd, static_cast<uint32_t>(groups.x), static_cast<uint32_t>(groups.y),
                           static_cast<uint32_t>(groups.z));

@@ -144,16 +144,38 @@
                       "(app A (state (filling bool #t)) (run G (n 1) #:enabled ((fill state.filling))))\n"))))
   (check-true (string-contains? h "for (const NodeId node : ids0_->nodes.fill) { graph0_->setEnabled(node, enabled_fill()); }")))
 
+(test-case "Library nodes and counted draws in loops share their materials, whose steps push each iteration's values"
+  (define h (header (compile-text
+                     (string-append
+                      "(import indirect)\n"
+                      (graph "  (buffer sums uint 64 #:frames shared)"
+                             "  (buffer keys uint 64 #:frames shared)"
+                             "  (buffer draws DrawCommand 8 #:frames shared)"
+                             "  (material painting Paint #:push ((row 0)))"
+                             "  (for ([s spans])"
+                             "    (inclusive-scan scan cells sums #:op add #:count s.amount #:when (> s.amount 0))"
+                             "    (sort order keys #:count s.amount)"
+                             "    (draw d canvas painting #:indirect (at draws s.offset) #:draws s.amount #:count (at cells 0)))")))))
+  ;; One instance per step, created whatever the iterations' conditions, and each iteration's step
+  ;; pushes its count and sizes its dispatch
+  (check-true (string-contains? h "auto material_zgal_scan_reduce = context.resources().create<zgal::PushInstance<ZgalScanReduceUintAdd>>("))
+  (check-true (string-contains? h "DispatchSequenceNode::Step{.material = material_zgal_scan_reduce, .afterBind = [=, material = material_zgal_scan_reduce](const RecordContext& record) { zgal::pushOverride(record, *material, [&](const zgal::FrameInfo& frame, ZgalScanReduceUintAdd::Push& push) { push.count = loop_s.amount; }); }, .workgroups = zgal::recordedWorkgroups([=](const zgal::FrameInfo& frame) { return ZgalScanReduceUintAdd::workgroupsFor((std::min(std::max(((loop_s.amount + 255u) / 256u), 1u), 256u) * 256u)); })}"))
+  (check-regexp-match #rx"for [(]const auto& loop_s : in->spans[)] {\nif [(][(]loop_s.amount > 0u[)][)] {\nconst NodeId node = graph.add<DispatchSequenceNode>"
+                      (string-join (code-lines h) "\n"))
+  ;; The sort's scratch buffers hold as many keys as its buffer, as the iterations' counts differ;
+  ;; its passes push their pass with the rest
+  (check-true (string-contains? h "graph.createBuffer(\"zgal_order_keys\", FrameMode::Shared, VkDeviceSize(64u) * sizeof(uint32_t))"))
+  (check-true (string-contains? h "push.pass = 3u;"))
+  ;; The counted draw's copies of its commands are as many as the commands, and its limiting
+  ;; dispatch pushes the iteration's first command and draws
+  (check-true (string-contains? h "graph.createBuffer(\"zgal_d_commands\", FrameMode::PerFrame, VkDeviceSize(8u) * sizeof(DrawCommand))"))
+  (check-true (string-contains? h "push.first = loop_s.offset; push.countIndex = 0u; push.draws = loop_s.amount; }); }, [=](const zgal::FrameInfo& frame) { return ZgalLimitDrawsDraw::workgroupsFor(loop_s.amount); });"))
+  ;; Unless the graph doesn't know how many elements a buffer holds
+  (check-zgal-error (graph "  (import-buffer keys uint)" "  (for ([s spans]) (sort order keys #:count s.amount))")
+                    'type-mismatch "sort's keys keys are an imported buffer, whose size the graph doesn't know, so its #:count can't use the variables of the loop"))
+
 (test-case "Loops check what they hold and go over"
   (check-zgal-error (graph "  (for ([i (range 0 2)]) (material filling Fill cells #:invocations (1)))") 'loop-body "a loop's body holds nodes and loops")
-  (check-zgal-error (graph "  (buffer sums uint 64 #:frames shared)"
-                           "  (for ([i (range 0 2)]) (inclusive-scan scan cells sums #:op add #:count 64))")
-                    'loop-body "scan is in a loop, but inclusive-scan nodes aren't yet")
-  (check-zgal-error (string-append "(import indirect)\n"
-                                   (graph "  (buffer draws DrawCommand 4 #:frames shared)"
-                                          "  (material painting Paint #:push ((row 0)))"
-                                          "  (for ([i (range 0 2)]) (draw d canvas painting #:indirect (at draws 0) #:draws 4 #:count (at cells 0)))"))
-                    'loop-body "draws with a #:count aren't yet")
   (check-zgal-error (graph "  (material filling Fill cells #:invocations (1))"
                            "  (for ([i (range 0 2)]) (dispatch fill filling #:push ((offset (uint i)) (amount 1))))"
                            "  (dispatch after filling #:push ((offset (uint i)) (amount 1)))")

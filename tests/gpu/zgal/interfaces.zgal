@@ -768,6 +768,34 @@
     (draw band canvas banding 3 #:push ((row r) (rows rows) (shade (at shades r)))))
   (readback readPicture picture))
 
+;; Library nodes and counted draws in loops: per span, a sum of its first amount numbers (into
+;; sums at its value) and a sort of the first amount keys; per row, a band (from the row down)
+;; drawn as many times as its count says (0 or 1)
+(graph LoopLibraryGraph
+  (input spans (data Span))
+  (input numbers (data uint))
+  (input unsorted (data uint))
+  (input commands (data DrawCommand))
+  (input counts (data uint))
+  (upload numberBuffer numbers)
+  (upload keys unsorted)
+  (upload draws commands)
+  (upload drawCounts counts)
+  (buffer sums uint 4 #:frames shared)
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  (target canvas (color picture #:load load))
+  (material banding Band)
+  (draw background canvas banding 3 #:push ((row 0) (rows 4) (shade (vec4 0.0 0.0 0.0 1.0))))
+  (for ([s spans])
+    (reduce total numberBuffer (at sums s.value) #:op add #:count s.amount)
+    (sort order keys #:count s.amount))
+  (for ([r (range (uint 0) 4)])
+    (draw band canvas banding #:indirect (at draws r) #:draws 1 #:count (at drawCounts r)
+          #:push ((row r) (rows 4) (shade (vec4 1.0 1.0 1.0 1.0)))))
+  (readback readSums sums)
+  (readback readKeys keys)
+  (readback readPicture picture))
+
 ;; For the run-mode test: an app scripting its frames from how it's run, as a smoke test would. It
 ;; marks one more pixel of the row each frame (up to 4), and headless, halfway, shrinks the surface
 ;; the row follows.

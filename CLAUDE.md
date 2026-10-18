@@ -333,7 +333,8 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   Dispatches and draws (indirect ones and `draw-meshes` too) give per-node `#:push ((field v))` (and dispatches `#:invocations`), so
   iterations share a material and its pipeline; a material may leave out push constants every node
   using it gives. A looped node's id is a `std::vector<NodeId>` (readback accessors take an index).
-  Loops don't hold extern nodes, library nodes or counted draws yet; draws looping into one target
+  Library nodes and counted draws in loops share their materials and scratch buffers (each
+  iteration pushing its own values). Loops don't hold extern nodes yet; draws looping into one target
   need `#:load load`. Prefer loops to `extern` nodes where ZGAL has the nodes.
 - Top-level `(define (f [x : vec3]) : vec3 ...)` functions and `(define name value)` constants are
   shared by the shaders, and those without textures, images or effects also compile to C++

@@ -1382,8 +1382,16 @@ graph is built (ints, unless one is a @tt{uint}); @tt{[name input]} goes over th
 input (@tt{(input name (data T))}), e.g. structs C++ computed. The variables are names in the
 loop's nodes' expressions: their conditions, sizes and offsets, and their own push constants and
 invocations (@tt{#:push}, @tt{#:invocations}), so the iterations share one material, and pipeline.
-A loop holds nodes and loops; declare materials and resources before it. Extern nodes, the compute
-library's and draws with a @tt{#:count} aren't in loops yet.
+A loop holds nodes and loops; declare materials and resources before it. Extern nodes aren't in
+loops yet.
+
+The compute library's nodes and draws with a @tt{#:count} declare their own materials and scratch
+buffers; in a loop, its iterations share them, and each iteration's dispatches push its own values
+(counts, indices) and size their own work. Their scratch buffers are sized by what doesn't change
+between iterations: a sort whose @tt{#:count} uses the loop's variables gets scratch buffers as large
+as its keys' buffer, and a counted draw whose @tt{#:draws} does copies as many commands as its
+commands' buffer holds (so the graph must know their sizes: graph buffers and uploads, not imported
+buffers or buffer files). Sharing them orders the iterations' nodes one after another.
 
 @(define loops-source #<<ZGAL
 (struct Batch
@@ -1993,8 +2001,7 @@ What ZGAL doesn't describe yet:
 Graphs can't yet use storage images other than 2D ones, run a node on a chosen queue, or compute
 anything per frame but push constants, dispatch sizes and uniforms. Loops of nodes are fixed when
 the graph is built (a node list that changes from frame to frame needs a rebuilt graph), go over
-ranges and data inputs (not lists within their elements), and don't hold extern nodes, the compute
-library's or counted draws.
+ranges and data inputs (not lists within their elements), and don't hold extern nodes.
 
 Apps handle events only: they can't ask whether a key is held or where the cursor is outside
 handlers (track it in the state from press and release events), read files, or create resources.

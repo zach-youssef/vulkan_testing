@@ -287,14 +287,17 @@
 ;; (from up to, not including, to), or over the elements of the data input `data` (a name)
 (struct loop-clause (name type range data loc) #:transparent)
 ;; A step of a kernel node (a library algorithm, e.g. a scan): a dispatch of a material instance
-;; (its name), with its push constant `pass` replaced by pass (an integer) if pass isn't #f
-(struct k-step (material pass) #:transparent)
+;; (its name), with its push constant `pass` replaced by pass (an integer) if pass isn't #f.
+;; overrides: the step's own push constants and invocations (node-overrides), or #f for its
+;; material's (in a loop, the iterations' steps give their own, so they can use the loop's variables)
+(struct k-step (material pass overrides) #:transparent)
 ;; An indirect dispatch's or draw's commands: command, the first (an element-ref of a graph buffer
 ;; of commands); draws, how many a draw draws (at most, with a count; a build-time expression), or
 ;; #f for a dispatch; count, an element-ref of how many to draw, or #f. limit: for a count on devices
 ;; without drawIndirectCount, the material instance copying the commands with those past the count
-;; given no instances, and the buffer it copies them into (names), or #f.
-(struct indirect (command draws count limit limited) #:transparent)
+;; given no instances, and the buffer it copies them into (names), or #f; limit-overrides: the
+;; limiting dispatch's own push constants and invocations (node-overrides, in a loop), or #f.
+(struct indirect (command draws count limit limited limit-overrides) #:transparent)
 ;; A buffer element, e.g. a count shaders wrote: the buffer's name and the element's index (a
 ;; build-time expression)
 (struct element-ref (buffer index loc) #:transparent)

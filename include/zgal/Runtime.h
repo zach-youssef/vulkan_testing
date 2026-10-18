@@ -363,6 +363,11 @@ void pushOverride(const RecordContext& record, PushInstance<Material>& material,
                        sizeof(push), &push);
 }
 
+// A DispatchSequenceNode step's workgroups, from a function of the frame
+inline std::function<glm::vec3(const RecordContext&)> recordedWorkgroups(DispatchSource workgroups) {
+    return [workgroups = std::move(workgroups)](const RecordContext& record) { return workgroups(frameInfo(record)); };
+}
+
 /*
  A dispatch with its own push constants or workgroups, replacing its material's (e.g. one per
  iteration of a loop, sharing a material, and so a pipeline). push, if given, pushes them after the
@@ -583,14 +588,18 @@ inline VkExtent2D extentOf(VulkanContext& context, const FrameBinding<Image>& im
 // desc.maxDraws): natively where the device has drawIndirectCount, else by dispatching `limit` (the
 // library's ZgalLimitDraws), which copies the commands into `limited` with those past the count
 // given no instances, and drawing all of those. The limiting node is enabled with the draw
-// (RenderGraph::enableWith), so the draw's id is all callers need.
+// (RenderGraph::enableWith), so the draw's id is all callers need. limitPush and limitWorkgroups,
+// if given, are the limiting dispatch's own (as an OverridingDispatchNode's), e.g. in a loop.
 inline NodeId addCountedDraw(RenderGraph& graph, const std::string& name, IndirectDrawNode::Desc desc,
-                                  BufferOffset count, Handle<ComputeMaterial> limit, BufferId limited) {
+                             BufferOffset count, Handle<ComputeMaterial> limit, BufferId limited,
+                             OverridingDispatchNode::PushFn limitPush = nullptr, DispatchSource limitWorkgroups = nullptr) {
     if (graph.context().enabledFeatures().vulkan12.drawIndirectCount) {
         desc.count = count;
         return graph.add<IndirectDrawNode>(name, std::move(desc));
     }
-    const NodeId limitNode = graph.add<DispatchNode>(name + " (limit)", std::move(limit));
+    const NodeId limitNode = limitPush || limitWorkgroups
+        ? graph.add<OverridingDispatchNode>(name + " (limit)", std::move(limit), std::move(limitPush), std::move(limitWorkgroups), std::nullopt)
+        : graph.add<DispatchNode>(name + " (limit)", std::move(limit));
     desc.commands = BufferOffset{limited, 0};
     const NodeId draw = graph.add<IndirectDrawNode>(name, std::move(desc));
     graph.enableWith(limitNode, draw);

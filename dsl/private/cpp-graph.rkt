@@ -329,7 +329,7 @@
   ;; Indirect draws of more than one command
   (when (for/or ([n (in-list nodes)])
           (match (g-node-extra n)
-            [(indirect _ draws _ _ _) (and draws (not (equal? (e-literal-value* draws) 1)))]
+            [(indirect _ draws _ _ _ _) (and draws (not (equal? (e-literal-value* draws) 1)))]
             [_ #f]))
     (gen "        features.core.features.multiDrawIndirect = VK_TRUE;   // Indirect draws of several commands"))
   ;; Indirect draws of models' meshes, whose commands' first instances are materials
@@ -659,12 +659,29 @@
     (define material-type
       (and (g-node-material n) (material-name (g-material-material (entry-item (hash-ref env (g-node-material n)))))))
     (define overrides (g-node-overrides n))
-    ;; Pushes the node's own push constants, in a lambda holding `material` and `record`
-    (define (push-override)
-      (format "zgal::pushOverride(record, *material, [&](const zgal::FrameInfo& frame, ~a::Push& push) { ~a });" material-type
-              (string-join (for/list ([pair (in-list (node-overrides-push overrides))])
+    ;; Pushes push constants (pairs of fields and expressions) of a material of type `type`, in a
+    ;; lambda holding `material` and `record`
+    (define (push-pairs type pairs)
+      (format "zgal::pushOverride(record, *material, [&](const zgal::FrameInfo& frame, ~a::Push& push) { ~a });" type
+              (string-join (for/list ([pair (in-list pairs)])
                              (format "push.~a = ~a;" (field-name (car pair)) (cpp-expr (cdr pair) env (field-type (car pair)))))
                            " ")))
+    ;; Pushes the node's own push constants
+    (define (push-override) (push-pairs material-type (node-overrides-push overrides)))
+    ;; Instance `instance`'s own push constants and invocations (node-overrides) for a dispatch: a
+    ;; lambda after binding it, and one giving its workgroups (or nullptr)
+    (define (instance-overrides instance o)
+      (define type (material-name (g-material-material (entry-item (hash-ref env instance)))))
+      (define pairs (node-overrides-push o))
+      (define invocations (node-overrides-invocations o))
+      (values (if (pair? pairs)
+                  (format "[~a, material = ~a](const RecordContext& record) { ~a }" (frame-captures (map cdr pairs) env)
+                          (material-ref instance) (push-pairs type pairs))
+                  "nullptr")
+              (if invocations
+                  (format "[~a](const zgal::FrameInfo& frame) { return ~a::workgroupsFor(~a); }" (frame-captures invocations env) type
+                          (string-join (for/list ([e (in-list invocations)]) (build-expr e (scalar-t 'uint))) ", "))
+                  "nullptr")))
     (define (has-push?) (and overrides (pair? (node-overrides-push overrides))))
     ;; The node's name in the RenderGraph: in a loop, numbered like its id in nodes.name
     (define label
@@ -709,9 +726,13 @@
         ['dispatch (format "graph.add<DispatchNode>(~a, ~a)" label (material-ref (g-node-material n)))]
         [(or 'draw 'draw-meshes)
          #:when counted?
-         (format "zgal::addCountedDraw(graph, ~a, ~a, ~a, ~a, ~a)" label
+         (format "zgal::addCountedDraw(graph, ~a, ~a, ~a, ~a, ~a~a)" label
                  (draw-desc (command-offset (indirect-command spec))) (command-offset (indirect-count spec))
-                 (material-ref (indirect-limit spec)) (resource-ref (indirect-limited spec)))]
+                 (material-ref (indirect-limit spec)) (resource-ref (indirect-limited spec))
+                 (match (indirect-limit-overrides spec)
+                   [#f ""]
+                   [o (define-values (push workgroups) (instance-overrides (indirect-limit spec) o))
+                      (format ", ~a, ~a" push workgroups)]))]
         [(or 'draw 'draw-meshes)
          #:when spec
          (format "graph.add<IndirectDrawNode>(~a, ~a)" label (draw-desc (command-offset (indirect-command spec))))]
@@ -770,11 +791,16 @@
          (define steps
            (for/list ([step (in-list (g-node-extra n))])
              (define instance (k-step-material step))
-             (if (k-step-pass step)
-                 (let ([type (material-name (g-material-material (entry-item (hash-ref env instance))))])
-                   (format "DispatchSequenceNode::withPushedUint(material_~a, ~a::kPushOffset + offsetof(~a::Push, pass), ~au)"
-                           instance type type (k-step-pass step)))
-                 (format "{material_~a}" instance))))
+             (cond
+               [(k-step-overrides step)
+                (define-values (push workgroups) (instance-overrides instance (k-step-overrides step)))
+                (format "DispatchSequenceNode::Step{.material = ~a, .afterBind = ~a, .workgroups = ~a}" (material-ref instance) push
+                        (if (equal? workgroups "nullptr") workgroups (format "zgal::recordedWorkgroups(~a)" workgroups)))]
+               [(k-step-pass step)
+                (let ([type (material-name (g-material-material (entry-item (hash-ref env instance))))])
+                  (format "DispatchSequenceNode::withPushedUint(~a, ~a::kPushOffset + offsetof(~a::Push, pass), ~au)"
+                          (material-ref instance) type type (k-step-pass step)))]
+               [else (format "{~a}" (material-ref instance))])))
          (format "graph.add<DispatchSequenceNode>(~a, std::vector<DispatchSequenceNode::Step>{~a})"
                  label (string-join steps ", "))]
         ['extern #f]))

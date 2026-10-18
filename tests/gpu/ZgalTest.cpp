@@ -1231,6 +1231,38 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL nodes give their own push constants and invocat
     ctx.waitIdleAll();
 }
 
+TEST_CASE_FIXTURE(GpuTest, "ZGAL's library nodes and counted draws in loops use each iteration's values") {
+    auto& ctx = context();
+    std::vector<uint32_t> numbers(64);
+    std::vector<uint32_t> unsorted(64);
+    for (uint32_t i = 0; i < 64; ++i) {
+        numbers[i] = i + 1;
+        unsorted[i] = (i * 37 + 11) % 64;
+    }
+    RenderGraph graph(ctx);
+    // The second span sums and sorts more than the first, after it
+    const LoopLibraryGraph ids = LoopLibraryGraph::build(ctx, graph, LoopLibraryGraph::Inputs{
+        .spans = {{0, 8, 2}, {0, 40, 0}}, .numbers = numbers, .unsorted = unsorted,
+        .commands = std::vector<DrawCommand>(4, DrawCommand{3, 1, 0, 0}), .counts = {0, 0, 1, 1}}).value();
+    graph.execute().value();
+
+    CHECK(ids.readSumsContents(graph).value() == std::vector<uint32_t>{40 * 41 / 2, 0, 8 * 9 / 2, 0});
+    std::vector<uint32_t> expected = unsorted;
+    std::sort(expected.begin(), expected.begin() + 8);
+    std::sort(expected.begin(), expected.begin() + 40);
+    CHECK(ids.readKeysContents(graph).value() == expected);
+    // A band covers its row and those below it: the first two rows' counts are 0, so only the
+    // third's band, from its own row down, was drawn (and the fourth's over it)
+    const auto pixels = ids.readPicturePixels(graph).value();
+    for (size_t y = 0; y < 4; ++y) {
+        CAPTURE(y);
+        const uint8_t shade = y < 2 ? 0 : 255;
+        CHECK(std::vector<uint8_t>(pixels.begin() + y * 16, pixels.begin() + y * 16 + 4) ==
+              std::vector<uint8_t>{shade, shade, shade, 255});
+    }
+    ctx.waitIdleAll();
+}
+
 TEST_CASE_FIXTURE(GpuTest, "ZGAL's node loops add a node per element or step, with their own push constants and sizes") {
     auto& ctx = context();
     RenderGraph graph(ctx);
