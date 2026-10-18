@@ -46,6 +46,8 @@
     [(g-import-images _ _ _) (entry 'import-images #f item)]
     [(g-import-buffer _ t _) (entry 'import-buffer t item)]
     [(g-upload _ _ t _) (entry 'upload t item)]
+    ;; Like an upload, with its elements from files
+    [(g-buffer-file _ t _ _) (entry 'upload t item)]
     [(g-constant _ _ t _) (entry 'constant t item)]
     [(g-sampler _ _ _) (entry 'sampler #f item)]
     [(g-uniform _ t _ _) (entry 'uniform t item)]
@@ -480,6 +482,13 @@
        (check-known-options options '() form)
        (define source (lookup (second args) '(data per-frame-data) "a data input"))
        (declare! (g-upload (item-name) source (entry-type (hash-ref env source)) (stx->loc stx)) stx)]
+      ['buffer-file
+       (unless (>= (length args) 3)
+         (zgal-error 'malformed stx "expected (buffer-file name type asset ...+)"))
+       (check-known-options options '() form)
+       (declare! (g-buffer-file (item-name) (buffer-element-type (second args) form)
+                                (map parse-asset-source (cddr args)) (stx->loc stx))
+                 stx)]
       ['constant
        (args! 2 "(constant name expression)")
        (check-known-options options '() form)
@@ -546,7 +555,7 @@
        (unless (>= (length args) 2)
          (zgal-error 'malformed stx "expected (material name Material (binding resource) ... #:option value ...)"))
        (declare! (parse-material-instance stx args options) stx)]
-      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, image-file, model, import-buffer, upload, constant, sampler, uniform, image, buffer, target, material, nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern, reduce, inclusive-scan, exclusive-scan, sort) and loops of nodes (for)"
+      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, image-file, model, import-buffer, upload, buffer-file, constant, sampler, uniform, image, buffer, target, material, nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern, reduce, inclusive-scan, exclusive-scan, sort) and loops of nodes (for)"
                      name head)]))
 
   ;; The type of a buffer's elements
@@ -979,6 +988,7 @@
           (match (entry-item (hash-ref env b))
             [(g-buffer _ _ _ frames _ _) (eq? frames 'shared)]
             [(g-upload _ _ _ _) #t]
+            [(g-buffer-file _ _ _ _) #t]
             [_ #f]))
         'shared
         'per-frame))
@@ -1015,7 +1025,8 @@
          (match (entry-item (hash-ref env keys))
            [(g-buffer _ _ c _ _ _) c]
            [(g-upload _ source _ _) (e-op 'count (list (e-ref source where)) where)]
-           [_ (zgal-error 'type-mismatch (second args) "sort's keys ~a are an imported buffer, whose size the graph doesn't know, so its #:count is an expression, not an element of a buffer" keys)])]))
+           [_ (zgal-error 'type-mismatch (second args) "sort's keys ~a are ~a, whose size the graph doesn't know, so its #:count is an expression, not an element of a buffer" keys
+                       (if (g-buffer-file? (entry-item (hash-ref env keys))) "read from files" "an imported buffer"))])]))
     (define groups (grid-groups count where))
     ;; With a count the CPU knows, up to small-sort-keys keys are sorted by one workgroup in one
     ;; dispatch, as the 24 dispatches of the passes take longer than sorting them

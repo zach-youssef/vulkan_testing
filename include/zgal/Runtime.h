@@ -15,7 +15,9 @@
 
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -536,6 +538,33 @@ inline Result<Handle<Image>> loadImage(VulkanContext& context, const std::filesy
                                        const char* what) {
     TRY_ASSIGN(auto found, context.findAsset(path).withContext(std::string("loading ") + what));
     return Image::createFromFile(context, found, colorSpace).withContext(std::string("loading ") + what);
+}
+
+// A graph's buffer-file: the files at paths (found with VulkanContext::findAsset), each a whole
+// number of Ts as they're laid out in memory (e.g. a memory dump), in a device-local buffer in
+// order. what names it in errors.
+template<typename T>
+Result<Handle<Buffer<T>>> loadBufferFile(VulkanContext& context, const std::vector<std::filesystem::path>& paths, const char* what) {
+    static_assert(std::is_trivially_copyable_v<T>, "a buffer file holds Ts' bytes");
+    const std::string loading = std::string("loading ") + what;
+    std::vector<T> elements;
+    for (const auto& path : paths) {
+        TRY_ASSIGN(auto found, context.findAsset(path).withContext(loading));
+        std::ifstream file(found, std::ios::binary);
+        if (!file) {
+            return Error(ErrorCode::NotFound, "Can't open '" + found.string() + "'").withContext(loading);
+        }
+        const std::vector<char> bytes((std::istreambuf_iterator<char>(file)), {});
+        if (bytes.empty() || bytes.size() % sizeof(T) != 0) {
+            return Error(ErrorCode::InvalidData, "'" + found.string() + "' holds " + std::to_string(bytes.size())
+                                                     + " bytes, not a whole number of " + std::to_string(sizeof(T)) + "-byte elements")
+                .withContext(loading);
+        }
+        const size_t first = elements.size();
+        elements.resize(first + bytes.size() / sizeof(T));
+        std::memcpy(elements.data() + first, bytes.data(), bytes.size());
+    }
+    return upload(context, elements, what).withContext(loading);
 }
 
 // The extent of an imported image (the current frame's, if it has one per frame)

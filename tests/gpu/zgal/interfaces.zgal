@@ -436,6 +436,23 @@
   (readback srgbRead srgbTexels)
   (readback linearRead linearTexels))
 
+;; Pairs read from files, in order, then each one's first doubled in place
+(struct FilePair (first uint) (second uint))
+(compute-material DoubleFirsts (workgroup 4)
+  (bindings (pairs (buffer-array FilePair)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (let* ([p (at pairs i)])
+         (write! (at pairs i) (with p #:first (* p.first 2))))))))
+
+(graph BufferFiles (input dump path) (input more path)
+  (buffer-file pairs FilePair dump more)
+  (material doubling DoubleFirsts pairs #:push ((count 3)) #:invocations (3))
+  (dispatch doubleFirsts doubling)
+  (readback pairsRead pairs))
+
 ;; An app choosing ImageFiles' file from its parameter, as a generated main's option would
 (app PickFile
   (parameter picked path)

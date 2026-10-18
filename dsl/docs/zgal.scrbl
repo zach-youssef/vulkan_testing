@@ -238,6 +238,25 @@ alignment, without std140's rounding to 16 bytes. So a scalar packs into the 4 b
 ZGAL
    )
 
+@(define buffer-file-source #<<ZGAL
+(struct Sprite (y uint8) (tile uint8) (attributes uint8) (x uint8))
+
+(compute-material Move
+  (workgroup 64)
+  (bindings (sprites (buffer-array Sprite)))
+  (compute
+   (let* ([s (at sprites globalInvocationId.x)])
+     (write! (at sprites globalInvocationId.x) (with s #:x (uint8 (+ s.x 1)))))))
+
+(graph Sprites
+  (input level path)
+  ;; Each file holds whole Sprites, as a memory dump would: the buffer holds all of them, in order
+  (buffer-file sprites Sprite "sprites/player.bin" level)
+  (material moving Move sprites #:invocations (64))
+  (dispatch move moving))
+ZGAL
+   )
+
 @(define model-source #<<ZGAL
 (vertex-format Vertex
   (position vec3)
@@ -889,7 +908,7 @@ Its app (@secref["apps"]) computes the uniforms, shadows and exposure from its s
 and C++ supplies the meshes.
 
 @racketgrammar*[
- #:literals (graph parameter input per-frame data meshes cpu extern path import-image import-images image-file model import-buffer upload
+ #:literals (graph parameter input per-frame data meshes cpu extern path import-image import-images image-file buffer-file model import-buffer upload
              constant sampler uniform image buffer target surface attachments if color depth material
              dispatch draw-meshes draw readback copy clear fixed extent-of reduce inclusive-scan
              exclusive-scan sort at add min max for range)
@@ -905,6 +924,7 @@ and C++ supplies the meshes.
              (import-image name #:resting resting-state)
              (import-images name #:resting resting-state)
              (image-file name asset #:color color-space)
+             (buffer-file name type asset ...+)
              (model name asset Format model-option ...)
              (import-buffer name type)
              (upload name data-input)
@@ -1006,6 +1026,16 @@ to linear, and @tt{linear} for data (normal maps, masks, lookup tables), read as
 
 @(zgal-example image-file-source)
 @(generated-file image-file-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto file_albedo" #:to #rx"result.images.mask")
+
+@racket[(buffer-file name type asset ...+)] reads files of binary data (e.g. memory dumps) into a
+device-local buffer of @tt{type}'s elements, like an @racket[upload]: each file holds a whole number of
+them, laid out as the generated struct is (std430, @secref["types"]), and the buffer holds the files'
+elements in order. Shaders read and write it, and the graph knows how many elements it holds only
+when it's built, so a @racket[sort] of it takes a @tt{#:count} expression. A file of another size
+fails @tt{build()} (@tt{ErrorCode::InvalidData}).
+
+@(zgal-example buffer-file-source)
+@(generated-file buffer-file-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto file_sprites" #:to #rx"result.buffers.sprites")
 
 @racket[(model name asset Format)] loads a glTF (@tt{.gltf}, @tt{.glb}) or OBJ (@tt{.obj}, with its
 @tt{.mtl}) file: its triangles, with its nodes' transforms baked in, as one mesh of @tt{Format}'s

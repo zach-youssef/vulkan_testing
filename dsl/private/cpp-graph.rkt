@@ -225,6 +225,7 @@
   (define image-sets (of-type g-import-images?))
   (define buffer-imports (of-type g-import-buffer?))
   (define uploads (of-type g-upload?))
+  (define buffer-files (of-type g-buffer-file?))
   (define images (of-type g-image?))
   (define buffers (of-type g-buffer?))
   (define materials (of-type g-material?))
@@ -258,6 +259,7 @@
   (id-struct "Buffers"
              (append (for/list ([b (in-list buffer-imports)]) (list "BufferId" (g-import-buffer-name b) b))
                      (for/list ([b (in-list uploads)]) (list "BufferId" (g-upload-name b) b))
+                     (for/list ([b (in-list buffer-files)]) (list "BufferId" (g-buffer-file-name b) b))
                      (for/list ([b (in-list model-factors)]) (list "BufferId" (g-model-factors-name b) b))
                      (for/list ([b (in-list model-draws)]) (list "BufferId" (g-model-draws-name b) b))
                      (for/list ([b (in-list model-bounds)]) (list "BufferId" (g-model-bounds-name b) b))
@@ -293,7 +295,7 @@
        (at n (format "    // The elements readback ~a~a copied in the most recent frame (waiting for it)" (g-node-name n) which))
        (at n (format "    Result<std::vector<~a>> ~aContents(~a) const { return graph.nodeAs<BufferReadbackNode>(~a).contents<~a>(); }"
                      t (g-node-name n) parameters id t))]))
-  (unless (and (null? buffer-imports) (null? uploads) (null? model-factors) (null? model-draws) (null? model-bounds) (null? (filter (λ (b) (not (internal-name? (g-buffer-name b)))) buffers)))
+  (unless (and (null? buffer-imports) (null? uploads) (null? buffer-files) (null? model-factors) (null? model-draws) (null? model-bounds) (null? (filter (λ (b) (not (internal-name? (g-buffer-name b)))) buffers)))
     (gen "    Buffers buffers;"))
   (unless (null? nodes) (gen "    Nodes nodes;"))
   (gen "")
@@ -407,6 +409,15 @@
     (at u (format "        TRY_ASSIGN(auto upload_~a, zgal::upload(context, in->~a, ~a));" n (g-upload-source u)
                   (cpp-string (format "~a's upload ~a" name n))))
     (at u (format "        const BufferId buffer_~a = graph.importBuffer<~a>(~a, upload_~a);" n (cpp-type (g-upload-type u)) (cpp-string n) n))
+    (gen (format "        result.buffers.~a = buffer_~a;" n n)))
+  ;; Buffer files: read, uploaded, then imported
+  (for ([f (in-list buffer-files)])
+    (define n (g-buffer-file-name f))
+    (define t (cpp-type (g-buffer-file-type f)))
+    (at f (format "        TRY_ASSIGN(auto file_~a, zgal::loadBufferFile<~a>(context, {~a}, ~a));" n t
+                  (string-join (map asset-path (g-buffer-file-sources f)) ", ")
+                  (cpp-string (format "~a's buffer-file ~a" name n))))
+    (at f (format "        const BufferId buffer_~a = graph.importBuffer<~a>(~a, file_~a);" n t (cpp-string n) n))
     (gen (format "        result.buffers.~a = buffer_~a;" n n)))
   ;; Constants
   (for ([c (in-list (of-type g-constant?))])
@@ -756,6 +767,6 @@
 
 (define (item-loc item)
   (match item
-    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-model-draws _ _ _ l) l] [(g-model-bounds _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
+    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-model-draws _ _ _ l) l] [(g-model-bounds _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-buffer-file _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
     [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ l) l]))

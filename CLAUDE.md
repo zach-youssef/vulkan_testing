@@ -302,7 +302,8 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   `uint`/`int` and narrow explicitly to write them (`(uint8 x)`). A material using them needs device
   features: add its (or its graph's) `requiredFeatures()` to the context's features.
 - Graphs load assets when they're built: `(image-file name "file.png" #:color srgb)` (or `linear`)
-  imports an image file found in the asset search paths; `(model m "ship.gltf" Format
+  imports an image file found in the asset search paths; `(buffer-file b T "dump.bin" ...)` reads
+  binary files of whole `T`s (e.g. memory dumps) into a buffer; `(model m "ship.gltf" Format
   #:base-colors textures #:base-color-factors factors)` loads a glTF or OBJ model as meshes of a
   vertex format, filling its attributes by name (`position`, `normal`, `uv`, `color`, `tangent`;
   others need `#:default`), which `draw-meshes` draws; shaders read a mesh's material as

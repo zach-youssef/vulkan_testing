@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <numeric>
 
@@ -189,6 +191,41 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL image files load from the asset search paths in
     picked.execute().value();
     CHECK(app->ids().linearReadContents(picked).value() == linear);
     ctx.waitIdleAll();
+}
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL buffer files hold their files' elements in order, for shaders to read and write") {
+    auto& ctx = context();
+    const auto directory = std::filesystem::temp_directory_path() / "zgal-buffer-files";
+    std::filesystem::create_directories(directory);
+    const auto write = [&](const char* name, const std::vector<FilePair>& pairs, size_t extra = 0) {
+        std::ofstream file(directory / name, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(pairs.data()), static_cast<std::streamsize>(pairs.size() * sizeof(FilePair)));
+        file.write("abc", static_cast<std::streamsize>(extra));
+        return directory / name;
+    };
+    const auto two = write("two.bin", {{1, 2}, {3, 4}});
+    const auto one = write("one.bin", {{5, 6}});
+    RenderGraph graph(ctx);
+    auto ids = BufferFiles::build(ctx, graph, BufferFiles::Inputs{.dump = two, .more = one}).value();
+    graph.execute().value();
+    const auto pairs = ids.pairsReadContents(graph).value();
+    REQUIRE(pairs.size() == 3);
+    CHECK(pairs[0].first == 2);
+    CHECK(pairs[0].second == 2);
+    CHECK(pairs[1].first == 6);
+    CHECK(pairs[2].first == 10);
+    CHECK(pairs[2].second == 6);
+
+    // Files hold whole elements
+    const auto ragged = write("ragged.bin", {{1, 2}}, 3);
+    RenderGraph broken(ctx);
+    CHECK_ERROR(BufferFiles::build(ctx, broken, BufferFiles::Inputs{.dump = two, .more = ragged}), ErrorCode::InvalidData,
+                "holds 11 bytes, not a whole number of 8-byte elements");
+    RenderGraph missing(ctx);
+    CHECK_ERROR(BufferFiles::build(ctx, missing, BufferFiles::Inputs{.dump = two, .more = "missing.bin"}), ErrorCode::NotFound,
+                "Asset 'missing.bin' not found");
+    ctx.waitIdleAll();
+    std::filesystem::remove_all(directory);
 }
 
 TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs draw models with their materials' base colours") {

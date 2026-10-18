@@ -384,11 +384,13 @@
   (vertex (results #:position (vec4 position 1.0) #:uv texCoord #:m (+ (uint instanceIndex) layer)))
   (fragment (* (at factors m) (sample (at colors m) s uv))))
 
-;; Assets: image files and models, found by a path in the asset search paths or a path input C++ gives
+;; Assets: image files, buffer files and models, found by a path in the asset search paths or a path
+;; input C++ gives
 (graph Assets
   (input decalPath path)
   (image-file albedoMap "textures/albedo.png" #:color srgb)
   (image-file decalMap decalPath #:color linear)
+  (buffer-file savedLights Lights "lights/day.bin" "lights/night.bin")
   (input frameLights (per-frame Lights))
   (uniform lightBuffer Lights frameLights)
   (image mask rgba8 (extent-of decalMap) #:frames shared)

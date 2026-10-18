@@ -66,6 +66,27 @@
   (check-zgal-error (string-replace files "(target canvas)" "(target logo)") 'binding-mismatch
                     "binding target is a storage image, but logo is an image file, which shaders only sample"))
 
+(define buffer-files
+  (string-append
+   "(struct Pair (a uint) (b uint))\n"
+   "(compute-material Bump (workgroup 1) (bindings (pairs (buffer-array Pair)))\n"
+   "  (compute (let* ([p (at pairs 0)]) (write! (at pairs 0) (with p #:a (+ p.a 1))))))\n"
+   "(graph G (input more path)\n"
+   "  (buffer-file pairs Pair \"pairs.bin\" more)\n"
+   "  (material bump Bump pairs #:invocations (1))\n"
+   "  (dispatch run bump)\n"
+   "  (readback read pairs))\n"))
+
+(test-case "Buffer files read files' elements into a buffer when the graph is built"
+  (define h (named (compile-text buffer-files) ".zgal.h"))
+  (check-true (string-contains? h "TRY_ASSIGN(auto file_pairs, zgal::loadBufferFile<Pair>(context, {std::filesystem::path(\"pairs.bin\"), in->more}, \"G's buffer-file pairs\"));"))
+  (check-true (string-contains? h "const BufferId buffer_pairs = graph.importBuffer<Pair>(\"pairs\", file_pairs);"))
+  (check-true (string-contains? h "BufferId pairs;"))
+  (check-zgal-error (string-replace buffer-files " \"pairs.bin\" more" "") 'malformed "expected (buffer-file name type asset ...+)")
+  (check-zgal-error (string-replace buffer-files "Pair \"pairs.bin\"" "(array Pair 2) \"pairs.bin\"") 'type-not-allowed "give the element type")
+  (check-zgal-error (string-append buffer-files "(graph S (buffer-file keys uint \"k.bin\") (buffer n uint 1 #:frames shared) (sort s keys #:count (at n 0)))")
+                    'type-mismatch "sort's keys keys are read from files, whose size the graph doesn't know"))
+
 (define models
   (string-append
    "(vertex-format V (position vec3) (normal vec3 #:as snorm8) (colour vec3 #:default (vec3 1 1 1)) (id uint #:default 3))\n"

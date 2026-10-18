@@ -241,6 +241,9 @@
 (struct g-import-buffer (name type loc) #:transparent)
 ;; A device-local buffer holding a data input's elements, uploaded when the graph is built
 (struct g-upload (name source type loc) #:transparent)
+;; A device-local buffer holding files' bytes as elements of type, read when the graph is built.
+;; sources: asset-sources, in order.
+(struct g-buffer-file (name type sources loc) #:transparent)
 ;; Build-time values. type: the expression's type
 (struct g-constant (name expr type loc) #:transparent)
 ;; options: an association list of option symbols (e.g. 'filter) to values (symbols, booleans, numbers)
@@ -298,6 +301,6 @@
 ;; The declaration of a graph-level name
 (define (graph-item-name item)
   (match item
-    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-image-file n _ _ _) n] [(g-model n _ _ _) n] [(g-model-textures n _ _) n] [(g-model-factors n _ _) n] [(g-model-draws n _ _ _) n] [(g-model-bounds n _ _) n] [(g-import-images n _ _) n] [(g-import-buffer n _ _) n] [(g-upload n _ _ _) n] [(g-constant n _ _ _) n]
+    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-image-file n _ _ _) n] [(g-model n _ _ _) n] [(g-model-textures n _ _) n] [(g-model-factors n _ _) n] [(g-model-draws n _ _ _) n] [(g-model-bounds n _ _) n] [(g-import-images n _ _) n] [(g-import-buffer n _ _) n] [(g-upload n _ _ _) n] [(g-buffer-file n _ _ _) n] [(g-constant n _ _ _) n]
     [(g-sampler n _ _) n] [(g-uniform n _ _ _) n] [(g-image n _ _ _ _ _) n] [(g-buffer n _ _ _ _ _) n]
     [(g-target n _ _) n] [(g-material n _ _ _ _ _ _) n]))
