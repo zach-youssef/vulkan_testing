@@ -135,7 +135,7 @@
          "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64)\n  (bindings (target (storage-image write))))\n(graph G\n  (sampler s)\n  (material fill Fill (target s) #:invocations (64))\n  (dispatch fill fill))")
    (kind 'incomplete-material
          "A material in a graph doesn't give a binding or push constant"
-         "A graph's material gives a resource for every binding of the material it instantiates, and a value for every push constant (`#:push ((field value) ...)`)."
+         "A graph's material gives a resource for every binding of the material it instantiates, and a value for every push constant (`#:push ((field value) ...)`), unless every node using it gives that push constant itself (`#:push` on dispatches and draws)."
          "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64)\n  (push (value float)))\n(graph G\n  (material fill Fill #:invocations (64))\n  (dispatch fill fill))")
    (kind 'material-kind
          "A node is given a material of the wrong kind"

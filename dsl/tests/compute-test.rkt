@@ -115,7 +115,7 @@
 
 (test-case "Indirect dispatches and draws check their commands"
   (check-zgal-error (string-replace indirect-program " #:indirect (at dispatches 1)" "") 'bad-option
-                    "material counting has no #:invocations, so dispatch count needs them, or dispatches it #:indirect")
+                    "material counting has no #:invocations, so dispatch count needs them (#:invocations on the material or the dispatch), or dispatches it #:indirect")
   (check-zgal-error (string-replace indirect-program "(at dispatches 1)" "(at draws 1)") 'type-mismatch
                     "#:indirect reads DispatchCommands, (import indirect), but draws holds DrawCommand")
   (check-zgal-error (string-replace indirect-program "(at dispatches 1)" "dispatches") 'malformed

@@ -1047,3 +1047,35 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL's compute library sorts keys and their values, 
         ctx.waitIdleAll();
     }
 }
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL nodes give their own push constants and invocations, sharing a material") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    const OverrideGraph ids = OverrideGraph::build(ctx, graph, OverrideGraph::Inputs{}).value();
+    graph.execute().value();
+
+    std::vector<uint32_t> expected(64, 0);
+    std::fill_n(expected.begin(), 10, 5u);
+    std::fill_n(expected.begin() + 30, 4, 7u);
+    std::fill_n(expected.begin() + 60, 4, 3u);
+    for (uint32_t increment : {1u, 2u}) {
+        for (uint32_t& v : expected) {
+            v = v * 2 + increment;
+        }
+    }
+    CHECK(ids.readCellsContents(graph).value() == expected);
+
+    // The top half red, the bottom blue
+    const auto pixels = ids.readPicturePixels(graph).value();
+    REQUIRE(pixels.size() == 4 * 4 * 4);
+    for (size_t y = 0; y < 4; ++y) {
+        for (size_t x = 0; x < 4; ++x) {
+            CAPTURE(x);
+            CAPTURE(y);
+            const uint8_t* pixel = &pixels[(y * 4 + x) * 4];
+            CHECK(std::vector<uint8_t>(pixel, pixel + 4) ==
+                  (y < 2 ? std::vector<uint8_t>{255, 0, 0, 255} : std::vector<uint8_t>{0, 0, 255, 255}));
+        }
+    }
+    ctx.waitIdleAll();
+}

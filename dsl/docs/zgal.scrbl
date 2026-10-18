@@ -908,10 +908,10 @@ and C++ supplies the meshes.
              (target name target-spec)
              (material name Material binding ... material-option ...)
              node]
- [node (dispatch name material maybe-indirect node-option ...)
+ [node (dispatch name material maybe-indirect dispatch-option ... node-option ...)
        (draw-meshes name target meshes-input-or-model material node-option ...)
        (draw-meshes name target model material #:indirect (at commands index) draw-option ... node-option ...)
-       (draw name target material vertex-count node-option ...)
+       (draw name target material vertex-count maybe-push node-option ...)
        (draw name target material #:indirect (at commands index) draw-option ... node-option ...)
        (readback name image-or-buffer node-option ...)
        (cpu name cpu-input cpu-option ... node-option ...)
@@ -928,6 +928,8 @@ and C++ supplies the meshes.
  [count expression (at uint-buffer index)]
  [maybe-value (code:line) (code:line #:value expression)]
  [maybe-indirect (code:line) (code:line #:indirect (at commands index))]
+ [dispatch-option (code:line #:push ((push-constant expression) ...)) (code:line #:invocations (x [y [z]]))]
+ [maybe-push (code:line) (code:line #:push ((push-constant expression) ...))]
  [draw-option (code:line #:draws expression) (code:line #:count (at uint-buffer index))]
  [region-option (code:line #:source-offset expression) (code:line #:destination-offset (x y))
                 (code:line #:extent (width height))]
@@ -1113,15 +1115,17 @@ element type. An @racket[array] binding takes a list of resources of its element
 makes its @tt{DescriptorArray}. Its
 options are
 @itemlist[
- @item{@tt{#:push ((field expression) ...)}: a value for every push constant;}
+ @item{@tt{#:push ((field expression) ...)}: a value for every push constant, except those every
+       node using the material gives itself (@tt{#:push} on dispatches and draws);}
  @item{graphics materials' pipeline options: @tt{#:cull} (@tt{none}, @tt{back}, @tt{front},
        @tt{front-and-back}), @tt{#:front-face}, @tt{#:blend} (@tt{opaque}, @tt{alpha},
        @tt{premultiplied-alpha}, @tt{additive}), @tt{#:depth-test}, @tt{#:depth-write},
        @tt{#:depth-compare} and @tt{#:topology}, defaulting to @tt{GraphicsPipelineOptions}';}
  @item{compute materials' @tt{#:invocations (x [y [z]])}, the invocations each dispatch covers
        (rounded up to whole workgroups), which is required unless the material is only dispatched
-       @tt{#:indirect}. It's computed each frame, so dispatch sizes can follow per-frame inputs
-       (e.g. a reduction over however many elements the CPU has this frame) and images' sizes.}
+       @tt{#:indirect} or by dispatches giving their own. It's computed each frame, so dispatch
+       sizes can follow per-frame inputs (e.g. a reduction over however many elements the CPU has
+       this frame) and images' sizes.}
 ]
 A graphics material is built for the formats of the one target its nodes draw into, and every
 material is used by a node.
@@ -1131,7 +1135,9 @@ Nodes:
  @item{@racket[dispatch]: a compute material (a @tt{DispatchNode}). With @tt{#:indirect (at
        commands index)}, as many workgroups as a @tt{DispatchCommand} (@racket[(import indirect)])
        in a graph buffer says, which an earlier node's shader wrote: the GPU sizes its own work
-       (@secref["indirect"]).}
+       (@secref["indirect"]). @tt{#:push} and @tt{#:invocations} replace the material's push
+       constants (some or all) and invocations for this dispatch, so several dispatches can share a
+       material, and its pipeline (a @tt{zgal::OverridingDispatchNode}).}
  @item{@racket[draw-meshes]: draws each mesh of a meshes input or a @racket[model] with a graphics
        material that has a @racket[vertex-input] (a @tt{RenderablesNode}); a model's material reads
        its vertex format. Each draw's first instance is its mesh's instance index
@@ -1139,7 +1145,8 @@ Nodes:
        model's commands shaders chose (@secref["indirect"]).}
  @item{@racket[draw]: draws a vertex count with a graphics material without one, e.g. a fullscreen
        triangle or particles pulled from a buffer, or with @tt{#:indirect}, the @tt{DrawCommand}s
-       shaders wrote (@secref["indirect"]).}
+       shaders wrote (@secref["indirect"]). A draw of a vertex count can replace its material's push
+       constants with its own @tt{#:push}, like a dispatch.}
  @item{@racket[readback]: copies an image or a buffer to the CPU each frame (a @tt{ReadbackNode}
        or @tt{BufferReadbackNode}). C++ reads the most recent copy through the generated struct:
        @tt{namePixels(graph)} gives an image's bytes, and @tt{nameContents(graph)} a buffer's

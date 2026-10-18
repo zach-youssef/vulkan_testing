@@ -539,14 +539,16 @@
           (format "[~a](const zgal::FrameInfo& frame) { return ~a::workgroupsFor(~a); }"
                   (frame-captures (g-material-invocations mi) env) type
                   (string-join (for/list ([e (in-list (g-material-invocations mi))]) (build-expr e (scalar-t 'uint))) ", "))))
-    (define push? (pair? (g-material-push mi)))
+    ;; Push constants nodes give (and the instance leaves out) are pushed by those nodes
+    (define push? (pair? (material-push m)))
+    (define given-push (filter cdr (g-material-push mi)))
     (line (format "        TRY_ASSIGN(auto shaders_~a, ~a::loadShaders(context));" instance type))
     (line (format "        auto material_~a = context.resources().create<zgal::~a<~a>>(" instance (if push? "PushInstance" "Instance") type))
     (line (format "            zgal::Updates{~a}," (string-join updates ", ")))
     (when push?
       (line (format "            [~a](const zgal::FrameInfo& frame, ~a::Push& push) {"
-                    (frame-captures (map cdr (g-material-push mi)) env) type))
-      (for ([pair (in-list (g-material-push mi))])
+                    (frame-captures (map cdr given-push) env) type))
+      (for ([pair (in-list given-push)])
         (match-define (cons f e) pair)
         (emit! w (format "                push.~a = ~a;" (field-name f) (cpp-expr e env (field-type f))) #:at (field-loc f)))
       (line "            },"))
@@ -559,6 +561,17 @@
   (for ([n (in-list nodes)])
     (define (line text) (emit! w text #:at (g-node-loc n)))
     (define node-name (g-node-name n))
+    (define material-type
+      (and (g-node-material n) (material-name (g-material-material (entry-item (hash-ref env (g-node-material n)))))))
+    (define overrides (g-node-overrides n))
+    ;; Pushes the node's own push constants, in a lambda holding `material` and `record`
+    (define (push-override)
+      (format "zgal::pushOverride(record, *material, [&](const zgal::FrameInfo& frame, ~a::Push& push) { ~a });" material-type
+              (string-join (for/list ([pair (in-list (node-overrides-push overrides))])
+                             (format "push.~a = ~a;" (field-name (car pair)) (cpp-expr (cdr pair) env (field-type (car pair)))))
+                           " ")))
+    (define (has-push?) (and overrides (pair? (node-overrides-push overrides))))
+    (define label (cpp-string node-name))
     ;; An indirect command's place: a BufferOffset
     (define (command-offset ref)
       (format "BufferOffset{~a, VkDeviceSize(~a) * sizeof(~a)}" (resource-ref (element-ref-buffer ref))
@@ -573,33 +586,50 @@
     (define create
       (match (g-node-kind n)
         ['dispatch
+         #:when overrides
+         (define push-exprs (map cdr (node-overrides-push overrides)))
+         (define invocations (node-overrides-invocations overrides))
+         (format "graph.add<zgal::OverridingDispatchNode>(~a, material_~a, ~a, ~a, ~a)" label (g-node-material n)
+                 (if (has-push?)
+                     (format "[~a, material = material_~a](const RecordContext& record) { ~a }" (frame-captures push-exprs env)
+                             (g-node-material n) (push-override))
+                     "nullptr")
+                 (if invocations
+                     (format "[~a](const zgal::FrameInfo& frame) { return ~a::workgroupsFor(~a); }" (frame-captures invocations env) material-type
+                             (string-join (for/list ([e (in-list invocations)]) (build-expr e (scalar-t 'uint))) ", "))
+                     "nullptr")
+                 (if spec (format "std::optional<BufferOffset>(~a)" (command-offset (indirect-command spec))) "std::nullopt"))]
+        ['dispatch
          #:when spec
-         (format "graph.add<DispatchNode>(~a, material_~a, ~a)" (cpp-string node-name) (g-node-material n) (command-offset (indirect-command spec)))]
-        ['dispatch (format "graph.add<DispatchNode>(~a, material_~a)" (cpp-string node-name) (g-node-material n))]
+         (format "graph.add<DispatchNode>(~a, material_~a, ~a)" label (g-node-material n) (command-offset (indirect-command spec)))]
+        ['dispatch (format "graph.add<DispatchNode>(~a, material_~a)" label (g-node-material n))]
         [(or 'draw 'draw-meshes)
          #:when counted?
-         (format "zgal::addCountedDraw(graph, ~a, ~a, ~a, material_~a, ~a)" (cpp-string node-name)
+         (format "zgal::addCountedDraw(graph, ~a, ~a, ~a, material_~a, ~a)" label
                  (draw-desc (command-offset (indirect-command spec))) (command-offset (indirect-count spec))
                  (indirect-limit spec) (resource-ref (indirect-limited spec)))]
         [(or 'draw 'draw-meshes)
          #:when spec
-         (format "graph.add<IndirectDrawNode>(~a, ~a)" (cpp-string node-name) (draw-desc (command-offset (indirect-command spec))))]
-        ['draw-meshes (format "graph.add<RenderablesNode>(~a, std::move(renderables), target_~a)" (cpp-string node-name) (g-node-target n))]
+         (format "graph.add<IndirectDrawNode>(~a, ~a)" label (draw-desc (command-offset (indirect-command spec))))]
+        ['draw-meshes (format "graph.add<RenderablesNode>(~a, std::move(renderables), target_~a)" label (g-node-target n))]
         ['draw
-         (format "graph.addGraphics(~a, [target = target_~a, material = material_~a](NodeBuilder& builder) { builder.renderTo(target).uses(material); }, [material = material_~a, count = ~a](RecordContext& record) { material->bind(record.commandBuffer, record.frameIndex); vkCmdDraw(record.commandBuffer, count, 1, 0, 0); })"
-                 (cpp-string node-name) (g-node-target n) (g-node-material n) (g-node-material n)
-                 (build-expr (g-node-count n) (scalar-t 'uint)))]
+         (format "graph.addGraphics(~a, [target = target_~a, material = material_~a](NodeBuilder& builder) { builder.renderTo(target).uses(material); }, [~amaterial = material_~a, count = ~a](RecordContext& record) { material->bind(record.commandBuffer, record.frameIndex); ~avkCmdDraw(record.commandBuffer, count, 1, 0, 0); })"
+                 label (g-node-target n) (g-node-material n)
+                 (if (has-push?) (string-append (frame-captures (map cdr (node-overrides-push overrides)) env) ", ") "")
+                 (g-node-material n)
+                 (build-expr (g-node-count n) (scalar-t 'uint))
+                 (if (has-push?) (string-append (push-override) " ") ""))]
         ['readback (format "graph.add<~a>(~a, ~a)" (if (image-kind? (g-node-subject n)) "ReadbackNode" "BufferReadbackNode")
-                           (cpp-string node-name) (resource-ref (g-node-subject n)))]
+                           label (resource-ref (g-node-subject n)))]
         ['clear
          (format "graph.addTransfer(~a, [target = ~a](NodeBuilder& builder) { builder.write(target, Access::TransferDst); }, [target = ~a, value = ~a](RecordContext& record) { vkCmdFillBuffer(record.commandBuffer, record.graph.buffer(target, record.frameIndex), 0, VK_WHOLE_SIZE, value); })"
-                 (cpp-string node-name) (resource-ref (first (g-node-writes n))) (resource-ref (first (g-node-writes n)))
+                 label (resource-ref (first (g-node-writes n))) (resource-ref (first (g-node-writes n)))
                  (build-expr (g-node-count n) (scalar-t 'uint)))]
         ['cpu
          (define uses
            (append (for/list ([b (in-list (g-node-reads n))]) (format ".read(~a, Access::HostRead)" (resource-ref b)))
                    (for/list ([b (in-list (g-node-writes n))]) (format ".write(~a, Access::HostWrite)" (resource-ref b)))))
-         (format "graph.addCpu(~a, ~a, in->~a)" (cpp-string node-name)
+         (format "graph.addCpu(~a, ~a, in->~a)" label
                  (if (null? uses)
                      "nullptr"
                      (format "[~a](NodeBuilder& builder) { builder~a; }"
@@ -614,7 +644,7 @@
          (define offset (cdr (g-node-offsets n)))
          (define extent (g-node-count n))
          (format "graph.addTransfer(~a, [source = ~a, destination = ~a](NodeBuilder& builder) { builder.read(source, Access::TransferSrc).write(destination, Access::TransferDst); }, [source = ~a, destination = ~a, sourceOffset = VkDeviceSize(~a) * sizeof(~a), offset = VkOffset2D{int32_t(~a), int32_t(~a)}, extent = ~a](RecordContext& record) { zgal::copyBufferToImage(record, source, destination, sourceOffset, offset, extent, ~a); })"
-                 (cpp-string node-name) (resource-ref source) (resource-ref (first (g-node-writes n)))
+                 label (resource-ref source) (resource-ref (first (g-node-writes n)))
                  (resource-ref source) (resource-ref (first (g-node-writes n)))
                  (build-expr (car (g-node-offsets n)) (scalar-t 'uint)) (cpp-type (entry-type (hash-ref env source)))
                  (build-expr (first offset) (scalar-t 'uint)) (build-expr (second offset) (scalar-t 'uint))
@@ -627,7 +657,7 @@
          (define destination (first (g-node-writes n)))
          (define element (cpp-type (entry-type (hash-ref env source))))
          (format "graph.addTransfer(~a, [source = ~a, destination = ~a](NodeBuilder& builder) { builder.read(source, Access::TransferSrc).write(destination, Access::TransferDst); }, [source = ~a, destination = ~a, sourceOffset = VkDeviceSize(~a), destinationOffset = VkDeviceSize(~a), count = ~a](RecordContext& record) { zgal::copyBuffer(record, source, destination, sizeof(~a), sourceOffset, destinationOffset, count, ~a); })"
-                 (cpp-string node-name) (resource-ref source) (resource-ref destination) (resource-ref source) (resource-ref destination)
+                 label (resource-ref source) (resource-ref destination) (resource-ref source) (resource-ref destination)
                  (build-expr (car (g-node-offsets n)) (scalar-t 'uint)) (build-expr (cdr (g-node-offsets n)) (scalar-t 'uint))
                  (if (g-node-count n) (format "std::optional<VkDeviceSize>(~a)" (build-expr (g-node-count n) (scalar-t 'uint))) "std::optional<VkDeviceSize>()")
                  element (cpp-string node-name))]
@@ -641,7 +671,7 @@
                            instance type type (k-step-pass step)))
                  (format "{material_~a}" instance))))
          (format "graph.add<DispatchSequenceNode>(~a, std::vector<DispatchSequenceNode::Step>{~a})"
-                 (cpp-string node-name) (string-join steps ", "))]
+                 label (string-join steps ", "))]
         ['extern #f]))
     (line (if (g-node-when n)
               (format "        if (~a) {" (build-expr (g-node-when n) (scalar-t 'bool)))
@@ -690,4 +720,4 @@
   (match item
     [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-model-draws _ _ _ l) l] [(g-model-bounds _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
-    [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ _ l) l]))
+    [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ _ _ l) l]))

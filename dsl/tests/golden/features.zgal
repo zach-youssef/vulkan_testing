@@ -208,6 +208,15 @@
      (store! target texel (vec4 (float (.x (texture-size decal 0))) (float (.count (at settings 0))) 0.0 1.0)))))
 
 ;; Every graph item, node and option
+;; Dispatches give the push constant their material leaves out
+(compute-material Bump
+  (workgroup 64)
+  (bindings (sums (buffer-array float)))
+  (push (first uint) (amount float))
+  (compute
+   (let* ([i (+ first globalInvocationId.x)])
+     (write! (at sums i) (+ (at sums i) amount)))))
+
 (graph Everything
   (parameter enabled bool)
   (parameter count int)
@@ -277,7 +286,10 @@
   (copy seedCorner seedBuffer seedImage #:source-offset 1 #:destination-offset (1 (uint count)) #:extent (1 1))
   (readback readSeeds seedBuffer #:once #t)
   (readback readTotal totalBuffer #:when enabled)
-  (readback readSamples samples))
+  (readback readSamples samples)
+  ;; A dispatch giving the push constant its material leaves out, and its own size
+  (material bump Bump (sums sumBuffer) #:push ((amount halfScale)))
+  (dispatch bumpOnce bump #:push ((first (uint count))) #:invocations (size)))
 
 ;; Every event, effect and kind of graph binding: parameters computed once, per-frame inputs from
 ;; the state, node enables (one of a #:when node), and the rest passed through from C++

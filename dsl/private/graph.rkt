@@ -499,7 +499,7 @@
        (unless (>= (length args) 2)
          (zgal-error 'malformed stx "expected (material name Material (binding resource) ... #:option value ...)"))
        (declare! (parse-material-instance stx args options) stx)]
-      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, image-file, model, import-buffer, upload, constant, sampler, uniform, image, buffer, target, material and nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern)"
+      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, image-file, model, import-buffer, upload, constant, sampler, uniform, image, buffer, target, material and nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern, reduce, inclusive-scan, exclusive-scan, sort)"
                      name head)]))
 
   ;; The type of a buffer's elements
@@ -614,27 +614,11 @@
         (cons b (or (hash-ref given (binding-name b) #f)
                     (zgal-error 'incomplete-material stx "material ~a doesn't give ~a's binding ~a" instance-name
                                 (material-name m) (binding-name b))))))
-    ;; Push constants
-    (define push-values (make-hash))
-    (define push-stx (hash-ref options '#:push #f))
-    (when push-stx
-      (for ([p-stx (in-list (or (syntax->list push-stx) (zgal-error 'malformed push-stx "#:push takes ((field value) ...)")))])
-        (match (syntax->list p-stx)
-          [(list f-stx value-stx)
-           (define f-name (format "~a" (syntax-e f-stx)))
-           (define f (or (for/first ([f (in-list (material-push m))] #:when (string=? (field-name f) f-name)) f)
-                         (zgal-error 'unknown-name f-stx "material ~a has no push constant ~a" (material-name m) f-name)))
-           (when (hash-ref push-values f-name #f)
-             (zgal-error 'duplicate-name f-stx "push constant ~a is given twice" f-name))
-           (define e (parse-expression value-stx))
-           (check-expression e env (field-type f) (format "push constant ~a" f-name))
-           (hash-set! push-values f-name e)]
-          [_ (zgal-error 'malformed p-stx "expected (push-constant value)")])))
+    ;; Push constants: those it leaves out, every node using it gives (checked once they're read)
+    (define push-values (parse-push (hash-ref options '#:push #f) m))
     (define push
       (for/list ([f (in-list (material-push m))])
-        (cons f (or (hash-ref push-values (field-name f) #f)
-                    (zgal-error 'incomplete-material stx "material ~a doesn't give ~a's push constant ~a (#:push ((~a value)))"
-                                instance-name (material-name m) (field-name f) (field-name f))))))
+        (cons f (hash-ref push-values (field-name f) #f))))
     ;; Pipeline options and dispatch size
     (define (flag key)
       (define s (hash-ref options key #f))
@@ -652,20 +636,42 @@
                         (cons 'depth-write (flag '#:depth-write))
                         (cons 'depth-compare (choice-option options '#:depth-compare compare-ops "material"))))
           '()))
-    ;; Optional: a material only dispatched indirectly has none
+    ;; Optional: a material only dispatched indirectly, or by nodes giving their own, has none
     (define invocations
       (and (not graphics?)
            (hash-ref options '#:invocations #f)
-           (let ([s (hash-ref options '#:invocations)])
-             (define sizes (syntax->list s))
-             (unless (and sizes (<= 1 (length sizes) 3))
-               (zgal-error 'bad-option s "#:invocations is (x [y [z]])"))
-             ;; Computed each frame, so they can follow per-frame inputs and images' sizes
-             (for/list ([size (in-list sizes)])
-               (define e (parse-expression size))
-               (check-expression e env (scalar-t 'uint) "an invocation count")
-               e))))
+           (parse-invocations (hash-ref options '#:invocations))))
     (g-material instance-name m bindings push pipeline invocations (stx->loc stx)))
+
+  ;; #:push ((field value) ...) for material m's push constants: a hash of the fields given to their
+  ;; expressions (computed each frame)
+  (define (parse-push push-stx m)
+    (define push-values (make-hash))
+    (when push-stx
+      (for ([p-stx (in-list (or (syntax->list push-stx) (zgal-error 'malformed push-stx "#:push takes ((field value) ...)")))])
+        (match (syntax->list p-stx)
+          [(list f-stx value-stx)
+           (define f-name (format "~a" (syntax-e f-stx)))
+           (define f (or (for/first ([f (in-list (material-push m))] #:when (string=? (field-name f) f-name)) f)
+                         (zgal-error 'unknown-name f-stx "material ~a has no push constant ~a" (material-name m) f-name)))
+           (when (hash-ref push-values f-name #f)
+             (zgal-error 'duplicate-name f-stx "push constant ~a is given twice" f-name))
+           (define e (parse-expression value-stx))
+           (check-expression e env (field-type f) (format "push constant ~a" f-name))
+           (hash-set! push-values f-name e)]
+          [_ (zgal-error 'malformed p-stx "expected (push-constant value)")])))
+    push-values)
+
+  ;; #:invocations (x [y [z]]): computed each frame, so they can follow per-frame inputs and images'
+  ;; sizes
+  (define (parse-invocations s)
+    (define sizes (syntax->list s))
+    (unless (and sizes (<= 1 (length sizes) 3))
+      (zgal-error 'bad-option s "#:invocations is (x [y [z]])"))
+    (for/list ([size (in-list sizes)])
+      (define e (parse-expression size))
+      (check-expression e env (scalar-t 'uint) "an invocation count")
+      e))
 
   ;; The resource bound to binding b: checks it fits, and returns its name. An array binding takes
   ;; a list of resources of its elements' kind, or imported images (for arrays of images).
@@ -731,8 +737,9 @@
                            [(extern) '(#:when)]
                            [(reduce inclusive-scan exclusive-scan) '(#:when #:enabled #:once #:op #:count)]
                            [(sort) '(#:when #:enabled #:once #:values #:count)]
-                           [(dispatch) '(#:when #:enabled #:once #:indirect)]
-                           [(draw draw-meshes) '(#:when #:enabled #:once #:indirect #:draws #:count)]
+                           [(dispatch) '(#:when #:enabled #:once #:indirect #:push #:invocations)]
+                           [(draw) '(#:when #:enabled #:once #:indirect #:draws #:count #:push)]
+                           [(draw-meshes) '(#:when #:enabled #:once #:indirect #:draws #:count)]
                            [else '(#:when #:enabled #:once)])
                          form)
     (define (shape n text)
@@ -750,9 +757,17 @@
                     form kind m-name (material-kind m) (material-name m)))
       (values m-name m))
     (define (node kind #:target [target #f] #:material [m #f] #:subject [subject #f] #:count [count #f]
-                  #:reads [reads '()] #:writes [writes '()] #:offsets [offsets #f] #:extra [extra #f])
+                  #:reads [reads '()] #:writes [writes '()] #:offsets [offsets #f] #:extra [extra #f]
+                  #:overrides [overrides #f])
       (g-node kind node-name target m subject count reads writes offsets
-              (condition options '#:when) (condition options '#:enabled) (once?) extra (stx->loc stx)))
+              (condition options '#:when) (condition options '#:enabled) (once?) extra overrides (stx->loc stx)))
+    ;; The node's own #:push for material m, and invocations (or #f), or #f if it gives neither
+    (define (overrides-of m invocations)
+      (define given (parse-push (hash-ref options '#:push #f) m))
+      (and (or (positive? (hash-count given)) invocations)
+           (node-overrides (for/list ([f (in-list (material-push m))] #:when (hash-ref given (field-name f) #f))
+                             (cons f (hash-ref given (field-name f))))
+                           invocations)))
     ;; #:once #t: the node runs in the graph's first frame, then is disabled
     (define (once?)
       (define stx (hash-ref options '#:once #f))
@@ -781,13 +796,17 @@
     (match head
       ['dispatch
        (shape 2 "(dispatch name material)")
-       (define-values (m-name _m) (material-of (second args) 'compute))
+       (define-values (m-name m) (material-of (second args) 'compute))
        (define command-stx (hash-ref options '#:indirect #f))
-       (unless (or command-stx (g-material-invocations (entry-item (hash-ref env m-name))))
-         (zgal-error 'bad-option (second args) "material ~a has no #:invocations, so dispatch ~a needs them, or dispatches it #:indirect (at commands index)"
+       (define invocations-stx (hash-ref options '#:invocations #f))
+       (when (and command-stx invocations-stx)
+         (zgal-error 'bad-option invocations-stx "dispatch ~a reads its workgroups from #:indirect, so it takes no #:invocations" node-name))
+       (unless (or command-stx invocations-stx (g-material-invocations (entry-item (hash-ref env m-name))))
+         (zgal-error 'bad-option (second args) "material ~a has no #:invocations, so dispatch ~a needs them (#:invocations on the material or the dispatch), or dispatches it #:indirect (at commands index)"
                      m-name node-name))
        (node 'dispatch #:material m-name
-             #:extra (and command-stx (indirect (parse-command command-stx "DispatchCommand") #f #f #f #f)))]
+             #:extra (and command-stx (indirect (parse-command command-stx "DispatchCommand") #f #f #f #f))
+             #:overrides (overrides-of m (and invocations-stx (parse-invocations invocations-stx))))]
       ['draw-meshes
        (shape 4 "(draw-meshes name target meshes material)")
        (define target (lookup (second args) '(target) "a target"))
@@ -825,10 +844,13 @@
        (when (material-vertex-input m)
          (zgal-error 'material-kind (third args) "draw reads no vertex buffers, but material ~a (~a) has a vertex-input; draw it with draw-meshes"
                      m-name (material-name m)))
+       (when (and command-stx (hash-ref options '#:push #f))
+         (zgal-error 'bad-option (hash-ref options '#:push) "draw ~a draws #:indirect, so it takes its material's push constants: #:push is for draws of a vertex count, and dispatches" node-name))
        (if command-stx
            (node 'draw #:target target #:material m-name
                  #:extra (parse-indirect-draw command-stx "DrawCommand" node-name options stx))
-           (node 'draw #:target target #:material m-name #:count (build-time (fourth args) (scalar-t 'uint) "a vertex count")))]
+           (node 'draw #:target target #:material m-name #:count (build-time (fourth args) (scalar-t 'uint) "a vertex count")
+                 #:overrides (overrides-of m #f)))]
       ['readback
        (shape 2 "(readback name image-or-buffer)")
        (node 'readback #:subject (lookup (second args) '(image import buffer import-buffer upload) "an image or buffer"))]
@@ -1138,14 +1160,16 @@
   (define-values (graph-items nodes)
     (for/fold ([items '()] [nodes '()] #:result (values (reverse items) (reverse nodes)))
               ([item-stx (in-list (cddr items))])
-      (if (memq (head-symbol item-stx) '(dispatch draw-meshes draw readback cpu copy clear extern reduce inclusive-scan exclusive-scan sort))
-          ;; A node, and the items it declares
-          (let ([n (parse-node item-stx)])
-            (begin0 (values (append (reverse node-items) items) (cons n nodes))
-                    (set! node-items '())))
-          ;; An item, or the items a model declares
-          (let ([parsed (parse-item item-stx)])
-            (values (append (reverse (if (list? parsed) parsed (list parsed))) items) nodes)))))
+      (cond
+        [(memq (head-symbol item-stx) node-forms)
+         ;; A node, and the items it declares
+         (let ([n (parse-node item-stx)])
+           (begin0 (values (append (reverse node-items) items) (cons n nodes))
+                   (set! node-items '())))]
+        [else
+         ;; An item, or the items a model declares
+         (let ([parsed (parse-item item-stx)])
+           (values (append (reverse (if (list? parsed) parsed (list parsed))) items) nodes))])))
 
   ;; Every material is used, and a graphics material draws into one target
   (for ([item (in-list graph-items)] #:when (g-material? item))
@@ -1156,9 +1180,22 @@
                           nodes))
     (when (null? users)
       (zgal-error 'unused-material (g-material-loc item) "no node uses material ~a" (g-material-name item)))
+    ;; Push constants it leaves out, every node using it gives
+    (for ([pair (in-list (g-material-push item))] #:unless (cdr pair))
+      (define f (car pair))
+      (define gives? (λ (n) (and (g-node-overrides n)
+                                 (for/or ([p (in-list (node-overrides-push (g-node-overrides n)))]) (equal? (field-name (car p)) (field-name f))))))
+      (define lacking (findf (λ (n) (not (gives? n))) users))
+      (when lacking
+        (zgal-error 'incomplete-material (g-material-loc item)
+                    "material ~a doesn't give ~a's push constant ~a: give it with #:push ((~a value)) on the material, or on every node using it (~a doesn't)"
+                    (g-material-name item) (material-name (g-material-material item)) (field-name f) (field-name f) (g-node-name lacking))))
     (define targets (remove-duplicates (filter values (map g-node-target users))))
     (when (> (length targets) 1)
       (zgal-error 'material-targets (g-node-loc (second users))
                   "material ~a is drawn into targets ~a: a graphics material's pipeline is built for one target's formats, so declare a material per target"
                   (g-material-name item) (string-join targets " and "))))
   (graph name graph-items nodes (stx->loc stx)))
+
+;; The forms of nodes
+(define node-forms '(dispatch draw-meshes draw readback cpu copy clear extern reduce inclusive-scan exclusive-scan sort))

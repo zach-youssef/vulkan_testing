@@ -617,3 +617,56 @@
   (readback readOrder order)
   (readback readPartial partial)
   (readback readFloatKeys floatKeys))
+
+;; For the tests of nodes' own push constants and invocations: spans of a buffer to fill, a step
+;; applied to every element, and bands of an image drawn a row at a time. The materials leave out
+;; push constants their nodes give.
+(compute-material FillSpan
+  (workgroup 64)
+  (bindings (cells (buffer-array uint)))
+  (push (offset uint) (amount uint) (value uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i amount) (write! (at cells (+ offset i)) value)))))
+
+(compute-material Step
+  (workgroup 64)
+  (bindings (cells (buffer-array uint)))
+  (push (increment uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (write! (at cells i) (+ (* (at cells i) 2) increment)))))
+
+;; Row `row` of `rows` (and below it, which later rows cover), in `shade`
+(graphics-material Band
+  (push (row uint) (rows uint) (shade vec4))
+  (outputs (color vec4))
+  (vertex
+   (let* ([corner (vec2 (float (bitand vertexIndex 2)) (float (bitand (shl vertexIndex 1) 2)))]
+          [height (/ 2.0 (float rows))]
+          [top (+ -1.0 (* height (float row)))])
+     (results #:position (vec4 (- (* corner.x 2.0) 1.0) (+ top (* corner.y height)) 0.0 1.0))))
+  (fragment shade))
+
+(graph OverrideGraph
+  (buffer cells uint 64 #:frames shared)
+  (buffer command DispatchCommand 1 #:frames shared)
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  ;; Each band keeps what the other drew (the rows cover the whole image)
+  (target canvas (color picture #:load load))
+  (material filling FillSpan cells)
+  (material stepping Step cells #:push ((increment 1)) #:invocations (64))
+  (material banding Band #:push ((rows 2)))
+  (clear zero cells)
+  (dispatch fillFirst filling #:push ((offset 0) (amount 10) (value 5)) #:invocations (10))
+  (dispatch fillSecond filling #:push ((offset 30) (amount 4) (value 7)) #:invocations (4))
+  ;; One workgroup, from a command, with its own push constants
+  (clear oneGroup command #:value 1)
+  (dispatch tail filling #:indirect (at command 0) #:push ((offset 60) (amount 4) (value 3)))
+  ;; The material's increment, then the node's
+  (dispatch stepOne stepping)
+  (dispatch stepTwo stepping #:push ((increment 2)))
+  (draw top canvas banding 3 #:push ((row 0) (shade (vec4 1.0 0.0 0.0 1.0))))
+  (draw bottom canvas banding 3 #:push ((row 1) (shade (vec4 0.0 0.0 1.0 1.0))))
+  (readback readCells cells)
+  (readback readPicture picture))

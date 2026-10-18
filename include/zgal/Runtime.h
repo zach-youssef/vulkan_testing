@@ -333,6 +333,11 @@ public:
         return dispatch_;
     }
 
+    // The push constants computed for the frame (by update)
+    const Push& pushValues() const {
+        return values_;
+    }
+
 protected:
     void writePush(uint32_t, Push& push) {
         push = values_;
@@ -344,6 +349,63 @@ private:
     DispatchSource dispatchSource_;
     glm::vec3 dispatch_{0.0f};
     Push values_{};
+};
+
+// Pushes a node's own push constants, after binding its material: the material's for the frame,
+// with those the node gives replaced by `write(frame, push)`
+template<typename Material, typename Write>
+void pushOverride(const RecordContext& record, PushInstance<Material>& material, Write&& write) {
+    typename Material::Push push = material.pushValues();
+    write(frameInfo(record), push);
+    vkCmdPushConstants(record.commandBuffer, material.getPipelineLayout(), VK_SHADER_STAGE_ALL, Material::kPushOffset,
+                       sizeof(push), &push);
+}
+
+/*
+ A dispatch with its own push constants or workgroups, replacing its material's (e.g. one per
+ iteration of a loop, sharing a material, and so a pipeline). push, if given, pushes them after the
+ material is bound (pushOverride); workgroups, if given, are the dispatch's for the frame, unless
+ it dispatches indirectly, as many workgroups as the command at `command` says.
+ */
+class OverridingDispatchNode : public ComputeNode {
+public:
+    using PushFn = std::function<void(const RecordContext&)>;
+
+    OverridingDispatchNode(Handle<ComputeMaterial> material, PushFn push, DispatchSource workgroups,
+                           std::optional<BufferOffset> command)
+    : material_(std::move(material)), push_(std::move(push)), workgroups_(std::move(workgroups)), command_(command) {
+        if (workgroups_ && command_) {
+            contractViolation("OverridingDispatchNode dispatches indirectly, so it takes no workgroups");
+        }
+    }
+
+    void setup(NodeBuilder& builder) override {
+        builder.uses(material_);
+        if (command_) {
+            builder.read(command_->buffer, Access::IndirectRead);
+        }
+    }
+
+    void record(RecordContext& context) override {
+        material_->bind(context.commandBuffer, context.frameIndex);
+        if (push_) {
+            push_(context);
+        }
+        if (command_) {
+            vkCmdDispatchIndirect(context.commandBuffer, context.graph.buffer(command_->buffer, context.frameIndex),
+                                  command_->offset);
+            return;
+        }
+        const glm::vec3 groups = workgroups_ ? workgroups_(frameInfo(context)) : material_->getDispatchDimensions();
+        vkCmdDispatch(context.commandBuffer, static_cast<uint32_t>(groups.x), static_cast<uint32_t>(groups.y),
+                      static_cast<uint32_t>(groups.z));
+    }
+
+private:
+    Handle<ComputeMaterial> material_;
+    PushFn push_;
+    DispatchSource workgroups_;
+    std::optional<BufferOffset> command_;
 };
 
 // A graph's declaration that exists only under a condition, used where the condition was false

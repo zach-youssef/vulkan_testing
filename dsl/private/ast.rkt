@@ -240,7 +240,8 @@
 ;; An instance of a material declared in the file. bindings: (cons binding resource) in the
 ;; material's order, where resource is a name, or for an array binding a list of names or the name
 ;; of imported images. push: (cons field expression) in the material's order. options: an
-;; association list of pipeline options. invocations: expressions (compute) or #f.
+;; association list of pipeline options. invocations: expressions (compute) or #f. A push constant
+;; every node using the instance gives (#:push on the node) may be left out: its expression is #f.
 (struct g-material (name material bindings push options invocations loc) #:transparent)
 ;; kind: 'dispatch 'draw-meshes 'draw 'readback 'cpu 'copy 'clear 'extern. target, material,
 ;; subject (the meshes, image, cpu or extern input): names or #f. count: an expression or #f (a
@@ -249,8 +250,12 @@
 ;; clear reads and writes (names). offsets: a copy's (cons source-offset destination-offset), the
 ;; destination offset an image's (x y) for a copy into one; else #f. when, enabled: expressions or #f.
 ;; once?: whether it runs in the graph's first frame only (RenderGraph::runOnce). extra: what a kind
-;; needs beyond these, else #f: a kernel's steps (k-steps).
-(struct g-node (kind name target material subject count reads writes offsets when enabled once? extra loc) #:transparent)
+;; needs beyond these, else #f: a kernel's steps (k-steps). overrides: a node-overrides or #f.
+(struct g-node (kind name target material subject count reads writes offsets when enabled once? extra overrides loc) #:transparent)
+;; A dispatch's or draw's own push constants, replacing its material's (push: (cons field
+;; expression) for those it gives, in the material's order), and a dispatch's own invocations
+;; (expressions, or #f for its material's)
+(struct node-overrides (push invocations) #:transparent)
 ;; A step of a kernel node (a library algorithm, e.g. a scan): a dispatch of a material instance
 ;; (its name), with its push constant `pass` replaced by pass (an integer) if pass isn't #f
 (struct k-step (material pass) #:transparent)

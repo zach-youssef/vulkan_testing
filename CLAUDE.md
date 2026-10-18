@@ -314,6 +314,9 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   sorting)` maps floats and ints to them). `#:count` is an expression or a GPU-written `(at counts i)`. The compiler instantiates
   their materials from `dsl/lib/kernels` (named `Zgal...`) and dispatches them as one
   `DispatchSequenceNode`.
+- Dispatches and draws (of a vertex count) give their own `#:push ((field v))`, and dispatches
+  `#:invocations`, replacing their material's, so several nodes share a material and its pipeline;
+  a material may leave out push constants every node using it gives.
 - Top-level `(define (f [x : vec3]) : vec3 ...)` functions and `(define name value)` constants are
   shared by the shaders, and those without textures, images or effects also compile to C++
   (`sunDirection` in the scene example), so the CPU computes the same thing.
