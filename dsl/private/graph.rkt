@@ -246,11 +246,32 @@
 (define compare-ops '(never less equal less-or-equal greater not-equal greater-or-equal always))
 
 ;; ---------------------------------------------------------------------------------------------
+;; Library kernels
+
+;; What a kernel template's operator symbols become for op ('add 'min 'max) on elements of type t
+;; (a uint, int or float scalar-t): see dsl/lib/kernels/reduce.zgal
+(define (operator-substitutions op t)
+  (define kind (scalar-t-kind t))
+  (define identity
+    (match* (op kind)
+      [('add 'float) 0.0] [('add k) `(,k 0)]
+      [('min 'uint) '(bitnot (uint 0))] [('min 'int) '(int 2147483647)] [('min 'float) '(uintBitsToFloat (uint 2139095040))]
+      [('max 'uint) '(uint 0)] [('max 'int) '(- (int -2147483647) 1)] [('max 'float) '(uintBitsToFloat (uint 4286578688))]))
+  (define title (case op [(add) "Add"] [(min) "Min"] [(max) "Max"]))
+  (hash 'T kind
+        'COMBINE (case op [(add) '+] [else op])
+        'IDENTITY identity
+        'SUBGROUP_ALL (string->symbol (format "subgroup~a" title))
+        'SUBGROUP_INCLUSIVE (string->symbol (format "subgroupInclusive~a" title))
+        'SUBGROUP_EXCLUSIVE (string->symbol (format "subgroupExclusive~a" title))))
+
+;; ---------------------------------------------------------------------------------------------
 ;; The graph
 
 ;; stx: the (graph Name item ...) form. parse-type: parses a type. top-level: declares a top-level
-;; name. materials: the file's materials so far, by name.
-(define (parse-graph stx parse-type top-level materials formats)
+;; name. materials: the file's materials so far, by name. instantiate-kernel: instantiates a library
+;; kernel's materials (see parse.rkt).
+(define (parse-graph stx parse-type top-level materials formats instantiate-kernel)
   (define items (syntax->list stx))
   (unless (and items (>= (length items) 2))
     (zgal-error 'malformed stx "expected (graph Name item ...)"))
@@ -259,6 +280,8 @@
   (define names (make-namespace (format "in graph ~a" name)))
   (define node-names (make-namespace (format "as a node of graph ~a" name)))
   (define env (make-hash))   ; name -> entry, as declared so far
+  ;; Items nodes declare (e.g. a kernel's scratch buffers and materials), in order
+  (define node-items '())
   (define (declare! item stx)
     (names (graph-item-name item) stx)
     (hash-set! env (graph-item-name item) (item-entry item))
@@ -694,6 +717,7 @@
                            [(clear) '(#:when #:enabled #:once #:value)]
                            ;; C++ adds and enables the nodes
                            [(extern) '(#:when)]
+                           [(reduce inclusive-scan exclusive-scan) '(#:when #:enabled #:once #:op #:count)]
                            [else '(#:when #:enabled #:once)])
                          form)
     (define (shape n text)
@@ -711,9 +735,9 @@
                     form kind m-name (material-kind m) (material-name m)))
       (values m-name m))
     (define (node kind #:target [target #f] #:material [m #f] #:subject [subject #f] #:count [count #f]
-                  #:reads [reads '()] #:writes [writes '()] #:offsets [offsets #f])
+                  #:reads [reads '()] #:writes [writes '()] #:offsets [offsets #f] #:extra [extra #f])
       (g-node kind node-name target m subject count reads writes offsets
-              (condition options '#:when) (condition options '#:enabled) (once?) (stx->loc stx)))
+              (condition options '#:when) (condition options '#:enabled) (once?) extra (stx->loc stx)))
     ;; #:once #t: the node runs in the graph's first frame, then is disabled
     (define (once?)
       (define stx (hash-ref options '#:once #f))
@@ -825,20 +849,129 @@
                                  (or (elements '#:destination-offset "a copy's destination offset") zero))))]
       ['extern
        (shape 2 "(extern name input)")
-       (node 'extern #:subject (lookup (second args) '(extern) "an extern input"))]))
+       (node 'extern #:subject (lookup (second args) '(extern) "an extern input"))]
+      [(or 'reduce 'inclusive-scan 'exclusive-scan)
+       (parse-kernel-node head node-name stx args options node)]))
+
+  ;; (at buffer index): an element of a buffer of uints (or of type), e.g. a count a shader wrote
+  (define (parse-element stx what #:type [type (scalar-t 'uint)])
+    (match (syntax->list stx)
+      [(list at-stx buffer-stx index-stx) #:when (eq? (syntax-e at-stx) 'at)
+       (define buffer (lookup buffer-stx '(buffer import-buffer upload) "a buffer"))
+       (define t (entry-type (hash-ref env buffer)))
+       (unless (equal? t type)
+         (zgal-error 'type-mismatch buffer-stx "~a is an element of a buffer of ~as, but ~a holds ~a" what (type-name type) buffer (type-name t)))
+       (element-ref buffer (build-time index-stx (scalar-t 'uint) "an element's index") (stx->loc stx))]
+      [_ (zgal-error 'malformed stx "~a is a buffer's element, (at buffer index), not ~a" what (show stx))]))
+
+  ;; A kernel's #:count: an expression, computed each frame, or an element of a buffer of uints
+  ;; (which the kernel reads on the GPU)
+  (define (parse-kernel-count stx form where)
+    (cond
+      [(not stx) (zgal-error 'bad-option where "~a needs #:count: how many elements, an expression or (at buffer index)" form)]
+      [(eq? (head-symbol stx) 'at) (parse-element stx (format "~a's #:count" form))]
+      [else
+       (define e (parse-expression stx))
+       (check-expression e env (scalar-t 'uint) (format "~a's #:count" form))
+       e]))
+
+  ;; Library algorithms: nodes dispatching materials instantiated from dsl/lib/kernels, with scratch
+  ;; buffers, which this declares (named zgal_<node>_..., so they can't clash with the program's)
+  (define (parse-kernel-node head node-name stx args options node)
+    (define form (symbol->string head))
+    (define reduce? (eq? head 'reduce))
+    (unless (= (length args) 3)
+      (zgal-error 'malformed stx "expected ~a"
+                  (if reduce? "(reduce name source (at destination index) #:op op #:count n)"
+                      (format "(~a name source destination #:op op #:count n)" form))))
+    (define where (stx->loc stx))
+    (define source (lookup (second args) '(buffer import-buffer upload) "a buffer"))
+    (define t (entry-type (hash-ref env source)))
+    (unless (member t (list (scalar-t 'uint) (scalar-t 'int) (scalar-t 'float)))
+      (zgal-error 'type-mismatch (second args) "~a combines uints, ints or floats, but ~a holds ~a" form source (type-name t)))
+    (define destination
+      (if reduce?
+          (parse-element (third args) "reduce's destination" #:type t)
+          (let ([d (lookup (third args) '(buffer import-buffer upload) "a buffer")])
+            (unless (equal? (entry-type (hash-ref env d)) t)
+              (zgal-error 'type-mismatch (third args) "~a holds ~a, but ~a holds ~a" source (type-name t) d
+                          (type-name (entry-type (hash-ref env d)))))
+            d)))
+    (define op (choice-option options '#:op '(add min max) form #:required? #t #:where stx))
+    (define count (parse-kernel-count (hash-ref options '#:count #f) form stx))
+    (define gpu? (element-ref? count))
+    (define (lit n) (e-literal n where))
+    ;; Workgroups: enough for the elements' tiles of 256, at most 256; with a count only the GPU
+    ;; knows, all 256, which take turns over the tiles
+    (define groups
+      (if gpu?
+          (lit 256)
+          (e-op 'min (list (e-op 'max (list (e-op '/ (list (e-op '+ (list count (lit 255)) where) (lit 256)) where) (lit 1)) where)
+                           (lit 256))
+                where)))
+    (define invocations (list (e-op '* (list groups (lit 256)) where)))
+    (define (capitalized s) (string-append (string-upcase (substring s 0 1)) (substring s 1)))
+    (define suffix (format "~a~a~a" (capitalized (type-name t)) (capitalized (symbol->string op)) (if gpu? "Counted" "")))
+    (define flags (append (if gpu? '(gpu-count) '()) (if (eq? op 'add) '(native-scan) '())))
+    (define reduce-materials (instantiate-kernel "reduce.zgal" (operator-substitutions op t) flags suffix))
+    (define created-when (condition options '#:when))
+    (define (internal what) (format "zgal_~a_~a" node-name what))
+    (define (declare-internal! item) (declare! item stx) (set! node-items (append node-items (list item))))
+    (define partials (internal "partials"))
+    (declare-internal! (g-buffer partials t (lit 256) 'per-frame created-when where))
+    ;; An instance of material m. bindings, push: hashes of names to resources and expressions.
+    (define (instance! what m bindings push invocations)
+      (define name (internal what))
+      (declare-internal!
+       (g-material name m
+                   (for/list ([b (in-list (material-bindings m))]) (cons b (hash-ref bindings (binding-name b))))
+                   (for/list ([f (in-list (material-push m))]) (cons f (hash-ref push (field-name f))))
+                   '() invocations where))
+      name)
+    (define (counted bindings push)
+      (if gpu?
+          (values (hash-set bindings "counts" (element-ref-buffer count)) (hash-set push "countIndex" (element-ref-index count)))
+          (values bindings (hash-set push "count" count))))
+    (define-values (reduce-bindings reduce-push) (counted (hash "source" source "partials" partials) (hash)))
+    (define reduce-step (instance! "reduce" (hash-ref reduce-materials "ZgalScanReduce") reduce-bindings reduce-push invocations))
+    (define one-group (list (lit 256)))
+    (define steps
+      (cond
+        [reduce?
+         (list reduce-step
+               (instance! "finish" (hash-ref reduce-materials "ZgalReduceFinish")
+                          (hash "partials" partials "destination" (element-ref-buffer destination))
+                          (hash "groups" groups "index" (element-ref-index destination)) one-group))]
+        [else
+         (define exclusive? (eq? head 'exclusive-scan))
+         (define apply-materials
+           (instantiate-kernel "scan.zgal" (operator-substitutions op t) (append flags (if exclusive? '(exclusive) '()))
+                               (string-append suffix (if exclusive? "Exclusive" "Inclusive"))))
+         (define-values (apply-bindings apply-push)
+           (counted (hash "source" source "destination" destination "partials" partials) (hash)))
+         (list reduce-step
+               (instance! "scanPartials" (hash-ref reduce-materials "ZgalScanPartials") (hash "partials" partials) (hash "groups" groups) one-group)
+               (instance! "apply" (hash-ref apply-materials "ZgalScanApply") apply-bindings apply-push invocations))]))
+    (node 'kernel #:extra (for/list ([m (in-list steps)]) (k-step m #f))))
 
   (define-values (graph-items nodes)
     (for/fold ([items '()] [nodes '()] #:result (values (reverse items) (reverse nodes)))
               ([item-stx (in-list (cddr items))])
-      (if (memq (head-symbol item-stx) '(dispatch draw-meshes draw readback cpu copy clear extern))
-          (values items (cons (parse-node item-stx) nodes))
+      (if (memq (head-symbol item-stx) '(dispatch draw-meshes draw readback cpu copy clear extern reduce inclusive-scan exclusive-scan))
+          ;; A node, and the items it declares
+          (let ([n (parse-node item-stx)])
+            (begin0 (values (append (reverse node-items) items) (cons n nodes))
+                    (set! node-items '())))
           ;; An item, or the items a model declares
           (let ([parsed (parse-item item-stx)])
             (values (append (reverse (if (list? parsed) parsed (list parsed))) items) nodes)))))
 
   ;; Every material is used, and a graphics material draws into one target
   (for ([item (in-list graph-items)] #:when (g-material? item))
-    (define users (filter (λ (n) (equal? (g-node-material n) (g-material-name item))) nodes))
+    (define users (filter (λ (n) (or (equal? (g-node-material n) (g-material-name item))
+                                     (and (eq? (g-node-kind n) 'kernel)
+                                          (for/or ([step (in-list (g-node-extra n))]) (equal? (k-step-material step) (g-material-name item))))))
+                          nodes))
     (when (null? users)
       (zgal-error 'unused-material (g-material-loc item) "no node uses material ~a" (g-material-name item)))
     (define targets (remove-duplicates (filter values (map g-node-target users))))

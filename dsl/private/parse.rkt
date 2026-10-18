@@ -531,7 +531,7 @@
                                 (case stage
                                   [(compute) "nothing (it writes buffers and images)"]
                                   [else (format "(results ~a)" (string-join (map (λ (x) (format "#:~a ..." (car x))) expected) " "))]))])])))
-    (when (eq? stage 'compute) (check-barriers body))
+    (when (eq? stage 'compute) (check-barriers body summaries))
     (define name (format "~a.~a" material-name (case stage [(vertex) "vert"] [(fragment) "frag"] [(compute) "comp"])))
     (claim-shader-name! name material-name stx)
     (zgal-shader #f name stage (stx->loc stx) body (uses-closure (context-uses ctx))))
@@ -733,6 +733,34 @@
                     name (type-name t) name (type-name t)))
       (varying name t interpolation (stx->loc v-stx))))
 
+;; ---------------------------------------------------------------------------------------------
+  ;; Library kernels: materials in dsl/lib/kernels, instantiated for the graphs using them
+
+  (define kernel-instances (make-hash))   ; (list file suffix) -> hash of template name -> material
+  (define kernel-materials '())           ; instantiated, in order
+  (define kernel-files '())               ; the templates read, as locations name them
+  ;; The materials of the template `file` (in dsl/lib/kernels) with symbols replaced by
+  ;; substitutions (a hash of symbol -> datum), (%if flag then [else]) chosen by flags, and each
+  ;; material's name followed by suffix. Returns a hash from the template's material names to the
+  ;; instances; instantiating the same file and suffix again gives the same materials.
+  (define (instantiate-kernel file substitutions flags suffix)
+    (hash-ref! kernel-instances (list file suffix)
+               (λ ()
+                 (define complete (simplify-path (build-path library-directory "kernels" file)))
+                 (define shown (display-path complete))
+                 (unless (member shown kernel-files) (set! kernel-files (append kernel-files (list shown))))
+                 (define forms (read-forms shown (open-input-string (file->string complete))))
+                 (define names
+                   (for/hash ([f (in-list forms)] #:when (eq? (head-symbol f) 'compute-material))
+                     (define n (syntax-e (cadr (syntax->list f))))
+                     (values n (string->symbol (format "~a~a" n suffix)))))
+                 (parameterize ([library-names-allowed? #t])
+                   (for/hash ([f (in-list forms)])
+                     (define instance (substitute-template f (hash-union* substitutions names) flags))
+                     (define m (parse-material instance (syntax->list instance) 'compute))
+                     (set! kernel-materials (append kernel-materials (list m)))
+                     (values (symbol->string (syntax-e (cadr (syntax->list f)))) m))))))
+
   (define graphs (make-hash))   ; name -> graph
   (define-values (all-forms imports) (expand-imports forms source))
   (define-values (structs-out formats-out materials-out graphs-out apps-out)
@@ -746,7 +774,7 @@
         ['graphics-material (values ss fs (cons (parse-material form items 'graphics) ms) gs as)]
         ['compute-material (values ss fs (cons (parse-material form items 'compute) ms) gs as)]
         ['graph
-         (define g (parse-graph form parse-type top-level materials formats))
+         (define g (parse-graph form parse-type top-level materials formats instantiate-kernel))
          (hash-set! graphs (graph-name g) g)
          (values ss fs ms (cons g gs) as)]
         ['app
@@ -758,11 +786,11 @@
         [_ (zgal-error 'unknown-form form
                        "expected import, struct, vertex-format, define, extern-glsl, graphics-material, compute-material, graph or app, found ~a"
                        (let ([head (head-symbol form)]) (if head (format "(~a ...)" head) (show form))))])))
-  (program source structs-out formats-out materials-out graphs-out
+  (program source structs-out formats-out (append materials-out kernel-materials) graphs-out
            (sort (append (hash-values functions) (hash-values constants)) <
                  #:key (λ (d) (hash-ref declaration-order (if (function-decl? d) (function-decl-name d) (constant-decl-name d)))))
            apps-out
-           imports))
+           (append imports kernel-files)))
 
 ;; ---------------------------------------------------------------------------------------------
 ;; Imports
@@ -830,6 +858,28 @@
       (if (path? dir) dir (current-directory))))
   (define start (simplify-path (path->complete-path source)))
   (values (expand forms directory (list start)) (reverse order)))
+
+;; A kernel template's form with symbols replaced (substitutions: symbol -> datum, given the symbol's
+;; location) and (%if flag then [else]) forms chosen by flags (a list of symbols), dropping those
+;; without an else whose flag isn't set
+(define (substitute-template stx substitutions flags)
+  (define dropped (gensym 'dropped))
+  (define (walk stx)
+    (define d (syntax-e stx))
+    (cond
+      [(symbol? d)
+       (if (hash-has-key? substitutions d) (datum->syntax #f (hash-ref substitutions d) stx) stx)]
+      [(syntax->list stx)
+       => (λ (items)
+            (cond
+              [(and (pair? items) (eq? (syntax-e (car items)) '%if))
+               (match (cdr items)
+                 [(list flag then) (if (memq (syntax-e flag) flags) (walk then) dropped)]
+                 [(list flag then else) (walk (if (memq (syntax-e flag) flags) then else))])]
+              [else
+               (datum->syntax #f (filter (λ (x) (not (eq? x dropped))) (map walk items)) stx)]))]
+      [else stx]))
+  (walk stx))
 
 ;; Vertex inputs are named "in" followed by the attribute, e.g. inPosition
 (define (input-variable-name attribute)

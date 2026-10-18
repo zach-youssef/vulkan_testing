@@ -244,8 +244,15 @@
 ;; (width height) expressions or #f. reads, writes: the resources a cpu node's work, a copy or a
 ;; clear reads and writes (names). offsets: a copy's (cons source-offset destination-offset), the
 ;; destination offset an image's (x y) for a copy into one; else #f. when, enabled: expressions or #f.
-;; once?: whether it runs in the graph's first frame only (RenderGraph::runOnce).
-(struct g-node (kind name target material subject count reads writes offsets when enabled once? loc) #:transparent)
+;; once?: whether it runs in the graph's first frame only (RenderGraph::runOnce). extra: what a kind
+;; needs beyond these, else #f: a kernel's steps (k-steps).
+(struct g-node (kind name target material subject count reads writes offsets when enabled once? extra loc) #:transparent)
+;; A step of a kernel node (a library algorithm, e.g. a scan): a dispatch of a material instance
+;; (its name), with its push constant `pass` replaced by pass (an integer) if pass isn't #f
+(struct k-step (material pass) #:transparent)
+;; A buffer element, e.g. a count shaders wrote: the buffer's name and the element's index (a
+;; build-time expression)
+(struct element-ref (buffer index loc) #:transparent)
 
 ;; The declaration of a graph-level name
 (define (graph-item-name item)

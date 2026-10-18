@@ -42,7 +42,7 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | `include/descriptors` | `DescriptorHeap`: the universal descriptor set and `DescriptorEntry` |
 | `include/shaders` | `ShaderLibrary` and `Shader` (SPIR-V loading and reloading), `SpirvReflection` (what shaders write) |
 | `include/materials` | `Material`, `ComputeMaterial`, `GraphicsMaterial`, `MaterialBinding`, `Renderable`, `Mesh`, `MeshRenderable`, `AttachmentFormats` |
-| `include/graph` | `RenderGraph` (runtime), `Node`/`NodeBuilder`, the pure compiler (`GraphCompiler.h`) and synchronization state machine (`GraphSync.h`), `nodes/` (`RenderablesNode`, `DispatchNode`, `IndirectDrawNode`, `ReadbackNode`, `BufferReadbackNode`) |
+| `include/graph` | `RenderGraph` (runtime), `Node`/`NodeBuilder`, the pure compiler (`GraphCompiler.h`) and synchronization state machine (`GraphSync.h`), `nodes/` (`RenderablesNode`, `DispatchNode`, `DispatchSequenceNode`, `IndirectDrawNode`, `ReadbackNode`, `BufferReadbackNode`) |
 | `include/targets` | `RenderTarget`, `Swapchain` |
 | `include/app` | `VulkanApp` (the only GLFW user) |
 | `include/glsl` | `bindless.glsl`, included by shaders (`glslc -I include/glsl`) |
@@ -221,7 +221,9 @@ int main() { return exitStatus(runApp()); }            // prints the error
   cases. GPU-driven work reads commands shaders wrote: `DispatchNode(material, BufferOffset{buffer,
   offset})` dispatches indirectly, and `IndirectDrawNode` draws `VkDraw(Indexed)IndirectCommand`s
   (from a mesh's buffers for indexed ones), with a count from a buffer where the device has
-  `drawIndirectCount` (`ctx.enabledFeatures()`; the context enables it when it can). Per-frame work that can fail (creating resources) goes in `Node::prepareFrame`, which runs
+  `drawIndirectCount` (`ctx.enabledFeatures()`; the context enables it when it can).
+  `DispatchSequenceNode` dispatches several materials in order as one node, with barriers between
+  them (the steps of an algorithm). Per-frame work that can fail (creating resources) goes in `Node::prepareFrame`, which runs
   before anything is acquired or submitted; `record` and `run` can't fail. For one-offs, use `addGraphics`, `addCompute`, `addTransfer` or `addCpu(name, setup, record/run)`.
   Subclass `GraphicsNode` / `ComputeNode` / `TransferNode` / `CpuNode` for reusable nodes.
   `NodeBuilder::uses(material)` declares the material's resource uses automatically. Declare
@@ -299,6 +301,11 @@ writing ZGAL: it has the language, what's generated and every error. In short:
 - Vertex attributes can be stored packed, `(color vec4 #:as unorm8)` (`float16`, `unorm8/16`,
   `snorm8/16`, `uint8/16`, `int8/16`): shaders read the declared type, and the C++ struct holds
   GLM's sized types (fill them with `glm::packUnorm` etc., as the generated comments say).
+- The compute library: `(reduce n source (at dest i) #:op add|min|max #:count c)`,
+  `(inclusive-scan n source dest ...)` and `(exclusive-scan ...)` nodes over buffers of uints, ints
+  or floats. `#:count` is an expression or a GPU-written `(at counts i)`. The compiler instantiates
+  their materials from `dsl/lib/kernels` (named `Zgal...`) and dispatches them as one
+  `DispatchSequenceNode`.
 - Top-level `(define (f [x : vec3]) : vec3 ...)` functions and `(define name value)` constants are
   shared by the shaders, and those without textures, images or effects also compile to C++
   (`sunDirection` in the scene example), so the CPU computes the same thing.

@@ -18,6 +18,10 @@
 ;; The graph being emitted, for messages
 (define current-graph-name (make-parameter #f))
 
+;; Whether an item is one a node declared for itself (e.g. a kernel's scratch buffer), which the
+;; generated struct's ids leave out
+(define (internal-name? n) (string-prefix? n "zgal_"))
+
 ;; The captures of a lambda computing expressions each frame: by copy, plus the context or graph
 ;; when an image's size needs them (capturing them only then, as compilers warn about unused
 ;; captures)
@@ -222,7 +226,8 @@
   (gen "    };")
   (gen "")
   ;; Ids
-  (define (id-struct title members)
+  (define (id-struct title all-members)
+    (define members (filter (λ (m) (not (internal-name? (second m)))) all-members))
     (unless (null? members)
       (gen (format "    struct ~a {" title))
       (for ([m (in-list members)])
@@ -266,7 +271,8 @@
        (at n (format "    // The elements readback ~a copied in the most recent frame (waiting for it)" (g-node-name n)))
        (at n (format "    Result<std::vector<~a>> ~aContents(RenderGraph& graph) const { return graph.nodeAs<BufferReadbackNode>(~a).contents<~a>(); }"
                      t (g-node-name n) id t))]))
-  (unless (and (null? buffer-imports) (null? uploads) (null? model-factors) (null? buffers)) (gen "    Buffers buffers;"))
+  (unless (and (null? buffer-imports) (null? uploads) (null? model-factors) (null? (filter (λ (b) (not (internal-name? (g-buffer-name b)))) buffers)))
+    (gen "    Buffers buffers;"))
   (unless (null? nodes) (gen "    Nodes nodes;"))
   (gen "")
   (gen "    // The device features the graph's materials need beyond the wrapper's: add them to the")
@@ -413,7 +419,8 @@
        (at item (format "            ~a = ~a;" variable create))
        (gen "        }")]
       [else (at item (format "        const ~a ~a = ~a;" id-type-name variable create))])
-    (gen (format "        result.~a.~a = ~a;" kind-name (graph-item-name item) variable)))
+    (unless (internal-name? (graph-item-name item))
+      (gen (format "        result.~a.~a = ~a;" kind-name (graph-item-name item) variable))))
   ;; Targets
   (for ([t (in-list (of-type g-target?))])
     (define variable (format "target_~a" (g-target-name t)))
@@ -578,6 +585,17 @@
                  (build-expr (car (g-node-offsets n)) (scalar-t 'uint)) (build-expr (cdr (g-node-offsets n)) (scalar-t 'uint))
                  (if (g-node-count n) (format "std::optional<VkDeviceSize>(~a)" (build-expr (g-node-count n) (scalar-t 'uint))) "std::optional<VkDeviceSize>()")
                  element (cpp-string node-name))]
+        ['kernel
+         (define steps
+           (for/list ([step (in-list (g-node-extra n))])
+             (define instance (k-step-material step))
+             (if (k-step-pass step)
+                 (let ([type (material-name (g-material-material (entry-item (hash-ref env instance))))])
+                   (format "DispatchSequenceNode::withPushedUint(material_~a, ~a::kPushOffset + offsetof(~a::Push, pass), ~au)"
+                           instance type type (k-step-pass step)))
+                 (format "{material_~a}" instance))))
+         (format "graph.add<DispatchSequenceNode>(~a, std::vector<DispatchSequenceNode::Step>{~a})"
+                 (cpp-string node-name) (string-join steps ", "))]
         ['extern #f]))
     (line (if (g-node-when n)
               (format "        if (~a) {" (build-expr (g-node-when n) (scalar-t 'bool)))
@@ -610,4 +628,4 @@
   (match item
     [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
-    [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ l) l]))
+    [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ _ l) l]))

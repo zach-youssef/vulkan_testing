@@ -756,8 +756,10 @@ ZGAL
 Every invocation of a workgroup must reach a barrier, or none, so a @racket[barrier!] can't be
 under a condition, or in a loop, that could differ between invocations. Conditions and ranges
 computed from literals, constants, push constants, @tt{workgroupId} and @tt{workgroupCount} (and
-locals and loop variables computed from them) are the same for the whole workgroup; anything read
-from a buffer or shared memory, or computed from an invocation's id, isn't. Shared variables aren't
+locals and loop variables computed from them) are the same for the whole workgroup, and so is an
+element of a buffer the shader doesn't write at such an index (e.g. a count an earlier pass wrote:
+nothing can change it during the dispatch); anything read from shared memory or a buffer the shader
+writes, or computed from an invocation's id, isn't. Shared variables aren't
 bindings, so they don't take part in access inference.
 
 @subsection{Textures and images}
@@ -881,7 +883,8 @@ and C++ supplies the meshes.
 @racketgrammar*[
  #:literals (graph parameter input per-frame data meshes cpu extern path import-image import-images image-file model import-buffer upload
              constant sampler uniform image buffer target surface attachments if color depth material
-             dispatch draw-meshes draw readback copy clear fixed extent-of)
+             dispatch draw-meshes draw readback copy clear fixed extent-of reduce inclusive-scan
+             exclusive-scan at add min max)
  [graph-form (graph Name graph-item ...)]
  [graph-item (parameter name type)
              (input name (per-frame type))
@@ -913,7 +916,12 @@ and C++ supplies the meshes.
        (copy name source-buffer destination-buffer copy-option ... node-option ...)
        (copy name source-buffer destination-image region-option ... node-option ...)
        (clear name buffer maybe-value node-option ...)
-       (extern name extern-input maybe-when)]
+       (extern name extern-input maybe-when)
+       (reduce name source-buffer (at buffer index) #:op op #:count count node-option ...)
+       (inclusive-scan name source-buffer destination-buffer #:op op #:count count node-option ...)
+       (exclusive-scan name source-buffer destination-buffer #:op op #:count count node-option ...)]
+ [op add min max]
+ [count expression (at uint-buffer index)]
  [maybe-value (code:line) (code:line #:value expression)]
  [region-option (code:line #:source-offset expression) (code:line #:destination-offset (x y))
                 (code:line #:extent (width height))]
@@ -1141,12 +1149,58 @@ Nodes:
        to @tt{#:destination-offset} (in elements, by default 0), computed when the graph is
        built. A range outside either buffer is a contract violation when it's recorded.}
  @item{@racket[extern]: nodes C++ adds (@secref["extern"]).}
+ @item{@racket[reduce], @racket[inclusive-scan] and @racket[exclusive-scan]: the compute library's
+       algorithms (@secref["compute-library"]).}
 ]
 @tt{#:when} leaves a node out when the condition is false (C++ gets a @tt{std::optional} id), and
 @tt{#:enabled} adds it disabled: disabled nodes still count when the graph allocates resources, and
 C++ can enable them later with @tt{graph.setEnabled}. @tt{#:once #t} runs a node in the graph's
 first frame only (@tt{RenderGraph::runOnce}), e.g. one-time setup, or a readback of its result;
 C++ can run it once more with @tt{graph.runOnce}.
+
+@subsection[#:tag "compute-library"]{The compute library}
+
+Some algorithms come up in GPU-driven work again and again, and take several dispatches and some
+care to write well: ZGAL has them as nodes.
+@itemlist[
+ @item{@racket[reduce] combines a buffer's first elements (@tt{#:count} of them) into one, written to
+       an element of a buffer of the same type, @tt{(at buffer index)}: their sum, minimum or maximum
+       (@tt{#:op add}, @tt{min} or @tt{max}).}
+ @item{@racket[inclusive-scan] writes each element combined with every element before it (a prefix
+       sum, minimum or maximum), and @racket[exclusive-scan] what comes before it only (the first
+       gets the operator's identity: 0, or the largest or smallest value), e.g. where each item's
+       output starts from how many outputs each has. The destination may be the source.}
+]
+They take buffers (graph, imported or uploaded) of @tt{uint}s, @tt{int}s or @tt{float}s. The count
+is required: an expression computed each frame, or an element of a buffer of @tt{uint}s that an
+earlier node wrote on the GPU, @tt{(at counts 0)} (e.g. how many particles a pass kept), which the
+kernels read themselves, so nothing waits for the CPU. Elements past the count are left alone.
+
+@(define library-source #<<ZGAL
+(graph Compaction
+  (input n (per-frame uint))
+  (buffer flags uint 4096 #:frames per-frame)
+  (buffer offsets uint 4096 #:frames per-frame)
+  (buffer kept uint 1 #:frames per-frame)
+  ;; ... a pass writing 1 into flags for the items to keep ...
+  (exclusive-scan positions flags offsets #:op add #:count n)
+  (reduce total flags (at kept 0) #:op add #:count n))
+ZGAL
+)
+@(zgal-example library-source)
+
+Each is one node (a @tt{DispatchSequenceNode}, which the graph orders, enables and synchronizes as
+a whole) dispatching materials the compiler instantiates from @tt{dsl/lib/kernels} for the element
+type and operator, named @tt{Zgal...}, with a small scratch buffer of their own:
+@(generated-file library-source "example.zgal.h" #:from #rx"DispatchSequenceNode>[(].positions" #:to #rx"DispatchSequenceNode>[(].positions")
+
+They reduce, then scan: each workgroup (at most 256, of 256 invocations, taking turns over the
+elements when there are more) combines a run of tiles of 256 elements into a partial; a reduction
+then combines the partials, and a scan scans them and scans each run again, starting from what
+comes before it. Workgroups scan with subgroup operations (so the device's subgroups need arithmetic
+operations, and shuffles for minima and maxima, which Metal can't scan natively), then combine the
+subgroups' totals in shared memory. With a count on the GPU all 256 workgroups are dispatched,
+and those without elements finish at once.
 
 @subsection[#:tag "extern"]{Extern nodes}
 
@@ -1535,9 +1589,8 @@ What ZGAL doesn't describe yet:
  @item{in shader bodies: recursion, atomics on images and on 64-bit or small integers, arithmetic
        on 8- and 16-bit integers (they're widened), and functions reading bindings (pass them as
        arguments). GLSL bodies and functions (@racket[extern-glsl]) can do these;}
- @item{vertex attributes in other formats than 32-bit ones (e.g. normalized bytes), several vertex
-       buffers, or per-instance attributes;}
- @item{images other than 2D ones, and arrays of bindings;}
+ @item{several vertex buffers, or per-instance attributes;}
+ @item{images other than 2D ones;}
  @item{a shader used by more than one material.}
 ]
 

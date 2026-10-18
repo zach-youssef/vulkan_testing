@@ -202,7 +202,7 @@
   (check-zgal-error (shared-material "(when (= x 0) (barrier!)) (write! result 0.0)") 'bad-barrier "under a condition")
   (check-zgal-error (shared-material "(for ([i (range 0 x)]) (barrier!)) (write! result 0.0)") 'bad-barrier "in a loop")
   ;; A value read from a buffer can differ
-  (check-zgal-error (shared-material "(let* ([n (at samples 0)]) (when (> n 0.0) (barrier!))) (write! result 0.0)") 'bad-barrier "under a condition")
+  (check-zgal-error (shared-material "(let* ([n (at samples x)]) (when (> n 0.0) (barrier!))) (write! result 0.0)") 'bad-barrier "under a condition")
   (check-zgal-error "(graphics-material F (outputs (color vec4)) (vertex (results #:position (vec4 0.0))) (fragment (begin (barrier!) (vec4 1.0))))"
                     'bad-barrier "only compute shaders"))
 
@@ -264,3 +264,7 @@
   (check-true (string-contains? shader "    memoryBarrierBuffer();\n#line 3 \"test.zgal\"\n    barrier();"))
   (check-zgal-error (counting-material "(when (> i 3) (buffer-barrier!)) (write! (at counts i) 1) (write! (at samples i) 1) (write! (at sums i) 0.0)")
                     'bad-barrier "under a condition"))
+
+(test-case "Conversions between kinds keep the shape and change the kind"
+  (check-not-exn
+   (λ () (compile-text "(compute-material C (workgroup 1) (bindings (b (buffer-array float)) (v (buffer-array vec2)))\n  (compute (write! (at b 0) (+ 1.0 (uintBitsToFloat (uint 5)))) (write! (at v 0) (* 2.0 (intBitsToFloat (ivec2 1 2))))))"))))

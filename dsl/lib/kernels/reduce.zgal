@@ -1,0 +1,87 @@
+;; ZGAL's compute library: reductions, and the first steps of prefix sums (scans), which graphs'
+;; reduce, inclusive-scan and exclusive-scan nodes dispatch. Not a module to import: the compiler
+;; instantiates these materials for each element type and operator a graph uses, substituting
+;;   T                   the elements' type (uint, int or float)
+;;   COMBINE             the operator (+, min or max)
+;;   IDENTITY            its identity (0, or the largest or smallest value)
+;;   SUBGROUP_ALL        its subgroup reduction (subgroupAdd, ...)
+;;   SUBGROUP_INCLUSIVE  its subgroup scans (subgroupInclusiveAdd, subgroupExclusiveAdd), used only
+;;   SUBGROUP_EXCLUSIVE  with the flag native-scan (adding: Metal can't scan minima or maxima)
+;; and choosing (%if flag then [else]) by the flags native-scan and gpu-count (the count is a
+;; buffer element).
+;; Material names get a suffix naming the instance.
+;;
+;; Reduce then scan, over a fixed grid: the elements are tiles of 256, and each of the dispatch's
+;; workgroups (at most 256) takes a run of consecutive tiles. ZgalScanReduce combines each
+;; workgroup's run into a partial. A reduction ends with ZgalReduceFinish combining the partials; a
+;; scan goes on with ZgalScanPartials, scanning the partials (one workgroup), and ZgalScanApply
+;; (scan.zgal), scanning each run again from its partial. Workgroups scan with subgroup operations,
+;; then combine the subgroups' totals through shared memory.
+
+(compute-material ZgalScanReduce
+  (workgroup 256)
+  (bindings
+   (source (buffer-array T))
+   (partials (buffer-array T))
+   (%if gpu-count (counts (buffer-array uint))))
+  (push (%if gpu-count (countIndex uint) (count uint)))
+  (shared (totals (array T 64)))
+  (compute
+   (let* ([n (%if gpu-count (at counts countIndex) count)]
+          [tiles (/ (+ n 255) 256)]
+          [run (/ (+ tiles (- workgroupCount.x 1)) workgroupCount.x)]
+          [first (* workgroupId.x run)]
+          [last (min tiles (+ first run))]
+          [lane localInvocationId.x]
+          [value (fold ([acc IDENTITY]) ([t (range first last)])
+                   (let* ([i (+ (* t 256) lane)])
+                     (if (< i n) (COMBINE acc (at source i)) acc)))])
+     (let* ([total (SUBGROUP_ALL value)])
+       (when (subgroupElect) (write! (at totals subgroupId) total)))
+     (barrier!)
+     (when (= lane 0)
+       (write! (at partials workgroupId.x)
+               (fold ([acc IDENTITY]) ([k (range 0 subgroupCount)]) (COMBINE acc (at totals k))))))))
+
+;; Replaces the first `groups` partials with their exclusive scan: what comes before each run
+(compute-material ZgalScanPartials
+  (workgroup 256)
+  (bindings (partials (buffer-array T)))
+  (push (groups uint))
+  (shared (totals (array T 64)))
+  (compute
+   (let* ([lane localInvocationId.x]
+          [value (if (< lane groups) (at partials lane) IDENTITY)]
+          [inclusive (%if native-scan
+                         (SUBGROUP_INCLUSIVE value)
+                         ;; Hillis-Steele from shuffles: Metal has subgroup scans of sums only
+                         (let* ([(x stride) (while ([x value] [stride (uint 1)]) (< stride subgroupSize)
+                                            (values (let* ([other (subgroupShuffle x (- subgroupInvocationId stride))])
+                                                      (if (>= subgroupInvocationId stride) (COMBINE x other) x))
+                                                    (* stride 2)))])
+                           x))]
+          [before (%if native-scan
+                       (SUBGROUP_EXCLUSIVE value)
+                       (let* ([other (subgroupShuffle inclusive (- subgroupInvocationId 1))])
+                         (if (= subgroupInvocationId 0) IDENTITY other)))])
+     (let* ([total (SUBGROUP_ALL value)])
+       (when (subgroupElect) (write! (at totals subgroupId) total)))
+     (barrier!)
+     (let* ([prefix (fold ([acc IDENTITY]) ([k (range 0 subgroupId)]) (COMBINE acc (at totals k)))])
+       (when (< lane groups) (write! (at partials lane) (COMBINE prefix before)))))))
+
+;; Combines the first `groups` partials into the destination's element `index`
+(compute-material ZgalReduceFinish
+  (workgroup 256)
+  (bindings (partials (buffer-array T)) (destination (buffer-array T)))
+  (push (groups uint) (index uint))
+  (shared (totals (array T 64)))
+  (compute
+   (let* ([lane localInvocationId.x]
+          [value (if (< lane groups) (at partials lane) IDENTITY)])
+     (let* ([total (SUBGROUP_ALL value)])
+       (when (subgroupElect) (write! (at totals subgroupId) total)))
+     (barrier!)
+     (when (= lane 0)
+       (write! (at destination index)
+               (fold ([acc IDENTITY]) ([k (range 0 subgroupCount)]) (COMBINE acc (at totals k))))))))

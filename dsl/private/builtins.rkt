@@ -153,8 +153,14 @@
     (and (= (length patterns) (length arg-types))
          (match-signature patterns result arg-types))))
 
+;; t (a scalar or vector type) with components of kind k
+(define (with-kind t k)
+  (if (vector-t? t) (vector-t k (vector-t-size t)) (scalar-t k)))
+
 (define (match-signature patterns result arg-types)
-  ;; Bind T and M from the non-literal arguments first, then check everything
+  ;; Bind T and M from the non-literal arguments first, then check everything. T is a shape (a
+  ;; scalar or a vector's size), which each pattern gives its own kind, so conversions such as
+  ;; uintBitsToFloat (genU to genF) keep the shape and change the kind.
   (define T #f)
   (define M #f)
   (define (bind! p t)
@@ -163,12 +169,12 @@
       [(pattern-kind p)
        (and (equal? (component-kind t) (pattern-kind p))
             (or (not (vector-pattern? p)) (vector-t? t))
-            (cond [T (equal? T t)] [else (set! T t) #t]))]
+            (cond [T (equal? (with-kind T (pattern-kind p)) t)] [else (set! T t) #t]))]
       [(eq? p 'mat) (and (matrix-t? t) (cond [M (equal? M t)] [else (set! M t) #t]))]
       [else #t]))
   (define (expected p)
     (cond
-      [(pattern-kind p) T]
+      [(pattern-kind p) (and T (with-kind T (pattern-kind p)))]
       [(eq? p 'scalarT) (and T (scalar-t (component-kind T)))]
       [(eq? p 'bvecT) (and (vector-t? T) (vector-t 'bool (vector-t-size T)))]
       [(eq? p 'mat) M]

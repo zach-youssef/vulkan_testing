@@ -7,7 +7,12 @@
          racket/string)
 
 (provide valid-identifier?
-         reserved-name-reason)
+         reserved-name-reason
+         library-names-allowed?)
+
+;; Whether names starting with zgal may be declared: true while reading the compiler's own library
+;; code (the kernels graphs instantiate), whose names mustn't clash with a program's
+(define library-names-allowed? (make-parameter #f))
 
 (define (valid-identifier? s)
   (and (regexp-match? #px"^[A-Za-z][A-Za-z0-9_]*$" s)
@@ -102,5 +107,5 @@
     [(hash-ref wrapper-set s #f) "is a name the wrapper's C++ declares"]
     [(hash-ref generated-set s #f) "is a name the generated code declares"]
     [(string-prefix? s "gl_") "starts with gl_, which GLSL reserves"]
-    [(regexp-match? #px"^(?i:zgal)" s) "starts with zgal, which the generated code uses"]
+    [(and (regexp-match? #px"^(?i:zgal)" s) (not (library-names-allowed?))) "starts with zgal, which the generated code uses"]
     [else #f]))

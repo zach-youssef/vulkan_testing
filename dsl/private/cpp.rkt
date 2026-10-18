@@ -521,7 +521,7 @@
     [(pair? materials) (gen "#include \"materials/Material.h\"")])
   (define apps (program-apps prog))
   (when (pair? graphs)
-    (for ([h (in-list '("graph/RenderGraph.h" "graph/nodes/DispatchNode.h" "graph/nodes/ReadbackNode.h"
+    (for ([h (in-list '("graph/RenderGraph.h" "graph/nodes/DispatchNode.h" "graph/nodes/DispatchSequenceNode.h" "graph/nodes/ReadbackNode.h"
                         "graph/nodes/RenderablesNode.h" "graph/nodes/BufferReadbackNode.h" "materials/Renderable.h" "zgal/Runtime.h"))])
       (gen (format "#include \"~a\"" h)))
     (when (for*/or ([g (in-list graphs)] [item (in-list (graph-items g))]) (g-model? item))

@@ -9,6 +9,7 @@
 
 #include "interfaces.zgal.h"
 
+#include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <numeric>
@@ -911,4 +912,44 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL apps run phases: graphs chosen by state, once n
         ctx.waitIdleAll();
     }
     ctx.collectRetired();
+}
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL's compute library scans and reduces, counted by the CPU or the GPU") {
+    auto& ctx = context();
+    // Small, one tile, and several tiles per workgroup (with every workgroup of the grid)
+    for (const uint32_t size : {5u, 256u, 70001u}) {
+        CAPTURE(size);
+        std::vector<uint32_t> values(size);
+        std::vector<float> floats(size);
+        for (uint32_t i = 0; i < size; ++i) {
+            values[i] = (i * 7919u) % 100u + 3u;
+            floats[i] = static_cast<float>((i * 31u) % 1000u) / 8.0f - 20.0f;
+        }
+        const uint32_t gpuCount = size - size / 3;
+        RenderGraph graph(ctx);
+        const LibraryGraph library = LibraryGraph::build(ctx, graph, LibraryGraph::Inputs{
+            .gpuCount = gpuCount, .values = values, .floats = floats}).value();
+        for (int frame = 0; frame < 2; ++frame) {
+            graph.execute().value();
+        }
+
+        std::vector<uint32_t> sums(size);
+        std::inclusive_scan(values.begin(), values.end(), sums.begin());
+        CHECK(library.readSumsContents(graph).value() == sums);
+        CHECK(library.readInPlaceContents(graph).value() == sums);
+        // Exclusive, over the first gpuCount elements (the rest are left as they were: zero)
+        std::vector<uint32_t> before(size, 0);
+        std::exclusive_scan(values.begin(), values.begin() + gpuCount, before.begin(), 0u);
+        CHECK(library.readBeforeContents(graph).value() == before);
+        // The maximum's identity is the smallest int, not 0
+        CHECK(library.readMaximaContents(graph).value() == std::vector<int32_t>(size, -1));
+
+        const auto results = library.readResultsContents(graph).value();
+        CHECK(results[0] == sums.back());
+        CHECK(results[1] == *std::min_element(values.begin(), values.begin() + gpuCount));
+        const auto floatResults = library.readFloatResultsContents(graph).value();
+        CHECK(floatResults[0] == *std::max_element(floats.begin(), floats.end()));
+        CHECK(floatResults[1] == doctest::Approx(std::accumulate(floats.begin(), floats.end(), 0.0)).epsilon(1e-4));
+        ctx.waitIdleAll();
+    }
 }

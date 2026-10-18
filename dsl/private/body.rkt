@@ -1077,10 +1077,16 @@
 ;; under conditions or in loops that could differ between invocations. Uniform values are
 ;; literals, constants, push constants, workgroupId and workgroupCount, and what's computed only
 ;; from them (buffers and shared memory can change, so reading them isn't).
-(define (check-barriers body)
+;; summaries: as binding-accesses takes, to know which bindings the body writes
+(define (check-barriers body summaries)
+  ;; Buffers the shader doesn't write hold the same values for the whole dispatch (only earlier work
+  ;; wrote them), so reading one at a uniform index gives a uniform value, e.g. a count
+  (define written
+    (for/set ([(name access) (in-hash (binding-accesses body summaries))] #:when (set-member? access 'write)) name))
   (define (uniform? e locals)
     (match e
       [(t-lit _ _ _) #t]
+      [(t-global 'binding name _ t _) (and (not (opaque-t? t)) (not (binding-array-t? t)) (not (set-member? written name)))]
       [(t-local name _ _) (set-member? locals name)]
       [(t-global (or 'constant 'push) _ _ _ _) #t]
       [(t-global 'stage name _ _ _) (and (member name '("workgroupId" "workgroupCount")) #t)]
