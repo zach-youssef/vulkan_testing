@@ -254,8 +254,8 @@
 ;; (list 'extent-of import-name). frames: 'shared or 'per-frame. when: an expression or #f.
 (struct g-image (name format extent frames when loc) #:transparent)
 (struct g-buffer (name type count frames when loc) #:transparent)
-;; spec: a t-attachments, t-surface or t-target-if
-(struct g-target (name spec loc) #:transparent)
+;; spec: a t-attachments, t-surface or t-target-if. when: a build-time condition or #f.
+(struct g-target (name spec when loc) #:transparent)
 (struct t-attachments (colors depth loc) #:transparent)       ; depth: a t-attachment or #f
 (struct t-attachment (image load store clear loc) #:transparent) ; clear: a list of 4 reals, or a real
 (struct t-surface (clear depth loc) #:transparent)              ; depth: a format symbol or 'none
@@ -265,7 +265,8 @@
 ;; of imported images. push: (cons field expression) in the material's order. options: an
 ;; association list of pipeline options. invocations: expressions (compute) or #f. A push constant
 ;; every node using the instance gives (#:push on the node) may be left out: its expression is #f.
-(struct g-material (name material bindings push options invocations loc) #:transparent)
+;; when: a build-time condition or #f.
+(struct g-material (name material bindings push options invocations when loc) #:transparent)
 ;; kind: 'dispatch 'draw-meshes 'draw 'readback 'cpu 'copy 'clear 'extern. target, material,
 ;; subject (the meshes, image, cpu or extern input): names or #f. count: an expression or #f (a
 ;; draw's vertices, a copy's elements, a clear's value), or for a copy into an image its region's
@@ -303,4 +304,4 @@
   (match item
     [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-image-file n _ _ _) n] [(g-model n _ _ _) n] [(g-model-textures n _ _) n] [(g-model-factors n _ _) n] [(g-model-draws n _ _ _) n] [(g-model-bounds n _ _) n] [(g-import-images n _ _) n] [(g-import-buffer n _ _) n] [(g-upload n _ _ _) n] [(g-buffer-file n _ _ _) n] [(g-constant n _ _ _) n]
     [(g-sampler n _ _) n] [(g-uniform n _ _ _) n] [(g-image n _ _ _ _ _) n] [(g-buffer n _ _ _ _ _) n]
-    [(g-target n _ _) n] [(g-material n _ _ _ _ _ _) n]))
+    [(g-target n _ _ _) n] [(g-material n _ _ _ _ _ _ _) n]))

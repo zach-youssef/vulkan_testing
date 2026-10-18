@@ -211,6 +211,16 @@
     (if (conditional? n)
         (format "zgal::require(~a, ~a, ~a)" variable (cpp-string name) (cpp-string n))
         variable))
+  ;; A target's or material instance's variable, checked to exist if it's conditional
+  (define (instance-ref prefix n)
+    (define conditional?
+      (match (entry-item (hash-ref env n))
+        [(g-target _ _ when _) when]
+        [(g-material _ _ _ _ _ _ when _) when]))
+    (define variable (format "~a_~a" prefix n))
+    (if conditional? (format "zgal::require(~a, ~a, ~a)" variable (cpp-string name) (cpp-string n)) variable))
+  (define (target-ref n) (instance-ref "target" n))
+  (define (material-ref n) (instance-ref "material" n))
   (define (build-expr e want) (cpp-expr e env want))
   (define (image-kind? resource) (memq (entry-kind (hash-ref env resource)) '(image import)))
 
@@ -475,9 +485,16 @@
       (gen (format "        result.~a.~a = ~a;" kind-name (graph-item-name item) variable))))
   ;; Targets
   (for ([t (in-list (of-type g-target?))])
-    (define variable (format "target_~a" (g-target-name t)))
-    (at t (format "        RenderTarget ~a;" variable))
-    (let emit-spec ([spec (g-target-spec t)] [indent "        "])
+    ;; Conditional ones are built into a local, then given to the optional
+    (define created-if (g-target-when t))
+    (define variable (if created-if "built" (format "target_~a" (g-target-name t))))
+    (cond
+      [created-if
+       (at t (format "        std::optional<RenderTarget> target_~a;" (g-target-name t)))
+       (at t (format "        if (~a) {" (build-expr created-if (scalar-t 'bool))))
+       (at t (format "            RenderTarget ~a;" variable))]
+      [else (at t (format "        RenderTarget ~a;" variable))])
+    (let emit-spec ([spec (g-target-spec t)] [indent (if created-if "            " "        ")])
       (define (line text) (emit! w (string-append indent text) #:at (g-target-loc t)))
       (match spec
         [(t-attachments colors depth _)
@@ -498,14 +515,20 @@
          (emit-spec then (string-append indent "    "))
          (line "} else {")
          (emit-spec else (string-append indent "    "))
-         (line "}")])))
+         (line "}")]))
+    (when created-if
+      (at t (format "            target_~a = ~a;" (g-target-name t) variable))
+      (gen "        }")))
   ;; Materials
   (for ([mi (in-list materials)])
     (define m (g-material-material mi))
     (define type (material-name m))
     (define instance (g-material-name mi))
     (define graphics? (eq? (material-kind m) 'graphics))
-    (define (line text) (emit! w text #:at (g-material-loc mi)))
+    ;; Conditional ones are created in an if, into an optional
+    (define created-if (g-material-when mi))
+    (define pad (if created-if "    " ""))
+    (define (line text) (emit! w (string-append pad text) #:at (g-material-loc mi)))
     ;; The uniforms it binds (alone or in arrays) are written before it records
     (define bound
       (remove-duplicates
@@ -528,6 +551,10 @@
                 (if (eq? (binding-kind b) 'array)
                     (format "array_~a_~a" instance (binding-name b))
                     (entry-of (binding-kind b) resource)))))
+    (define instance-type (format "zgal::~a<~a>" (if (pair? (material-push m)) "PushInstance" "Instance") type))
+    (when created-if
+      (emit! w (format "        std::optional<Handle<~a>> material_~a;" instance-type instance) #:at (g-material-loc mi))
+      (emit! w (format "        if (~a) {" (build-expr created-if (scalar-t 'bool))) #:at (g-material-loc mi)))
     ;; Arrays' entries
     (for ([pair (in-list (g-material-bindings mi))] #:when (eq? (binding-kind (car pair)) 'array))
       (match-define (cons b resource) pair)
@@ -572,20 +599,22 @@
     (define push? (pair? (material-push m)))
     (define given-push (filter cdr (g-material-push mi)))
     (line (format "        TRY_ASSIGN(auto shaders_~a, ~a::loadShaders(context));" instance type))
-    (line (format "        auto material_~a = context.resources().create<zgal::~a<~a>>(" instance (if push? "PushInstance" "Instance") type))
+    (line (format "        ~amaterial_~a = context.resources().create<~a>(" (if created-if "" "auto ") instance instance-type))
     (line (format "            zgal::Updates{~a}," (string-join updates ", ")))
     (when push?
       (line (format "            [~a](const zgal::FrameInfo& frame, ~a::Push& push) {"
                     (frame-captures (map cdr given-push) env) type))
       (for ([pair (in-list given-push)])
         (match-define (cons f e) pair)
-        (emit! w (format "                push.~a = ~a;" (field-name f) (cpp-expr e env (field-type f))) #:at (field-loc f)))
+        (emit! w (format "~a                push.~a = ~a;" pad (field-name f) (cpp-expr e env (field-type f))) #:at (field-loc f)))
       (line "            },"))
     (line (format "            ~a, context, shaders_~a~a~a);" dispatch instance
                   (if (null? entries) "" (format ", ~a::Bindings{~a}" type (string-join entries ", ")))
                   (if graphics?
-                      (format ", graph.formats(target_~a), GraphicsPipelineOptions{~a}" target (string-join pipeline-fields ", "))
-                      ""))))
+                      (format ", graph.formats(~a), GraphicsPipelineOptions{~a}" (target-ref target) (string-join pipeline-fields ", "))
+                      "")))
+    (when created-if
+      (emit! w "        }" #:at (g-material-loc mi))))
   ;; Nodes, in their loops: C++ loops, opened and closed as the nodes enter and leave them
   (define open-loops '())   ; outermost first
   (define (indent) (make-string (* 4 (for/sum ([l (in-list open-loops)]) (length (g-loop-clauses l)))) #\space))
@@ -638,8 +667,8 @@
     (define spec (and (indirect? (g-node-extra n)) (g-node-extra n)))
     ;; A draw-meshes' commands draw ranges of its model's mesh
     (define (draw-desc commands)
-      (format "IndirectDrawNode::Desc{.material = material_~a, .target = target_~a, .commands = ~a, .maxDraws = ~a~a}"
-              (g-node-material n) (g-node-target n) commands (build-expr (indirect-draws spec) (scalar-t 'uint))
+      (format "IndirectDrawNode::Desc{.material = ~a, .target = ~a, .commands = ~a, .maxDraws = ~a~a}"
+              (material-ref (g-node-material n)) (target-ref (g-node-target n)) commands (build-expr (indirect-draws spec) (scalar-t 'uint))
               (if (eq? (g-node-kind n) 'draw-meshes) (format ", .mesh = model_~a.mesh" (g-node-subject n)) "")))
     (define counted? (and spec (indirect-count spec) #t))
     (define create
@@ -648,10 +677,10 @@
          #:when overrides
          (define push-exprs (map cdr (node-overrides-push overrides)))
          (define invocations (node-overrides-invocations overrides))
-         (format "graph.add<zgal::OverridingDispatchNode>(~a, material_~a, ~a, ~a, ~a)" label (g-node-material n)
+         (format "graph.add<zgal::OverridingDispatchNode>(~a, ~a, ~a, ~a, ~a)" label (material-ref (g-node-material n))
                  (if (has-push?)
-                     (format "[~a, material = material_~a](const RecordContext& record) { ~a }" (frame-captures push-exprs env)
-                             (g-node-material n) (push-override))
+                     (format "[~a, material = ~a](const RecordContext& record) { ~a }" (frame-captures push-exprs env)
+                             (material-ref (g-node-material n)) (push-override))
                      "nullptr")
                  (if invocations
                      (format "[~a](const zgal::FrameInfo& frame) { return ~a::workgroupsFor(~a); }" (frame-captures invocations env) material-type
@@ -660,22 +689,22 @@
                  (if spec (format "std::optional<BufferOffset>(~a)" (command-offset (indirect-command spec))) "std::nullopt"))]
         ['dispatch
          #:when spec
-         (format "graph.add<DispatchNode>(~a, material_~a, ~a)" label (g-node-material n) (command-offset (indirect-command spec)))]
-        ['dispatch (format "graph.add<DispatchNode>(~a, material_~a)" label (g-node-material n))]
+         (format "graph.add<DispatchNode>(~a, ~a, ~a)" label (material-ref (g-node-material n)) (command-offset (indirect-command spec)))]
+        ['dispatch (format "graph.add<DispatchNode>(~a, ~a)" label (material-ref (g-node-material n)))]
         [(or 'draw 'draw-meshes)
          #:when counted?
-         (format "zgal::addCountedDraw(graph, ~a, ~a, ~a, material_~a, ~a)" label
+         (format "zgal::addCountedDraw(graph, ~a, ~a, ~a, ~a, ~a)" label
                  (draw-desc (command-offset (indirect-command spec))) (command-offset (indirect-count spec))
-                 (indirect-limit spec) (resource-ref (indirect-limited spec)))]
+                 (material-ref (indirect-limit spec)) (resource-ref (indirect-limited spec)))]
         [(or 'draw 'draw-meshes)
          #:when spec
          (format "graph.add<IndirectDrawNode>(~a, ~a)" label (draw-desc (command-offset (indirect-command spec))))]
-        ['draw-meshes (format "graph.add<RenderablesNode>(~a, std::move(renderables), target_~a)" label (g-node-target n))]
+        ['draw-meshes (format "graph.add<RenderablesNode>(~a, std::move(renderables), ~a)" label (target-ref (g-node-target n)))]
         ['draw
-         (format "graph.addGraphics(~a, [target = target_~a, material = material_~a](NodeBuilder& builder) { builder.renderTo(target).uses(material); }, [~amaterial = material_~a, count = ~a](RecordContext& record) { material->bind(record.commandBuffer, record.frameIndex); ~avkCmdDraw(record.commandBuffer, count, 1, 0, 0); })"
-                 label (g-node-target n) (g-node-material n)
+         (format "graph.addGraphics(~a, [target = ~a, material = ~a](NodeBuilder& builder) { builder.renderTo(target).uses(material); }, [~amaterial = ~a, count = ~a](RecordContext& record) { material->bind(record.commandBuffer, record.frameIndex); ~avkCmdDraw(record.commandBuffer, count, 1, 0, 0); })"
+                 label (target-ref (g-node-target n)) (material-ref (g-node-material n))
                  (if (has-push?) (string-append (frame-captures (map cdr (node-overrides-push overrides)) env) ", ") "")
-                 (g-node-material n)
+                 (material-ref (g-node-material n))
                  (build-expr (g-node-count n) (scalar-t 'uint))
                  (if (has-push?) (string-append (push-override) " ") ""))]
         ['readback (format "graph.add<~a>(~a, ~a)" (if (image-kind? (g-node-subject n)) "ReadbackNode" "BufferReadbackNode")
@@ -738,12 +767,12 @@
     (when (and (eq? (g-node-kind n) 'draw-meshes) (not spec))
       (cond
         [(eq? (entry-kind (hash-ref env (g-node-subject n))) 'model)
-         (line (format "            std::vector<Handle<Renderable>> renderables = model_~a.renderables(context, material_~a);"
-                       (g-node-subject n) (g-node-material n)))]
+         (line (format "            std::vector<Handle<Renderable>> renderables = model_~a.renderables(context, ~a);"
+                       (g-node-subject n) (material-ref (g-node-material n))))]
         [else
          (line "            std::vector<Handle<Renderable>> renderables;")
          (line (format "            for (const auto& mesh : in->~a) {" (g-node-subject n)))
-         (line (format "                renderables.push_back(context.resources().create<MeshRenderable>(mesh, material_~a));" (g-node-material n)))
+         (line (format "                renderables.push_back(context.resources().create<MeshRenderable>(mesh, ~a));" (material-ref (g-node-material n))))
          (line "            }")]))
     (cond
       [(eq? (g-node-kind n) 'extern)
@@ -769,4 +798,4 @@
   (match item
     [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-model-draws _ _ _ l) l] [(g-model-bounds _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-buffer-file _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
-    [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ l) l]))
+    [(g-target _ _ _ l) l] [(g-material _ _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ l) l]))

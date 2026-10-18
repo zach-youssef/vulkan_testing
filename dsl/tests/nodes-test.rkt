@@ -61,6 +61,25 @@
                            "  (dispatch a filling #:push ((count 1)))")
                     'unknown-name "material Fill has no push constant count"))
 
+(test-case "Targets and materials with #:when are created only if it holds, and checked where they're used"
+  (define text
+    (string-append
+     "(graphics-material Show (bindings (picture texture) (s sampler)) (outputs (color vec4))\n"
+     "  (vertex (results #:position (vec4 0.0 0.0 0.0 1.0))) (fragment (sample picture s (vec2 0.5))))\n"
+     "(graph G (parameter headless bool)\n"
+     "  (image picture rgba8 (fixed 2 2) #:frames shared) (sampler s)\n"
+     "  (target screen (surface #:depth none) #:when (not headless))\n"
+     "  (material showing Show picture s #:when (not headless))\n"
+     "  (draw show screen showing 3 #:when (not headless)))\n"))
+  (define h (header (compile-text text)))
+  (check-true (string-contains? h "std::optional<RenderTarget> target_screen;\n"))
+  (check-true (string-contains? h "target_screen = built;"))
+  (check-true (string-contains? h "std::optional<Handle<zgal::Instance<Show>>> material_showing;"))
+  (check-true (string-contains? h "material_showing = context.resources().create<zgal::Instance<Show>>("))
+  (check-true (string-contains? h "graph.formats(zgal::require(target_screen, \"G\", \"screen\"))"))
+  (check-true (string-contains? h "[target = zgal::require(target_screen, \"G\", \"screen\"), material = zgal::require(material_showing, \"G\", \"showing\")]"))
+  (check-zgal-error (string-replace text "#:depth none) #:when" "#:depth none) #:if") 'bad-option "#:if"))
+
 (test-case "Loops repeat their nodes in C++ loops, in order, with an id per iteration"
   (define h (header (compile-text
                      (graph "  (material filling Fill cells)"

@@ -259,9 +259,10 @@
             #:push ((object (if enabled (max size 1) 0)) (tint (* tintNow (vec3 halfScale 1 (float pictureWidth)))))
             #:cull none #:front-face clockwise #:blend alpha #:depth-test #t #:depth-write #f
             #:depth-compare greater-or-equal #:topology triangle-list)
-  ;; Invocations are computed each frame, so they can use graph images' current sizes
+  ;; Invocations are computed each frame, so they can use graph images' current sizes. Created
+  ;; only for the dispatch using it.
   (material accumulate Accumulate (lights lightBuffer) (sums sumBuffer) (target maskImage)
-            #:invocations ((width colorImage) (max (height maskImage) size)))
+            #:invocations ((width colorImage) (max (height maskImage) size)) #:when (>= count 2))
   (material plain Plain)
   (buffer packedCopy Packed 64 #:frames shared)
   (buffer totalBuffer uint 1 #:frames shared)

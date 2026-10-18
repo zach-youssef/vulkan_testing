@@ -12,13 +12,13 @@
 #include <filesystem>
 #include <string>
 
-#line 341 "dsl/tests/golden/features.zgal"
+#line 342 "dsl/tests/golden/features.zgal"
 int main(int argc, char** argv) {
 #line 18 "build/generated/features.zgal.main.cpp"
     using App = features::Explorer;
     // What the command line sets: the options' parameters, with their defaults
     App::Inputs inputs;
-#line 347 "dsl/tests/golden/features.zgal"
+#line 348 "dsl/tests/golden/features.zgal"
     inputs.level = 2;
     inputs.gain = 1.5f;
 #line 25 "build/generated/features.zgal.main.cpp"
@@ -32,16 +32,16 @@ int main(int argc, char** argv) {
             "escape   quit",
         },
     });
-#line 347 "dsl/tests/golden/features.zgal"
+#line 348 "dsl/tests/golden/features.zgal"
     commandLine.option("--level", "<integer>", "how much there is (0 to 8, default 2)", [&inputs](const std::string& text) {
-#line 347 "dsl/tests/golden/features.zgal"
+#line 348 "dsl/tests/golden/features.zgal"
         return zgal::parseNumber<decltype(inputs.level)>(text, inputs.level, decltype(inputs.level)(0), decltype(inputs.level)(8));
-#line 347 "dsl/tests/golden/features.zgal"
+#line 348 "dsl/tests/golden/features.zgal"
     });
     commandLine.option("--gain", "<number>", "the light's gain (default 1.5)", [&inputs](const std::string& text) {
-#line 348 "dsl/tests/golden/features.zgal"
+#line 349 "dsl/tests/golden/features.zgal"
         return zgal::parseNumber<decltype(inputs.gain)>(text, inputs.gain);
-#line 348 "dsl/tests/golden/features.zgal"
+#line 349 "dsl/tests/golden/features.zgal"
     });
 #line 47 "build/generated/features.zgal.main.cpp"
     const auto parsed = commandLine.parse(argc, argv);
@@ -75,5 +75,5 @@ int main(int argc, char** argv) {
         [](App& app) -> Result<zgal::Captured> {
             return zgal::captureReadback(app.renderGraph(), app.ids().nodes.readMask);
         });
-#line 341 "dsl/tests/golden/features.zgal"
+#line 342 "dsl/tests/golden/features.zgal"
 }

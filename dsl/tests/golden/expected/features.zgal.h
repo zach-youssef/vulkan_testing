@@ -103,7 +103,7 @@ struct MeshVertex {
 #line 104 "build/generated/features.zgal.h"
 
 // vertex-format ModelVertex: read from vertex buffers as C++ lays it out
-#line 371 "dsl/tests/golden/features.zgal"
+#line 372 "dsl/tests/golden/features.zgal"
 struct ModelVertex {
     glm::vec3 position;
     alignas(4) glm::i16vec3 normal;   // snorm16, read as vec3; convert with glm::packSnorm<int16_t>
@@ -114,21 +114,21 @@ struct ModelVertex {
 
     // A model primitive's vertices (graphs' models): position from positions, normal from normals, texCoord from uvs, tint from its default, layer from its default
     static Result<std::vector<ModelVertex>> fromModel(const ModelPrimitive& primitive) {
-#line 373 "dsl/tests/golden/features.zgal"
+#line 374 "dsl/tests/golden/features.zgal"
         if (primitive.normals.empty()) {
-#line 373 "dsl/tests/golden/features.zgal"
+#line 374 "dsl/tests/golden/features.zgal"
             return Error(ErrorCode::InvalidData, "the model has no normals, which ModelVertex's normal reads (or give it a #:default)");
-#line 373 "dsl/tests/golden/features.zgal"
+#line 374 "dsl/tests/golden/features.zgal"
         }
         if (primitive.uvs.empty()) {
-#line 374 "dsl/tests/golden/features.zgal"
+#line 375 "dsl/tests/golden/features.zgal"
             return Error(ErrorCode::InvalidData, "the model has no uvs, which ModelVertex's texCoord reads (or give it a #:default)");
-#line 374 "dsl/tests/golden/features.zgal"
+#line 375 "dsl/tests/golden/features.zgal"
         }
 #line 129 "build/generated/features.zgal.h"
         std::vector<ModelVertex> vertices(primitive.positions.size());
         for (size_t i = 0; i < vertices.size(); ++i) {
-#line 372 "dsl/tests/golden/features.zgal"
+#line 373 "dsl/tests/golden/features.zgal"
             vertices[i].position = primitive.positions[i];
             vertices[i].normal = glm::packSnorm<int16_t>(primitive.normals[i]);
             vertices[i].texCoord = primitive.uvs[i];
@@ -138,7 +138,7 @@ struct ModelVertex {
         }
         return vertices;
     }
-#line 371 "dsl/tests/golden/features.zgal"
+#line 372 "dsl/tests/golden/features.zgal"
 };
 #line 144 "build/generated/features.zgal.h"
 
@@ -979,18 +979,18 @@ private:
 #line 980 "build/generated/features.zgal.h"
 
 // graphics-material ModelPaint (ModelPaint.vert, ModelPaint.frag)
-#line 379 "dsl/tests/golden/features.zgal"
+#line 380 "dsl/tests/golden/features.zgal"
 class ModelPaint : public GraphicsMaterial {
 #line 985 "build/generated/features.zgal.h"
 public:
     // The descriptor entries the shaders use (an array's: DescriptorArray::create). Their
     // indices are pushed in this order.
     struct Bindings {
-#line 381 "dsl/tests/golden/features.zgal"
+#line 382 "dsl/tests/golden/features.zgal"
         Handle<DescriptorArray> colors;   // (array texture), fragment shader
-#line 381 "dsl/tests/golden/features.zgal"
+#line 382 "dsl/tests/golden/features.zgal"
         FrameBinding<DescriptorEntry> factors;   // (buffer-array vec4 read), fragment shader
-#line 381 "dsl/tests/golden/features.zgal"
+#line 382 "dsl/tests/golden/features.zgal"
         FrameBinding<DescriptorEntry> s;   // sampler
 #line 996 "build/generated/features.zgal.h"
     };
@@ -1001,7 +1001,7 @@ public:
 
     // Loads ModelPaint.vert and ModelPaint.frag from the context's shader library
     static Result<Shaders> loadShaders(VulkanContext& context) {
-#line 384 "dsl/tests/golden/features.zgal"
+#line 385 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto vertex, context.shaders().get("ModelPaint.vert"));
         TRY_ASSIGN(auto fragment, context.shaders().get("ModelPaint.frag"));
 #line 1008 "build/generated/features.zgal.h"
@@ -1018,7 +1018,7 @@ public:
     // Vertex buffers of ModelVertex (one, at binding 0), read at the attributes' locations
     static VertexLayout vertexLayout() {
         return VertexLayout::interleaved(sizeof(ModelVertex), {
-#line 372 "dsl/tests/golden/features.zgal"
+#line 373 "dsl/tests/golden/features.zgal"
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(ModelVertex, position)},
             {1, 0, VK_FORMAT_R16G16B16_SNORM, offsetof(ModelVertex, normal)},
             {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(ModelVertex, texCoord)},
@@ -1047,16 +1047,16 @@ private:
         zgal::requireBound(bindings.factors, "ModelPaint", "factors");
         zgal::requireBound(bindings.s, "ModelPaint", "s");
         return {
-#line 381 "dsl/tests/golden/features.zgal"
+#line 382 "dsl/tests/golden/features.zgal"
             MaterialBinding::array(std::move(bindings.colors), Access::SampledRead, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT),
-#line 381 "dsl/tests/golden/features.zgal"
+#line 382 "dsl/tests/golden/features.zgal"
             MaterialBinding{std::move(bindings.factors), Access::StorageBufferRead, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT},
-#line 381 "dsl/tests/golden/features.zgal"
+#line 382 "dsl/tests/golden/features.zgal"
             MaterialBinding{std::move(bindings.s), Access::SampledRead, 0},
 #line 1057 "build/generated/features.zgal.h"
         };
     }
-#line 379 "dsl/tests/golden/features.zgal"
+#line 380 "dsl/tests/golden/features.zgal"
 };
 #line 1062 "build/generated/features.zgal.h"
 
@@ -1083,7 +1083,7 @@ struct Everything {
         std::vector<uint32_t> seeds;
 #line 251 "dsl/tests/golden/features.zgal"
         zgal::FrameSource<uint32_t> sampleCount;
-#line 270 "dsl/tests/golden/features.zgal"
+#line 271 "dsl/tests/golden/features.zgal"
         std::vector<FrameBinding<Image>> decals;   // Imported, resting shader-read-only
 #line 1089 "build/generated/features.zgal.h"
     };
@@ -1091,7 +1091,7 @@ struct Everything {
     struct Images {
 #line 231 "dsl/tests/golden/features.zgal"
         ImageId picture;
-#line 270 "dsl/tests/golden/features.zgal"
+#line 271 "dsl/tests/golden/features.zgal"
         std::vector<ImageId> decals;
 #line 236 "dsl/tests/golden/features.zgal"
         ImageId seedImage;
@@ -1113,13 +1113,13 @@ struct Everything {
         std::optional<BufferId> transformBuffer;
 #line 252 "dsl/tests/golden/features.zgal"
         BufferId samples;
-#line 266 "dsl/tests/golden/features.zgal"
+#line 267 "dsl/tests/golden/features.zgal"
         BufferId packedCopy;
         BufferId totalBuffer;
 #line 1120 "build/generated/features.zgal.h"
     };
     struct Nodes {
-#line 272 "dsl/tests/golden/features.zgal"
+#line 273 "dsl/tests/golden/features.zgal"
         NodeId drawSurface;
         std::optional<NodeId> accumulate;
         NodeId drawPlain;
@@ -1131,41 +1131,41 @@ struct Everything {
         NodeId reduce;
         std::optional<NodeId> pick;
         std::vector<NodeId> customNodes;
-#line 284 "dsl/tests/golden/features.zgal"
+#line 285 "dsl/tests/golden/features.zgal"
         NodeId clearTotal;
         NodeId toSeedImage;
         NodeId seedCorner;
         NodeId readSeeds;
         std::optional<NodeId> readTotal;
         NodeId readSamples;
-#line 292 "dsl/tests/golden/features.zgal"
+#line 293 "dsl/tests/golden/features.zgal"
         NodeId bumpOnce;
-#line 295 "dsl/tests/golden/features.zgal"
+#line 296 "dsl/tests/golden/features.zgal"
         std::vector<NodeId> bumpEach;
         std::vector<NodeId> readEach;
-#line 298 "dsl/tests/golden/features.zgal"
+#line 299 "dsl/tests/golden/features.zgal"
         std::vector<NodeId> drawEach;
 #line 1149 "build/generated/features.zgal.h"
     };
     Images images;
 
-#line 275 "dsl/tests/golden/features.zgal"
+#line 276 "dsl/tests/golden/features.zgal"
     // The pixels readback readMask copied in the most recent frame (waiting for it)
-#line 275 "dsl/tests/golden/features.zgal"
+#line 276 "dsl/tests/golden/features.zgal"
     Result<std::vector<uint8_t>> readMaskPixels(RenderGraph& graph) const { return graph.nodeAs<ReadbackNode>(nodes.readMask).pixels(); }
-#line 287 "dsl/tests/golden/features.zgal"
+#line 288 "dsl/tests/golden/features.zgal"
     // The elements readback readSeeds copied in the most recent frame (waiting for it)
-#line 287 "dsl/tests/golden/features.zgal"
+#line 288 "dsl/tests/golden/features.zgal"
     Result<std::vector<uint32_t>> readSeedsContents(RenderGraph& graph) const { return graph.nodeAs<BufferReadbackNode>(nodes.readSeeds).contents<uint32_t>(); }
     // The elements readback readTotal copied in the most recent frame (waiting for it)
-#line 288 "dsl/tests/golden/features.zgal"
+#line 289 "dsl/tests/golden/features.zgal"
     Result<std::vector<uint32_t>> readTotalContents(RenderGraph& graph) const { return graph.nodeAs<BufferReadbackNode>(zgal::require(nodes.readTotal, "Everything", "readTotal")).contents<uint32_t>(); }
     // The elements readback readSamples copied in the most recent frame (waiting for it)
-#line 289 "dsl/tests/golden/features.zgal"
+#line 290 "dsl/tests/golden/features.zgal"
     Result<std::vector<uint32_t>> readSamplesContents(RenderGraph& graph) const { return graph.nodeAs<BufferReadbackNode>(nodes.readSamples).contents<uint32_t>(); }
-#line 296 "dsl/tests/golden/features.zgal"
+#line 297 "dsl/tests/golden/features.zgal"
     // The elements readback readEach (iteration index's) copied in the most recent frame (waiting for it)
-#line 296 "dsl/tests/golden/features.zgal"
+#line 297 "dsl/tests/golden/features.zgal"
     Result<std::vector<float>> readEachContents(RenderGraph& graph, size_t index) const { return graph.nodeAs<BufferReadbackNode>(zgal::nodeAt(nodes.readEach, index, "Everything", "readEach")).contents<float>(); }
 #line 1171 "build/generated/features.zgal.h"
     Buffers buffers;
@@ -1242,19 +1242,19 @@ struct Everything {
         const ImageId image_picture = graph.importImage("picture", in->picture, ImageState::shaderReadOnly());
 #line 1244 "build/generated/features.zgal.h"
         result.images.picture = image_picture;
-#line 270 "dsl/tests/golden/features.zgal"
+#line 271 "dsl/tests/golden/features.zgal"
         std::vector<ImageId> images_decals;
-#line 270 "dsl/tests/golden/features.zgal"
+#line 271 "dsl/tests/golden/features.zgal"
         for (size_t i = 0; i < in->decals.size(); ++i) {
-#line 270 "dsl/tests/golden/features.zgal"
+#line 271 "dsl/tests/golden/features.zgal"
             if (!in->decals[i].isPerFrame() && !in->decals[i].shared()) {
-#line 270 "dsl/tests/golden/features.zgal"
+#line 271 "dsl/tests/golden/features.zgal"
                 contractViolation("Everything's imported image decals " + std::to_string(i) + " isn't given");
-#line 270 "dsl/tests/golden/features.zgal"
+#line 271 "dsl/tests/golden/features.zgal"
             }
-#line 270 "dsl/tests/golden/features.zgal"
+#line 271 "dsl/tests/golden/features.zgal"
             images_decals.push_back(graph.importImage("decals " + std::to_string(i), in->decals[i], ImageState::shaderReadOnly()));
-#line 270 "dsl/tests/golden/features.zgal"
+#line 271 "dsl/tests/golden/features.zgal"
         }
 #line 1260 "build/generated/features.zgal.h"
         result.images.decals = images_decals;
@@ -1322,11 +1322,11 @@ struct Everything {
         const BufferId buffer_samples = graph.createBuffer("samples", FrameMode::PerFrame, [=](const FrameContext& frameContext) { const zgal::FrameInfo frame = zgal::frameInfo(frameContext); return VkDeviceSize((in->sampleCount(frame) * 2u)) * sizeof(uint32_t); });
 #line 1324 "build/generated/features.zgal.h"
         result.buffers.samples = buffer_samples;
-#line 266 "dsl/tests/golden/features.zgal"
+#line 267 "dsl/tests/golden/features.zgal"
         const BufferId buffer_packedCopy = graph.createBuffer("packedCopy", FrameMode::Shared, VkDeviceSize(64u) * sizeof(Packed));
 #line 1328 "build/generated/features.zgal.h"
         result.buffers.packedCopy = buffer_packedCopy;
-#line 267 "dsl/tests/golden/features.zgal"
+#line 268 "dsl/tests/golden/features.zgal"
         const BufferId buffer_totalBuffer = graph.createBuffer("totalBuffer", FrameMode::Shared, VkDeviceSize(1u) * sizeof(uint32_t));
 #line 1332 "build/generated/features.zgal.h"
         result.buffers.totalBuffer = buffer_totalBuffer;
@@ -1364,276 +1364,282 @@ struct Everything {
             },
 #line 257 "dsl/tests/golden/features.zgal"
             nullptr, context, shaders_surface, Surface::Bindings{.lights = uniform_lightBuffer->entries(), .transforms = graph.storageBufferEntry(zgal::require(buffer_transformBuffer, "Everything", "transformBuffer")), .albedo = graph.sampledEntry(image_picture), .albedoSampler = context.descriptors().sampler(sampler_basic), .mask = graph.storageEntry(image_maskImage)}, graph.formats(target_scene), GraphicsPipelineOptions{.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_CLOCKWISE, .blend = {BlendMode::Alpha}, .depthTest = true, .depthWrite = false, .depthCompare = VK_COMPARE_OP_GREATER_OR_EQUAL});
-#line 263 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto shaders_accumulate, Accumulate::loadShaders(context));
-#line 263 "dsl/tests/golden/features.zgal"
-        auto material_accumulate = context.resources().create<zgal::Instance<Accumulate>>(
-#line 263 "dsl/tests/golden/features.zgal"
-            zgal::Updates{[uniform = uniform_lightBuffer](const zgal::FrameInfo& frame) { uniform->update(frame); }},
-#line 263 "dsl/tests/golden/features.zgal"
-            [=, &graph](const zgal::FrameInfo& frame) { return Accumulate::workgroupsFor(graph.imageExtent(image_colorImage, frame.frameIndex).width, std::max(graph.imageExtent(image_maskImage, frame.frameIndex).height, in->size)); }, context, shaders_accumulate, Accumulate::Bindings{.lights = uniform_lightBuffer->entries(), .sums = graph.storageBufferEntry(buffer_sumBuffer), .target = graph.storageEntry(image_maskImage)});
-#line 265 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto shaders_plain, Plain::loadShaders(context));
-#line 265 "dsl/tests/golden/features.zgal"
-        auto material_plain = context.resources().create<zgal::Instance<Plain>>(
-#line 265 "dsl/tests/golden/features.zgal"
-            zgal::Updates{},
-#line 265 "dsl/tests/golden/features.zgal"
-            nullptr, context, shaders_plain, graph.formats(target_screen), GraphicsPipelineOptions{});
-#line 268 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto shaders_reduce, Reduce::loadShaders(context));
-#line 268 "dsl/tests/golden/features.zgal"
-        auto material_reduce = context.resources().create<zgal::Instance<Reduce>>(
-#line 268 "dsl/tests/golden/features.zgal"
-            zgal::Updates{},
-#line 268 "dsl/tests/golden/features.zgal"
-            [=](const zgal::FrameInfo& frame) { return Reduce::workgroupsFor(64u); }, context, shaders_reduce, Reduce::Bindings{.packed = graph.storageBufferEntry(buffer_packedCopy), .total = graph.storageBufferEntry(buffer_totalBuffer)});
-#line 271 "dsl/tests/golden/features.zgal"
-        std::vector<FrameBinding<DescriptorEntry>> elements_pick_decals;
-#line 271 "dsl/tests/golden/features.zgal"
-        for (const ImageId image : images_decals) {
-#line 271 "dsl/tests/golden/features.zgal"
-            elements_pick_decals.push_back(graph.sampledEntry(image));
-#line 271 "dsl/tests/golden/features.zgal"
+#line 264 "dsl/tests/golden/features.zgal"
+        std::optional<Handle<zgal::Instance<Accumulate>>> material_accumulate;
+#line 264 "dsl/tests/golden/features.zgal"
+        if ((in->count >= 2)) {
+#line 264 "dsl/tests/golden/features.zgal"
+            TRY_ASSIGN(auto shaders_accumulate, Accumulate::loadShaders(context));
+#line 264 "dsl/tests/golden/features.zgal"
+            material_accumulate = context.resources().create<zgal::Instance<Accumulate>>(
+#line 264 "dsl/tests/golden/features.zgal"
+                zgal::Updates{[uniform = uniform_lightBuffer](const zgal::FrameInfo& frame) { uniform->update(frame); }},
+#line 264 "dsl/tests/golden/features.zgal"
+                [=, &graph](const zgal::FrameInfo& frame) { return Accumulate::workgroupsFor(graph.imageExtent(image_colorImage, frame.frameIndex).width, std::max(graph.imageExtent(image_maskImage, frame.frameIndex).height, in->size)); }, context, shaders_accumulate, Accumulate::Bindings{.lights = uniform_lightBuffer->entries(), .sums = graph.storageBufferEntry(buffer_sumBuffer), .target = graph.storageEntry(image_maskImage)});
+#line 264 "dsl/tests/golden/features.zgal"
         }
-#line 271 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto array_pick_decals, DescriptorArray::create(context, std::move(elements_pick_decals)));
-#line 271 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto array_pick_settings, DescriptorArray::create(context, {uniform_lightBuffer->entries(), uniform_lightBuffer->entries()}));
-#line 271 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto array_pick_targets, DescriptorArray::create(context, {graph.storageEntry(image_maskImage), graph.storageEntry(zgal::require(image_copy, "Everything", "copy"))}));
-#line 271 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto shaders_pick, Pick::loadShaders(context));
-#line 271 "dsl/tests/golden/features.zgal"
-        auto material_pick = context.resources().create<zgal::Instance<Pick>>(
-#line 271 "dsl/tests/golden/features.zgal"
-            zgal::Updates{[uniform = uniform_lightBuffer](const zgal::FrameInfo& frame) { uniform->update(frame); }},
-#line 271 "dsl/tests/golden/features.zgal"
-            [=](const zgal::FrameInfo& frame) { return Pick::workgroupsFor(8u, 8u); }, context, shaders_pick, Pick::Bindings{.decals = array_pick_decals, .settings = array_pick_settings, .targets = array_pick_targets});
-#line 291 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto shaders_bump, Bump::loadShaders(context));
-#line 291 "dsl/tests/golden/features.zgal"
-        auto material_bump = context.resources().create<zgal::PushInstance<Bump>>(
-#line 291 "dsl/tests/golden/features.zgal"
+#line 266 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto shaders_plain, Plain::loadShaders(context));
+#line 266 "dsl/tests/golden/features.zgal"
+        auto material_plain = context.resources().create<zgal::Instance<Plain>>(
+#line 266 "dsl/tests/golden/features.zgal"
             zgal::Updates{},
-#line 291 "dsl/tests/golden/features.zgal"
+#line 266 "dsl/tests/golden/features.zgal"
+            nullptr, context, shaders_plain, graph.formats(target_screen), GraphicsPipelineOptions{});
+#line 269 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto shaders_reduce, Reduce::loadShaders(context));
+#line 269 "dsl/tests/golden/features.zgal"
+        auto material_reduce = context.resources().create<zgal::Instance<Reduce>>(
+#line 269 "dsl/tests/golden/features.zgal"
+            zgal::Updates{},
+#line 269 "dsl/tests/golden/features.zgal"
+            [=](const zgal::FrameInfo& frame) { return Reduce::workgroupsFor(64u); }, context, shaders_reduce, Reduce::Bindings{.packed = graph.storageBufferEntry(buffer_packedCopy), .total = graph.storageBufferEntry(buffer_totalBuffer)});
+#line 272 "dsl/tests/golden/features.zgal"
+        std::vector<FrameBinding<DescriptorEntry>> elements_pick_decals;
+#line 272 "dsl/tests/golden/features.zgal"
+        for (const ImageId image : images_decals) {
+#line 272 "dsl/tests/golden/features.zgal"
+            elements_pick_decals.push_back(graph.sampledEntry(image));
+#line 272 "dsl/tests/golden/features.zgal"
+        }
+#line 272 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto array_pick_decals, DescriptorArray::create(context, std::move(elements_pick_decals)));
+#line 272 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto array_pick_settings, DescriptorArray::create(context, {uniform_lightBuffer->entries(), uniform_lightBuffer->entries()}));
+#line 272 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto array_pick_targets, DescriptorArray::create(context, {graph.storageEntry(image_maskImage), graph.storageEntry(zgal::require(image_copy, "Everything", "copy"))}));
+#line 272 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto shaders_pick, Pick::loadShaders(context));
+#line 272 "dsl/tests/golden/features.zgal"
+        auto material_pick = context.resources().create<zgal::Instance<Pick>>(
+#line 272 "dsl/tests/golden/features.zgal"
+            zgal::Updates{[uniform = uniform_lightBuffer](const zgal::FrameInfo& frame) { uniform->update(frame); }},
+#line 272 "dsl/tests/golden/features.zgal"
+            [=](const zgal::FrameInfo& frame) { return Pick::workgroupsFor(8u, 8u); }, context, shaders_pick, Pick::Bindings{.decals = array_pick_decals, .settings = array_pick_settings, .targets = array_pick_targets});
+#line 292 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto shaders_bump, Bump::loadShaders(context));
+#line 292 "dsl/tests/golden/features.zgal"
+        auto material_bump = context.resources().create<zgal::PushInstance<Bump>>(
+#line 292 "dsl/tests/golden/features.zgal"
+            zgal::Updates{},
+#line 292 "dsl/tests/golden/features.zgal"
             [=](const zgal::FrameInfo& frame, Bump::Push& push) {
 #line 215 "dsl/tests/golden/features.zgal"
                 push.amount = constant_halfScale;
-#line 291 "dsl/tests/golden/features.zgal"
+#line 292 "dsl/tests/golden/features.zgal"
             },
-#line 291 "dsl/tests/golden/features.zgal"
+#line 292 "dsl/tests/golden/features.zgal"
             nullptr, context, shaders_bump, Bump::Bindings{.sums = graph.storageBufferEntry(buffer_sumBuffer)});
-#line 272 "dsl/tests/golden/features.zgal"
+#line 273 "dsl/tests/golden/features.zgal"
         {
-#line 272 "dsl/tests/golden/features.zgal"
+#line 273 "dsl/tests/golden/features.zgal"
             std::vector<Handle<Renderable>> renderables;
-#line 272 "dsl/tests/golden/features.zgal"
+#line 273 "dsl/tests/golden/features.zgal"
             for (const auto& mesh : in->meshes) {
-#line 272 "dsl/tests/golden/features.zgal"
+#line 273 "dsl/tests/golden/features.zgal"
                 renderables.push_back(context.resources().create<MeshRenderable>(mesh, material_surface));
-#line 272 "dsl/tests/golden/features.zgal"
+#line 273 "dsl/tests/golden/features.zgal"
             }
-#line 272 "dsl/tests/golden/features.zgal"
+#line 273 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.add<RenderablesNode>("drawSurface", std::move(renderables), target_scene);
-#line 272 "dsl/tests/golden/features.zgal"
+#line 273 "dsl/tests/golden/features.zgal"
             graph.setEnabled(node, in->enabled);
-#line 272 "dsl/tests/golden/features.zgal"
+#line 273 "dsl/tests/golden/features.zgal"
             result.nodes.drawSurface = node;
-#line 272 "dsl/tests/golden/features.zgal"
+#line 273 "dsl/tests/golden/features.zgal"
         }
         if ((in->count >= 2)) {
-#line 273 "dsl/tests/golden/features.zgal"
-            const NodeId node = graph.add<DispatchNode>("accumulate", material_accumulate);
-#line 273 "dsl/tests/golden/features.zgal"
+#line 274 "dsl/tests/golden/features.zgal"
+            const NodeId node = graph.add<DispatchNode>("accumulate", zgal::require(material_accumulate, "Everything", "accumulate"));
+#line 274 "dsl/tests/golden/features.zgal"
             result.nodes.accumulate = node;
-#line 273 "dsl/tests/golden/features.zgal"
+#line 274 "dsl/tests/golden/features.zgal"
         }
         {
-#line 274 "dsl/tests/golden/features.zgal"
+#line 275 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.addGraphics("drawPlain", [target = target_screen, material = material_plain](NodeBuilder& builder) { builder.renderTo(target).uses(material); }, [material = material_plain, count = (3u * in->size)](RecordContext& record) { material->bind(record.commandBuffer, record.frameIndex); vkCmdDraw(record.commandBuffer, count, 1, 0, 0); });
-#line 274 "dsl/tests/golden/features.zgal"
+#line 275 "dsl/tests/golden/features.zgal"
             result.nodes.drawPlain = node;
-#line 274 "dsl/tests/golden/features.zgal"
+#line 275 "dsl/tests/golden/features.zgal"
         }
         {
-#line 275 "dsl/tests/golden/features.zgal"
+#line 276 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.add<ReadbackNode>("readMask", image_maskImage);
-#line 275 "dsl/tests/golden/features.zgal"
+#line 276 "dsl/tests/golden/features.zgal"
             result.nodes.readMask = node;
-#line 275 "dsl/tests/golden/features.zgal"
+#line 276 "dsl/tests/golden/features.zgal"
         }
         {
-#line 276 "dsl/tests/golden/features.zgal"
+#line 277 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.addCpu("logFrame", nullptr, in->logger);
-#line 276 "dsl/tests/golden/features.zgal"
+#line 277 "dsl/tests/golden/features.zgal"
             result.nodes.logFrame = node;
-#line 276 "dsl/tests/golden/features.zgal"
+#line 277 "dsl/tests/golden/features.zgal"
         }
         {
-#line 277 "dsl/tests/golden/features.zgal"
+#line 278 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.addCpu("fillStaging", [buffer_packedInput, buffer_staging](NodeBuilder& builder) { builder.read(buffer_packedInput, Access::HostRead).write(buffer_staging, Access::HostWrite); }, in->upload);
-#line 277 "dsl/tests/golden/features.zgal"
+#line 278 "dsl/tests/golden/features.zgal"
             result.nodes.fillStaging = node;
-#line 277 "dsl/tests/golden/features.zgal"
+#line 278 "dsl/tests/golden/features.zgal"
         }
         {
-#line 278 "dsl/tests/golden/features.zgal"
+#line 279 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.addTransfer("copyAll", [source = buffer_packedInput, destination = buffer_packedCopy](NodeBuilder& builder) { builder.read(source, Access::TransferSrc).write(destination, Access::TransferDst); }, [source = buffer_packedInput, destination = buffer_packedCopy, sourceOffset = VkDeviceSize(0u), destinationOffset = VkDeviceSize(0u), count = std::optional<VkDeviceSize>()](RecordContext& record) { zgal::copyBuffer(record, source, destination, sizeof(Packed), sourceOffset, destinationOffset, count, "copyAll"); });
-#line 278 "dsl/tests/golden/features.zgal"
+#line 279 "dsl/tests/golden/features.zgal"
             result.nodes.copyAll = node;
-#line 278 "dsl/tests/golden/features.zgal"
+#line 279 "dsl/tests/golden/features.zgal"
         }
         {
-#line 279 "dsl/tests/golden/features.zgal"
+#line 280 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.addTransfer("copySome", [source = buffer_staging, destination = buffer_packedCopy](NodeBuilder& builder) { builder.read(source, Access::TransferSrc).write(destination, Access::TransferDst); }, [source = buffer_staging, destination = buffer_packedCopy, sourceOffset = VkDeviceSize(1u), destinationOffset = VkDeviceSize(static_cast<uint32_t>(in->count)), count = std::optional<VkDeviceSize>(32u)](RecordContext& record) { zgal::copyBuffer(record, source, destination, sizeof(Packed), sourceOffset, destinationOffset, count, "copySome"); });
-#line 279 "dsl/tests/golden/features.zgal"
+#line 280 "dsl/tests/golden/features.zgal"
             graph.setEnabled(node, in->enabled);
-#line 279 "dsl/tests/golden/features.zgal"
+#line 280 "dsl/tests/golden/features.zgal"
             result.nodes.copySome = node;
-#line 279 "dsl/tests/golden/features.zgal"
+#line 280 "dsl/tests/golden/features.zgal"
         }
         {
-#line 280 "dsl/tests/golden/features.zgal"
+#line 281 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.add<DispatchNode>("reduce", material_reduce);
-#line 280 "dsl/tests/golden/features.zgal"
+#line 281 "dsl/tests/golden/features.zgal"
             result.nodes.reduce = node;
-#line 280 "dsl/tests/golden/features.zgal"
+#line 281 "dsl/tests/golden/features.zgal"
         }
         if (in->enabled) {
-#line 281 "dsl/tests/golden/features.zgal"
+#line 282 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.add<DispatchNode>("pick", material_pick);
-#line 281 "dsl/tests/golden/features.zgal"
+#line 282 "dsl/tests/golden/features.zgal"
             result.nodes.pick = node;
-#line 281 "dsl/tests/golden/features.zgal"
+#line 282 "dsl/tests/golden/features.zgal"
         }
         if (in->enabled) {
-#line 282 "dsl/tests/golden/features.zgal"
+#line 283 "dsl/tests/golden/features.zgal"
             result.nodes.customNodes = in->custom(graph, result);
-#line 282 "dsl/tests/golden/features.zgal"
+#line 283 "dsl/tests/golden/features.zgal"
         }
-#line 284 "dsl/tests/golden/features.zgal"
+#line 285 "dsl/tests/golden/features.zgal"
         {
-#line 284 "dsl/tests/golden/features.zgal"
+#line 285 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.addTransfer("clearTotal", [target = buffer_totalBuffer](NodeBuilder& builder) { builder.write(target, Access::TransferDst); }, [target = buffer_totalBuffer, value = static_cast<uint32_t>(in->seeds.size())](RecordContext& record) { vkCmdFillBuffer(record.commandBuffer, record.graph.buffer(target, record.frameIndex), 0, VK_WHOLE_SIZE, value); });
-#line 284 "dsl/tests/golden/features.zgal"
+#line 285 "dsl/tests/golden/features.zgal"
             result.nodes.clearTotal = node;
-#line 284 "dsl/tests/golden/features.zgal"
+#line 285 "dsl/tests/golden/features.zgal"
         }
         {
-#line 285 "dsl/tests/golden/features.zgal"
+#line 286 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.addTransfer("toSeedImage", [source = buffer_seedBuffer, destination = image_seedImage](NodeBuilder& builder) { builder.read(source, Access::TransferSrc).write(destination, Access::TransferDst); }, [source = buffer_seedBuffer, destination = image_seedImage, sourceOffset = VkDeviceSize(0u) * sizeof(uint32_t), offset = VkOffset2D{int32_t(0u), int32_t(0u)}, extent = std::optional<VkExtent2D>()](RecordContext& record) { zgal::copyBufferToImage(record, source, destination, sourceOffset, offset, extent, "toSeedImage"); });
-#line 285 "dsl/tests/golden/features.zgal"
+#line 286 "dsl/tests/golden/features.zgal"
             result.nodes.toSeedImage = node;
-#line 285 "dsl/tests/golden/features.zgal"
+#line 286 "dsl/tests/golden/features.zgal"
         }
         {
-#line 286 "dsl/tests/golden/features.zgal"
+#line 287 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.addTransfer("seedCorner", [source = buffer_seedBuffer, destination = image_seedImage](NodeBuilder& builder) { builder.read(source, Access::TransferSrc).write(destination, Access::TransferDst); }, [source = buffer_seedBuffer, destination = image_seedImage, sourceOffset = VkDeviceSize(1u) * sizeof(uint32_t), offset = VkOffset2D{int32_t(1u), int32_t(static_cast<uint32_t>(in->count))}, extent = std::optional<VkExtent2D>(VkExtent2D{1u, 1u})](RecordContext& record) { zgal::copyBufferToImage(record, source, destination, sourceOffset, offset, extent, "seedCorner"); });
-#line 286 "dsl/tests/golden/features.zgal"
+#line 287 "dsl/tests/golden/features.zgal"
             result.nodes.seedCorner = node;
-#line 286 "dsl/tests/golden/features.zgal"
+#line 287 "dsl/tests/golden/features.zgal"
         }
         {
-#line 287 "dsl/tests/golden/features.zgal"
+#line 288 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.add<BufferReadbackNode>("readSeeds", buffer_seedBuffer);
-#line 287 "dsl/tests/golden/features.zgal"
+#line 288 "dsl/tests/golden/features.zgal"
             graph.runOnce(node);
-#line 287 "dsl/tests/golden/features.zgal"
+#line 288 "dsl/tests/golden/features.zgal"
             result.nodes.readSeeds = node;
-#line 287 "dsl/tests/golden/features.zgal"
+#line 288 "dsl/tests/golden/features.zgal"
         }
         if (in->enabled) {
-#line 288 "dsl/tests/golden/features.zgal"
+#line 289 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.add<BufferReadbackNode>("readTotal", buffer_totalBuffer);
-#line 288 "dsl/tests/golden/features.zgal"
+#line 289 "dsl/tests/golden/features.zgal"
             result.nodes.readTotal = node;
-#line 288 "dsl/tests/golden/features.zgal"
+#line 289 "dsl/tests/golden/features.zgal"
         }
         {
-#line 289 "dsl/tests/golden/features.zgal"
+#line 290 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.add<BufferReadbackNode>("readSamples", buffer_samples);
-#line 289 "dsl/tests/golden/features.zgal"
+#line 290 "dsl/tests/golden/features.zgal"
             result.nodes.readSamples = node;
-#line 289 "dsl/tests/golden/features.zgal"
+#line 290 "dsl/tests/golden/features.zgal"
         }
-#line 292 "dsl/tests/golden/features.zgal"
+#line 293 "dsl/tests/golden/features.zgal"
         {
-#line 292 "dsl/tests/golden/features.zgal"
+#line 293 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.add<zgal::OverridingDispatchNode>("bumpOnce", material_bump, [=, material = material_bump](const RecordContext& record) { zgal::pushOverride(record, *material, [&](const zgal::FrameInfo& frame, Bump::Push& push) { push.first = static_cast<uint32_t>(in->count); }); }, [=](const zgal::FrameInfo& frame) { return Bump::workgroupsFor(in->size); }, std::nullopt);
-#line 292 "dsl/tests/golden/features.zgal"
+#line 293 "dsl/tests/golden/features.zgal"
             result.nodes.bumpOnce = node;
-#line 292 "dsl/tests/golden/features.zgal"
+#line 293 "dsl/tests/golden/features.zgal"
         }
-#line 294 "dsl/tests/golden/features.zgal"
+#line 295 "dsl/tests/golden/features.zgal"
         for (const auto& loop_s : in->seeds) {
-#line 294 "dsl/tests/golden/features.zgal"
+#line 295 "dsl/tests/golden/features.zgal"
             for (int32_t loop_k = 0; loop_k < in->count; loop_k += 2) {
                 if ((loop_k > 0)) {
-#line 295 "dsl/tests/golden/features.zgal"
+#line 296 "dsl/tests/golden/features.zgal"
                     const NodeId node = graph.add<zgal::OverridingDispatchNode>(std::string("bumpEach ") + std::to_string(result.nodes.bumpEach.size()), material_bump, [=, material = material_bump](const RecordContext& record) { zgal::pushOverride(record, *material, [&](const zgal::FrameInfo& frame, Bump::Push& push) { push.first = (loop_s + static_cast<uint32_t>(loop_k)); }); }, [=](const zgal::FrameInfo& frame) { return Bump::workgroupsFor((loop_s + 1u)); }, std::nullopt);
-#line 295 "dsl/tests/golden/features.zgal"
+#line 296 "dsl/tests/golden/features.zgal"
                     result.nodes.bumpEach.push_back(node);
-#line 295 "dsl/tests/golden/features.zgal"
+#line 296 "dsl/tests/golden/features.zgal"
                 }
                 {
-#line 296 "dsl/tests/golden/features.zgal"
-                    const NodeId node = graph.add<BufferReadbackNode>(std::string("readEach ") + std::to_string(result.nodes.readEach.size()), buffer_sumBuffer);
-#line 296 "dsl/tests/golden/features.zgal"
-                    result.nodes.readEach.push_back(node);
-#line 296 "dsl/tests/golden/features.zgal"
-                }
-#line 294 "dsl/tests/golden/features.zgal"
-            }
-#line 294 "dsl/tests/golden/features.zgal"
-        }
 #line 297 "dsl/tests/golden/features.zgal"
+                    const NodeId node = graph.add<BufferReadbackNode>(std::string("readEach ") + std::to_string(result.nodes.readEach.size()), buffer_sumBuffer);
+#line 297 "dsl/tests/golden/features.zgal"
+                    result.nodes.readEach.push_back(node);
+#line 297 "dsl/tests/golden/features.zgal"
+                }
+#line 295 "dsl/tests/golden/features.zgal"
+            }
+#line 295 "dsl/tests/golden/features.zgal"
+        }
+#line 298 "dsl/tests/golden/features.zgal"
         for (uint32_t loop_i = static_cast<uint32_t>(0); loop_i < in->size; loop_i += 1u) {
             {
-#line 298 "dsl/tests/golden/features.zgal"
+#line 299 "dsl/tests/golden/features.zgal"
                 const NodeId node = graph.addGraphics(std::string("drawEach ") + std::to_string(result.nodes.drawEach.size()), [target = target_screen, material = material_plain](NodeBuilder& builder) { builder.renderTo(target).uses(material); }, [material = material_plain, count = (loop_i + 3u)](RecordContext& record) { material->bind(record.commandBuffer, record.frameIndex); vkCmdDraw(record.commandBuffer, count, 1, 0, 0); });
-#line 298 "dsl/tests/golden/features.zgal"
+#line 299 "dsl/tests/golden/features.zgal"
                 result.nodes.drawEach.push_back(node);
-#line 298 "dsl/tests/golden/features.zgal"
+#line 299 "dsl/tests/golden/features.zgal"
             }
-#line 297 "dsl/tests/golden/features.zgal"
+#line 298 "dsl/tests/golden/features.zgal"
         }
-#line 1602 "build/generated/features.zgal.h"
+#line 1608 "build/generated/features.zgal.h"
         return result;
     }
 #line 220 "dsl/tests/golden/features.zgal"
 };
-#line 1607 "build/generated/features.zgal.h"
+#line 1613 "build/generated/features.zgal.h"
 
 // graph Warmup: build() adds its resources, materials and nodes to a RenderGraph
-#line 352 "dsl/tests/golden/features.zgal"
+#line 353 "dsl/tests/golden/features.zgal"
 struct Warmup {
-#line 1612 "build/generated/features.zgal.h"
+#line 1618 "build/generated/features.zgal.h"
     // What C++ supplies: the parameters, and the inputs. Give every one.
     struct Inputs {
-#line 353 "dsl/tests/golden/features.zgal"
+#line 354 "dsl/tests/golden/features.zgal"
         zgal::FrameSource<zgal::Data<Light>> lights;
-#line 1617 "build/generated/features.zgal.h"
+#line 1623 "build/generated/features.zgal.h"
     };
 
     struct Buffers {
-#line 354 "dsl/tests/golden/features.zgal"
+#line 355 "dsl/tests/golden/features.zgal"
         BufferId lightList;
         BufferId lightCopy;
-#line 1624 "build/generated/features.zgal.h"
-    };
-    struct Nodes {
-#line 356 "dsl/tests/golden/features.zgal"
-        NodeId copyLights;
-        NodeId readLights;
 #line 1630 "build/generated/features.zgal.h"
     };
+    struct Nodes {
+#line 357 "dsl/tests/golden/features.zgal"
+        NodeId copyLights;
+        NodeId readLights;
+#line 1636 "build/generated/features.zgal.h"
+    };
 
-#line 357 "dsl/tests/golden/features.zgal"
+#line 358 "dsl/tests/golden/features.zgal"
     // The elements readback readLights copied in the most recent frame (waiting for it)
-#line 357 "dsl/tests/golden/features.zgal"
+#line 358 "dsl/tests/golden/features.zgal"
     Result<std::vector<Light>> readLightsContents(RenderGraph& graph) const { return graph.nodeAs<BufferReadbackNode>(nodes.readLights).contents<Light>(); }
-#line 1637 "build/generated/features.zgal.h"
+#line 1643 "build/generated/features.zgal.h"
     Buffers buffers;
     Nodes nodes;
 
@@ -1648,87 +1654,87 @@ struct Warmup {
     // the inputs' callbacks, so whatever those use must outlive the graph.
     static Result<Warmup> build(VulkanContext& context, RenderGraph& graph, Inputs inputs) {
         const auto in = std::make_shared<const Inputs>(std::move(inputs));
-#line 353 "dsl/tests/golden/features.zgal"
+#line 354 "dsl/tests/golden/features.zgal"
         if (!in->lights) {
-#line 353 "dsl/tests/golden/features.zgal"
+#line 354 "dsl/tests/golden/features.zgal"
             contractViolation("Warmup's input lights isn't given");
-#line 353 "dsl/tests/golden/features.zgal"
+#line 354 "dsl/tests/golden/features.zgal"
         }
-#line 1658 "build/generated/features.zgal.h"
+#line 1664 "build/generated/features.zgal.h"
         Warmup result;
-#line 353 "dsl/tests/golden/features.zgal"
+#line 354 "dsl/tests/golden/features.zgal"
         const auto data_lights = std::make_shared<zgal::FrameCache<zgal::Data<Light>>>(in->lights);
         const BufferId buffer_lightList = graph.createBuffer("lightList", FrameMode::PerFrame, [data = data_lights](const FrameContext& frameContext) { return VkDeviceSize(data->get(zgal::frameInfo(frameContext)).size()) * sizeof(Light); });
-#line 354 "dsl/tests/golden/features.zgal"
-        graph.add<zgal::DataUploadNode<Light>>("upload lightList", buffer_lightList, data_lights);
-#line 1665 "build/generated/features.zgal.h"
-        result.buffers.lightList = buffer_lightList;
 #line 355 "dsl/tests/golden/features.zgal"
+        graph.add<zgal::DataUploadNode<Light>>("upload lightList", buffer_lightList, data_lights);
+#line 1671 "build/generated/features.zgal.h"
+        result.buffers.lightList = buffer_lightList;
+#line 356 "dsl/tests/golden/features.zgal"
         const BufferId buffer_lightCopy = graph.createBuffer("lightCopy", FrameMode::PerFrame, [=](const FrameContext& frameContext) { const zgal::FrameInfo frame = zgal::frameInfo(frameContext); return VkDeviceSize(data_lights->get(frame).size()) * sizeof(Light); });
-#line 1669 "build/generated/features.zgal.h"
+#line 1675 "build/generated/features.zgal.h"
         result.buffers.lightCopy = buffer_lightCopy;
-#line 356 "dsl/tests/golden/features.zgal"
+#line 357 "dsl/tests/golden/features.zgal"
         {
-#line 356 "dsl/tests/golden/features.zgal"
+#line 357 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.addTransfer("copyLights", [source = buffer_lightList, destination = buffer_lightCopy](NodeBuilder& builder) { builder.read(source, Access::TransferSrc).write(destination, Access::TransferDst); }, [source = buffer_lightList, destination = buffer_lightCopy, sourceOffset = VkDeviceSize(0u), destinationOffset = VkDeviceSize(0u), count = std::optional<VkDeviceSize>()](RecordContext& record) { zgal::copyBuffer(record, source, destination, sizeof(Light), sourceOffset, destinationOffset, count, "copyLights"); });
-#line 356 "dsl/tests/golden/features.zgal"
+#line 357 "dsl/tests/golden/features.zgal"
             result.nodes.copyLights = node;
-#line 356 "dsl/tests/golden/features.zgal"
+#line 357 "dsl/tests/golden/features.zgal"
         }
         {
-#line 357 "dsl/tests/golden/features.zgal"
+#line 358 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.add<BufferReadbackNode>("readLights", buffer_lightCopy);
-#line 357 "dsl/tests/golden/features.zgal"
+#line 358 "dsl/tests/golden/features.zgal"
             graph.runOnce(node);
-#line 357 "dsl/tests/golden/features.zgal"
+#line 358 "dsl/tests/golden/features.zgal"
             result.nodes.readLights = node;
-#line 357 "dsl/tests/golden/features.zgal"
+#line 358 "dsl/tests/golden/features.zgal"
         }
-#line 1688 "build/generated/features.zgal.h"
+#line 1694 "build/generated/features.zgal.h"
         return result;
     }
-#line 352 "dsl/tests/golden/features.zgal"
+#line 353 "dsl/tests/golden/features.zgal"
 };
-#line 1693 "build/generated/features.zgal.h"
+#line 1699 "build/generated/features.zgal.h"
 
 // graph Assets: build() adds its resources, materials and nodes to a RenderGraph
-#line 389 "dsl/tests/golden/features.zgal"
+#line 390 "dsl/tests/golden/features.zgal"
 struct Assets {
-#line 1698 "build/generated/features.zgal.h"
+#line 1704 "build/generated/features.zgal.h"
     // What C++ supplies: the parameters, and the inputs. Give every one.
     struct Inputs {
-#line 390 "dsl/tests/golden/features.zgal"
+#line 391 "dsl/tests/golden/features.zgal"
         std::filesystem::path decalPath;
-#line 394 "dsl/tests/golden/features.zgal"
+#line 395 "dsl/tests/golden/features.zgal"
         zgal::FrameSource<Lights> frameLights;
-#line 1705 "build/generated/features.zgal.h"
+#line 1711 "build/generated/features.zgal.h"
     };
 
     struct Images {
-#line 391 "dsl/tests/golden/features.zgal"
+#line 392 "dsl/tests/golden/features.zgal"
         ImageId albedoMap;
         ImageId decalMap;
-#line 399 "dsl/tests/golden/features.zgal"
+#line 400 "dsl/tests/golden/features.zgal"
         std::vector<ImageId> shipColors;
-#line 396 "dsl/tests/golden/features.zgal"
+#line 397 "dsl/tests/golden/features.zgal"
         ImageId mask;
-#line 401 "dsl/tests/golden/features.zgal"
+#line 402 "dsl/tests/golden/features.zgal"
         ImageId shipImage;
-#line 1718 "build/generated/features.zgal.h"
+#line 1724 "build/generated/features.zgal.h"
     };
     struct Buffers {
-#line 393 "dsl/tests/golden/features.zgal"
+#line 394 "dsl/tests/golden/features.zgal"
         BufferId savedLights;
-#line 399 "dsl/tests/golden/features.zgal"
+#line 400 "dsl/tests/golden/features.zgal"
         BufferId shipFactors;
-#line 1725 "build/generated/features.zgal.h"
+#line 1731 "build/generated/features.zgal.h"
     };
     struct Nodes {
-#line 398 "dsl/tests/golden/features.zgal"
+#line 399 "dsl/tests/golden/features.zgal"
         NodeId pick;
-#line 404 "dsl/tests/golden/features.zgal"
+#line 405 "dsl/tests/golden/features.zgal"
         NodeId drawShip;
-#line 1732 "build/generated/features.zgal.h"
+#line 1738 "build/generated/features.zgal.h"
     };
     Images images;
     Buffers buffers;
@@ -1747,123 +1753,123 @@ struct Assets {
     // the inputs' callbacks, so whatever those use must outlive the graph.
     static Result<Assets> build(VulkanContext& context, RenderGraph& graph, Inputs inputs) {
         const auto in = std::make_shared<const Inputs>(std::move(inputs));
-#line 394 "dsl/tests/golden/features.zgal"
-        if (!in->frameLights) {
-#line 394 "dsl/tests/golden/features.zgal"
-            contractViolation("Assets's input frameLights isn't given");
-#line 394 "dsl/tests/golden/features.zgal"
-        }
-#line 1757 "build/generated/features.zgal.h"
-        Assets result;
-#line 391 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto file_albedoMap, zgal::loadImage(context, std::filesystem::path("textures/albedo.png"), ColorSpace::Srgb, "Assets's image-file albedoMap"));
-#line 391 "dsl/tests/golden/features.zgal"
-        const ImageId image_albedoMap = graph.importImage("albedoMap", file_albedoMap, ImageState::shaderReadOnly());
-#line 1763 "build/generated/features.zgal.h"
-        result.images.albedoMap = image_albedoMap;
-#line 392 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto file_decalMap, zgal::loadImage(context, in->decalPath, ColorSpace::Linear, "Assets's image-file decalMap"));
-#line 392 "dsl/tests/golden/features.zgal"
-        const ImageId image_decalMap = graph.importImage("decalMap", file_decalMap, ImageState::shaderReadOnly());
-#line 1769 "build/generated/features.zgal.h"
-        result.images.decalMap = image_decalMap;
-#line 399 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto model_ship, zgal::loadModel<ModelVertex>(context, std::filesystem::path("models/ship.glb"), "Assets's model ship"));
-#line 399 "dsl/tests/golden/features.zgal"
-        const std::vector<ImageId> images_shipColors = zgal::importImages(graph, "shipColors", model_ship.baseColorTextures, ImageState::shaderReadOnly());
-#line 1775 "build/generated/features.zgal.h"
-        result.images.shipColors = images_shipColors;
-#line 399 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto upload_shipFactors, zgal::upload(context, model_ship.baseColorFactors, "Assets's base colour factors shipFactors"));
-#line 399 "dsl/tests/golden/features.zgal"
-        const BufferId buffer_shipFactors = graph.importBuffer<glm::vec4>("shipFactors", upload_shipFactors);
-#line 1781 "build/generated/features.zgal.h"
-        result.buffers.shipFactors = buffer_shipFactors;
-#line 393 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto file_savedLights, zgal::loadBufferFile<Lights>(context, {std::filesystem::path("lights/day.bin"), std::filesystem::path("lights/night.bin")}, "Assets's buffer-file savedLights"));
-#line 393 "dsl/tests/golden/features.zgal"
-        const BufferId buffer_savedLights = graph.importBuffer<Lights>("savedLights", file_savedLights);
-#line 1787 "build/generated/features.zgal.h"
-        result.buffers.savedLights = buffer_savedLights;
-#line 400 "dsl/tests/golden/features.zgal"
-        TRY_ASSIGN(auto sampler_linearSampler, VulkanSampler::create(context, SamplerDesc{}));
 #line 395 "dsl/tests/golden/features.zgal"
+        if (!in->frameLights) {
+#line 395 "dsl/tests/golden/features.zgal"
+            contractViolation("Assets's input frameLights isn't given");
+#line 395 "dsl/tests/golden/features.zgal"
+        }
+#line 1763 "build/generated/features.zgal.h"
+        Assets result;
+#line 392 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto file_albedoMap, zgal::loadImage(context, std::filesystem::path("textures/albedo.png"), ColorSpace::Srgb, "Assets's image-file albedoMap"));
+#line 392 "dsl/tests/golden/features.zgal"
+        const ImageId image_albedoMap = graph.importImage("albedoMap", file_albedoMap, ImageState::shaderReadOnly());
+#line 1769 "build/generated/features.zgal.h"
+        result.images.albedoMap = image_albedoMap;
+#line 393 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto file_decalMap, zgal::loadImage(context, in->decalPath, ColorSpace::Linear, "Assets's image-file decalMap"));
+#line 393 "dsl/tests/golden/features.zgal"
+        const ImageId image_decalMap = graph.importImage("decalMap", file_decalMap, ImageState::shaderReadOnly());
+#line 1775 "build/generated/features.zgal.h"
+        result.images.decalMap = image_decalMap;
+#line 400 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto model_ship, zgal::loadModel<ModelVertex>(context, std::filesystem::path("models/ship.glb"), "Assets's model ship"));
+#line 400 "dsl/tests/golden/features.zgal"
+        const std::vector<ImageId> images_shipColors = zgal::importImages(graph, "shipColors", model_ship.baseColorTextures, ImageState::shaderReadOnly());
+#line 1781 "build/generated/features.zgal.h"
+        result.images.shipColors = images_shipColors;
+#line 400 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto upload_shipFactors, zgal::upload(context, model_ship.baseColorFactors, "Assets's base colour factors shipFactors"));
+#line 400 "dsl/tests/golden/features.zgal"
+        const BufferId buffer_shipFactors = graph.importBuffer<glm::vec4>("shipFactors", upload_shipFactors);
+#line 1787 "build/generated/features.zgal.h"
+        result.buffers.shipFactors = buffer_shipFactors;
+#line 394 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto file_savedLights, zgal::loadBufferFile<Lights>(context, {std::filesystem::path("lights/day.bin"), std::filesystem::path("lights/night.bin")}, "Assets's buffer-file savedLights"));
+#line 394 "dsl/tests/golden/features.zgal"
+        const BufferId buffer_savedLights = graph.importBuffer<Lights>("savedLights", file_savedLights);
+#line 1793 "build/generated/features.zgal.h"
+        result.buffers.savedLights = buffer_savedLights;
+#line 401 "dsl/tests/golden/features.zgal"
+        TRY_ASSIGN(auto sampler_linearSampler, VulkanSampler::create(context, SamplerDesc{}));
+#line 396 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto uniform_lightBuffer, zgal::Uniform<Lights>::create(context, in->frameLights));
         const ImageId image_mask = graph.createImage("mask", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{zgal::extentOf(context, file_decalMap, "decalMap")});
-#line 1794 "build/generated/features.zgal.h"
+#line 1800 "build/generated/features.zgal.h"
         result.images.mask = image_mask;
-#line 401 "dsl/tests/golden/features.zgal"
+#line 402 "dsl/tests/golden/features.zgal"
         const ImageId image_shipImage = graph.createImage("shipImage", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, FixedExtent{{64u, 64u}});
-#line 1798 "build/generated/features.zgal.h"
+#line 1804 "build/generated/features.zgal.h"
         result.images.shipImage = image_shipImage;
-#line 402 "dsl/tests/golden/features.zgal"
+#line 403 "dsl/tests/golden/features.zgal"
         RenderTarget target_shipTarget;
-#line 402 "dsl/tests/golden/features.zgal"
+#line 403 "dsl/tests/golden/features.zgal"
         target_shipTarget.color.push_back({image_shipImage, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, {0.0f, 0.0f, 0.0f, 1.0f}});
-#line 397 "dsl/tests/golden/features.zgal"
+#line 398 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto array_pick_decals, DescriptorArray::create(context, {graph.sampledEntry(image_albedoMap), graph.sampledEntry(image_decalMap)}));
-#line 397 "dsl/tests/golden/features.zgal"
+#line 398 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto array_pick_settings, DescriptorArray::create(context, {uniform_lightBuffer->entries()}));
-#line 397 "dsl/tests/golden/features.zgal"
+#line 398 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto array_pick_targets, DescriptorArray::create(context, {graph.storageEntry(image_mask)}));
-#line 397 "dsl/tests/golden/features.zgal"
+#line 398 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto shaders_pick, Pick::loadShaders(context));
-#line 397 "dsl/tests/golden/features.zgal"
+#line 398 "dsl/tests/golden/features.zgal"
         auto material_pick = context.resources().create<zgal::Instance<Pick>>(
-#line 397 "dsl/tests/golden/features.zgal"
+#line 398 "dsl/tests/golden/features.zgal"
             zgal::Updates{[uniform = uniform_lightBuffer](const zgal::FrameInfo& frame) { uniform->update(frame); }},
-#line 397 "dsl/tests/golden/features.zgal"
+#line 398 "dsl/tests/golden/features.zgal"
             [=, &context](const zgal::FrameInfo& frame) { return Pick::workgroupsFor(zgal::extentOf(context, file_albedoMap, "albedoMap").width, zgal::extentOf(context, file_albedoMap, "albedoMap").height); }, context, shaders_pick, Pick::Bindings{.decals = array_pick_decals, .settings = array_pick_settings, .targets = array_pick_targets});
-#line 403 "dsl/tests/golden/features.zgal"
+#line 404 "dsl/tests/golden/features.zgal"
         std::vector<FrameBinding<DescriptorEntry>> elements_paint_colors;
-#line 403 "dsl/tests/golden/features.zgal"
+#line 404 "dsl/tests/golden/features.zgal"
         for (const ImageId image : images_shipColors) {
-#line 403 "dsl/tests/golden/features.zgal"
+#line 404 "dsl/tests/golden/features.zgal"
             elements_paint_colors.push_back(graph.sampledEntry(image));
-#line 403 "dsl/tests/golden/features.zgal"
+#line 404 "dsl/tests/golden/features.zgal"
         }
-#line 403 "dsl/tests/golden/features.zgal"
+#line 404 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto array_paint_colors, DescriptorArray::create(context, std::move(elements_paint_colors)));
-#line 403 "dsl/tests/golden/features.zgal"
+#line 404 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto shaders_paint, ModelPaint::loadShaders(context));
-#line 403 "dsl/tests/golden/features.zgal"
+#line 404 "dsl/tests/golden/features.zgal"
         auto material_paint = context.resources().create<zgal::Instance<ModelPaint>>(
-#line 403 "dsl/tests/golden/features.zgal"
+#line 404 "dsl/tests/golden/features.zgal"
             zgal::Updates{},
-#line 403 "dsl/tests/golden/features.zgal"
+#line 404 "dsl/tests/golden/features.zgal"
             nullptr, context, shaders_paint, ModelPaint::Bindings{.colors = array_paint_colors, .factors = graph.storageBufferEntry(buffer_shipFactors), .s = context.descriptors().sampler(sampler_linearSampler)}, graph.formats(target_shipTarget), GraphicsPipelineOptions{});
-#line 398 "dsl/tests/golden/features.zgal"
+#line 399 "dsl/tests/golden/features.zgal"
         {
-#line 398 "dsl/tests/golden/features.zgal"
+#line 399 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.add<DispatchNode>("pick", material_pick);
-#line 398 "dsl/tests/golden/features.zgal"
+#line 399 "dsl/tests/golden/features.zgal"
             result.nodes.pick = node;
-#line 398 "dsl/tests/golden/features.zgal"
+#line 399 "dsl/tests/golden/features.zgal"
         }
-#line 404 "dsl/tests/golden/features.zgal"
+#line 405 "dsl/tests/golden/features.zgal"
         {
-#line 404 "dsl/tests/golden/features.zgal"
+#line 405 "dsl/tests/golden/features.zgal"
             std::vector<Handle<Renderable>> renderables = model_ship.renderables(context, material_paint);
-#line 404 "dsl/tests/golden/features.zgal"
+#line 405 "dsl/tests/golden/features.zgal"
             const NodeId node = graph.add<RenderablesNode>("drawShip", std::move(renderables), target_shipTarget);
-#line 404 "dsl/tests/golden/features.zgal"
+#line 405 "dsl/tests/golden/features.zgal"
             result.nodes.drawShip = node;
-#line 404 "dsl/tests/golden/features.zgal"
+#line 405 "dsl/tests/golden/features.zgal"
         }
-#line 1854 "build/generated/features.zgal.h"
+#line 1860 "build/generated/features.zgal.h"
         return result;
     }
-#line 389 "dsl/tests/golden/features.zgal"
+#line 390 "dsl/tests/golden/features.zgal"
 };
-#line 1859 "build/generated/features.zgal.h"
+#line 1865 "build/generated/features.zgal.h"
 
 // app Explorer: its state, the handlers computing the next one, and graph Everything
-#line 302 "dsl/tests/golden/features.zgal"
+#line 303 "dsl/tests/golden/features.zgal"
 class Explorer {
-#line 1864 "build/generated/features.zgal.h"
+#line 1870 "build/generated/features.zgal.h"
 public:
     // What the handlers compute the next of
-#line 307 "dsl/tests/golden/features.zgal"
+#line 308 "dsl/tests/golden/features.zgal"
     struct State {
         glm::vec3 tint{};
         glm::vec2 cursor{};
@@ -1871,17 +1877,17 @@ public:
         float zoom{};
         uint32_t frames{};
         Light light{};
-#line 1875 "build/generated/features.zgal.h"
+#line 1881 "build/generated/features.zgal.h"
     };
 
     // What C++ supplies: the parameters, the clock, and graph inputs the app doesn't compute
     struct Inputs {
-#line 303 "dsl/tests/golden/features.zgal"
+#line 304 "dsl/tests/golden/features.zgal"
         int32_t level{};
         float gain{};
-#line 1883 "build/generated/features.zgal.h"
+#line 1889 "build/generated/features.zgal.h"
         zgal::Timestep timestep;   // How far the frame handler's clock advances a frame
-#line 305 "dsl/tests/golden/features.zgal"
+#line 306 "dsl/tests/golden/features.zgal"
         std::function<float(glm::vec2)> noise;
         std::function<void(uint32_t, glm::mat4)> report;
 #line 225 "dsl/tests/golden/features.zgal"
@@ -1895,9 +1901,9 @@ public:
         FrameBinding<Buffer<Packed>> packedInput;   // Imported
         FrameBinding<Buffer<Packed>> staging;   // Imported
         std::vector<uint32_t> seeds;
-#line 270 "dsl/tests/golden/features.zgal"
+#line 271 "dsl/tests/golden/features.zgal"
         std::vector<FrameBinding<Image>> decals;   // Imported, resting shader-read-only
-#line 1901 "build/generated/features.zgal.h"
+#line 1907 "build/generated/features.zgal.h"
     };
 
     // The app, with its initial state, adding its graph to `graph`. The graphs' callbacks
@@ -1906,54 +1912,54 @@ public:
         if (!inputs.timestep.given()) {
             contractViolation("Explorer's timestep isn't given: zgal::Timestep::realTime or fixed");
         }
-#line 305 "dsl/tests/golden/features.zgal"
+#line 306 "dsl/tests/golden/features.zgal"
         if (!inputs.noise) {
-#line 1912 "build/generated/features.zgal.h"
+#line 1918 "build/generated/features.zgal.h"
             contractViolation("Explorer's extern function noise isn't given");
         }
-#line 306 "dsl/tests/golden/features.zgal"
+#line 307 "dsl/tests/golden/features.zgal"
         if (!inputs.report) {
-#line 1917 "build/generated/features.zgal.h"
+#line 1923 "build/generated/features.zgal.h"
             contractViolation("Explorer's extern function report isn't given");
         }
         std::unique_ptr<Explorer> app(new Explorer(context, graph, std::move(inputs)));
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto ids0, Everything::build(context, *app->graph0_, Everything::Inputs{
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .enabled = app->parameter_enabled(),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .count = app->parameter_count(),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .size = app->parameter_size(),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .scale = app->parameter_scale(),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .meshes = std::move(app->inputs_.meshes),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .frameLights = std::move(app->inputs_.frameLights),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .tintNow = [self = app.get()](const zgal::FrameInfo&) { return self->input_tintNow(); },
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .logger = std::move(app->inputs_.logger),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .upload = std::move(app->inputs_.upload),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .custom = std::move(app->inputs_.custom),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .picture = std::move(app->inputs_.picture),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .packedInput = std::move(app->inputs_.packedInput),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .staging = std::move(app->inputs_.staging),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .seeds = std::move(app->inputs_.seeds),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .sampleCount = [self = app.get()](const zgal::FrameInfo&) { return self->input_sampleCount(); },
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
             .decals = std::move(app->inputs_.decals),
-#line 328 "dsl/tests/golden/features.zgal"
+#line 329 "dsl/tests/golden/features.zgal"
         }));
-#line 1957 "build/generated/features.zgal.h"
+#line 1963 "build/generated/features.zgal.h"
         app->ids0_.emplace(std::move(ids0));
         return app;
     }
@@ -1985,29 +1991,29 @@ public:
     void handle(const zgal::Event& event) {
         if (const auto* e = std::get_if<zgal::KeyPressed>(&event)) {
             switch (e->key) {
-#line 314 "dsl/tests/golden/features.zgal"
+#line 315 "dsl/tests/golden/features.zgal"
                 case zgal::Key::A:
-#line 314 "dsl/tests/golden/features.zgal"
+#line 315 "dsl/tests/golden/features.zgal"
                 case zgal::Key::Digit1:
-#line 314 "dsl/tests/golden/features.zgal"
+#line 315 "dsl/tests/golden/features.zgal"
                 case zgal::Key::F12:
-#line 314 "dsl/tests/golden/features.zgal"
+#line 315 "dsl/tests/golden/features.zgal"
                 case zgal::Key::KeypadAdd:
-#line 314 "dsl/tests/golden/features.zgal"
+#line 315 "dsl/tests/golden/features.zgal"
                     state_ = on0(state_);
-#line 1999 "build/generated/features.zgal.h"
-                    break;
-#line 316 "dsl/tests/golden/features.zgal"
-                case zgal::Key::Escape:
-#line 316 "dsl/tests/golden/features.zgal"
-                    state_ = on2(state_);
 #line 2005 "build/generated/features.zgal.h"
                     break;
 #line 317 "dsl/tests/golden/features.zgal"
-                case zgal::Key::Digit3:
+                case zgal::Key::Escape:
 #line 317 "dsl/tests/golden/features.zgal"
-                    state_ = on3(state_);
+                    state_ = on2(state_);
 #line 2011 "build/generated/features.zgal.h"
+                    break;
+#line 318 "dsl/tests/golden/features.zgal"
+                case zgal::Key::Digit3:
+#line 318 "dsl/tests/golden/features.zgal"
+                    state_ = on3(state_);
+#line 2017 "build/generated/features.zgal.h"
                     break;
                 default:
                     break;
@@ -2015,54 +2021,54 @@ public:
         }
         if (const auto* e = std::get_if<zgal::KeyReleased>(&event)) {
             switch (e->key) {
-#line 315 "dsl/tests/golden/features.zgal"
+#line 316 "dsl/tests/golden/features.zgal"
                 case zgal::Key::Space:
-#line 315 "dsl/tests/golden/features.zgal"
+#line 316 "dsl/tests/golden/features.zgal"
                     state_ = on1(state_);
-#line 2023 "build/generated/features.zgal.h"
+#line 2029 "build/generated/features.zgal.h"
                     break;
                 default:
                     break;
             }
         }
         if (const auto* e = std::get_if<zgal::MousePressed>(&event)) {
-#line 318 "dsl/tests/golden/features.zgal"
+#line 319 "dsl/tests/golden/features.zgal"
             if (e->button == zgal::MouseButton::Left) {
-#line 318 "dsl/tests/golden/features.zgal"
+#line 319 "dsl/tests/golden/features.zgal"
                 state_ = on4(state_, e->cursor);
-#line 2034 "build/generated/features.zgal.h"
+#line 2040 "build/generated/features.zgal.h"
             }
         }
         if (const auto* e = std::get_if<zgal::MouseReleased>(&event)) {
-#line 319 "dsl/tests/golden/features.zgal"
+#line 320 "dsl/tests/golden/features.zgal"
             if (e->button == zgal::MouseButton::Right) {
-#line 319 "dsl/tests/golden/features.zgal"
+#line 320 "dsl/tests/golden/features.zgal"
                 state_ = on5(state_, e->cursor);
-#line 2042 "build/generated/features.zgal.h"
+#line 2048 "build/generated/features.zgal.h"
             }
         }
         if (const auto* e = std::get_if<zgal::CursorMoved>(&event)) {
-#line 320 "dsl/tests/golden/features.zgal"
+#line 321 "dsl/tests/golden/features.zgal"
             state_ = on6(state_, e->cursor);
-#line 2048 "build/generated/features.zgal.h"
+#line 2054 "build/generated/features.zgal.h"
         }
         if (const auto* e = std::get_if<zgal::Scrolled>(&event)) {
-#line 321 "dsl/tests/golden/features.zgal"
+#line 322 "dsl/tests/golden/features.zgal"
             state_ = on7(state_, e->offset);
-#line 2053 "build/generated/features.zgal.h"
+#line 2059 "build/generated/features.zgal.h"
         }
     }
 
     // Each frame, before drawing: the frame handler, then which graph is drawn and which of its nodes are enabled
     Result<void> beginFrame() {
         frameNumber_ = framesBegun_++;
-#line 322 "dsl/tests/golden/features.zgal"
+#line 323 "dsl/tests/golden/features.zgal"
         state_ = on8(state_, inputs_.timestep.next());
-#line 335 "dsl/tests/golden/features.zgal"
+#line 336 "dsl/tests/golden/features.zgal"
         if (ids0_->nodes.accumulate) { graph0_->setEnabled(*ids0_->nodes.accumulate, enabled_accumulate()); }
         graph0_->setEnabled(ids0_->nodes.drawPlain, enabled_drawPlain());
         for (const NodeId node : ids0_->nodes.drawEach) { graph0_->setEnabled(node, enabled_drawEach()); }
-#line 2066 "build/generated/features.zgal.h"
+#line 2072 "build/generated/features.zgal.h"
         return {};
     }
 
@@ -2070,168 +2076,168 @@ private:
     Explorer(VulkanContext& context, RenderGraph& graph, Inputs inputs)
     : context_(&context), graph0_(&graph), active_(&graph), inputs_(std::move(inputs)), state_(initialState()) {}
 
-#line 307 "dsl/tests/golden/features.zgal"
+#line 308 "dsl/tests/golden/features.zgal"
     State initialState() const {
-#line 307 "dsl/tests/golden/features.zgal"
+#line 308 "dsl/tests/golden/features.zgal"
         return State{.tint = glm::vec3(inputs_.gain), .cursor = glm::vec2(0.0f), .dragging = false, .zoom = 1.0f, .frames = 0u, .light = Light{.direction = glm::vec3(0.0f, 1.0f, 0.0f), .intensity = inputs_.gain, .color = glm::vec4(1.0f)}};
-#line 307 "dsl/tests/golden/features.zgal"
+#line 308 "dsl/tests/golden/features.zgal"
     }
-#line 305 "dsl/tests/golden/features.zgal"
+#line 306 "dsl/tests/golden/features.zgal"
     float noise(glm::vec2 p) { return inputs_.noise(p); }
     void report(uint32_t frame, glm::mat4 view) { inputs_.report(frame, view); }
-#line 314 "dsl/tests/golden/features.zgal"
+#line 315 "dsl/tests/golden/features.zgal"
     State on0([[maybe_unused]] const State& state) {
-#line 314 "dsl/tests/golden/features.zgal"
+#line 315 "dsl/tests/golden/features.zgal"
         State zgalUpdated1 = state;
-#line 314 "dsl/tests/golden/features.zgal"
+#line 315 "dsl/tests/golden/features.zgal"
         zgalUpdated1.tint = state.tint * 2.0f;
-#line 314 "dsl/tests/golden/features.zgal"
+#line 315 "dsl/tests/golden/features.zgal"
         return zgalUpdated1;
-#line 314 "dsl/tests/golden/features.zgal"
+#line 315 "dsl/tests/golden/features.zgal"
     }
     State on1([[maybe_unused]] const State& state) {
-#line 315 "dsl/tests/golden/features.zgal"
+#line 316 "dsl/tests/golden/features.zgal"
         std::cout << "frames: " << state.frames << ", dragging: " << (state.dragging ? "true" : "false") << std::endl;
-#line 315 "dsl/tests/golden/features.zgal"
+#line 316 "dsl/tests/golden/features.zgal"
         return state;
-#line 315 "dsl/tests/golden/features.zgal"
+#line 316 "dsl/tests/golden/features.zgal"
     }
     State on2([[maybe_unused]] const State& state) {
-#line 316 "dsl/tests/golden/features.zgal"
+#line 317 "dsl/tests/golden/features.zgal"
         quit_ = true;
-#line 316 "dsl/tests/golden/features.zgal"
+#line 317 "dsl/tests/golden/features.zgal"
         return state;
-#line 316 "dsl/tests/golden/features.zgal"
+#line 317 "dsl/tests/golden/features.zgal"
     }
     State on3([[maybe_unused]] const State& state) {
-#line 317 "dsl/tests/golden/features.zgal"
+#line 318 "dsl/tests/golden/features.zgal"
         context_->setFramesInFlight(3u);
-#line 317 "dsl/tests/golden/features.zgal"
+#line 318 "dsl/tests/golden/features.zgal"
         return state;
-#line 317 "dsl/tests/golden/features.zgal"
+#line 318 "dsl/tests/golden/features.zgal"
     }
     State on4([[maybe_unused]] const State& state, [[maybe_unused]] glm::vec2 at) {
-#line 318 "dsl/tests/golden/features.zgal"
+#line 319 "dsl/tests/golden/features.zgal"
         State zgalUpdated1 = state;
-#line 318 "dsl/tests/golden/features.zgal"
+#line 319 "dsl/tests/golden/features.zgal"
         zgalUpdated1.dragging = true;
-#line 318 "dsl/tests/golden/features.zgal"
+#line 319 "dsl/tests/golden/features.zgal"
         zgalUpdated1.cursor = at;
-#line 318 "dsl/tests/golden/features.zgal"
+#line 319 "dsl/tests/golden/features.zgal"
         return zgalUpdated1;
-#line 318 "dsl/tests/golden/features.zgal"
+#line 319 "dsl/tests/golden/features.zgal"
     }
     State on5([[maybe_unused]] const State& state, [[maybe_unused]] glm::vec2 at_2) {
-#line 319 "dsl/tests/golden/features.zgal"
+#line 320 "dsl/tests/golden/features.zgal"
         State zgalUpdated1 = state;
-#line 319 "dsl/tests/golden/features.zgal"
+#line 320 "dsl/tests/golden/features.zgal"
         zgalUpdated1.dragging = false;
-#line 319 "dsl/tests/golden/features.zgal"
+#line 320 "dsl/tests/golden/features.zgal"
         return zgalUpdated1;
-#line 319 "dsl/tests/golden/features.zgal"
+#line 320 "dsl/tests/golden/features.zgal"
     }
     State on6([[maybe_unused]] const State& state, [[maybe_unused]] glm::vec2 at_3) {
-#line 320 "dsl/tests/golden/features.zgal"
+#line 321 "dsl/tests/golden/features.zgal"
         State zgalBranch2;
-#line 320 "dsl/tests/golden/features.zgal"
+#line 321 "dsl/tests/golden/features.zgal"
         if (state.dragging) {
-#line 320 "dsl/tests/golden/features.zgal"
+#line 321 "dsl/tests/golden/features.zgal"
             State zgalUpdated1 = state;
-#line 320 "dsl/tests/golden/features.zgal"
+#line 321 "dsl/tests/golden/features.zgal"
             zgalUpdated1.cursor = at_3;
-#line 320 "dsl/tests/golden/features.zgal"
+#line 321 "dsl/tests/golden/features.zgal"
             zgalBranch2 = zgalUpdated1;
-#line 320 "dsl/tests/golden/features.zgal"
+#line 321 "dsl/tests/golden/features.zgal"
         } else {
-#line 320 "dsl/tests/golden/features.zgal"
+#line 321 "dsl/tests/golden/features.zgal"
             zgalBranch2 = state;
-#line 320 "dsl/tests/golden/features.zgal"
+#line 321 "dsl/tests/golden/features.zgal"
         }
-#line 320 "dsl/tests/golden/features.zgal"
+#line 321 "dsl/tests/golden/features.zgal"
         return zgalBranch2;
-#line 320 "dsl/tests/golden/features.zgal"
+#line 321 "dsl/tests/golden/features.zgal"
     }
     State on7([[maybe_unused]] const State& state, [[maybe_unused]] glm::vec2 offset) {
-#line 321 "dsl/tests/golden/features.zgal"
+#line 322 "dsl/tests/golden/features.zgal"
         State zgalUpdated1 = state;
-#line 321 "dsl/tests/golden/features.zgal"
+#line 322 "dsl/tests/golden/features.zgal"
         zgalUpdated1.zoom = state.zoom * polish(glm::vec3(offset.y), 1).x;
-#line 321 "dsl/tests/golden/features.zgal"
+#line 322 "dsl/tests/golden/features.zgal"
         return zgalUpdated1;
-#line 321 "dsl/tests/golden/features.zgal"
+#line 322 "dsl/tests/golden/features.zgal"
     }
     State on8([[maybe_unused]] const State& state, [[maybe_unused]] float dt) {
         uint32_t next = state.frames + 1u;
         if ((next % 100u) == 0u) {
             std::cout << "frame " << next << " of " << context_->framesInFlight() << " in flight at " << glm::vec2(float(active_->surfaceExtent().width), float(active_->surfaceExtent().height)).x << std::endl;
             report(next, lookAt(glm::vec3(noise(state.cursor), 0.0f, unitFloat(pcgHash(next))), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f)));
-#line 324 "dsl/tests/golden/features.zgal"
+#line 325 "dsl/tests/golden/features.zgal"
         }
-#line 327 "dsl/tests/golden/features.zgal"
+#line 328 "dsl/tests/golden/features.zgal"
         State zgalUpdated1 = state;
-#line 327 "dsl/tests/golden/features.zgal"
+#line 328 "dsl/tests/golden/features.zgal"
         zgalUpdated1.frames = next;
-#line 323 "dsl/tests/golden/features.zgal"
+#line 324 "dsl/tests/golden/features.zgal"
         return zgalUpdated1;
-#line 322 "dsl/tests/golden/features.zgal"
+#line 323 "dsl/tests/golden/features.zgal"
     }
-#line 329 "dsl/tests/golden/features.zgal"
+#line 330 "dsl/tests/golden/features.zgal"
     bool parameter_enabled() {
-#line 329 "dsl/tests/golden/features.zgal"
+#line 330 "dsl/tests/golden/features.zgal"
         return inputs_.level > 0;
-#line 329 "dsl/tests/golden/features.zgal"
+#line 330 "dsl/tests/golden/features.zgal"
     }
     int32_t parameter_count() {
-#line 330 "dsl/tests/golden/features.zgal"
+#line 331 "dsl/tests/golden/features.zgal"
         return inputs_.level;
-#line 330 "dsl/tests/golden/features.zgal"
+#line 331 "dsl/tests/golden/features.zgal"
     }
     uint32_t parameter_size() {
-#line 331 "dsl/tests/golden/features.zgal"
+#line 332 "dsl/tests/golden/features.zgal"
         return static_cast<uint32_t>(inputs_.level * 2);
-#line 331 "dsl/tests/golden/features.zgal"
+#line 332 "dsl/tests/golden/features.zgal"
     }
     float parameter_scale() {
-#line 332 "dsl/tests/golden/features.zgal"
+#line 333 "dsl/tests/golden/features.zgal"
         return inputs_.gain;
-#line 332 "dsl/tests/golden/features.zgal"
+#line 333 "dsl/tests/golden/features.zgal"
     }
     glm::vec3 input_tintNow() {
-#line 333 "dsl/tests/golden/features.zgal"
+#line 334 "dsl/tests/golden/features.zgal"
         [[maybe_unused]] const State& state = state_;
-#line 333 "dsl/tests/golden/features.zgal"
+#line 334 "dsl/tests/golden/features.zgal"
         return state.tint * state.zoom;
-#line 333 "dsl/tests/golden/features.zgal"
+#line 334 "dsl/tests/golden/features.zgal"
     }
     uint32_t input_sampleCount() {
-#line 334 "dsl/tests/golden/features.zgal"
+#line 335 "dsl/tests/golden/features.zgal"
         [[maybe_unused]] const State& state = state_;
-#line 334 "dsl/tests/golden/features.zgal"
+#line 335 "dsl/tests/golden/features.zgal"
         return state.frames;
-#line 334 "dsl/tests/golden/features.zgal"
+#line 335 "dsl/tests/golden/features.zgal"
     }
     bool enabled_accumulate() {
-#line 335 "dsl/tests/golden/features.zgal"
+#line 336 "dsl/tests/golden/features.zgal"
         [[maybe_unused]] const State& state = state_;
-#line 335 "dsl/tests/golden/features.zgal"
+#line 336 "dsl/tests/golden/features.zgal"
         return state.dragging;
-#line 335 "dsl/tests/golden/features.zgal"
+#line 336 "dsl/tests/golden/features.zgal"
     }
     bool enabled_drawPlain() {
-#line 336 "dsl/tests/golden/features.zgal"
+#line 337 "dsl/tests/golden/features.zgal"
         [[maybe_unused]] const State& state = state_;
-#line 336 "dsl/tests/golden/features.zgal"
+#line 337 "dsl/tests/golden/features.zgal"
         return !state.dragging;
-#line 336 "dsl/tests/golden/features.zgal"
+#line 337 "dsl/tests/golden/features.zgal"
     }
     bool enabled_drawEach() {
-#line 337 "dsl/tests/golden/features.zgal"
+#line 338 "dsl/tests/golden/features.zgal"
         [[maybe_unused]] const State& state = state_;
-#line 337 "dsl/tests/golden/features.zgal"
+#line 338 "dsl/tests/golden/features.zgal"
         return state.dragging;
-#line 337 "dsl/tests/golden/features.zgal"
+#line 338 "dsl/tests/golden/features.zgal"
     }
-#line 2235 "build/generated/features.zgal.h"
+#line 2241 "build/generated/features.zgal.h"
     VulkanContext* context_;
     RenderGraph* graph0_;
     RenderGraph* active_;
@@ -2244,27 +2250,27 @@ private:
     bool quit_ = false;
     std::optional<VkExtent2D> resize_;
     std::optional<Everything> ids0_;
-#line 302 "dsl/tests/golden/features.zgal"
+#line 303 "dsl/tests/golden/features.zgal"
 };
-#line 2250 "build/generated/features.zgal.h"
+#line 2256 "build/generated/features.zgal.h"
 
 // app Stages: its state, the handlers computing the next one, and graphs Warmup, Everything, one active each frame
-#line 359 "dsl/tests/golden/features.zgal"
+#line 360 "dsl/tests/golden/features.zgal"
 class Stages {
-#line 2255 "build/generated/features.zgal.h"
+#line 2261 "build/generated/features.zgal.h"
 public:
     // What the handlers compute the next of
-#line 361 "dsl/tests/golden/features.zgal"
+#line 362 "dsl/tests/golden/features.zgal"
     struct State {
         zgal::Data<Light> lights{};
         bool warm{};
         uint32_t seen{};
-#line 2263 "build/generated/features.zgal.h"
+#line 2269 "build/generated/features.zgal.h"
     };
 
     // What C++ supplies: the parameters, the clock, and graph inputs the app doesn't compute
     struct Inputs {
-#line 360 "dsl/tests/golden/features.zgal"
+#line 361 "dsl/tests/golden/features.zgal"
         std::function<zgal::Data<Light>(const zgal::Data<Light>&)> brighten;
 #line 222 "dsl/tests/golden/features.zgal"
         int32_t count{};
@@ -2282,25 +2288,25 @@ public:
         std::vector<uint32_t> seeds;
 #line 251 "dsl/tests/golden/features.zgal"
         zgal::FrameSource<uint32_t> sampleCount;
-#line 270 "dsl/tests/golden/features.zgal"
+#line 271 "dsl/tests/golden/features.zgal"
         std::vector<FrameBinding<Image>> decals;   // Imported, resting shader-read-only
-#line 2288 "build/generated/features.zgal.h"
+#line 2294 "build/generated/features.zgal.h"
     };
 
     // The render graphs it adds its graphs to (e.g. VulkanApp::createGraph), one per graph
     struct Graphs {
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
         RenderGraph* warmup = nullptr;
         RenderGraph* everything = nullptr;
-#line 2296 "build/generated/features.zgal.h"
+#line 2302 "build/generated/features.zgal.h"
     };
 
     // The app, with its initial state, adding each graph to its render graph. The graphs' callbacks
     // use the app, so it must outlive their use.
     static Result<std::unique_ptr<Stages>> create(VulkanContext& context, Graphs graphs, Inputs inputs) {
-#line 360 "dsl/tests/golden/features.zgal"
+#line 361 "dsl/tests/golden/features.zgal"
         if (!inputs.brighten) {
-#line 2304 "build/generated/features.zgal.h"
+#line 2310 "build/generated/features.zgal.h"
             contractViolation("Stages's extern function brighten isn't given");
         }
         if (!graphs.warmup) {
@@ -2310,51 +2316,51 @@ public:
             contractViolation("Stages's render graph for Everything isn't given");
         }
         std::unique_ptr<Stages> app(new Stages(context, graphs, std::move(inputs)));
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto ids0, Warmup::build(context, *app->graph0_, Warmup::Inputs{
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
             .lights = [self = app.get()](const zgal::FrameInfo&) { return self->input_lights_Warmup(); },
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
         }));
-#line 2320 "build/generated/features.zgal.h"
+#line 2326 "build/generated/features.zgal.h"
         app->ids0_.emplace(std::move(ids0));
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
         TRY_ASSIGN(auto ids1, Everything::build(context, *app->graph1_, Everything::Inputs{
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .enabled = app->parameter_enabled_Everything(),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .count = std::move(app->inputs_.count),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .size = std::move(app->inputs_.size),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .scale = std::move(app->inputs_.scale),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .meshes = std::move(app->inputs_.meshes),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .frameLights = std::move(app->inputs_.frameLights),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .tintNow = std::move(app->inputs_.tintNow),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .logger = std::move(app->inputs_.logger),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .upload = std::move(app->inputs_.upload),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .custom = std::move(app->inputs_.custom),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .picture = std::move(app->inputs_.picture),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .packedInput = std::move(app->inputs_.packedInput),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .staging = std::move(app->inputs_.staging),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .seeds = std::move(app->inputs_.seeds),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .sampleCount = std::move(app->inputs_.sampleCount),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             .decals = std::move(app->inputs_.decals),
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
         }));
-#line 2358 "build/generated/features.zgal.h"
+#line 2364 "build/generated/features.zgal.h"
         app->ids1_.emplace(std::move(ids1));
         return app;
     }
@@ -2395,26 +2401,26 @@ public:
     // Each frame, before drawing: the handlers of readbacks' finished copies, the frame handler, then which graph is drawn and which of its nodes are enabled
     Result<void> beginFrame() {
         frameNumber_ = framesBegun_++;
-#line 365 "dsl/tests/golden/features.zgal"
+#line 366 "dsl/tests/golden/features.zgal"
         {
-#line 365 "dsl/tests/golden/features.zgal"
+#line 366 "dsl/tests/golden/features.zgal"
             TRY_ASSIGN(auto copied, graph0_->nodeAs<BufferReadbackNode>(ids0_->nodes.readLights).takeFinished<Light>().withContext("reading back readLights"));
-#line 365 "dsl/tests/golden/features.zgal"
+#line 366 "dsl/tests/golden/features.zgal"
             if (copied) {
-#line 365 "dsl/tests/golden/features.zgal"
+#line 366 "dsl/tests/golden/features.zgal"
                 state_ = on0(state_, zgal::Data<Light>(std::move(*copied)));
-#line 365 "dsl/tests/golden/features.zgal"
+#line 366 "dsl/tests/golden/features.zgal"
             }
-#line 365 "dsl/tests/golden/features.zgal"
+#line 366 "dsl/tests/golden/features.zgal"
         }
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
         if (active_Warmup()) {
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
             active_ = graph0_;
         } else {
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
             active_ = graph1_;
-#line 2418 "build/generated/features.zgal.h"
+#line 2424 "build/generated/features.zgal.h"
         }
         return {};
     }
@@ -2423,49 +2429,49 @@ private:
     Stages(VulkanContext& context, Graphs graphs, Inputs inputs)
     : context_(&context), graph0_(graphs.warmup), graph1_(graphs.everything), active_(graphs.everything), inputs_(std::move(inputs)), state_(initialState()) {}
 
-#line 361 "dsl/tests/golden/features.zgal"
+#line 362 "dsl/tests/golden/features.zgal"
     State initialState() const {
-#line 361 "dsl/tests/golden/features.zgal"
+#line 362 "dsl/tests/golden/features.zgal"
         return State{.lights = zgal::Data<Light>(), .warm = false, .seen = 0u};
-#line 361 "dsl/tests/golden/features.zgal"
+#line 362 "dsl/tests/golden/features.zgal"
     }
-#line 360 "dsl/tests/golden/features.zgal"
+#line 361 "dsl/tests/golden/features.zgal"
     zgal::Data<Light> brighten(const zgal::Data<Light>& l) { return inputs_.brighten(l); }
-#line 365 "dsl/tests/golden/features.zgal"
+#line 366 "dsl/tests/golden/features.zgal"
     State on0([[maybe_unused]] const State& state, [[maybe_unused]] const zgal::Data<Light>& copied) {
         State zgalUpdated1 = state;
-#line 366 "dsl/tests/golden/features.zgal"
+#line 367 "dsl/tests/golden/features.zgal"
         zgalUpdated1.warm = true;
-#line 366 "dsl/tests/golden/features.zgal"
+#line 367 "dsl/tests/golden/features.zgal"
         zgalUpdated1.lights = brighten(copied);
-#line 366 "dsl/tests/golden/features.zgal"
+#line 367 "dsl/tests/golden/features.zgal"
         zgalUpdated1.seen = (copied.size()) + static_cast<uint32_t>(copied[0].intensity);
-#line 366 "dsl/tests/golden/features.zgal"
+#line 367 "dsl/tests/golden/features.zgal"
         return zgalUpdated1;
-#line 365 "dsl/tests/golden/features.zgal"
+#line 366 "dsl/tests/golden/features.zgal"
     }
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
     zgal::Data<Light> input_lights_Warmup() {
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
         [[maybe_unused]] const State& state = state_;
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
         return state.lights;
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
     }
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
     bool active_Warmup() {
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
         [[maybe_unused]] const State& state = state_;
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
         return !state.warm;
-#line 367 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
     }
     bool parameter_enabled_Everything() {
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
         return true;
-#line 368 "dsl/tests/golden/features.zgal"
+#line 369 "dsl/tests/golden/features.zgal"
     }
-#line 2469 "build/generated/features.zgal.h"
+#line 2475 "build/generated/features.zgal.h"
     VulkanContext* context_;
     RenderGraph* graph0_;
     RenderGraph* graph1_;
@@ -2480,15 +2486,15 @@ private:
     std::optional<VkExtent2D> resize_;
     std::optional<Warmup> ids0_;
     std::optional<Everything> ids1_;
-#line 359 "dsl/tests/golden/features.zgal"
+#line 360 "dsl/tests/golden/features.zgal"
 };
-#line 2486 "build/generated/features.zgal.h"
+#line 2492 "build/generated/features.zgal.h"
 
 // What the program's C++ gives app Explorer, which its main (features.zgal.main.cpp) can't: the parameters no
 // option sets, the extern functions and the graph inputs the app doesn't compute
-#line 341 "dsl/tests/golden/features.zgal"
+#line 342 "dsl/tests/golden/features.zgal"
 struct MainInputs {
-#line 305 "dsl/tests/golden/features.zgal"
+#line 306 "dsl/tests/golden/features.zgal"
     std::function<float(glm::vec2)> noise;
     std::function<void(uint32_t, glm::mat4)> report;
 #line 225 "dsl/tests/golden/features.zgal"
@@ -2502,9 +2508,9 @@ struct MainInputs {
     FrameBinding<Buffer<Packed>> packedInput;   // Imported
     FrameBinding<Buffer<Packed>> staging;   // Imported
     std::vector<uint32_t> seeds;
-#line 270 "dsl/tests/golden/features.zgal"
+#line 271 "dsl/tests/golden/features.zgal"
     std::vector<FrameBinding<Image>> decals;   // Imported, resting shader-read-only
-#line 2508 "build/generated/features.zgal.h"
+#line 2514 "build/generated/features.zgal.h"
 };
 
 // Defined by the program's C++, which main calls once the context exists

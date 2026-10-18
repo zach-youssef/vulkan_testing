@@ -935,8 +935,8 @@ and C++ supplies the meshes.
              (uniform name type per-frame-input)
              (image name format extent #:frames frames maybe-when)
              (buffer name type count #:frames frames maybe-when)
-             (target name target-spec)
-             (material name Material binding ... material-option ...)
+             (target name target-spec maybe-when)
+             (material name Material binding ... material-option ... maybe-when)
              node
              loop]
  [loop (for (loop-clause ...+) loop-body ...+)]
@@ -1150,9 +1150,12 @@ Image formats:
 
 @(format-table)
 
-With @tt{#:when}, an image or buffer is created only if the condition holds, and C++ gets a
-@tt{std::optional} id. Using it when it wasn't created (e.g. in a target or binding the condition
-doesn't cover) is a contract violation when the graph is built.
+With @tt{#:when}, an image, buffer, target or material is created only if the condition holds, and
+C++ gets a @tt{std::optional} id for an image or buffer. Using one when it wasn't created (e.g. in a
+target or binding the condition doesn't cover, or by a node without the condition) is a contract
+violation when the graph is built. A program drawing to a window only when it has one gives its
+surface target, the materials drawing into it and their nodes @tt{#:when (not headless)}: a
+headless graph has no surface.
 
 @subsection{Materials and nodes}
 

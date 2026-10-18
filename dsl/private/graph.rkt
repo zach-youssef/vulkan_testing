@@ -53,8 +53,8 @@
     [(g-uniform _ t _ _) (entry 'uniform t item)]
     [(g-image _ _ _ _ _ _) (entry 'image #f item)]
     [(g-buffer _ t _ _ _ _) (entry 'buffer t item)]
-    [(g-target _ _ _) (entry 'target #f item)]
-    [(g-material _ _ _ _ _ _ _) (entry 'material #f item)]))
+    [(g-target _ _ _ _) (entry 'target #f item)]
+    [(g-material _ _ _ _ _ _ _ _) (entry 'material #f item)]))
 
 ;; The graph's names: a hash from names to entries
 (define (graph-environment g)
@@ -547,10 +547,10 @@
       ['target
        (unless (>= (length args) 2)
          (zgal-error 'malformed stx "expected (target name attachment ...), (target name (surface ...)) or (target name (if condition target target))"))
-       (check-known-options options '() form)
+       (check-known-options options '(#:when) form)
        (define target-name (item-name))
        (define spec (parse-target-spec (rest args) stx))
-       (declare! (g-target target-name spec (stx->loc stx)) stx)]
+       (declare! (g-target target-name spec (condition options '#:when) (stx->loc stx)) stx)]
       ['material
        (unless (>= (length args) 2)
          (zgal-error 'malformed stx "expected (material name Material (binding resource) ... #:option value ...)"))
@@ -648,8 +648,8 @@
     (define graphics? (eq? (material-kind m) 'graphics))
     (check-known-options options
                          (if graphics?
-                             '(#:push #:cull #:front-face #:blend #:depth-test #:depth-write #:depth-compare #:topology)
-                             '(#:push #:invocations))
+                             '(#:push #:cull #:front-face #:blend #:depth-test #:depth-write #:depth-compare #:topology #:when)
+                             '(#:push #:invocations #:when))
                          (format "material ~a (a ~a material)" instance-name (material-kind m)))
     ;; Bindings: (binding resource), or binding alone when the resource has its name
     (define given (make-hash))
@@ -697,7 +697,7 @@
       (and (not graphics?)
            (hash-ref options '#:invocations #f)
            (parse-invocations (hash-ref options '#:invocations))))
-    (g-material instance-name m bindings push pipeline invocations (stx->loc stx)))
+    (g-material instance-name m bindings push pipeline invocations (condition options '#:when) (stx->loc stx)))
 
   ;; #:push ((field value) ...) for material m's push constants: a hash of the fields given to their
   ;; expressions (computed each frame)
@@ -1053,7 +1053,7 @@
        (g-material name m
                    (for/list ([b (in-list (material-bindings m))]) (cons b (hash-ref bindings (binding-name b))))
                    (for/list ([f (in-list (material-push m))]) (cons f (hash-ref push (field-name f))))
-                   '() invocations where))
+                   '() invocations #f where))
       name)
     (define-values (counted-bindings counted-push)
       (if gpu?
@@ -1146,7 +1146,7 @@
                                 [("first") (element-ref-index command)]
                                 [("countIndex") (element-ref-index count)]
                                 [("draws") draws])))
-                    '() (list draws) where))
+                    '() (list draws) (condition options '#:when) where))
        (indirect command draws count limit limited)]))
 
   ;; (at buffer index): an element of a buffer of uints (or of type), e.g. a count a shader wrote
@@ -1223,7 +1223,7 @@
        (g-material name m
                    (for/list ([b (in-list (material-bindings m))]) (cons b (hash-ref bindings (binding-name b))))
                    (for/list ([f (in-list (material-push m))]) (cons f (hash-ref push (field-name f))))
-                   '() invocations where))
+                   '() invocations #f where))
       name)
     (define (counted bindings push)
       (if gpu?

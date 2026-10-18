@@ -107,6 +107,21 @@
   (draw drawSecond canvasTarget second 3)
   (readback readback canvas #:when withReadback))
 
+;; A draw to the window only when there's one: headless, the graph has no surface target, nor the
+;; material and draw using it, and only paints its canvas
+(graph Shown
+  (parameter headless bool)
+  (input tint (per-frame TintData))
+  (uniform tints TintData tint)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target canvasTarget (color canvas))
+  (target screen (surface #:depth none) #:when (not headless))
+  (material painting Fill (tint tints) #:push ((scale 1.0)))
+  (material showing Fill (tint tints) #:push ((scale 1.0)) #:when (not headless))
+  (draw paint canvasTarget painting 3)
+  (draw show screen showing 3 #:when (not headless))
+  (readback readback canvas))
+
 ;; For the dynamic dispatch test: stores a value at each invocation's pixel of a row
 (compute-material Mark
   (shaders "shaders/mark.comp")

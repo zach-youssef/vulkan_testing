@@ -352,7 +352,9 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   changes is recreated, its contents discarded. `Name::build(ctx, graph, Name::Inputs{...})` adds
   them to a `RenderGraph` and returns their ids (`nodes.x` for `setEnabled` and readbacks). C++
   supplies parameters, meshes, imported images and buffers, and functions (per-frame values,
-  `zgal::FrameSource<T>`; cpu work; extern nodes), which must outlive the graph.
+  `zgal::FrameSource<T>`; cpu work; extern nodes), which must outlive the graph. Images, buffers,
+  targets, materials and nodes take `#:when` (build-time): e.g. a window's surface target, the
+  material drawing into it and its draw `#:when (not headless)`, as headless graphs have no surface.
 - Outside a graph, C++ builds a generated material from `Name::loadShaders(ctx)` and
   `Name::Bindings{.binding = entry, ...}`, and fills push constants by overriding
   `writePush(frameIndex, Push&)`.

@@ -387,6 +387,21 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs leave out what their conditions exclude,
     }
 }
 
+TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs leave out targets and materials their conditions exclude") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    // A headless graph has no surface: its target, and the material built for its formats, aren't created
+    const Shown shown = Shown::build(ctx, graph, Shown::Inputs{
+        .headless = true,
+        .tint = [](const zgal::FrameInfo&) { return TintData{.color = {1.0f, 0.0f, 1.0f, 1.0f}}; },
+    }).value();
+    CHECK_FALSE(shown.nodes.show);
+    graph.execute().value();
+    auto pixels = graph.nodeAs<ReadbackNode>(shown.nodes.readback).pixels().value();
+    CHECK(std::vector<uint8_t>(pixels.begin(), pixels.begin() + 4) == std::vector<uint8_t>{255, 0, 255, 255});
+    ctx.waitIdleAll();
+}
+
 TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs compute dispatch sizes each frame") {
     auto& ctx = context();
     RenderGraph graph(ctx);
