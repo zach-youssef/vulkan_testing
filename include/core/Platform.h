@@ -44,3 +44,13 @@ inline std::vector<std::string> defaultShaderSearchPaths() {
     }
     return {(directory / "shaders").string()};
 }
+
+// Where assets loaded by relative path (VulkanContext::findAsset) are found unless told otherwise:
+// <executable directory>/assets, beside the program (where the Makefile copies a program's assets)
+inline std::vector<std::string> defaultAssetSearchPaths() {
+    const auto directory = executableDirectory();
+    if (directory.empty()) {
+        return {};
+    }
+    return {(directory / "assets").string()};
+}

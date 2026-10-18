@@ -172,8 +172,9 @@ struct VulkanContextConfig {
     std::vector<std::string> shaderSearchPaths = defaultShaderSearchPaths();
 
     // Directories assets (models, images) loaded by relative path are found in, in order (see
-    // VulkanContext::findAsset). Without any, relative paths are relative to the working directory.
-    std::vector<std::string> assetSearchPaths;
+    // VulkanContext::findAsset): by default, the directory "assets" beside the executable. Without
+    // any, relative paths are relative to the working directory.
+    std::vector<std::string> assetSearchPaths = defaultAssetSearchPaths();
 
     // Number of frames the CPU may record while the GPU is still executing earlier ones. Can be
     // changed later with VulkanContext::setFramesInFlight.

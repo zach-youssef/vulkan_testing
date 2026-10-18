@@ -113,10 +113,13 @@ unique within a file.
 @subsection{The Makefile}
 
 The Makefile's @tt{zgal-rule} generates a @tt{.zgal} file's outputs into a directory, with a stamp
-file that depends on the @tt{.zgal} file, its shader bodies and the compiler. The scene example's
-rules:
+file that depends on the @tt{.zgal} file, its shader bodies and the compiler, and compiles its
+shaders. @tt{zgal-program} builds a program (@secref["main"]) on it: the generated main, the
+program's own C++ (the @tt{.cpp} files beside the @tt{.zgal} file), its SPIR-V in @tt{shaders/}
+and its assets (the files in @tt{assets/} beside the @tt{.zgal} file) copied to @tt{assets/},
+beside the executable, where the context finds them. The scene example's rules:
 
-@(file-excerpt "Makefile" #:from #rx"^SCENE_GEN =" #:to #rx"^[$][(]SCENE_OUT[)]/scene_example[.]o")
+@(file-excerpt "Makefile" #:from #rx"^SCENE_DIR =" #:to #rx"zgal-program,[$][(]SCENE_DIR[)]")
 
 The generated shaders are compiled with @tt{-I} for the bodies' directory, so a body's
 @tt{#include "common.glsl"} finds files beside it, and C++ is compiled with @tt{-I} for the
@@ -987,8 +990,10 @@ whatever they use must outlive the graph.
 
 Graphs load files when they're built, so C++ needn't. An asset is a path string or a path input:
 a relative path is found in the context's asset search paths (@tt{VulkanContextConfig::assetSearchPaths},
-@tt{AppConfig::assetSearchPaths}), in order, or without any relative to the working directory, by
-@tt{VulkanContext::findAsset}. A file that isn't found or can't be read fails @tt{build()}
+@tt{AppConfig::assetSearchPaths}; by default @tt{assets/} beside the executable, where the Makefile's
+@tt{zgal-program} copies a program's), in order, or without any relative to the working directory,
+by @tt{VulkanContext::findAsset}. Paths given on a generated main's command line are relative to
+the working directory. A file that isn't found or can't be read fails @tt{build()}
 (@tt{ErrorCode::NotFound} or @tt{InvalidData}), naming the item.
 
 @racket[(image-file name asset #:color color-space)] loads an image (PNG, JPEG, ... through

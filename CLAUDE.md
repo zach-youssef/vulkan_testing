@@ -63,15 +63,15 @@ images, define `STB_IMAGE_WRITE_IMPLEMENTATION` in one translation unit and incl
 Read `examples/simple/simple_example.cpp` first: it builds its graph with the C++ API, using
 materials and a small app generated from `simple.zgal`. Every example's shaders and app are written
 in ZGAL (see "Shaders, graphs and apps in ZGAL"), and the others declare their graphs there too.
-`image_filter` and `particles` are programs written entirely in ZGAL: their `main` is generated
-(`(main ...)`), with their options, window and smoke-test capture, and they have no C++. The scene's
-C++ is `main`: options, the window, and its meshes. They show common kinds of application:
+The other three are programs written entirely in ZGAL: their `main` is generated (`(main ...)`),
+with their options, window and smoke-test capture, and they have no C++. They show common kinds of
+application:
 
 | Example | Shows |
 |---|---|
 | `examples/image_filter` | Headless use without `VulkanApp` (a generated main without a window): a chain of compute passes enabled from the app's state, push constant parameters from command-line options, an image file named on the command line, readback written to a PNG |
 | `examples/particles` | Compute writing a graph buffer that a graphics pass reads (across queues), per-frame parameters computed from app state, input handlers, changing frames in flight at runtime (scripted by the app in its smoke test), a generated main with a window |
-| `examples/scene` | A 3D renderer: shadow map, HDR target that follows window resizes, tonemapping, an orbit camera whose matrices are ZGAL functions, toggling a pass, shader hot reload, window or headless targets chosen by a parameter |
+| `examples/scene` | A 3D renderer: a glTF model (`assets/scene.gltf`, written by `make_scene.py`), shadow map, HDR target that follows window resizes, tonemapping, an orbit camera whose matrices are ZGAL functions, toggling a pass, shader hot reload, window or headless targets chosen by how it's run, a smoke test scripted by the app (resizes, a pass toggled) |
 
 ```cpp
 // Fallible calls return Result<T>; TRY / TRY_ASSIGN return errors to the caller
@@ -81,7 +81,7 @@ Result<void> runApp() {
     config.enableValidation = true;
     // SPIR-V (<name>.<stage>.spv) is found in shaders/ beside the executable by default
     // (config.shaderSearchPaths)
-    config.assetSearchPaths = {MY_ASSET_DIR};              // where ctx.findAsset(path) looks
+    // Assets (models, images) by relative path are found in assets/ beside it (config.assetSearchPaths)
     config.autoReloadShaders = true;                       // optional
     VulkanApp app;
     TRY(app.init(config));

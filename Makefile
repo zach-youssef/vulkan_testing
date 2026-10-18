@@ -61,8 +61,8 @@ endef
 # A program whose main is generated (a .zgal file with a main): builds <out>/<binary> from the
 # generated <name>.zgal.main.cpp and the program's own C++, the .cpp files beside the .zgal file
 # (defining its MainInputs, if it has any), compiled with <out>/generated on the include path. Its
-# SPIR-V goes in <out>/shaders, beside it, where the shader library finds it. <libraries>: e.g.
-# $(GLFW_LDLIBS) for a program with a window.
+# SPIR-V goes in <out>/shaders, and the files in <dir>/assets are copied to <out>/assets: beside it,
+# where the context finds them. <libraries>: e.g. $(GLFW_LDLIBS) for a program with a window.
 #   $(call zgal-program,<dir>/<name>.zgal,<out>,<binary>,<libraries>)
 define zgal-program
 $(call zgal-rule,$(1),$(2)/generated,$(2)/shaders)
@@ -72,8 +72,11 @@ $(2)/$(notdir $(1)).main.o: $(2)/generated/$(notdir $(1)).stamp $$(HEADERS)
 $(if $(wildcard $(dir $(1))*.cpp),$(patsubst $(dir $(1))%.cpp,$(2)/%.o,$(wildcard $(dir $(1))*.cpp)): $(2)/%.o: $(dir $(1))%.cpp $(2)/generated/$(notdir $(1)).stamp $$(HEADERS)
 	@mkdir -p $$(dir $$@)
 	$$(CC) -c -o $$@ $$< $$(CFLAGS) -I$(2)/generated)
-$(2)/$(3): $(2)/$(notdir $(1)).main.o $(patsubst $(dir $(1))%.cpp,$(2)/%.o,$(wildcard $(dir $(1))*.cpp))
-	$$(CC) $$^ -o $$@ $$(LDFLAGS) $$(LDLIBS) $(4)
+$(2)/assets/%: $(dir $(1))assets/%
+	@mkdir -p $$(dir $$@)
+	cp $$< $$@
+$(2)/$(3): $(2)/$(notdir $(1)).main.o $(patsubst $(dir $(1))%.cpp,$(2)/%.o,$(wildcard $(dir $(1))*.cpp)) | $(patsubst $(dir $(1))assets/%,$(2)/assets/%,$(wildcard $(dir $(1))assets/*))
+	$$(CC) $$(filter %.o,$$^) -o $$@ $$(LDFLAGS) $$(LDLIBS) $(4)
 	install_name_tool -add_rpath /usr/local/lib ./$$@
 endef
 
@@ -158,24 +161,15 @@ test-example-particles: $(PARTICLES_OUT)/particles
 # ---------------------------------------------------------------------------
 SCENE_DIR = $(EXAMPLES_DIR)/scene
 SCENE_OUT = $(EXAMPLES_OUT)/scene
-# The shaders and the graph are in scene.zgal
-SCENE_GEN = $(SCENE_OUT)/generated
-SCENE_ZGAL_STAMP = $(SCENE_GEN)/scene.zgal.stamp
-SCENE_CFLAGS = $(CFLAGS) -I$(SCENE_GEN)
+# Everything is in scene.zgal, main too, and the scene is assets/scene.gltf (make_scene.py)
+SCENE_ZGAL_STAMP = $(SCENE_OUT)/generated/scene.zgal.stamp
 
-$(eval $(call zgal-rule,$(SCENE_DIR)/scene.zgal,$(SCENE_GEN),$(SCENE_OUT)/shaders))
+$(eval $(call zgal-program,$(SCENE_DIR)/scene.zgal,$(SCENE_OUT),scene_example,$(GLFW_LDLIBS)))
 
-$(SCENE_OUT)/scene_example.o : $(SCENE_DIR)/scene_example.cpp $(wildcard $(SCENE_DIR)/*.h) $(SCENE_ZGAL_STAMP) $(HEADERS)
-	@mkdir -p $(dir $@)
-	$(CC) -c -o $@ $< $(SCENE_CFLAGS)
-
-$(SCENE_OUT)/scene_example: $(SCENE_OUT)/scene_example.o
-	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
-	install_name_tool -add_rpath /usr/local/lib ./$@
-
-# Renders frames headless, toggling shadows midway, and captures the last one
+# Renders frames headless, as the app scripts them (shadows off for a quarter, resized halfway), and
+# captures the last one
 test-example-scene: $(SCENE_OUT)/scene_example
-	./$< --frames 60 --size 640x360 --capture $(SCENE_OUT)/smoke.png
+	./$< --frames 60 --size 640x360 --capture $(SCENE_OUT)/smoke.png --validation
 
 # All the examples' smoke tests
 test-examples: test-example-image_filter test-example-particles test-example-scene test-main

@@ -1,6 +1,19 @@
-;; The scene example's shaders, graph and app, in ZGAL (dsl/; `make docs` for the language). The
-;; build generates scene.zgal.h, with the structs, functions, a class per material, the graph and
-;; the app, and the complete shaders.
+;; A lit 3D scene: the example of a "normal" forward renderer. Each frame runs three passes,
+;;   1. shadow map: the scene's depth from a directional light, into a fixed-size depth image
+;;   2. lit:        PBR shading with filtered shadows into a linear HDR image the size of the window
+;;   3. tonemap:    exposure and an ACES curve from the HDR image to the window (or, headless, to an
+;;                  image read back into a PNG)
+;; and the render graph derives their order, barriers and queues from what each pass uses. The
+;; shaders, the graph, the app (the camera, the sun and the input handlers) and its main are all
+;; here, in ZGAL (dsl/; `make docs` for the language), and the scene is a glTF file
+;; (assets/scene.gltf, written by make_scene.py): the example has no C++ of its own.
+;;
+;;   scene_example                                     interactive, in a window
+;;   scene_example --frames N [--capture out.png] [--size WxH]
+;;                                                     headless smoke test: N frames, shadows off
+;;                                                     for a quarter of them and the view resized
+;;                                                     halfway (and back)
+;;   scene_example --window --frames N                 the same in a window
 
 ;; From the standard library: PI; acesFilmic; lookAt, perspective, ortho and orbit
 (import math)
@@ -17,11 +30,12 @@
   (skyAmbient vec3)             ; Ambient light from above
   (groundAmbient vec3))         ; Ambient light from below
 
-;; The scene's vertices: world space (nothing moves), each carrying its surface's material
+;; The scene's vertices: world space (nothing moves), each carrying its surface's material in its
+;; colour (the model's COLOR_0)
 (vertex-format SceneVertex
   (position vec3)
   (normal vec3)
-  (albedoRoughness vec4))       ; rgb: linear albedo, a: roughness
+  (color vec4))                 ; rgb: linear albedo, a: roughness
 
 ;; The unit vector towards a sun at an azimuth (around +Y, from +Z) and an elevation. Used by the
 ;; app (compiled to C++) and could be by shaders.
@@ -87,7 +101,7 @@
   (varyings
    (worldPosition vec3)
    (worldNormal vec3)
-   (surface vec4))              ; The vertices' albedoRoughness
+   (surface vec4))              ; The vertices' albedo and roughness
   (outputs
    (outColor vec4))             ; Linear HDR radiance
   ;; The world is the model space (nothing moves), so positions and normals pass through
@@ -95,7 +109,7 @@
    (results #:position (* scene.viewProjection (vec4 position 1.0))
             #:worldPosition position
             #:worldNormal normal
-            #:surface albedoRoughness))
+            #:surface color))
   (fragment
    (let* ([albedo surface.rgb]
           [roughness surface.a]
@@ -137,7 +151,8 @@
   ;; Headless, the display is an image instead of the window, and with capture it's read back
   (parameter headless bool)
   (parameter capture bool)
-  (input meshes meshes)                        ; Drawn by both the shadow and the lit pass
+  ;; Drawn by both the shadow and the lit pass
+  (model meshes "scene.gltf" SceneVertex)
   (input uniforms (per-frame SceneUniforms))
   (input shadows (per-frame bool))             ; Whether the shadow pass is enabled
   (input exposure (per-frame float))
@@ -198,7 +213,8 @@
    (elevation float (radians 50.0))
    (animated bool #t)           ; Whether the sun moves
    (shadows bool #t)
-   (exposure float 1.0))
+   (exposure float 1.0)
+   (fullSize uvec2 (uvec2 0))) ; The view's size before a smoke test shrinks it
 
   ;; Dragging with the left button orbits the camera; scrolling zooms
   (on (mouse-pressed left cursor) (with state #:dragging #t #:cursor cursor))
@@ -217,8 +233,21 @@
   (on (key-pressed equal keypad-add) (with state #:exposure (* state.exposure 1.25)))
   (on (key-pressed minus keypad-subtract) (with state #:exposure (/ state.exposure 1.25)))
   (on (key-pressed escape) (quit!))
+  ;; The sun moves unless paused. A smoke test (--frames N) scripts its frames: shadows off for the
+  ;; second quarter (the shadow pass drops out of the plan), and the view three quarters the size
+  ;; from halfway (headless, back to its full size for the last quarter).
   (on (frame dt)
-    (if state.animated (with state #:azimuth (+ state.azimuth (* 0.4 dt))) state))
+    (let* ([scripted (> frameLimit 0)]
+           [quarter (and scripted (= frameNumber (/ frameLimit 4)))]
+           [halfway (and scripted (= frameNumber (/ frameLimit 2)))]
+           [threeQuarters (and scripted headless (= frameNumber (/ (* 3 frameLimit) 4)))]
+           [size (uvec2 surfaceSize)])
+      (when halfway (resize! (/ (* size.x 3) 4) (/ (* size.y 3) 4)))
+      (when threeQuarters (resize! state.fullSize.x state.fullSize.y))
+      (with state
+            #:azimuth (if state.animated (+ state.azimuth (* 0.4 dt)) state.azimuth)
+            #:shadows (if quarter #f (if halfway #t state.shadows))
+            #:fullSize (if halfway size state.fullSize))))
 
   (run SceneGraph
     (headless headless)
@@ -239,3 +268,19 @@
     (exposure state.exposure)
     ;; The lit pass reads a stale shadow map when shadows are off (its shadowsEnabled push constant)
     #:enabled ((shadowPass state.shadows))))
+
+;; The program: a window (headless with --frames), the clock (real time interactively, a fixed step
+;; for a smoke test) and the last frame's capture
+(main SceneApp
+  (about "A lit 3D scene: a shadow map, PBR shading into HDR, and a tonemap")
+  (window "Scene example" 1280 720)
+  (timestep #:max 0.25 #:fixed 1/60)
+  (capture readback)
+  (controls "Controls:"
+            "  drag (left mouse)  orbit the camera"
+            "  scroll             zoom"
+            "  L                  toggle the light's animation"
+            "  S                  toggle shadows"
+            "  + / -              exposure"
+            "  Esc                quit"
+            "Shaders reload when their SPIR-V changes: edit examples/scene/scene.zgal and run `make shaders`."))

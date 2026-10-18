@@ -59,8 +59,9 @@ struct AppConfig {
     // Directories the shader library loads SPIR-V from (see ShaderLibrary). By default, the
     // directory "shaders" beside the executable.
     std::vector<std::string> shaderSearchPaths = defaultShaderSearchPaths();
-    // Directories assets loaded by relative path are found in (see VulkanContext::findAsset)
-    std::vector<std::string> assetSearchPaths;
+    // Directories assets loaded by relative path are found in (see VulkanContext::findAsset). By
+    // default, the directory "assets" beside the executable.
+    std::vector<std::string> assetSearchPaths = defaultAssetSearchPaths();
     // Reload shaders whose SPIR-V files change on disk, checking between frames (errors are printed
     // to std::cerr). Otherwise call reloadShaders().
     bool autoReloadShaders = false;
