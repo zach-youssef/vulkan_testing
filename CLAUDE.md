@@ -277,7 +277,7 @@ writing ZGAL: it has the language, what's generated and every error. In short:
 
 - `(import camera)` imports a standard library module (`dsl/lib`: `camera` with `lookAt`,
   `perspective`, `ortho`, `orbit`; `color`; `random`; `math`), and `(import "file.zgal")` another
-  file's structs, functions and constants. Use the library before writing your own.
+  file's structs, functions, constants and materials (so programs share materials). Use the library before writing your own.
 - For what bodies can't express yet, `(extern-glsl "file.glsl" ((f [x : T]) : R))` declares
   pure GLSL functions bodies can call (shaders only; apps can't). Prefer ZGAL.
 - Shaders are `(vertex ...)`, `(fragment ...)` and `(compute ...)` clauses: expressions, with

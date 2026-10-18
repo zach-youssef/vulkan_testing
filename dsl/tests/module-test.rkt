@@ -31,9 +31,16 @@
   (write! "loop.zgal" "(import \"program.zgal\")")
   (write! "program.zgal" "(import \"loop.zgal\")")
   (check-exn #rx"imports itself" (λ () (compile-zgal main #:check-only? #t)))
+  ;; Materials too, which the importing file compiles; not graphs or apps
   (write! "program.zgal" "(import \"material.zgal\")")
   (write! "material.zgal" "(compute-material C (workgroup 1) (compute))")
-  (check-exn #rx"declares structs, vertex formats, functions, constants" (λ () (compile-zgal main #:check-only? #t)))
+  (define-values (_with-material outputs) (compile-zgal main #:header-dir "out" #:shader-dir "out"))
+  (check-true (for/or ([o (in-list outputs)]) (string-suffix? (output-path o) "C.comp")))
+  (write! "material.zgal" "(graph G)")
+  (check-exn #rx"declares structs, vertex formats, functions, constants, GLSL functions, materials and imports, not [(]graph" (λ () (compile-zgal main #:check-only? #t)))
+  ;; By absolute path
+  (write! "program.zgal" (format "(import ~s)" (path->string (build-path directory "units.zgal"))))
+  (check-true (string-contains? (header (file->string main) #:source main) "inline float scaled("))
   (delete-directory/files directory))
 
 (test-case "Generated C++ is in the namespace of its file, which must be able to name one"

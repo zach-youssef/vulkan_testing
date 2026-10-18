@@ -838,7 +838,7 @@
                                           ", ")))
                p]
               [(string? target)
-               (define p (build-path directory target))
+               (define p (if (absolute-path? target) (string->path target) (build-path directory target)))
                (unless (file-exists? p)
                  (zgal-error 'bad-import (second items) "~a doesn't exist" (path->string (simplify-path p #f))))
                p]
@@ -854,8 +854,8 @@
              (define shown (display-path complete))
              (define imported-forms (read-forms shown (open-input-string (file->string complete))))
              (for ([f (in-list imported-forms)])
-               (unless (memq (head-symbol f) '(import struct vertex-format define extern-glsl))
-                 (zgal-error 'bad-import f "an imported file declares structs, vertex formats, functions, constants, GLSL functions and imports, not ~a"
+               (unless (memq (head-symbol f) '(import struct vertex-format define extern-glsl graphics-material compute-material))
+                 (zgal-error 'bad-import f "an imported file declares structs, vertex formats, functions, constants, GLSL functions, materials and imports, not ~a"
                              (let ([h (head-symbol f)]) (if h (format "(~a ...)" h) (show f))))))
              (define expanded
                (expand imported-forms (let-values ([(dir _f _d) (split-path complete)]) dir) (cons complete chain)))

@@ -199,7 +199,7 @@
          "(extern-glsl \"noise.glsl\" ((noise [p : vec2]) : float))\n(app A\n  (state (x float 0.0))\n  (on (key-pressed space) (with state #:x (noise (vec2 1.0)))))")
    (kind 'bad-import
          "An import can't be found or used"
-         "`(import name)` imports a module of the standard library (`dsl/lib`, listed in the reference), and `(import \"file.zgal\")` a file, relative to the importing one. Imported files hold only structs, vertex formats, functions, constants and imports, which become declarations of the importing file. A file can't import itself, even indirectly."
+         "`(import name)` imports a module of the standard library (`dsl/lib`, listed in the reference), and `(import \"file.zgal\")` a file, relative to the importing one. Imported files hold only structs, vertex formats, functions, constants, materials and imports, which become declarations of the importing file. A file can't import itself, even indirectly."
          "(import geometry)")
    (kind 'bad-effect
          "An app's effect outside an app"
