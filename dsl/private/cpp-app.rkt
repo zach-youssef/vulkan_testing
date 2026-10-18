@@ -247,9 +247,14 @@
       (for ([en (in-list enables)])
         (define node (node-of r (car en)))
         (define ids (ids-member r))
-        (emit! w (if (g-node-when node)
-                     (format "~aif (~a->nodes.~a) { ~a->setEnabled(*~a->nodes.~a, ~a()); }" indent ids (car en) (graph-member r) ids (car en) (run-name r (format "enabled_~a" (car en))))
-                     (format "~a~a->setEnabled(~a->nodes.~a, ~a());" indent (graph-member r) ids (car en) (run-name r (format "enabled_~a" (car en)))))
+        (emit! w (cond
+                   ;; One per iteration of its loop
+                   [(pair? (g-node-loops node))
+                    (format "~afor (const NodeId node : ~a->nodes.~a) { ~a->setEnabled(node, ~a()); }" indent ids (car en) (graph-member r) (run-name r (format "enabled_~a" (car en))))]
+                   [(g-node-when node)
+                    (format "~aif (~a->nodes.~a) { ~a->setEnabled(*~a->nodes.~a, ~a()); }" indent ids (car en) (graph-member r) ids (car en) (run-name r (format "enabled_~a" (car en))))]
+                   [else
+                    (format "~a~a->setEnabled(~a->nodes.~a, ~a());" indent (graph-member r) ids (car en) (run-name r (format "enabled_~a" (car en))))])
                #:at (texpr-loc (cdr en))))
       (unless single?
         (gen "        }"))))

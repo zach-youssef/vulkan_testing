@@ -148,6 +148,8 @@
       [(list (cons g n) _ ...)
        (unless (eq? (g-node-kind n) 'readback)
          (zgal-error 'type-mismatch node-stx "~a is a ~a node, not a readback" node-name (g-node-kind n)))
+       (when (pair? (g-node-loops n))
+         (zgal-error 'type-mismatch node-stx "readback ~a is in a loop, so it's a readback per iteration; read events take one readback" node-name))
        (define subject (hash-ref (graph-environment g) (g-node-subject n)))
        (unless (memq (entry-kind subject) '(buffer import-buffer upload))
          (zgal-error 'type-mismatch node-stx "readback ~a reads an image; read events give buffers' elements" node-name))

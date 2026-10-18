@@ -14,6 +14,7 @@
 (provide parse-graph
          (struct-out entry)
          graph-environment
+         loop-environment
          expression-type
          per-frame-expression?
          unify
@@ -57,10 +58,15 @@
 (define (graph-environment g)
   (for/hash ([item (in-list (graph-items g))]) (values (graph-item-name item) (item-entry item))))
 
+;; env with the variables of loops (g-loops' clauses, in order), e.g. those a node is in
+(define (loop-environment env loops)
+  (for*/fold ([env env]) ([l (in-list loops)] [c (in-list (g-loop-clauses l))])
+    (hash-set env (loop-clause-name c) (entry 'loop (loop-clause-type c) c))))
+
 (define kind-names
   (hash 'parameter "a parameter" 'constant "a constant" 'per-frame "a per-frame input" 'meshes "a meshes input"
         'cpu "a cpu input" 'extern "an extern input" 'path "a path input" 'model "a model" 'per-frame-data "a per-frame data input" 'import "an imported image" 'import-images "imported images" 'import-buffer "an imported buffer" 'data "a data input" 'upload "an uploaded buffer" 'sampler "a sampler" 'uniform "a uniform"
-        'image "an image" 'buffer "a buffer" 'target "a target" 'material "a material"))
+        'image "an image" 'buffer "a buffer" 'target "a target" 'material "a material" 'loop "a loop variable"))
 
 ;; ---------------------------------------------------------------------------------------------
 ;; Expressions and their types
@@ -116,7 +122,7 @@
     [(e-ref name where)
      (match (hash-ref env name #f)
        [#f (zgal-error 'unknown-name where "~a isn't declared in this graph before here" name)]
-       [(entry (or 'parameter 'constant) t _) t]
+       [(entry (or 'parameter 'constant 'loop) t _) t]
        [(entry 'per-frame t _)
         (unless per-frame-ok?
           (zgal-error 'not-build-time where
@@ -124,6 +130,21 @@
         t]
        [(entry kind _ _)
         (zgal-error 'type-mismatch where "~a is ~a, not a value" name (hash-ref kind-names kind))])]
+    [(e-field base field where)
+     (define t (recur base))
+     (match t
+       [(struct-t d)
+        (define f (or (for/first ([f (in-list (struct-decl-fields d))] #:when (string=? (field-name f) field)) f)
+                      (zgal-error 'unknown-name where "~a has no field ~a" (type-name t) field)))
+        (when (array-t? (field-type f))
+          (zgal-error 'type-not-allowed where "field ~a of ~a is an array, which graphs' expressions don't take" field (type-name t)))
+        (field-type f)]
+       [(vector-t k n)
+        (define components (take '("x" "y" "z" "w") n))
+        (unless (member field components)
+          (zgal-error 'unknown-name where "a ~a's components are ~a, one at a time" (type-name t) (string-join components ", ")))
+        (scalar-t k)]
+       [_ (zgal-error 'type-mismatch where "~a is ~a, which has no fields" field (a-type t))])]
     [(e-op op args where)
      (define (args-types) (map recur args))
      (case op
@@ -167,6 +188,16 @@
               (scalar-t 'uint)]
              [_ (zgal-error 'type-mismatch ref-where "(count input) takes a data input, and ~a isn't one" name)])]
           [other (zgal-error 'malformed (e-loc other) "(count input) takes a data input's name")])]
+       [(at)
+        (arity! 2 2 args op where)
+        (require-type (recur (second args)) (λ (t) (and (scalar-t? t) (memq (scalar-t-kind t) '(literal int uint)) #t))
+                      (e-loc (second args)) "an element's index is an integer")
+        (match (first args)
+          [(e-ref name ref-where)
+           (match (hash-ref env name #f)
+             [(entry 'data t _) t]
+             [_ (zgal-error 'type-mismatch ref-where "(at input index) takes a data input, and ~a isn't one" name)])]
+          [other (zgal-error 'malformed (e-loc other) "(at input index) takes a data input's name")])]
        [(width height)
         (arity! 1 1 args op where)
         (match (first args)
@@ -193,7 +224,7 @@
         t])]))
 
 (define (e-loc e)
-  (match e [(e-literal _ l) l] [(e-ref _ l) l] [(e-op _ _ l) l]))
+  (match e [(e-literal _ l) l] [(e-ref _ l) l] [(e-op _ _ l) l] [(e-field _ _ l) l]))
 
 ;; Whether e can change from frame to frame: it uses per-frame inputs or the size of a graph image
 (define (per-frame-expression? e env)
@@ -202,6 +233,7 @@
     [(e-op (or 'width 'height) (list (e-ref name _)) _) (match (hash-ref env name #f) [(entry 'image _ _) #t] [_ #f])]
     [(e-op 'count (list (e-ref name _)) _) (match (hash-ref env name #f) [(entry 'per-frame-data _ _) #t] [_ #f])]
     [(e-op _ args _) (ormap (λ (a) (per-frame-expression? a env)) args)]
+    [(e-field base _ _) (per-frame-expression? base env)]
     [_ #f]))
 
 ;; Checks e has type `expected` (integer literals adapting to it)
@@ -215,10 +247,23 @@
   (cond
     [(or (boolean? d) (and (real? d) (not (and (inexact? d) (or (nan? d) (infinite? d))))))
      (e-literal d (stx->loc stx))]
-    [(symbol? d) (e-ref (symbol->string d) (stx->loc stx))]
+    [(symbol? d)
+     ;; A name, followed by fields and components after dots: settings.gain, pass.offset.x
+     (define parts (string-split (symbol->string d) "." #:trim? #f))
+     (when (ormap (λ (p) (string=? p "")) parts)
+       (zgal-error 'malformed stx "~a isn't a name: write fields as name.field" d))
+     (for/fold ([e (e-ref (first parts) (stx->loc stx))]) ([f (in-list (rest parts))])
+       (e-field e f (stx->loc stx)))]
     [(and (syntax->list stx) (pair? (syntax->list stx)) (symbol? (syntax-e (car (syntax->list stx)))))
      (define items (syntax->list stx))
-     (e-op (syntax-e (car items)) (map parse-expression (cdr items)) (stx->loc stx))]
+     (define head (symbol->string (syntax-e (car items))))
+     (cond
+       ;; (.field expression)
+       [(and (> (string-length head) 1) (char=? (string-ref head 0) #\.))
+        (unless (= (length items) 2)
+          (zgal-error 'malformed stx "(~a expression) takes one expression" head))
+        (e-field (parse-expression (second items)) (substring head 1) (stx->loc stx))]
+       [else (e-op (syntax-e (car items)) (map parse-expression (cdr items)) (stx->loc stx))])]
     [else (zgal-error 'malformed stx "expected an expression, found ~a" (show stx))]))
 
 (define (nan? x) (not (= x x)))
@@ -284,6 +329,8 @@
   (define env (make-hash))   ; name -> entry, as declared so far
   ;; Items nodes declare (e.g. a kernel's scratch buffers and materials), in order
   (define node-items '())
+  ;; The loops the node being read is in, outermost first
+  (define current-loops '())
   (define (declare! item stx)
     (names (graph-item-name item) stx)
     (hash-set! env (graph-item-name item) (item-entry item))
@@ -499,7 +546,7 @@
        (unless (>= (length args) 2)
          (zgal-error 'malformed stx "expected (material name Material (binding resource) ... #:option value ...)"))
        (declare! (parse-material-instance stx args options) stx)]
-      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, image-file, model, import-buffer, upload, constant, sampler, uniform, image, buffer, target, material and nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern, reduce, inclusive-scan, exclusive-scan, sort)"
+      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, image-file, model, import-buffer, upload, constant, sampler, uniform, image, buffer, target, material, nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern, reduce, inclusive-scan, exclusive-scan, sort) and loops of nodes (for)"
                      name head)]))
 
   ;; The type of a buffer's elements
@@ -747,6 +794,8 @@
     (define node-name
       (begin (when (null? args) (zgal-error 'malformed stx "a node has a name"))
              (parse-name (first args) "the node's name")))
+    (when (and (pair? current-loops) (memq head '(extern reduce inclusive-scan exclusive-scan sort)))
+      (zgal-error 'loop-body stx "~a ~a is in a loop, but ~a nodes aren't yet: declare it outside the loop" form node-name form))
     (node-names node-name (first args))
     (define (material-of stx kind)
       (define m-name (lookup stx '(material) "a material"))
@@ -760,7 +809,7 @@
                   #:reads [reads '()] #:writes [writes '()] #:offsets [offsets #f] #:extra [extra #f]
                   #:overrides [overrides #f])
       (g-node kind node-name target m subject count reads writes offsets
-              (condition options '#:when) (condition options '#:enabled) (once?) extra overrides (stx->loc stx)))
+              (condition options '#:when) (condition options '#:enabled) (once?) extra overrides current-loops (stx->loc stx)))
     ;; The node's own #:push for material m, and invocations (or #f), or #f if it gives neither
     (define (overrides-of m invocations)
       (define given (parse-push (hash-ref options '#:push #f) m))
@@ -1032,6 +1081,8 @@
     (cond
       [(not count-stx) (indirect command draws #f #f #f)]
       [else
+       (when (pair? current-loops)
+         (zgal-error 'loop-body count-stx "draw ~a is in a loop, but draws with a #:count aren't yet: declare it outside the loop" node-name))
        (define count (parse-element count-stx "a draw's #:count"))
        (define t (entry-type (hash-ref env (element-ref-buffer command))))
        (define limit-material
@@ -1157,6 +1208,70 @@
                (instance! "apply" (hash-ref apply-materials "ZgalScanApply") apply-bindings apply-push invocations))]))
     (node 'kernel #:extra (for/list ([m (in-list steps)]) (k-step m #f))))
 
+  ;; (for (clause ...) node-or-loop ...): the nodes it declares, each in the loop (and those around it)
+  (define (parse-loop stx)
+    (define parts (syntax->list stx))
+    (define clause-stxs (and parts (>= (length parts) 3) (syntax->list (second parts))))
+    (unless (and clause-stxs (pair? clause-stxs))
+      (zgal-error 'malformed stx "expected (for ([name (range from to)] ...) node ...+), whose clauses are [name (range from to [step])] or [name data-input]"))
+    (define clauses
+      (for/list ([c (in-list clause-stxs)])
+        (define clause (parse-loop-clause c))
+        (hash-set! env (loop-clause-name clause) (entry 'loop (loop-clause-type clause) clause))
+        clause))
+    (define outer current-loops)
+    (set! current-loops (append outer (list (g-loop clauses (stx->loc stx)))))
+    (define body
+      (append*
+       (for/list ([b (in-list (cddr parts))])
+         (define head (head-symbol b))
+         (cond
+           [(eq? head 'for) (parse-loop b)]
+           [(memq head node-forms) (list (parse-node b))]
+           [else (zgal-error 'loop-body b "a loop's body holds nodes and loops, not ~a: declare it before the loop" (show b))]))))
+    (set! current-loops outer)
+    (for ([c (in-list clauses)]) (hash-remove! env (loop-clause-name c)))
+    body)
+
+  ;; [name (range from to [step])]: from up to, not including, to (ints, unless one is a uint); or
+  ;; [name data-input]: its elements
+  (define (parse-loop-clause c)
+    (match (syntax->list c)
+      [(list n-stx source-stx)
+       (define n (parse-name n-stx "a loop variable's name"))
+       (when (hash-ref env n #f)
+         (zgal-error 'duplicate-name n-stx "~a is already declared in graph ~a: give the loop variable another name" n name))
+       (cond
+         [(eq? (head-symbol source-stx) 'range)
+          (match (syntax->list source-stx)
+            [(list _ from-stx to-stx step-stx ...) #:when (<= (length step-stx) 1)
+             (define from (parse-expression from-stx))
+             (define to (parse-expression to-stx))
+             (define tf (expression-type from env #:per-frame-ok? #f))
+             (define tt (expression-type to env #:per-frame-ok? #f))
+             (define t (cond [(and (equal? tf literal-type) (equal? tt literal-type)) (scalar-t 'int)]
+                             [(equal? tf literal-type) tt]
+                             [else tf]))
+             (unless (member t (list (scalar-t 'int) (scalar-t 'uint)))
+               (zgal-error 'type-mismatch source-stx "a range is of ints or uints, not ~a" (a-type t)))
+             (check-expression to env t "a range's end" #:per-frame-ok? #f)
+             (define step
+               (cond
+                 [(null? step-stx) (e-literal 1 (stx->loc source-stx))]
+                 [else
+                  (define e (parse-expression (first step-stx)))
+                  (check-expression e env t "a range's step" #:per-frame-ok? #f)
+                  (when (and (e-literal? e) (<= (e-literal-value e) 0))
+                    (zgal-error 'malformed (first step-stx) "a range's step is positive, not ~a" (e-literal-value e)))
+                  e]))
+             (loop-clause n t (list from to step) #f (stx->loc c))]
+            [_ (zgal-error 'malformed source-stx "expected (range from to [step]): from up to, not including, to, by step (1 by default)")])]
+         [(symbol? (syntax-e source-stx))
+          (define data (lookup source-stx '(data) "a data input"))
+          (loop-clause n (entry-type (hash-ref env data)) #f data (stx->loc c))]
+         [else (zgal-error 'malformed source-stx "a loop goes over (range from to [step]) or a data input, not ~a" (show source-stx))])]
+      [_ (zgal-error 'malformed c "expected [name (range from to [step])] or [name data-input]")]))
+
   (define-values (graph-items nodes)
     (for/fold ([items '()] [nodes '()] #:result (values (reverse items) (reverse nodes)))
               ([item-stx (in-list (cddr items))])
@@ -1166,6 +1281,9 @@
          (let ([n (parse-node item-stx)])
            (begin0 (values (append (reverse node-items) items) (cons n nodes))
                    (set! node-items '())))]
+        ;; A loop's nodes (which declare no items)
+        [(eq? (head-symbol item-stx) 'for)
+         (values items (append (reverse (parse-loop item-stx)) nodes))]
         [else
          ;; An item, or the items a model declares
          (let ([parsed (parse-item item-stx)])

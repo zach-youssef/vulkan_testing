@@ -32,6 +32,7 @@
         [(list es ...) (ormap walk es)]
         [(e-op (or 'width 'height) (list (e-ref name _)) _) (eq? (entry-kind (hash-ref env name)) kind)]
         [(e-op _ args _) (walk args)]
+        [(e-field base _ _) (walk base)]
         [_ #f])))
   (string-append "=" (if (images-sized 'import) ", &context" "") (if (images-sized 'image) ", &graph" "")))
 
@@ -68,7 +69,12 @@
      (match (entry-kind (hash-ref env name))
        ['parameter (format "in->~a" name)]
        ['constant (format "constant_~a" name)]
-       ['per-frame (format "in->~a(frame)" name)])]
+       ['per-frame (format "in->~a(frame)" name)]
+       ['loop (format "loop_~a" name)])]
+    [(e-field base field _)
+     ;; std430 structs hold bools as uint32_t
+     (define access (format "~a.~a" (cpp-expr base env #f) field))
+     (if (equal? (type-of e) (scalar-t 'bool)) (format "static_cast<bool>(~a)" access) access)]
     [(e-op op args _)
      (define t (resolve (type-of e) want))
      (case op
@@ -93,6 +99,10 @@
             (format "static_cast<uint32_t>(in->~a.size())" input))]
        [(float int uint)
         (format "static_cast<~a>(~a)" (value-cpp-type (scalar-t op)) (cpp-expr (first args) env #f))]
+       [(at)
+        (define input (e-ref-name (first args)))
+        (format "zgal::elementOf(in->~a, ~a, ~a, ~a)" input (cpp-expr (second args) env #f)
+                (cpp-string (current-graph-name)) (cpp-string input))]
        [(width height)
         (define image (e-ref-name (first args)))
         (match (hash-ref env image)
@@ -183,7 +193,9 @@
 
 (define (emit-graph-body! w prog g)
   (define name (graph-name g))
-  (define env (graph-environment g))
+  (define base-env (graph-environment g))
+  ;; The names in scope: the graph's, and in loops their variables
+  (define env base-env)
   (define items (graph-items g))
   (define nodes (graph-nodes g))
   (define (gen text) (emit! w text))
@@ -250,10 +262,12 @@
                      (for/list ([b (in-list model-draws)]) (list "BufferId" (g-model-draws-name b) b))
                      (for/list ([b (in-list model-bounds)]) (list "BufferId" (g-model-bounds-name b) b))
                      (for/list ([b (in-list buffers)]) (list (id-type "BufferId" (g-buffer-when b)) (g-buffer-name b) b))))
+  (define (looped? n) (pair? (g-node-loops n)))
   (id-struct "Nodes"
              (for/list ([n (in-list nodes)])
-               ;; An extern node is the nodes C++ adds (none when its condition is false)
-               (list (if (eq? (g-node-kind n) 'extern) "std::vector<NodeId>" (id-type "NodeId" (g-node-when n)))
+               ;; An extern node is the nodes C++ adds (none when its condition is false), and a node
+               ;; in a loop one per iteration (whose condition held)
+               (list (if (or (eq? (g-node-kind n) 'extern) (looped? n)) "std::vector<NodeId>" (id-type "NodeId" (g-node-when n)))
                      (g-node-name n) n)))
   (unless (and (null? imports) (null? image-files) (null? image-sets) (null? model-textures) (null? images)) (gen "    Images images;"))
   ;; Readbacks' results, typed
@@ -262,19 +276,23 @@
     (gen ""))
   (for ([n (in-list readbacks)])
     (define subject (g-node-subject n))
-    (define id (if (g-node-when n)
-                   (format "zgal::require(nodes.~a, ~a, ~a)" (g-node-name n) (cpp-string name) (cpp-string (g-node-name n)))
-                   (format "nodes.~a" (g-node-name n))))
+    (define id (cond
+                 [(looped? n) (format "zgal::nodeAt(nodes.~a, index, ~a, ~a)" (g-node-name n) (cpp-string name) (cpp-string (g-node-name n)))]
+                 [(g-node-when n) (format "zgal::require(nodes.~a, ~a, ~a)" (g-node-name n) (cpp-string name) (cpp-string (g-node-name n)))]
+                 [else (format "nodes.~a" (g-node-name n))]))
+    ;; A readback in a loop is one per iteration: the accessor takes its index in nodes.name
+    (define-values (which parameters)
+      (if (looped? n) (values " (iteration index's)" "RenderGraph& graph, size_t index") (values "" "RenderGraph& graph")))
     (cond
       [(image-kind? subject)
-       (at n (format "    // The pixels readback ~a copied in the most recent frame (waiting for it)" (g-node-name n)))
-       (at n (format "    Result<std::vector<uint8_t>> ~aPixels(RenderGraph& graph) const { return graph.nodeAs<ReadbackNode>(~a).pixels(); }"
-                     (g-node-name n) id))]
+       (at n (format "    // The pixels readback ~a~a copied in the most recent frame (waiting for it)" (g-node-name n) which))
+       (at n (format "    Result<std::vector<uint8_t>> ~aPixels(~a) const { return graph.nodeAs<ReadbackNode>(~a).pixels(); }"
+                     (g-node-name n) parameters id))]
       [else
        (define t (cpp-type (entry-type (hash-ref env subject))))
-       (at n (format "    // The elements readback ~a copied in the most recent frame (waiting for it)" (g-node-name n)))
-       (at n (format "    Result<std::vector<~a>> ~aContents(RenderGraph& graph) const { return graph.nodeAs<BufferReadbackNode>(~a).contents<~a>(); }"
-                     t (g-node-name n) id t))]))
+       (at n (format "    // The elements readback ~a~a copied in the most recent frame (waiting for it)" (g-node-name n) which))
+       (at n (format "    Result<std::vector<~a>> ~aContents(~a) const { return graph.nodeAs<BufferReadbackNode>(~a).contents<~a>(); }"
+                     t (g-node-name n) parameters id t))]))
   (unless (and (null? buffer-imports) (null? uploads) (null? model-factors) (null? model-draws) (null? model-bounds) (null? (filter (λ (b) (not (internal-name? (g-buffer-name b)))) buffers)))
     (gen "    Buffers buffers;"))
   (unless (null? nodes) (gen "    Nodes nodes;"))
@@ -557,9 +575,35 @@
                   (if graphics?
                       (format ", graph.formats(target_~a), GraphicsPipelineOptions{~a}" target (string-join pipeline-fields ", "))
                       ""))))
-  ;; Nodes
+  ;; Nodes, in their loops: C++ loops, opened and closed as the nodes enter and leave them
+  (define open-loops '())   ; outermost first
+  (define (indent) (make-string (* 4 (for/sum ([l (in-list open-loops)]) (length (g-loop-clauses l)))) #\space))
+  (define (enter-loops! loops)
+    (define shared (let count ([a open-loops] [b loops] [k 0])
+                     (if (and (pair? a) (pair? b) (eq? (car a) (car b))) (count (cdr a) (cdr b) (add1 k)) k)))
+    (for ([l (in-list (reverse (drop open-loops shared)))])
+      (set! open-loops (drop-right open-loops 1))
+      ;; A brace per clause, innermost first
+      (for ([k (in-range (sub1 (length (g-loop-clauses l))) -1 -1)])
+        (emit! w (string-append "        " (indent) (make-string (* 4 k) #\space) "}") #:at (g-loop-loc l))))
+    (set! env (loop-environment base-env open-loops))
+    (for ([l (in-list (drop loops shared))])
+      (for ([c (in-list (g-loop-clauses l))] [k (in-naturals)])
+        (define pad (string-append "        " (indent) (make-string (* 4 k) #\space)))
+        (emit! w (string-append pad
+                                (match c
+                                  [(loop-clause v t (list from to step) _ _)
+                                   (format "for (~a loop_~a = ~a; loop_~a < ~a; loop_~a += ~a) {" (value-cpp-type t) v (build-expr from t)
+                                           v (build-expr to t) v (build-expr step t))]
+                                  [(loop-clause v _ #f data _)
+                                   (format "for (const auto& loop_~a : in->~a) {" v data)]))
+               #:at (loop-clause-loc c))
+        ;; Later clauses see it
+        (set! env (loop-environment env (list (g-loop (list c) #f)))))
+      (set! open-loops (append open-loops (list l)))))
   (for ([n (in-list nodes)])
-    (define (line text) (emit! w text #:at (g-node-loc n)))
+    (enter-loops! (g-node-loops n))
+    (define (line text) (emit! w (string-append (indent) text) #:at (g-node-loc n)))
     (define node-name (g-node-name n))
     (define material-type
       (and (g-node-material n) (material-name (g-material-material (entry-item (hash-ref env (g-node-material n)))))))
@@ -571,7 +615,11 @@
                              (format "push.~a = ~a;" (field-name (car pair)) (cpp-expr (cdr pair) env (field-type (car pair)))))
                            " ")))
     (define (has-push?) (and overrides (pair? (node-overrides-push overrides))))
-    (define label (cpp-string node-name))
+    ;; The node's name in the RenderGraph: in a loop, numbered like its id in nodes.name
+    (define label
+      (if (looped? n)
+          (format "std::string(~a) + std::to_string(result.nodes.~a.size())" (cpp-string (string-append node-name " ")) node-name)
+          (cpp-string node-name)))
     ;; An indirect command's place: a BufferOffset
     (define (command-offset ref)
       (format "BufferOffset{~a, VkDeviceSize(~a) * sizeof(~a)}" (resource-ref (element-ref-buffer ref))
@@ -707,8 +755,9 @@
          (line (format "            graph.setEnabled(node, ~a);" (build-expr (g-node-enabled n) (scalar-t 'bool)))))
        (when (g-node-once? n)
          (line "            graph.runOnce(node);"))
-       (line (format "            result.nodes.~a = node;" node-name))])
+       (line (format (if (looped? n) "            result.nodes.~a.push_back(node);" "            result.nodes.~a = node;") node-name))])
     (line "        }"))
+  (enter-loops! '())
   (gen "        return result;")
   (gen "    }")
   (emit! w "};" #:at (graph-loc g)))
@@ -720,4 +769,4 @@
   (match item
     [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-model-draws _ _ _ l) l] [(g-model-bounds _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
-    [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ _ _ l) l]))
+    [(g-target _ _ l) l] [(g-material _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ l) l]))

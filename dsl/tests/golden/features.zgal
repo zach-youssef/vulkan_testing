@@ -289,7 +289,13 @@
   (readback readSamples samples)
   ;; A dispatch giving the push constant its material leaves out, and its own size
   (material bump Bump (sums sumBuffer) #:push ((amount halfScale)))
-  (dispatch bumpOnce bump #:push ((first (uint count))) #:invocations (size)))
+  (dispatch bumpOnce bump #:push ((first (uint count))) #:invocations (size))
+  ;; Loops: nodes per seed and pass (with their own push constants and sizes), and per row
+  (for ([s seeds] [k (range 0 count 2)])
+    (dispatch bumpEach bump #:push ((first (+ s (uint k)))) #:invocations ((+ s 1)) #:when (> k 0))
+    (readback readEach sumBuffer))
+  (for ([i (range (uint 0) size)])
+    (draw drawEach screen plain (+ i 3))))
 
 ;; Every event, effect and kind of graph binding: parameters computed once, per-frame inputs from
 ;; the state, node enables (one of a #:when node), and the rest passed through from C++
@@ -327,7 +333,8 @@
     (tintNow (* state.tint state.zoom))
     (sampleCount state.frames)
     #:enabled ((accumulate state.dragging)
-               (drawPlain (not state.dragging)))))
+               (drawPlain (not state.dragging))
+               (drawEach state.dragging))))
 
 ;; Phases: a graph uploading per-frame data and reading it back once, whose copy an app's read event
 ;; keeps in the state until it switches to another graph

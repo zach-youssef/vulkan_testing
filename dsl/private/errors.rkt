@@ -137,6 +137,10 @@
          "A material in a graph doesn't give a binding or push constant"
          "A graph's material gives a resource for every binding of the material it instantiates, and a value for every push constant (`#:push ((field value) ...)`), unless every node using it gives that push constant itself (`#:push` on dispatches and draws)."
          "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64)\n  (push (value float)))\n(graph G\n  (material fill Fill #:invocations (64))\n  (dispatch fill fill))")
+   (kind 'loop-body
+         "A loop holds what it can't"
+         "A graph's `for` loop repeats nodes (dispatch, draw, draw-meshes, readback, cpu, copy, clear) and loops: declare materials, buffers and other items before it, and give each iteration's values with nodes' options (e.g. `#:push`, `#:invocations`). Extern nodes, the compute library's nodes and draws with a `#:count` aren't in loops yet."
+         "(compute-material Fill\n  (shaders \"fill.comp\")\n  (workgroup 64))\n(graph G\n  (for ([i (range 0 4)])\n    (material fill Fill #:invocations (64))\n    (dispatch fill fill)))")
    (kind 'material-kind
          "A node is given a material of the wrong kind"
          "`dispatch` runs compute materials. `draw-meshes` draws graphics materials with a `vertex-input` (from mesh vertex buffers), and `draw` graphics materials without one (a vertex count, e.g. a fullscreen triangle)."

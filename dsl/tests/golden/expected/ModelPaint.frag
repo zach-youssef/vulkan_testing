@@ -34,35 +34,35 @@ struct Packed {
     uint wide;
 #line 130 "dsl/tests/golden/features.zgal"
 };
-#line 361 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
 layout(push_constant) uniform ZgalPush {
-#line 363 "dsl/tests/golden/features.zgal"
+#line 370 "dsl/tests/golden/features.zgal"
     uint colors;
-#line 363 "dsl/tests/golden/features.zgal"
+#line 370 "dsl/tests/golden/features.zgal"
     uint factors;
-#line 363 "dsl/tests/golden/features.zgal"
+#line 370 "dsl/tests/golden/features.zgal"
     uint s;
-#line 361 "dsl/tests/golden/features.zgal"
+#line 368 "dsl/tests/golden/features.zgal"
 } materialPush;
-#line 363 "dsl/tests/golden/features.zgal"
+#line 370 "dsl/tests/golden/features.zgal"
 BINDLESS_BUFFER_ARRAY(readonly, ZGALBufferArray_vec4, vec4, zgalBufferArrays_vec4);
-#line 363 "dsl/tests/golden/features.zgal"
+#line 370 "dsl/tests/golden/features.zgal"
 BINDLESS_BUFFER_ARRAY(readonly, ZGALIndices, uint, zgalIndices);
-#line 363 "dsl/tests/golden/features.zgal"
+#line 370 "dsl/tests/golden/features.zgal"
 #define colors(i) (bindlessTextures[nonuniformEXT(zgalIndices[materialPush.colors].data[1u + uint(i)])])
-#line 363 "dsl/tests/golden/features.zgal"
+#line 370 "dsl/tests/golden/features.zgal"
 #define zgalLength_colors() (zgalIndices[materialPush.colors].data[0])
-#line 363 "dsl/tests/golden/features.zgal"
+#line 370 "dsl/tests/golden/features.zgal"
 #define factors() (zgalBufferArrays_vec4[materialPush.factors].data)
-#line 363 "dsl/tests/golden/features.zgal"
+#line 370 "dsl/tests/golden/features.zgal"
 #define s() (bindlessSamplers[materialPush.s])
 layout(location = 0) in vec2 uv;
-#line 364 "dsl/tests/golden/features.zgal"
+#line 371 "dsl/tests/golden/features.zgal"
 layout(location = 1) flat in uint m;
 layout(location = 0) out vec4 paint;
-#line 367 "dsl/tests/golden/features.zgal"
+#line 374 "dsl/tests/golden/features.zgal"
 void main() {
-#line 367 "dsl/tests/golden/features.zgal"
+#line 374 "dsl/tests/golden/features.zgal"
     paint = factors()[m] * texture(sampler2D(colors(m), s()), uv);
-#line 367 "dsl/tests/golden/features.zgal"
+#line 374 "dsl/tests/golden/features.zgal"
 }

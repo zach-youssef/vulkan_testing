@@ -670,3 +670,37 @@
   (draw bottom canvas banding 3 #:push ((row 1) (shade (vec4 0.0 0.0 1.0 1.0))))
   (readback readCells cells)
   (readback readPicture picture))
+
+;; For the node loop tests: spans to fill, steps, and a band per row, each a node per iteration
+(struct Span
+  (offset uint)
+  (amount uint)
+  (value uint))
+
+(graph LoopGraph
+  (parameter rows uint)
+  (input spans (data Span))
+  (input shades (data vec4))
+  (buffer cells uint 64 #:frames shared)
+  (buffer command DispatchCommand 1 #:frames shared)
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  ;; Each band keeps what earlier ones drew (the rows cover the whole image)
+  (target canvas (color picture #:load load))
+  (material filling FillSpan cells)
+  (material stepping Step cells #:push ((increment 0)) #:invocations (64))
+  (material banding Band)
+  (clear zero cells)
+  ;; A fill per span, skipping empty ones
+  (for ([s spans])
+    (dispatch fill filling #:push ((offset s.offset) (amount s.amount) (value s.value))
+              #:invocations (s.amount) #:when (> s.amount 0)))
+  ;; One workgroup, from a command, with its own push constants
+  (clear oneGroup command #:value 1)
+  (dispatch tail filling #:indirect (at command 0) #:push ((offset 60) (amount 4) (value 3)))
+  ;; Steps in order, each read back after it
+  (for ([k (range 1 4)])
+    (dispatch stepping stepping #:push ((increment (uint k))))
+    (readback snapshot cells))
+  (for ([r (range (uint 0) rows)])
+    (draw band canvas banding 3 #:push ((row r) (rows rows) (shade (at shades r)))))
+  (readback readPicture picture))

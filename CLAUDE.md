@@ -314,9 +314,13 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   sorting)` maps floats and ints to them). `#:count` is an expression or a GPU-written `(at counts i)`. The compiler instantiates
   their materials from `dsl/lib/kernels` (named `Zgal...`) and dispatches them as one
   `DispatchSequenceNode`.
-- Dispatches and draws (of a vertex count) give their own `#:push ((field v))`, and dispatches
-  `#:invocations`, replacing their material's, so several nodes share a material and its pipeline;
-  a material may leave out push constants every node using it gives.
+- Node loops: `(for ([b batches] [pass (range 0 n)]) node ...)` repeats nodes when the graph is
+  built, over build-time ranges and `(data T)` inputs' elements (`b.first`, `(at batches i)`).
+  Dispatches and draws give per-node `#:push ((field v))` (and dispatches `#:invocations`), so
+  iterations share a material and its pipeline; a material may leave out push constants every node
+  using it gives. A looped node's id is a `std::vector<NodeId>` (readback accessors take an index).
+  Loops don't hold extern nodes, library nodes or counted draws yet; draws looping into one target
+  need `#:load load`. Prefer loops to `extern` nodes where ZGAL has the nodes.
 - Top-level `(define (f [x : vec3]) : vec3 ...)` functions and `(define name value)` constants are
   shared by the shaders, and those without textures, images or effects also compile to C++
   (`sunDirection` in the scene example), so the CPU computes the same thing.

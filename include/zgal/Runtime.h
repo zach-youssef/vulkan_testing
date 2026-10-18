@@ -408,6 +408,25 @@ private:
     std::optional<BufferOffset> command_;
 };
 
+// Element `index` of a graph's data input, checked to exist
+template<typename T>
+const T& elementOf(const std::vector<T>& elements, int64_t index, const char* graph, const char* input) {
+    if (index < 0 || static_cast<uint64_t>(index) >= elements.size()) {
+        contractViolation(std::string("Graph ") + graph + " reads element " + std::to_string(index) + " of " + input +
+                          ", which has " + std::to_string(elements.size()));
+    }
+    return elements[static_cast<size_t>(index)];
+}
+
+// The id of iteration `index` of a node in a loop (of those its #:when condition kept)
+inline NodeId nodeAt(const std::vector<NodeId>& nodes, size_t index, const char* graph, const char* node) {
+    if (index >= nodes.size()) {
+        contractViolation(std::string("Graph ") + graph + " has " + std::to_string(nodes.size()) + " nodes " + node +
+                          ", so none at " + std::to_string(index));
+    }
+    return nodes[index];
+}
+
 // A graph's declaration that exists only under a condition, used where the condition was false
 template<typename T>
 const T& require(const std::optional<T>& value, const char* graph, const char* name) {

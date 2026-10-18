@@ -884,7 +884,7 @@ and C++ supplies the meshes.
  #:literals (graph parameter input per-frame data meshes cpu extern path import-image import-images image-file model import-buffer upload
              constant sampler uniform image buffer target surface attachments if color depth material
              dispatch draw-meshes draw readback copy clear fixed extent-of reduce inclusive-scan
-             exclusive-scan sort at add min max)
+             exclusive-scan sort at add min max for range)
  [graph-form (graph Name graph-item ...)]
  [graph-item (parameter name type)
              (input name (per-frame type))
@@ -907,7 +907,11 @@ and C++ supplies the meshes.
              (buffer name type count #:frames frames maybe-when)
              (target name target-spec)
              (material name Material binding ... material-option ...)
-             node]
+             node
+             loop]
+ [loop (for (loop-clause ...+) loop-body ...+)]
+ [loop-clause [name (range from to)] [name (range from to step)] [name data-input]]
+ [loop-body node loop]
  [node (dispatch name material maybe-indirect dispatch-option ... node-option ...)
        (draw-meshes name target meshes-input-or-model material node-option ...)
        (draw-meshes name target model material #:indirect (at commands index) draw-option ... node-option ...)
@@ -1041,11 +1045,15 @@ with the wrapper's loaders (@tt{resources/Model.h}).
              (+ a b ...+) (- a b ...) (* a b ...+) (/ a b) (min a b) (max a b)
              (float a) (int a) (uint a)
              (vec2 a b) (ivec3 a b c) (code:line ...)
-             (width image) (height image) (count data-input)]]
+             name.field (.field expression)
+             (width image) (height image) (count data-input) (at data-input index)]]
 
 Expressions are typed like GLSL: arithmetic operands share a type (scalars or vectors), and
 conditions are bools. Integer literals take the type their context needs, so @tt{(* 6 count)} is a
-@tt{uint} when @tt{count} is. A name is a parameter, constant or per-frame input.
+@tt{uint} when @tt{count} is. A name is a parameter, constant, per-frame input or loop variable
+(@secref["loops"]). Fields of structs and components of vectors (one at a time) follow names after
+dots, @tt{batch.first}, or are functions on other expressions, @racket[(.first (at batches 0))];
+@racket[(at input index)] is an element of a data input, checked to exist when it's computed.
 
 Most expressions are computed once, when the graph is built: conditions, constants, extents and
 counts. They can use parameters, constants, imported images' sizes and the number of elements C++
@@ -1136,8 +1144,9 @@ Nodes:
        commands index)}, as many workgroups as a @tt{DispatchCommand} (@racket[(import indirect)])
        in a graph buffer says, which an earlier node's shader wrote: the GPU sizes its own work
        (@secref["indirect"]). @tt{#:push} and @tt{#:invocations} replace the material's push
-       constants (some or all) and invocations for this dispatch, so several dispatches can share a
-       material, and its pipeline (a @tt{zgal::OverridingDispatchNode}).}
+       constants (some or all) and invocations for this dispatch, so several dispatches (e.g. a
+       loop's, @secref["loops"]) can share a material, and its pipeline (a
+       @tt{zgal::OverridingDispatchNode}).}
  @item{@racket[draw-meshes]: draws each mesh of a meshes input or a @racket[model] with a graphics
        material that has a @racket[vertex-input] (a @tt{RenderablesNode}); a model's material reads
        its vertex format. Each draw's first instance is its mesh's instance index
@@ -1295,10 +1304,62 @@ operations). Keys move between their buffer and a scratch one, and end in their 
 buffers hold as many elements as the count, or with a count on the GPU, as the keys' buffer (a
 graph or uploaded buffer then, whose size the graph knows).
 
+@subsection[#:tag "loops"]{Loops of nodes}
+
+Some graphs have a node per something: per batch of work the application computes, per pass of an
+algorithm, per row or layer. A @racket[for] loop repeats its nodes when the graph is built, for each
+value of its clauses (nested, the first outermost): @tt{[name (range from to step)]} goes from
+@tt{from} up to, and not including, @tt{to}, by @tt{step} (1 by default), all computed when the
+graph is built (ints, unless one is a @tt{uint}); @tt{[name input]} goes over the elements of a data
+input (@tt{(input name (data T))}), e.g. structs C++ computed. The variables are names in the
+loop's nodes' expressions: their conditions, sizes and offsets, and their own push constants and
+invocations (@tt{#:push}, @tt{#:invocations}), so the iterations share one material, and pipeline.
+A loop holds nodes and loops; declare materials and resources before it. Extern nodes, the compute
+library's and draws with a @tt{#:count} aren't in loops yet.
+
+@(define loops-source #<<ZGAL
+(struct Batch
+  (first uint)
+  (count uint))
+
+(compute-material Settle
+  (workgroup 64)
+  (bindings (heights (buffer-array float)))
+  (push (first uint) (count uint) (rate float))
+  (compute
+   (let* ([i (+ first globalInvocationId.x)])
+     (when (< globalInvocationId.x count)
+       (write! (at heights i) (* (at heights i) rate))))))
+
+(graph Batches
+  (parameter passes uint)
+  (input batches (data Batch))
+  (buffer heights float 4096 #:frames shared)
+  (material settling Settle heights #:push ((rate 0.5)))
+  ;; Each batch, settled `passes` times in order
+  (for ([b batches] [pass (range (uint 0) passes)])
+    (dispatch settle settling #:push ((first b.first) (count b.count))
+              #:invocations (b.count) #:when (> b.count 0)))
+  (readback result heights))
+ZGAL
+)
+@(zgal-example loops-source)
+@(generated-file loops-source "example.zgal.h" #:from #rx"for [(]const auto& loop_b" #:to #rx"^        }$")
+
+Each iteration's nodes come in order, before the next iteration's, and the graph orders nodes by
+their uses in that order, as everywhere: here each batch's passes run one after another. A node in
+a loop is one per iteration (whose @tt{#:when} held): C++ finds their ids in @tt{nodes.name}, a
+@tt{std::vector<NodeId>}, the graph names them @tt{"name 0"}, @tt{"name 1"}, and so on, and a
+looped readback's accessor takes the index, @tt{nameContents(graph, i)}. An app's @tt{#:enabled} enables
+or disables them all; read events take readbacks outside loops. Draws in a loop into one target
+each begin by clearing it unless the target loads it (@tt{(color image #:load load)}), so later
+iterations keep what earlier ones drew.
+
 @subsection[#:tag "extern"]{Extern nodes}
 
-Some graphs depend on data only C++ has, e.g. a node per batch of work the application computes. An
-@racket[extern] node is where C++ adds such nodes itself: its extern input is a function
+Some graphs depend on data only C++ has. Loops (@secref["loops"]) cover nodes ZGAL declares; for
+anything else, e.g. nodes recording commands ZGAL has no node for, an
+@racket[extern] node is where C++ adds nodes itself: its extern input is a function
 @tt{zgal::ExternNodes<Graph>}, called by @tt{build()} at the node's place in the graph, with the
 @tt{RenderGraph} and the ids so far (every image and buffer, and the nodes before it). It adds nodes
 declaring their uses as usual, and returns their ids, which C++ then finds in
@@ -1687,9 +1748,11 @@ What ZGAL doesn't describe yet:
  @item{a shader used by more than one material.}
 ]
 
-Graphs can't yet use storage images other than 2D ones, run a node on a chosen queue, compute anything per frame but push constants, dispatch sizes and
-uniforms, or describe nodes that depend on the application's data
-except through @racket[extern] nodes (build-time loops over list inputs could cover some of them).
+Graphs can't yet use storage images other than 2D ones, run a node on a chosen queue, or compute
+anything per frame but push constants, dispatch sizes and uniforms. Loops of nodes are fixed when
+the graph is built (a node list that changes from frame to frame needs a rebuilt graph), go over
+ranges and data inputs (not lists within their elements), and don't hold extern nodes, the compute
+library's or counted draws.
 
 Apps handle events only: they can't ask whether a key is held or where the cursor is outside
 handlers (track it in the state from press and release events), read files, or create resources.

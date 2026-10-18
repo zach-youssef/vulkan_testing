@@ -1079,3 +1079,47 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL nodes give their own push constants and invocat
     }
     ctx.waitIdleAll();
 }
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL's node loops add a node per element or step, with their own push constants and sizes") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    const std::vector<Span> spans{{0, 10, 5}, {20, 0, 9}, {30, 4, 7}};
+    const std::vector<glm::vec4> shades{{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 1, 1}};
+    const LoopGraph loops = LoopGraph::build(ctx, graph, LoopGraph::Inputs{.rows = 4, .spans = spans, .shades = shades}).value();
+    // The empty span's fill was skipped
+    CHECK(loops.nodes.fill.size() == 2);
+    CHECK(loops.nodes.stepping.size() == 3);
+    CHECK(loops.nodes.snapshot.size() == 3);
+    CHECK(loops.nodes.band.size() == 4);
+    graph.execute().value();
+
+    // Each snapshot follows its step: v * 2 + k, in order
+    std::vector<uint32_t> expected(64, 0);
+    for (const Span& span : spans) {
+        std::fill_n(expected.begin() + span.offset, span.amount, span.value);
+    }
+    // The indirect dispatch's
+    std::fill_n(expected.begin() + 60, 4, 3u);
+    for (uint32_t k = 1; k <= 3; ++k) {
+        for (uint32_t& v : expected) {
+            v = v * 2 + k;
+        }
+        CAPTURE(k);
+        CHECK(loops.snapshotContents(graph, k - 1).value() == expected);
+    }
+    CHECK_THROWS_AS((void)loops.snapshotContents(graph, 3), ContractViolation);
+
+    // A band per row, in its shade
+    const auto pixels = loops.readPicturePixels(graph).value();
+    REQUIRE(pixels.size() == 4 * 4 * 4);
+    for (size_t y = 0; y < 4; ++y) {
+        for (size_t x = 0; x < 4; ++x) {
+            CAPTURE(x);
+            CAPTURE(y);
+            const uint8_t* pixel = &pixels[(y * 4 + x) * 4];
+            CHECK(std::vector<uint8_t>(pixel, pixel + 4) ==
+                  std::vector<uint8_t>{uint8_t(shades[y].r * 255), uint8_t(shades[y].g * 255), uint8_t(shades[y].b * 255), 255});
+        }
+    }
+    ctx.waitIdleAll();
+}

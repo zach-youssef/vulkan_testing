@@ -181,11 +181,13 @@
 ;; ---------------------------------------------------------------------------------------------
 ;; Graphs
 
-;; Expressions: literals (exact integers, reals and booleans), references to parameters, constants
-;; and per-frame inputs, and operations (op is a symbol, e.g. '+ or 'vec2)
+;; Expressions: literals (exact integers, reals and booleans), references to parameters, constants,
+;; per-frame inputs and loop variables, operations (op is a symbol, e.g. '+ or 'vec2), and a struct's
+;; field or a vector's component (name, a string) of expr's value
 (struct e-literal (value loc) #:transparent)
 (struct e-ref (name loc) #:transparent)
 (struct e-op (op args loc) #:transparent)
+(struct e-field (expr name loc) #:transparent)
 
 ;; A graph: its items in file order, and its nodes in file order
 (struct graph (name items nodes loc) #:transparent)
@@ -251,11 +253,17 @@
 ;; destination offset an image's (x y) for a copy into one; else #f. when, enabled: expressions or #f.
 ;; once?: whether it runs in the graph's first frame only (RenderGraph::runOnce). extra: what a kind
 ;; needs beyond these, else #f: a kernel's steps (k-steps). overrides: a node-overrides or #f.
-(struct g-node (kind name target material subject count reads writes offsets when enabled once? extra overrides loc) #:transparent)
+;; loops: the g-loops it's in, outermost first (a node in a loop is one per iteration).
+(struct g-node (kind name target material subject count reads writes offsets when enabled once? extra overrides loops loc) #:transparent)
 ;; A dispatch's or draw's own push constants, replacing its material's (push: (cons field
 ;; expression) for those it gives, in the material's order), and a dispatch's own invocations
 ;; (expressions, or #f for its material's)
 (struct node-overrides (push invocations) #:transparent)
+;; A loop over nodes, run when the graph is built: its clauses, nested, the first outermost
+(struct g-loop (clauses loc) #:transparent)
+;; A loop variable: name, of type, going over range, (list from to step) of build-time expressions
+;; (from up to, not including, to), or over the elements of the data input `data` (a name)
+(struct loop-clause (name type range data loc) #:transparent)
 ;; A step of a kernel node (a library algorithm, e.g. a scan): a dispatch of a material instance
 ;; (its name), with its push constant `pass` replaced by pass (an integer) if pass isn't #f
 (struct k-step (material pass) #:transparent)
