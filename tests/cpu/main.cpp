@@ -6,6 +6,7 @@
 #define VK_WRAP_UTIL_IMPL
 #include "core/VkTypes.h"
 #include "core/DeviceSelection.h"
+#include "resources/Model.h"   // cgltf and tinyobjloader
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>

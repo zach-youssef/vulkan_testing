@@ -1,0 +1,15 @@
+;; ZGAL's standard library: keys for sort nodes, which sort uints. (import sorting)
+
+;; A uint that sorts as x does among floats: negative floats' bits are flipped (so larger magnitudes
+;; come first), positive floats' sign bit is set (so they come after every negative one)
+(define (floatSortKey [x : float]) : uint
+  (let* ([bits (floatBitsToUint x)])
+    (bitxor bits (if (= (shr bits 31) (uint 1)) (bitnot (uint 0)) (shl (uint 1) 31)))))
+
+;; The float a floatSortKey came from
+(define (floatFromSortKey [key : uint]) : float
+  (uintBitsToFloat (bitxor key (if (= (shr key 31) (uint 1)) (shl (uint 1) 31) (bitnot (uint 0))))))
+
+;; A uint that sorts as x does among ints
+(define (intSortKey [x : int]) : uint
+  (bitxor (uint x) (shl (uint 1) 31)))

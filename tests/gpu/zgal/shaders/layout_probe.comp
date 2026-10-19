@@ -1,0 +1,24 @@
+// Writes every field of the result from the inputs, so the test can check the C++ struct reads
+// them where the shader wrote them
+void main() {
+    result().s = seed();
+    result().v3 = shift();
+    result().f = inputs()[0];
+    result().v2 = vec2(inputs()[1], inputs()[2]);
+    result().i = -int(inputs()[3]);
+    result().u = uvec3(tail(), tail() + 1u, tail() + 2u);
+    result().m2 = mat2(inputs()[4], inputs()[5], inputs()[6], inputs()[7]);
+    result().inner = Inner(vec2(inputs()[8], inputs()[9]), inputs()[10]);
+    for (int k = 0; k < 3; ++k) {
+        result().scalars[k] = inputs()[11 + k];
+    }
+    for (int k = 0; k < 2; ++k) {
+        result().inners[k] = Inner(vec2(inputs()[14 + 3 * k], inputs()[15 + 3 * k]), inputs()[16 + 3 * k]);
+    }
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            result().m4[column][row] = inputs()[20 + 4 * column + row];
+        }
+    }
+    result().last = tail() * 2u;
+}

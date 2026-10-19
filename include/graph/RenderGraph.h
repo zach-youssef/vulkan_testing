@@ -45,7 +45,7 @@
     - Misusing the API while building the graph (unknown ids, read() with a writing access, a
       surface-relative image without a surface, ...) is a contract violation.
     - compile() and execute() return Results. A graph that can't be compiled (cycles, missing
-      image usage, format mismatches, undeclared writes, ...) fails with ErrorCode::InvalidGraph,
+      image or imported buffer usage, format mismatches, undeclared writes, ...) fails with ErrorCode::InvalidGraph,
       and so do failures to create its resources or its materials' pipelines (with their own
       codes). These happen before anything is submitted, so the frame can be retried, e.g. after
       fixing a shader. Failures after the frame's work started being submitted (a lost device, a
@@ -183,9 +183,55 @@ public: // Nodes
         structureChanged();
     }
 
-    // Disabled nodes drop out of the plan. Plans are cached per set of enabled nodes.
+    // Disabled nodes drop out of the plan. Plans are cached per set of enabled nodes. Nodes
+    // following this one (enableWith) are enabled or disabled with it.
     void setEnabled(NodeId id, bool enabled) {
-        nodeRecord(id).enabled = enabled;
+        auto& record = nodeRecord(id);
+        record.enabled = enabled;
+        record.once = false;
+        for (const NodeId follower : record.followers) {
+            setEnabled(follower, enabled);
+        }
+    }
+
+    // Enables a node for the next frame the graph runs, then disables it: one-time work such as
+    // precomputing a table, or reading a result back once. Calling it again runs it once more;
+    // setEnabled cancels it. A frame skipped before submitting (an out-of-date surface) doesn't count.
+    // Nodes following this one run once with it.
+    void runOnce(NodeId id) {
+        auto& record = nodeRecord(id);
+        record.enabled = true;
+        record.once = true;
+        for (const NodeId follower : record.followers) {
+            runOnce(follower);
+        }
+    }
+
+    // Makes `follower` take `leader`'s enabled state, now and whenever setEnabled or runOnce
+    // changes it: for a node that only prepares another's input and is pointless without it, so
+    // whoever toggles the leader (often code that only knows the leader) toggles both. A node
+    // follows at most one leader.
+    void enableWith(NodeId follower, NodeId leader) {
+        auto& following = nodeRecord(follower);
+        auto& leading = nodeRecord(leader);
+        if (following.leader) {
+            contractViolation("Node '" + following.name + "' already follows '" + nodes_[*following.leader].name + "'");
+        }
+        // A cycle of followers would recurse forever
+        for (std::optional<uint32_t> at = leader.index; at; at = nodes_[*at].leader) {
+            if (*at == follower.index) {
+                contractViolation("Node '" + following.name + "' can't follow '" + leading.name + "', which follows it");
+            }
+        }
+        following.leader = leader.index;
+        following.enabled = leading.enabled;
+        following.once = leading.once;
+        leading.followers.push_back(follower);
+    }
+
+    // Whether the node runs once and hasn't yet
+    bool isPendingOnce(NodeId id) {
+        return nodeRecord(id).once;
     }
 
     bool isEnabled(NodeId id) {
@@ -219,6 +265,15 @@ public: // Resources
             }
             return handle->getBuffer();
         };
+        record.resolveImportedSize = [buffer](uint32_t frame) -> VkDeviceSize {
+            auto handle = buffer.get(frame);
+            return handle ? handle->getSize() : 0;
+        };
+        record.resolveImportedUsage = [buffer](uint32_t frame) -> VkBufferUsageFlags {
+            auto handle = buffer.get(frame);
+            // An unbound buffer is reported where it's resolved
+            return handle ? handle->getUsage() : ~VkBufferUsageFlags(0);
+        };
         record.makeEntry = [buffer](uint32_t frame, DescriptorHeap& heap) {
             return heap.storageBuffer(buffer.get(frame));
         };
@@ -251,6 +306,27 @@ public: // Resources
         record.kind = BufferKind::Created;
         record.perFrame = mode == FrameMode::PerFrame;
         record.size = size;
+        record.extraUsage = extraUsage;
+        record.memory = memory;
+        return addBuffer(std::move(record));
+    }
+
+    // A buffer owned by the graph whose size in bytes is computed at the start of every frame (and
+    // when compiling), e.g. from application state. When the size changes the graph recreates the
+    // buffer, discarding its contents, and its graph entries (storageBufferEntry) follow; frames in
+    // flight keep using the previous one. A size of 0 is a buffer holding nothing (bufferSize() is 0).
+    using BufferSizeSource = std::function<VkDeviceSize(const FrameContext&)>;
+
+    BufferId createBuffer(std::string name, FrameMode mode, BufferSizeSource size, VkBufferUsageFlags extraUsage = 0,
+                          VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+        if (!size) {
+            contractViolation("Buffer '" + name + "' has no size source");
+        }
+        BufferRecord record;
+        record.name = std::move(name);
+        record.kind = BufferKind::Created;
+        record.perFrame = mode == FrameMode::PerFrame;
+        record.sizeSource = std::move(size);
         record.extraUsage = extraUsage;
         record.memory = memory;
         return addBuffer(std::move(record));
@@ -299,6 +375,16 @@ public: // Resources
         return createdBuffer(id, frameIndex)->getBuffer();
     }
 
+    // The size in bytes of the buffer used in a frame
+    VkDeviceSize bufferSize(BufferId id, uint32_t frameIndex) {
+        auto& record = bufferRecord(id);
+        if (record.kind == BufferKind::Imported) {
+            buffer(id, frameIndex);   // An unbound buffer is a contract violation
+            return record.resolveImportedSize(frameIndex);
+        }
+        return record.size;
+    }
+
     VkFormat imageFormat(ImageId id) {
         auto& record = imageRecord(id);
         switch (record.kind) {
@@ -337,7 +423,8 @@ public: // Resources
 public: // Descriptor entries for graph resources
     // Entries of the universal descriptor set for a resource, one per frame, kept up to date as the
     // graph creates and recreates its images and buffers. Give them to materials (MaterialBinding):
-    // a node using the material then declares the matching use automatically.
+    // a node using the material then declares the matching use automatically. A resource the graph
+    // creates gets the usage its entries need.
     FrameBinding<DescriptorEntry> sampledEntry(ImageId image) {
         imageRecord(image);
         return graphEntry(true, image.index, DescriptorType::SampledImage);
@@ -351,6 +438,18 @@ public: // Descriptor entries for graph resources
     FrameBinding<DescriptorEntry> storageBufferEntry(BufferId buffer) {
         bufferRecord(buffer);
         return graphEntry(false, buffer.index, DescriptorType::StorageBuffer);
+    }
+
+    // Elements of a descriptor array chosen each frame, e.g. from what an application shows: the
+    // function runs at the start of every frame, before the graph plans it, and when what it
+    // returns differs from the array's elements the array takes them (DescriptorArray::setElements),
+    // and nodes using the array declare their new uses. The function must outlive the graph.
+    using ElementSource = std::function<std::vector<FrameBinding<DescriptorEntry>>(const FrameContext&)>;
+    void setElementSource(Handle<DescriptorArray> array, ElementSource source) {
+        if (!array || !source) {
+            contractViolation("setElementSource needs an array and a function");
+        }
+        elementSources_.push_back({std::move(array), std::move(source)});
     }
 
 public: // Surface
@@ -434,6 +533,14 @@ public: // Compiling and running
             if (record.node->kind() != NodeKind::Cpu) {
                 TRY(record.node->prepareFrame(frameContext).withContext("preparing node '" + record.name + "'"));
             }
+            // Descriptor arrays whose elements grew need larger buffers of indices
+            for (const auto& material : record.materials) {
+                for (const auto& binding : material->bindings()) {
+                    if (binding.descriptorArray) {
+                        TRY(binding.descriptorArray->reserve(frame).withContext("growing an array of node '" + record.name + "'"));
+                    }
+                }
+            }
         }
 
         // A frame executed by something else (another graph) may still be using imported resources
@@ -465,6 +572,20 @@ public: // Compiling and running
                 VK_TRY(vkResetCommandPool(context_->device(), queue.pool->get(), 0), "Failed to reset command pool");
                 queue.used = 0;
             }
+        }
+        slot.timed.clear();
+        if (timing_) {
+            // The slot's previous frame has finished (beginFrame waited), so its pool can be replaced
+            const uint32_t capacity = 2 * static_cast<uint32_t>(nodes_.size());
+            if (!slot.timestamps || slot.timestampCapacity < capacity) {
+                VkQueryPoolCreateInfo info{};
+                info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+                info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+                info.queryCount = capacity;
+                VK_TRY(VulkanQueryPool::create(slot.timestamps, context_->device(), info), "Failed to create a timestamp query pool");
+                slot.timestampCapacity = capacity;
+            }
+            lastTimedSlot_ = frame;
         }
 
         // Each distinct material is updated once, just before the first submission recording it,
@@ -513,6 +634,15 @@ public: // Compiling and running
             }
         }
 
+        // Nodes that ran once are done
+        for (uint32_t node : plan->order) {
+            auto& record = nodes_[node];
+            if (record.once) {
+                record.once = false;
+                record.enabled = false;
+            }
+        }
+
         lastFrameNumber_ = context_->frameNumber();
         TRY(context_->advanceFrame());
         return result;
@@ -521,6 +651,56 @@ public: // Compiling and running
     // Blocks until everything this graph submitted has completed (not the whole device)
     Result<void> waitIdle() {
         return context_->wait(submittedPoints_);
+    }
+
+    // A GPU node's time in a frame (see setTimingEnabled)
+    struct NodeTiming {
+        NodeId node;
+        std::string name;
+        uint32_t queue;
+        double milliseconds;
+    };
+
+    // Measures each GPU node's time, with timestamps written before and after it, for profiling. A
+    // timestamp waits for the work recorded before it on its queue, so work that would overlap
+    // serializes around timed nodes: compare timings with each other, not with untimed frames.
+    // Work on other queues still runs alongside, and a node's time includes it slowing the node
+    // down (on MoltenVK, a small node beside a large one can take as long as the large one): for a
+    // node's own cost, time it with the others disabled (tools/bench's --only).
+    // Nodes on queues without timestamps, or without graphics or compute (transfer-only queues
+    // can't reset queries), aren't timed.
+    void setTimingEnabled(bool enabled) { timing_ = enabled; }
+    bool timingEnabled() const { return timing_; }
+
+    // The GPU times of the nodes the last timed frame recorded, in recording order, waiting for the
+    // graph's submitted work (like ReadbackNode::pixels); empty before any frame is timed
+    Result<std::vector<NodeTiming>> timings() {
+        std::vector<NodeTiming> result;
+        if (!lastTimedSlot_ || *lastTimedSlot_ >= slots_.size()) {
+            return result;
+        }
+        TRY(waitIdle());
+        auto& slot = slots_[*lastTimedSlot_];
+        if (slot.timed.empty()) {
+            return result;
+        }
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(context_->physicalDevice(), &properties);
+        uint32_t familyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(context_->physicalDevice(), &familyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> families(familyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(context_->physicalDevice(), &familyCount, families.data());
+        for (const auto& [node, queue] : slot.timed) {
+            uint64_t stamps[2] = {};
+            VK_TRY(vkGetQueryPoolResults(context_->device(), **slot.timestamps, 2 * node, 2, sizeof(stamps), stamps,
+                                         sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT),
+                   "Failed to read timestamps");
+            const uint32_t validBits = families[context_->queueDescription(queue).family].timestampValidBits;
+            const uint64_t mask = validBits >= 64 ? ~uint64_t(0) : (uint64_t(1) << validBits) - 1;
+            const uint64_t ticks = ((stamps[1] & mask) - (stamps[0] & mask)) & mask;
+            result.push_back({NodeId{node}, nodes_[node].name, queue, double(ticks) * properties.limits.timestampPeriod / 1.0e6});
+        }
+        return result;
     }
 
     // Called with compiler warnings (by default printed to std::cerr)
@@ -559,16 +739,24 @@ private:
         Access access;
         VkPipelineStageFlags2 shaderStages;
         bool discard;
+        // The material whose binding declared it (NodeBuilder::uses), if one did
+        const Material* material = nullptr;
     };
 
     struct NodeRecord {
         std::string name;
         std::unique_ptr<Node> node;
         bool enabled = true;
+        bool once = false;   // Disabled after the next frame it runs in (runOnce)
+        std::vector<NodeId> followers;   // Enabled with this node (enableWith)
+        std::optional<uint32_t> leader;  // The node this one is enabled with
         bool pinToPrimaryQueue = false;
         std::vector<NodeUse> uses;
         std::optional<RenderTarget> target;
         std::vector<Handle<Material>> materials;
+        // Per material: the versions of its descriptor arrays when its uses were declared, so
+        // they're declared again when an array's elements change
+        std::vector<uint64_t> arrayVersions;
     };
 
     struct ImageRecord {
@@ -596,9 +784,14 @@ private:
         BufferKind kind = BufferKind::Created;
         bool perFrame = false;
         std::function<VkBuffer(uint32_t)> resolveImported;
+        std::function<VkDeviceSize(uint32_t)> resolveImportedSize;
+        // What the imported buffer was created for, if known (not for buffers known by their entry)
+        std::function<VkBufferUsageFlags(uint32_t)> resolveImportedUsage;
         // Creates a storage buffer entry for a frame (imported buffers of a known type)
         std::function<Handle<DescriptorEntry>(uint32_t, DescriptorHeap&)> makeEntry;
         VkDeviceSize size = 0;
+        BufferSizeSource sizeSource;      // Computes size each frame, if given
+        VkDeviceSize realizedSize = 0;    // The size of the buffers created
         VkBufferUsageFlags extraUsage = 0;
         VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         VkBufferUsageFlags usage = 0;
@@ -624,6 +817,11 @@ private:
             uint32_t used = 0;
         };
         std::vector<Queue> queues;
+        // With timing: two timestamps per node (before and after it), and the nodes timed in the
+        // slot's last frame, with their queues
+        std::unique_ptr<VulkanQueryPool> timestamps;
+        uint32_t timestampCapacity = 0;
+        std::vector<std::pair<uint32_t, uint32_t>> timed;
     };
 
     NodeRecord& nodeRecord(NodeId id) {
@@ -754,6 +952,55 @@ private:
         }
     }
 
+    // The sum of the versions of a material's descriptor arrays (each only grows)
+    static uint64_t arrayVersion(const Material& material) {
+        uint64_t version = 0;
+        for (const auto& binding : material.bindings()) {
+            if (binding.descriptorArray) {
+                version += binding.descriptorArray->version();
+            }
+        }
+        return version;
+    }
+
+    // Declares node's uses of material's resources, as its bindings declare them (an array's
+    // elements, not its buffer of indices, which only the CPU writes)
+    void declareMaterialUses(uint32_t node, const Handle<Material>& material) {
+        auto& record = nodes_[node];
+        const auto& bindings = material->bindings();
+        for (size_t i = 0; i < bindings.size(); ++i) {
+            const VkPipelineStageFlags2 stages = bindings[i].stages ? bindings[i].stages : material->defaultStages();
+            std::vector<FrameBinding<DescriptorEntry>> entries{bindings[i].entry};
+            if (bindings[i].descriptorArray) {
+                entries = bindings[i].descriptorArray->elements();
+            }
+            for (const auto& entry : entries) {
+                auto resource = resolveBinding(MaterialBinding{entry, bindings[i].access, stages}, record.name, i);
+                if (resource) {
+                    nodes_[node].uses.push_back({resource->first, resource->second, bindings[i].access, stages, false, material.get()});
+                }
+            }
+        }
+        structureChanged();
+    }
+
+    // Declares again the uses of materials whose descriptor arrays' elements changed
+    void refreshArrayUses() {
+        for (uint32_t n = 0; n < nodes_.size(); ++n) {
+            auto& record = nodes_[n];
+            for (size_t m = 0; m < record.materials.size(); ++m) {
+                const uint64_t version = arrayVersion(*record.materials[m]);
+                if (version == record.arrayVersions[m]) {
+                    continue;
+                }
+                const Material* material = record.materials[m].get();
+                std::erase_if(record.uses, [material](const NodeUse& use) { return use.material == material; });
+                declareMaterialUses(n, record.materials[m]);
+                nodes_[n].arrayVersions[m] = version;
+            }
+        }
+    }
+
     // Creates (or recreates) graph-owned resources whose usage or size changed. If creating one
     // fails, the next call tries again.
     Result<void> prepare() {
@@ -767,7 +1014,25 @@ private:
         } else if (headlessSurfaceExtent_) {
             surfaceExtent_ = *headlessSurfaceExtent_;
         }
-        if (!structureDirty_ && realizedSurfaceExtent_.width == surfaceExtent_.width
+        const FrameContext frame{*context_, *this, context_->currentFrame(), context_->frameNumber(), surfaceExtent_};
+        // Arrays' elements chosen each frame, then the uses of the arrays that changed
+        for (auto& [array, source] : elementSources_) {
+            auto elements = source(frame);
+            if (elements != array->elements()) {
+                array->setElements(std::move(elements));
+            }
+        }
+        refreshArrayUses();
+        // Buffers sized each frame
+        bool resized = false;
+        for (auto& record : buffers_) {
+            if (record->sizeSource) {
+                record->size = record->sizeSource(frame);
+            }
+            const bool exists = record->perFrame ? record->perFrameBuffers != nullptr : static_cast<bool>(record->shared);
+            resized = resized || (exists && record->size != record->realizedSize);
+        }
+        if (!structureDirty_ && !resized && realizedSurfaceExtent_.width == surfaceExtent_.width
             && realizedSurfaceExtent_.height == surfaceExtent_.height) {
             return {};
         }
@@ -828,12 +1093,14 @@ private:
             }
             const VkBufferUsageFlags usage = bufferUsage[i] | record.extraUsage;
             const bool exists = record.perFrame ? record.perFrameBuffers != nullptr : static_cast<bool>(record.shared);
-            if ((exists && usage == record.usage) || usage == 0) {
+            if ((exists && usage == record.usage && record.size == record.realizedSize) || usage == 0) {
                 continue;
             }
             retireBuffer(record);
             record.usage = usage;
-            auto create = [this, size = record.size, usage, memory = record.memory, name = record.name]() {
+            record.realizedSize = record.size;
+            // Vulkan has no empty buffers: one holding nothing has room for a word it never uses
+            auto create = [this, size = std::max<VkDeviceSize>(record.size, 4), usage, memory = record.memory, name = record.name]() {
                 return Buffer<uint8_t>::create(*context_, size, usage, memory)
                     .withContext("creating graph buffer '" + name + "'");
             };
@@ -933,6 +1200,17 @@ private:
             }
             for (const auto& use : record.uses) {
                 if (!use.image) {
+                    // Graph-owned buffers' usage is derived from the uses
+                    const auto& buffer = *buffers_[use.index];
+                    if (buffer.kind != BufferKind::Imported || !buffer.resolveImportedUsage) {
+                        continue;
+                    }
+                    const VkBufferUsageFlags required = requiredBufferUsage(use.access);
+                    if ((buffer.resolveImportedUsage(context_->currentFrame()) & required) != required) {
+                        return graphError("Node '" + record.name + "' uses buffer '" + buffer.name + "' with access "
+                                          + accessName(use.access) + ", which needs usage " + string_VkBufferUsageFlags(required)
+                                          + " the buffer wasn't created with");
+                    }
                     continue;
                 }
                 const auto& image = *images_[use.index];
@@ -972,6 +1250,15 @@ private:
             if (entries.image == image && entries.index == index && entries.type == type) {
                 return entries.collection;
             }
+        }
+        // A created resource gets the usage its entries describe it with, though no node may use
+        // it through them yet (e.g. a descriptor array's elements, which can change)
+        if (image && images_[index]->kind == ImageKind::Created) {
+            images_[index]->extraUsage |= type == DescriptorType::SampledImage ? VK_IMAGE_USAGE_SAMPLED_BIT : VK_IMAGE_USAGE_STORAGE_BIT;
+            structureChanged();
+        } else if (!image && buffers_[index]->kind == BufferKind::Created) {
+            buffers_[index]->extraUsage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            structureChanged();
         }
         auto collection = context_->resources().create<PerFrameHandles<DescriptorEntry>>(*context_, [](uint32_t) {
             return Handle<DescriptorEntry>();
@@ -1279,6 +1566,14 @@ private:
             }
             recordBarriers(barriers);
 
+            // Timestamps around the node, after its barriers: the first waits for the work before it
+            const bool timed = timing_ && timesQueue(queue);
+            if (timed) {
+                vkCmdResetQueryPool(commandBuffer, **slot.timestamps, 2 * node, 2);
+                vkCmdWriteTimestamp2(commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, **slot.timestamps, 2 * node);
+            }
+            // Named for profilers and GPU captures
+            context_->beginLabel(commandBuffer, nodes_[node].name.c_str());
             RecordContext recordContext{frameContext, commandBuffer, {0, 0}};
             if (record.node->kind() == NodeKind::Graphics) {
                 recordContext.renderExtent = beginRendering(commandBuffer, *record.target, frame, acquired);
@@ -1286,6 +1581,11 @@ private:
                 vkCmdEndRendering(commandBuffer);
             } else {
                 record.node->record(recordContext);
+            }
+            context_->endLabel(commandBuffer);
+            if (timed) {
+                vkCmdWriteTimestamp2(commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, **slot.timestamps, 2 * node + 1);
+                slot.timed.emplace_back(node, queue);
             }
         }
 
@@ -1347,6 +1647,19 @@ private:
             state->resolvePending(queue, value);
         }
         return value;
+    }
+
+    // Whether nodes on a queue can be timed: it has timestamps, and resets queries
+    bool timesQueue(uint32_t queue) {
+        const auto& description = context_->queueDescription(queue);
+        if (!(description.flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
+            return false;
+        }
+        uint32_t familyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(context_->physicalDevice(), &familyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> families(familyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(context_->physicalDevice(), &familyCount, families.data());
+        return families[description.family].timestampValidBits > 0;
     }
 
     VkImageView attachmentView(ImageId id, uint32_t frame, const Swapchain::Acquired& acquired) {
@@ -1417,6 +1730,11 @@ private:
     std::vector<std::unique_ptr<BufferRecord>> buffers_;
     std::vector<std::pair<uint32_t, uint32_t>> dependencies_;
     std::vector<GraphEntries> graphEntries_;
+    struct ElementSourceRecord {
+        Handle<DescriptorArray> array;
+        ElementSource source;
+    };
+    std::vector<ElementSourceRecord> elementSources_;
     // Resources imported automatically for materials' per-frame entries, by entry collection
     std::map<const void*, std::pair<bool, uint32_t>> entryImports_;
 
@@ -1429,6 +1747,9 @@ private:
     std::optional<uint64_t> lastFrameNumber_;
     VulkanContext::TimelinePoints submittedPoints_;
     PerFrame<FrameSlot> slots_;
+
+    bool timing_ = false;
+    std::optional<uint32_t> lastTimedSlot_;   // The frame slot of the last frame timed
 };
 
 // NodeBuilder's methods, which need RenderGraph
@@ -1501,18 +1822,9 @@ inline NodeBuilder& NodeBuilder::uses(Handle<Material> material) {
     if (std::find(record.materials.begin(), record.materials.end(), material) != record.materials.end()) {
         return *this;
     }
-    // The material's resources, as its bindings declare them
-    const auto& bindings = material->bindings();
-    for (size_t i = 0; i < bindings.size(); ++i) {
-        auto resource = graph_->resolveBinding(bindings[i], record.name, i);
-        if (!resource) {
-            continue;
-        }
-        const VkPipelineStageFlags2 stages = bindings[i].stages ? bindings[i].stages : material->defaultStages();
-        graph_->nodes_[node_].uses.push_back({resource->first, resource->second, bindings[i].access, stages, false});
-    }
+    graph_->declareMaterialUses(node_, material);
+    graph_->nodes_[node_].arrayVersions.push_back(RenderGraph::arrayVersion(*material));
     graph_->nodes_[node_].materials.push_back(std::move(material));
-    graph_->structureChanged();
     return *this;
 }
 

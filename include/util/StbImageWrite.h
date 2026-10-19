@@ -1,4 +1,6 @@
-#pragma once
+// No #pragma once: like stb_image_write.h itself, a translation unit may include it again after
+// defining STB_IMAGE_WRITE_IMPLEMENTATION (e.g. after zgal/Main.h has included it), which compiles
+// the implementation then.
 
 /*
  stb_image_write, without its warnings. Its HDR writer uses sprintf, which macOS's SDK deprecates,

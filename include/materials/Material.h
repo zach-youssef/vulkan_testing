@@ -6,6 +6,7 @@
 #include "core/VkUtil.h"
 #include "core/VulkanContext.h"
 #include "core/FrameResources.h"
+#include "descriptors/DescriptorArray.h"
 #include "descriptors/DescriptorHeap.h"
 #include "graph/GraphTypes.h"
 #include "materials/AttachmentFormats.h"
@@ -50,6 +51,8 @@ struct MaterialBinding {
     Access access = Access::SampledRead;
     // The shader stages using it; 0 for the material's (vertex and fragment, or compute)
     VkPipelineStageFlags2 stages = 0;
+    // An array binding's elements (entry is then the array's own buffer)
+    Handle<DescriptorArray> descriptorArray;
 
     static MaterialBinding sampled(FrameBinding<DescriptorEntry> entry, VkPipelineStageFlags2 stages = 0) {
         return {std::move(entry), Access::SampledRead, stages};
@@ -69,6 +72,16 @@ struct MaterialBinding {
     static MaterialBinding storageBuffer(FrameBinding<DescriptorEntry> entry, Access access = Access::StorageBufferRead,
                                          VkPipelineStageFlags2 stages = 0) {
         return {std::move(entry), access, stages};
+    }
+
+    // An array of sampled images, storage images or storage buffers, all used with one access
+    // (that of their kind, as above). It pushes the index of the array's buffer of indices (see
+    // DescriptorArray), and a node using the material uses every element.
+    static MaterialBinding array(Handle<DescriptorArray> elements, Access access, VkPipelineStageFlags2 stages = 0) {
+        if (!elements) {
+            contractViolation("MaterialBinding::array was given no DescriptorArray");
+        }
+        return {elements->entries(), access, stages, std::move(elements)};
     }
 };
 
@@ -107,6 +120,9 @@ public:
     std::vector<uint8_t> pushConstants(uint32_t frameIndex) {
         std::vector<uint8_t> data(bindings_.size() * sizeof(uint32_t));
         for (size_t i = 0; i < bindings_.size(); ++i) {
+            if (bindings_[i].descriptorArray) {
+                bindings_[i].descriptorArray->update(frameIndex);
+            }
             auto entry = bindings_[i].entry.get(frameIndex);
             if (!entry) {
                 contractViolation("Material binding " + std::to_string(i) + " has no descriptor entry for frame "

@@ -1,0 +1,48 @@
+;; A program with a generated main (make test-main): options set the app's parameters, C++ gives the
+;; rest (painter.cpp), and it writes its capture where the command line says. It paints a square the
+;; size --side says, red as --level says (scaled by what C++ gives), with a band of the input image's
+;; first texel, after counting the data C++ gives.
+
+(compute-material Paint
+  (workgroup 8 8)
+  (bindings
+   (picture texture)
+   (pick sampler)
+   (canvas (storage-image write)))
+  (push (level float) (side uint))
+  (compute
+   (let* ([at globalInvocationId.xy])
+     (when (and (< at.x side) (< at.y side))
+       (store! canvas (ivec2 at)
+               (if (= at.y 0)
+                   (sample picture pick (vec2 0.25 0.25))
+                   (vec4 level 0.0 0.0 1.0)))))))
+
+(graph Painting
+  (parameter level float)
+  (parameter side uint)
+  (input file path)
+  (input marks (data uint))
+  (image-file picture file #:color linear)
+  (sampler pick #:filter nearest)
+  (image canvas rgba8 (fixed side side) #:frames shared)
+  (material paint Paint picture pick canvas #:push ((level level) (side side)) #:invocations (side side))
+  (dispatch painting paint)
+  (readback result canvas))
+
+(app Painter
+  (parameter level float)
+  (parameter side uint)
+  (parameter source path)
+  (parameter destination path)
+  (parameter scale float)
+  (extern (note [level : float]) : float)
+  (run Painting (level (note (* level scale))) (side side) (file source)))
+
+(main Painter
+  (about "Paints a square")
+  (option level "--level" "how red" #:default 1.0 #:range (0.0 1.0))
+  (option side "--side" "the square's side, in pixels" #:default 4 #:range (1 64))
+  (positional source "an image, whose first texel is the top row")
+  (positional destination "the PNG file to write")
+  (capture result #:to destination))

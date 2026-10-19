@@ -1,0 +1,134 @@
+;; The web backend's tests of apps and functions compiled to TypeScript (web/tests/apps.test.ts)
+
+(import random)
+
+;; Computed by the GPU (WGSL) and the CPU (TypeScript) from the same definition, as ZgalTest does with
+;; C++
+(define hashRange 1000)
+
+(define (evaluate [i : uint]) : vec4
+  (let* ([t (/ (float i) 7.0)]
+         [v (normalize (vec3 (sin t) (cos (* 2.0 t)) (+ 1.0 t)))]
+         [c (cross v (vec3 0.0 1.0 0.0))]
+         [s (sum ([k (range 0 4)]) (pow (+ 1.0 (* 0.1 (float k))) 1.5))]
+         [blend (mix c v (smoothstep 0.0 4.0 t))])
+    (vec4 blend.zx (+ s (exp (- t))) (float (remainder (pcgHash i) hashRange)))))
+
+(compute-material Evaluate
+  (workgroup 64)
+  (bindings (evaluated (buffer-array vec4)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (write! (at evaluated i) (evaluate i))))))
+
+(graph Evaluating
+  (parameter count uint)
+  (buffer evaluated vec4 count #:frames shared)
+  (material evaluator Evaluate (evaluated evaluated) #:push ((count count)) #:invocations (count))
+  (dispatch evaluate evaluator)
+  (readback readEvaluated evaluated))
+
+;; C++'s semantics, which TypeScript's doubles emulate: floats rounded to 32 bits, integers wrapping
+;; and truncating, conversions, small integers, vectors, matrices and swizzles
+(struct Exact
+  (sum float)
+  (product int)
+  (quotient int)
+  (remains int)
+  (under uint)
+  (shifted uint)
+  (narrowed uint)
+  (signedNarrowed int)
+  (scaled vec3)
+  (transformed vec2)
+  (swapped vec2)
+  (truncated ivec2)
+  (inverted mat2))
+
+(define (exact [a : float] [b : float] [big : int] [u : uint]) : Exact
+  (Exact (+ a b)
+         (* big big)
+         (/ (- 0 7) 2)
+         (remainder (- 0 7) 2)
+         (- u 1)
+         (shl (+ u 1) 31)
+         (uint (uint8 (+ u 300)))
+         (int (int8 (+ big 135)))
+         (* (vec3 1.0 2.0 3.0) a)
+         (* (mat2 1.0 2.0 3.0 4.0) (vec2 1.0 1.0))
+         (.yx (vec2 a b))
+         (ivec2 (vec2 -1.5 2.5))
+         (inverse (mat2 2.0 0.0 0.0 4.0))))
+
+;; Loops, folds and collect in functions
+(define (triangle [n : uint]) : uint
+  (sum ([k (range 0 (+ n 1))]) k))
+
+(define (collatz [n : uint]) : uint
+  (let* ([(steps x) (while ([steps (uint 0)] [x n]) (not (= x 1))
+                       (values (+ steps 1) (if (= (remainder x 2) 0) (/ x 2) (+ (* 3 x) 1))))])
+    steps))
+
+;; Fills its buffer from a push constant, for apps to set and read back
+(compute-material Fill
+  (workgroup 1)
+  (bindings (filled (buffer-array uint)))
+  (push (value uint))
+  (compute (write! (at filled globalInvocationId.x) (+ value globalInvocationId.x))))
+
+(graph Shown
+  (parameter base uint)
+  (input value (per-frame uint))
+  (input extra (per-frame uint))
+  (buffer shown uint 2 #:frames shared)
+  (buffer extraOut uint 1 #:frames shared)
+  (material fill Fill (filled shown) #:push ((value (+ value base))) #:invocations (2))
+  (material fillExtra Fill (filled extraOut) #:push ((value extra)) #:invocations (1))
+  (dispatch filling fill)
+  (dispatch extraFilling fillExtra)
+  (dispatch onceFilling fillExtra #:once #t)
+  (readback readOut shown)
+  (readback readExtra extraOut))
+
+(graph Waiting
+  (buffer waited uint 1 #:frames shared)
+  (material fillWaited Fill (filled waited) #:push ((value 77)) #:invocations (1))
+  (dispatch waiting fillWaited))
+
+;; An app: handlers of every event, effects, read events, an extern function, phases (a graph until
+;; started), node enables and node runs
+(app Probe
+  (parameter base uint)
+  (parameter label float)
+  (extern (note [x : uint]) : uint)
+  (state
+   (started bool #f)
+   (presses uint 0)
+   (held vec2 (vec2 0.0))
+   (cursor vec2 (vec2 0.0))
+   (scroll float 0.0)
+   (time float 0.0)
+   (noted uint 0)
+   (seen (data uint) (empty-data uint))
+   (extraOn bool #t))
+  (on (key-pressed space a)
+    (print! "pressed " (+ state.presses 1) " at " label " " state.started)
+    (with state #:presses (+ state.presses 1)))
+  (on (key-released s) (with state #:started #t))
+  (on (key-pressed e) (with state #:extraOn (not state.extraOn)))
+  (on (key-pressed o) (run-once! onceFilling) state)
+  (on (key-pressed escape) (quit!))
+  (on (key-pressed r) (resize! 32 16) (set-frames-in-flight! 3))
+  (on (mouse-pressed left at) (with state #:held at))
+  (on (cursor-moved at) (with state #:cursor at))
+  (on (scrolled by) (with state #:scroll (+ state.scroll by.y)))
+  (on (frame dt) (with state #:time (+ state.time dt) #:noted (note frameNumber)))
+  (on (read readOut copied) (with state #:seen copied))
+  (run Waiting #:when (not state.started))
+  (run Shown
+    (base base)
+    (value state.presses)
+    (extra (+ state.presses 100))
+    #:enabled ((extraFilling state.extraOn))))

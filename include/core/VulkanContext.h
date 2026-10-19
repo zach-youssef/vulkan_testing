@@ -8,11 +8,13 @@
 #include "core/DeviceSelection.h"
 #include "core/DeviceFeatures.h"
 #include "core/FrameResources.h"
+#include "core/Platform.h"
 #include "descriptors/UniversalSet.h"
 
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <list>
@@ -165,8 +167,14 @@ struct VulkanContextConfig {
     // Size of the universal descriptor set (see DescriptorHeap)
     DescriptorCapacities descriptorCapacities;
 
-    // Directories the shader library looks for SPIR-V in (see ShaderLibrary)
-    std::vector<std::string> shaderSearchPaths;
+    // Directories the shader library looks for SPIR-V in (see ShaderLibrary). By default, the
+    // directory "shaders" beside the executable.
+    std::vector<std::string> shaderSearchPaths = defaultShaderSearchPaths();
+
+    // Directories assets (models, images) loaded by relative path are found in, in order (see
+    // VulkanContext::findAsset): by default, the directory "assets" beside the executable. Without
+    // any, relative paths are relative to the working directory.
+    std::vector<std::string> assetSearchPaths = defaultAssetSearchPaths();
 
     // Number of frames the CPU may record while the GPU is still executing earlier ones. Can be
     // changed later with VulkanContext::setFramesInFlight.
@@ -228,7 +236,11 @@ public:
 public: // Accessors
     VkInstance instance() { return **instance_; }
     VkPhysicalDevice physicalDevice() { return physicalDevice_; }
-    // The features the device was created with: the wrapper's and VulkanContextConfig::features
+    // What the device's subgroups support: their size, stages and operations (generated ZGAL
+    // materials check their shaders' needs against it)
+    const VkPhysicalDeviceSubgroupProperties& subgroupProperties() const { return subgroupProperties_; }
+    // The features the device was created with: the wrapper's, VulkanContextConfig::features, and
+    // those of DeviceFeatures::optional() the device supports
     const DeviceFeatures& enabledFeatures() const { return enabledFeatures_; }
     VkDevice device() { return **device_; }
     ResourceManager& resources() { return *resourceManager_; }
@@ -241,6 +253,27 @@ public: // Accessors
     // included to use it.
     ShaderLibrary& shaders();
 
+    // Where an asset (a model, an image) is: an absolute path as it is, a relative one in the first
+    // of the asset search paths holding it (or, without any, relative to the working directory).
+    // Fails with ErrorCode::NotFound, naming where it looked.
+    Result<std::filesystem::path> findAsset(const std::filesystem::path& path) const {
+        if (path.is_absolute() || config_.assetSearchPaths.empty()) {
+            if (std::filesystem::exists(path)) {
+                return path;
+            }
+            return Error(ErrorCode::NotFound, "Asset '" + path.string() + "' not found");
+        }
+        std::string searched;
+        for (const auto& directory : config_.assetSearchPaths) {
+            const std::filesystem::path candidate = std::filesystem::path(directory) / path;
+            if (std::filesystem::exists(candidate)) {
+                return candidate;
+            }
+            searched += (searched.empty() ? "" : ", ") + directory;
+        }
+        return Error(ErrorCode::NotFound, "Asset '" + path.string() + "' not found in the asset search paths (" + searched + ")");
+    }
+
     bool hasSurface() { return surface_ != nullptr; }
     VkSurfaceKHR surface() {
         assert(hasSurface() && "Context was created without a surface");
@@ -248,6 +281,23 @@ public: // Accessors
     }
 
     bool validationEnabled() { return messenger_ != VK_NULL_HANDLE; }
+
+    // Names the commands recorded between beginLabel and endLabel (which nest) for debuggers and
+    // profilers, e.g. GPU captures and Instruments' Metal traces. Does nothing where the instance
+    // lacks VK_EXT_debug_utils (labelsEnabled()).
+    void beginLabel(VkCommandBuffer commandBuffer, const char* name) {
+        if (beginLabel_) {
+            VkDebugUtilsLabelEXT label{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
+            label.pLabelName = name;
+            beginLabel_(commandBuffer, &label);
+        }
+    }
+    void endLabel(VkCommandBuffer commandBuffer) {
+        if (endLabel_) {
+            endLabel_(commandBuffer);
+        }
+    }
+    bool labelsEnabled() const { return beginLabel_ != nullptr; }
 
     std::string deviceName() {
         VkPhysicalDeviceProperties properties{};
@@ -720,8 +770,13 @@ private:
                 extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
             }
         }
-        if (useValidation) {
+        // Debug utils name spans of commands for debuggers and profilers (labelCommands), and
+        // deliver validation messages
+        const bool useDebugUtils = hasInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        if (useDebugUtils) {
             extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
+        if (useValidation) {
             layers.push_back(validationLayer);
         }
 
@@ -763,6 +818,16 @@ private:
         createInfo.ppEnabledLayerNames = layers.data();
 
         VK_TRY(VulkanInstance::create(instance_, createInfo), "Failed to create instance");
+        if (useDebugUtils) {
+            beginLabel_ = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
+                vkGetInstanceProcAddr(**instance_, "vkCmdBeginDebugUtilsLabelEXT"));
+            endLabel_ = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
+                vkGetInstanceProcAddr(**instance_, "vkCmdEndDebugUtilsLabelEXT"));
+            if (!beginLabel_ || !endLabel_) {
+                beginLabel_ = nullptr;
+                endLabel_ = nullptr;
+            }
+        }
 
         if (useValidation) {
             VkDebugUtilsMessengerCreateInfoEXT messengerInfo{};
@@ -830,6 +895,12 @@ private:
                 continue;
             }
             physicalDevice_ = device;
+            subgroupProperties_.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+            VkPhysicalDeviceProperties2 properties2{};
+            properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            properties2.pNext = &subgroupProperties_;
+            vkGetPhysicalDeviceProperties2(device, &properties2);
+            subgroupProperties_.pNext = nullptr;
             graphicsFamily_ = *graphicsFamily;
             presentFamily_.reset();
             if (hasSurface()) {
@@ -895,10 +966,13 @@ private:
             queueFamilies_.push_back(family);
         }
 
-        // Every feature was checked when picking the physical device
-        const DeviceFeatures& features = enabledFeatures_;
+        // Every feature was checked when picking the physical device; optional ones are enabled
+        // when it has them
+        enabledFeatures_.add(DeviceFeatures::optional().common(DeviceFeatures::supported(physicalDevice_)));
+        DeviceFeatures features = enabledFeatures_;
 
-        std::vector<const char*> extensions;
+        // Those of extensions' features enabled, then the surface's
+        std::vector<const char*> extensions = features.extensions();
         if (hasSurface()) {
             extensions.insert(extensions.end(), deviceExtensions.begin(), deviceExtensions.end());
         }
@@ -968,9 +1042,12 @@ private:
 
     std::unique_ptr<VulkanInstance> instance_;
     VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
+    PFN_vkCmdBeginDebugUtilsLabelEXT beginLabel_ = nullptr;   // Null without VK_EXT_debug_utils
+    PFN_vkCmdEndDebugUtilsLabelEXT endLabel_ = nullptr;
     std::unique_ptr<VulkanSurface> surface_;
 
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
+    VkPhysicalDeviceSubgroupProperties subgroupProperties_{};
     uint32_t graphicsFamily_ = 0;
     std::optional<uint32_t> presentFamily_;
     std::unique_ptr<VulkanDevice> device_;

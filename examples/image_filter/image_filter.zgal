@@ -1,0 +1,234 @@
+;; image_filter: a headless command-line GPU image filter, and the example of a program without a
+;; window (no window system: a context and a render graph). Its shaders, graph, app and main are
+;; all here, in ZGAL (dsl/; `make docs` for the language): the build generates image_filter.zgal.h,
+;; its main (image_filter.zgal.main.cpp) and the complete shaders, and the example has no C++ of
+;; its own.
+;;
+;;     image_filter <in.png|jpg> <out.png> [--blur <radius>] [--edges] [--threshold <0..1>]
+;;                  [--validation] [--plan]
+;;
+;; Every filter is a compute pass (a dispatch) over the graph's images, run once per pixel of the
+;; working image (16 x 16 workgroups):
+;;
+;;     input (sRGB) -load-> working -blur rows-> scratch -blur columns-> working
+;;                          working -sobel rows-> scratch -sobel columns-> working
+;;                          working -threshold-> working (in place)
+;;                          working -store-> encoded (sRGB bytes) -readback-> PNG
+;;
+;; Each filter takes the working image back to the working image, so the graph contains every pass
+;; and the ones the user didn't ask for are disabled. Their uses still count when the graph sizes
+;; and allocates its images, so toggling passes never reallocates, and plans are cached per set of
+;; enabled nodes: a long-running tool (e.g. an interactive editor) could flip filters between
+;; frames and only compile each combination once.
+;;
+;; Colour: the input is an sRGB texture, so sampling it decodes to linear colour. The working
+;; images hold that linear colour as half floats (8 bits would band in linear space), and blurring
+;; happens in linear light. Storage images can't be sRGB, so the store pass encodes sRGB itself into
+;; a UNORM image. Without filters the output therefore matches the input.
+
+;; From the standard library: luminance, srgbEncode and srgbDecode
+(import color)
+
+;; The dispatch is rounded up to whole workgroups, so some invocations fall outside the image
+(define (outside [texel : ivec2] [size : ivec2]) : bool
+  (any (greaterThanEqual texel size)))
+
+;; Reads a storage image, clamping to its edge so kernels don't darken the border
+(define (loadClamped [image : image2D] [texel : ivec2]) : vec4
+  (image-load image (clamp texel (ivec2 0) (- (image-size image) 1))))
+
+;; Brightness as people perceive it (and as image editors show it): sRGB-encoded luminance
+(define (perceivedBrightness [linear : vec3]) : float
+  (.r (srgbEncode (vec3 (luminance linear)))))
+
+;; Copies the input into the working image. The input is an sRGB texture, so sampling decodes it to
+;; linear colour.
+(compute-material Load
+  (workgroup 16 16)
+  (bindings
+   (source texture)
+   (sourceSampler sampler)
+   (working (storage-image)))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     (unless (outside texel (image-size working))
+       (store! working texel (fetch source sourceSampler texel 0))))))
+
+;; One direction of a separable Gaussian blur, in linear light (so bright and dark areas mix as
+;; light does)
+(compute-material Blur
+  (workgroup 16 16)
+  (bindings
+   (source (storage-image))
+   (destination (storage-image)))
+  (push
+   (direction ivec2)            ; (1, 0) for the horizontal pass, (0, 1) for the vertical one
+   (radius int)                 ; In pixels; the kernel covers [-radius, radius]
+   (sigma float))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     (unless (outside texel (image-size destination))
+       (let* ([(weighted total)
+               (fold ([weighted (vec4 0.0)] [total 0.0])
+                     ([i (range (- radius) (+ radius 1))])
+                 (let* ([weight (exp (/ (- (float (* i i))) (* 2.0 sigma sigma)))])
+                   (values (+ weighted (* weight (loadClamped source (+ texel (* i direction)))))
+                           (+ total weight))))])
+         (store! destination texel (/ weighted total)))))))
+
+;; The perceived brightness of a pixel, clamped to the image
+(define (brightness [image : image2D] [texel : ivec2]) : float
+  (perceivedBrightness (.rgb (loadClamped image texel))))
+
+;; The horizontal half of a separable Sobel operator on perceived brightness. The 3x3 kernels
+;; factor into a [1 2 1] smoothing and a [-1 0 1] difference:
+;;     Gx = [1 2 1]^T * [-1 0 1]      Gy = [-1 0 1]^T * [1 2 1]
+;; This pass applies the horizontal factors, storing the difference (for Gx) in red and the
+;; smoothing (for Gy) in green. SobelColumns applies the vertical ones.
+(compute-material SobelRows
+  (workgroup 16 16)
+  (bindings
+   (source (storage-image))
+   (destination (storage-image)))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     (unless (outside texel (image-size destination))
+       (let* ([left (brightness source (- texel (ivec2 1 0)))]
+              [centre (brightness source texel)]
+              [right (brightness source (+ texel (ivec2 1 0)))])
+         (store! destination texel (vec4 (- right left) (+ left (* 2.0 centre) right) 0.0 1.0)))))))
+
+;; The vertical half of the separable Sobel operator. Writes the gradient magnitude as grey.
+(compute-material SobelColumns
+  (workgroup 16 16)
+  (bindings
+   (source (storage-image))
+   (destination (storage-image)))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     (unless (outside texel (image-size destination))
+       (let* ([above (.rg (loadClamped source (- texel (ivec2 0 1))))]
+              [centre (.rg (loadClamped source texel))]
+              [below (.rg (loadClamped source (+ texel (ivec2 0 1))))]
+              [gx (+ above.r (* 2.0 centre.r) below.r)]
+              [gy (- below.g above.g)]
+              ;; The magnitude is in perceived brightness (at most 4 * sqrt(2) for a hard edge):
+              ;; scale it so a full-contrast edge saturates, then decode so the output shows that
+              ;; brightness
+              [magnitude (clamp (/ (length (vec2 gx gy)) 4.0) 0.0 1.0)])
+         (store! destination texel (vec4 (srgbDecode (vec3 magnitude)) 1.0)))))))
+
+;; Makes each pixel black or white, in place. Compares perceived brightness, so a threshold of 0.5
+;; splits at the mid grey of an image editor.
+(compute-material Threshold
+  (workgroup 16 16)
+  (bindings
+   (working (storage-image)))
+  (push
+   (threshold float))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     (unless (outside texel (image-size working))
+       (let* ([colour (image-load working texel)]
+              [value (if (>= (perceivedBrightness colour.rgb) threshold) 1.0 0.0)])
+         (store! working texel (vec4 (vec3 value) colour.a)))))))
+
+;; Encodes the linear working image as sRGB bytes for the PNG. Storage images can't be sRGB, so
+;; the output is UNORM and the encoding happens here.
+(compute-material Store
+  (workgroup 16 16)
+  (bindings
+   (working (storage-image))
+   (encoded (storage-image)))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     (unless (outside texel (image-size encoded))
+       (let* ([colour (image-load working texel)])
+         (store! encoded texel (vec4 (srgbEncode colour.rgb) (clamp colour.a 0.0 1.0))))))))
+
+;; Each filter takes the working image back to the working image, so the graph contains every pass
+;; and the ones the user didn't ask for are disabled
+(graph FilterGraph
+  (parameter radius int)          ; Only used if the blur runs, but valid either way
+  (parameter level float)         ; The threshold, if it runs
+  (input file path)
+  ;; The input, decoded from sRGB when sampled
+  (image-file source file #:color srgb)
+
+  (constant imageWidth (width source))
+  (constant imageHeight (height source))
+  (sampler nearest #:filter nearest #:address clamp-to-edge)
+  ;; The graph's images. They're only used within one frame, so one copy is shared by every frame
+  ;; in flight rather than one per frame. Linear colour as half floats: 8 bits would band.
+  (image working rgba16f (extent-of source) #:frames shared)
+  (image scratch rgba16f (extent-of source) #:frames shared)
+  (image encoded rgba8 (extent-of source) #:frames shared)
+
+  ;; Bindings' accesses are what the graph synchronizes on: e.g. the blur's column pass reading
+  ;; scratch waits for the row pass writing it
+  (material load Load source (sourceSampler nearest) working
+            #:invocations (imageWidth imageHeight))
+  ;; The kernel spans two standard deviations either side
+  (material blurRows Blur (source working) (destination scratch)
+            #:push ((direction (ivec2 1 0)) (radius radius) (sigma (/ (float radius) 2.0)))
+            #:invocations (imageWidth imageHeight))
+  (material blurColumns Blur (source scratch) (destination working)
+            #:push ((direction (ivec2 0 1)) (radius radius) (sigma (/ (float radius) 2.0)))
+            #:invocations (imageWidth imageHeight))
+  (material sobelRows SobelRows (source working) (destination scratch)
+            #:invocations (imageWidth imageHeight))
+  (material sobelColumns SobelColumns (source scratch) (destination working)
+            #:invocations (imageWidth imageHeight))
+  (material threshold Threshold working
+            #:push ((threshold level))
+            #:invocations (imageWidth imageHeight))
+  (material store Store working encoded
+            #:invocations (imageWidth imageHeight))
+
+  ;; Insertion order is program order wherever passes use the same image
+  (dispatch load load)
+  ;; The app enables the filters asked for
+  (dispatch blurRows blurRows)
+  (dispatch blurColumns blurColumns)
+  (dispatch sobelRows sobelRows)
+  (dispatch sobelColumns sobelColumns)
+  (dispatch threshold threshold)
+  (dispatch store store)
+  (readback readback encoded))
+
+;; Which filters run is the app's state, so the passes are enabled each frame: an interactive
+;; editor would change it between frames, and the graph would only compile each combination of
+;; passes once
+(app FilterApp
+  (parameter picture path)
+  (parameter destination path)
+  (parameter blur bool)
+  (parameter radius int)
+  (parameter edges bool)
+  (parameter binarize bool)
+  (parameter level float)
+  (state
+   (blurring bool blur)
+   (findingEdges bool edges)
+   (binarizing bool binarize))
+  (run FilterGraph
+    (file picture)
+    (radius radius)
+    (level level)
+    #:enabled ((blurRows state.blurring)
+               (blurColumns state.blurring)
+               (sobelRows state.findingEdges)
+               (sobelColumns state.findingEdges)
+               (threshold state.binarizing))))
+
+;; The program: headless only, filtering the image the command line names into the PNG it names.
+;; Disabled passes still need valid parameters, hence the defaults.
+(main FilterApp
+  (about "Filters an image on the GPU: blur, then edges, then threshold, as asked. Without any, the image is copied.")
+  (positional picture "the image to filter (PNG, JPEG, ...)")
+  (positional destination "the PNG file to write")
+  (option radius "--blur" "Gaussian blur, radius in pixels" #:default 1 #:range (1 64) #:given blur)
+  (flag edges "--edges" "Sobel edge magnitude, as grey")
+  (option level "--threshold" "black or white by perceived brightness, 0.5 being mid grey" #:default 0.5
+          #:range (0.0 1.0) #:given binarize)
+  (capture readback #:to destination))

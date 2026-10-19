@@ -1,0 +1,286 @@
+;; A lit 3D scene: the example of a "normal" forward renderer. Each frame runs three passes,
+;;   1. shadow map: the scene's depth from a directional light, into a fixed-size depth image
+;;   2. lit:        PBR shading with filtered shadows into a linear HDR image the size of the window
+;;   3. tonemap:    exposure and an ACES curve from the HDR image to the window (or, headless, to an
+;;                  image read back into a PNG)
+;; and the render graph derives their order, barriers and queues from what each pass uses. The
+;; shaders, the graph, the app (the camera, the sun and the input handlers) and its main are all
+;; here, in ZGAL (dsl/; `make docs` for the language), and the scene is a glTF file
+;; (assets/scene.gltf, written by make_scene.py): the example has no C++ of its own.
+;;
+;;   scene_example                                     interactive, in a window
+;;   scene_example --frames N [--capture out.png] [--size WxH]
+;;                                                     headless smoke test: N frames, shadows off
+;;                                                     for a quarter of them and the view resized
+;;                                                     halfway (and back)
+;;   scene_example --window --frames N                 the same in a window
+
+;; From the standard library: PI; acesFilmic; lookAt, perspective, ortho and orbit
+(import math)
+(import color)
+(import camera)
+
+;; Per-frame data shared by the shadow and lit passes, computed by the app from its state
+(struct SceneUniforms
+  (viewProjection mat4)         ; Camera
+  (lightViewProjection mat4)    ; World to shadow map clip space
+  (cameraPosition vec3)
+  (lightDirection vec3)         ; Unit vector towards the light
+  (lightRadiance vec3)          ; Linear colour times intensity
+  (skyAmbient vec3)             ; Ambient light from above
+  (groundAmbient vec3))         ; Ambient light from below
+
+;; The scene's vertices: world space (nothing moves), each carrying its surface's material in its
+;; colour (the model's COLOR_0)
+(vertex-format SceneVertex
+  (position vec3)
+  (normal vec3)
+  (color vec4))                 ; rgb: linear albedo, a: roughness
+
+;; The unit vector towards a sun at an azimuth (around +Y, from +Z) and an elevation. Used by the
+;; app (compiled to C++) and could be by shaders.
+(define (sunDirection [azimuth : float] [elevation : float]) : vec3
+  (vec3 (* (cos elevation) (sin azimuth)) (sin elevation) (* (cos elevation) (cos azimuth))))
+
+;; Fraction of light reaching a point, filtered over 3x3 bilinear comparisons (PCF). The sampler
+;; compares: sampling returns the fraction of texels closer to the light than the reference.
+(define (shadowFactor [shadowMap : texture2D] [shadowSampler : sampler] [lightViewProjection : mat4]
+                      [position : vec3] [normal : vec3] [toLight : vec3]) : float
+  (let* ([texelSize (/ 1.0 (vec2 (texture-size shadowMap 0)))]
+         ;; Offset along the normal, more at grazing angles, so surfaces don't shadow themselves
+         [cosTheta (clamp (dot normal toLight) 0.0 1.0)]
+         [offsetPosition (+ position (* normal (+ 0.02 (* 0.04 (- 1.0 cosTheta)))))]
+         [clip (* lightViewProjection (vec4 offsetPosition 1.0))]
+         [ndc (/ clip.xyz clip.w)]
+         ;; Vulkan NDC y points down the image, matching texture coordinates
+         [uv (+ (* ndc.xy 0.5) 0.5)]
+         [reference (- ndc.z 0.001)])
+    (/ (sum ([y (range -1 2)] [x (range -1 2)])
+            (sample-compare shadowMap shadowSampler (+ uv (* (vec2 x y) texelSize)) reference))
+       9.0)))
+
+;; Cook-Torrance GGX specular for a dielectric (F0 = 0.04) plus Lambert diffuse
+(define (brdf [albedo : vec3] [roughness : float] [n : vec3] [v : vec3] [l : vec3]) : vec3
+  (let* ([h (normalize (+ v l))]
+         [nDotL (max (dot n l) 0.0)]
+         [nDotV (max (dot n v) 1e-4)]
+         [nDotH (max (dot n h) 0.0)]
+         [vDotH (max (dot v h) 0.0)]
+         [alpha (max (* roughness roughness) 1e-3)]
+         [alpha2 (* alpha alpha)]
+         [denom (+ (* nDotH nDotH (- alpha2 1.0)) 1.0)]
+         [distribution (/ alpha2 (* PI denom denom))]
+         [k (/ (* (+ roughness 1.0) (+ roughness 1.0)) 8.0)]
+         [geometry (* (/ nDotV (+ (* nDotV (- 1.0 k)) k)) (/ nDotL (+ (* nDotL (- 1.0 k)) k)))]
+         [fresnel (+ (vec3 0.04) (* (- 1.0 0.04) (pow (- 1.0 vDotH) 5.0)))]
+         [specular (/ (* distribution geometry fresnel) (max (* 4.0 nDotV nDotL) 1e-4))]
+         [diffuse (/ (* (- 1.0 fresnel) albedo) PI)])
+    (+ diffuse specular)))
+
+;; The scene's depth from the light, into the shadow map. It reads the same vertex buffers as the
+;; lit pass, skipping all but the positions.
+(graphics-material Shadow
+  (vertex-input SceneVertex position)
+  (bindings
+   (scene (buffer SceneUniforms)))
+  (outputs)                     ; Depth only
+  (vertex
+   (results #:position (* scene.lightViewProjection (vec4 position 1.0))))
+  ;; No colour attachments, so nothing to write
+  (fragment))
+
+;; PBR shading with filtered shadows, into the HDR image
+(graphics-material Lit
+  (vertex-input SceneVertex)
+  (bindings
+   (scene (buffer SceneUniforms))
+   (shadowMap texture)          ; The shadow pass's depth image
+   (shadowSampler sampler))     ; A comparison sampler
+  (push
+   (shadowsEnabled uint))       ; 0 while the shadow pass is disabled, as its map is stale
+  (varyings
+   (worldPosition vec3)
+   (worldNormal vec3)
+   (surface vec4))              ; The vertices' albedo and roughness
+  (outputs
+   (outColor vec4))             ; Linear HDR radiance
+  ;; The world is the model space (nothing moves), so positions and normals pass through
+  (vertex
+   (results #:position (* scene.viewProjection (vec4 position 1.0))
+            #:worldPosition position
+            #:worldNormal normal
+            #:surface color))
+  (fragment
+   (let* ([albedo surface.rgb]
+          [roughness surface.a]
+          [n (normalize worldNormal)]
+          [v (normalize (- scene.cameraPosition worldPosition))]
+          [l scene.lightDirection]
+          [shadow (if (not= shadowsEnabled 0)
+                      (shadowFactor shadowMap shadowSampler scene.lightViewProjection worldPosition n l)
+                      1.0)]
+          [direct (* (brdf albedo roughness n v l) scene.lightRadiance (max (dot n l) 0.0) shadow)]
+          ;; Hemisphere ambient: sky from above, light bounced off the ground from below
+          [ambient (* (mix scene.groundAmbient scene.skyAmbient (+ (* n.y 0.5) 0.5)) albedo)])
+     (vec4 (+ direct ambient) 1.0))))
+
+;; Exposure and an ACES curve, from the HDR image to the display: a triangle covering the screen,
+;; built from the vertex index alone (no vertex input). Its corners, (0, 0), (0, 2) and (2, 0) in
+;; texture coordinates, are counter-clockwise in framebuffer coordinates (y down), so back face
+;; culling keeps it.
+(graphics-material Tonemap
+  (bindings
+   (hdr texture)
+   (hdrSampler sampler))
+  (push
+   (exposure float))
+  (varyings
+   (uv vec2))
+  (outputs
+   (outColor vec4))             ; Linear: the sRGB target encodes it
+  (vertex
+   (let* ([corner (vec2 (bitand vertexIndex 2) (bitand (shl vertexIndex 1) 2))])
+     (results #:position (vec4 (- (* corner 2.0) 1.0) 0.0 1.0) #:uv corner)))
+  (fragment
+   (vec4 (acesFilmic (* (.rgb (sample hdr hdrSampler uv)) exposure)) 1.0)))
+
+;; The frame: a shadow map from the light, the lit scene into an HDR image the size of the surface,
+;; then the tonemap to the display. The render graph orders the passes, picks queues and
+;; synchronizes them from what each uses.
+(graph SceneGraph
+  ;; Headless, the display is an image instead of the window, and with capture it's read back
+  (parameter headless bool)
+  (parameter capture bool)
+  ;; Drawn by both the shadow and the lit pass
+  (model meshes "scene.gltf" SceneVertex)
+  (input uniforms (per-frame SceneUniforms))
+  (input shadows (per-frame bool))             ; Whether the shadow pass is enabled
+  (input exposure (per-frame float))
+
+  ;; Bilinear for the HDR image, and a comparison sampler for the shadow map, which returns how
+  ;; much of the bilinear footprint is closer to the light than the reference depth. Outside the
+  ;; map the white border reads as lit.
+  (sampler linearSampler #:filter linear #:address clamp-to-edge)
+  (sampler shadowSampler #:filter linear #:mipmap nearest #:address clamp-to-border #:border opaque-white
+           #:compare less-or-equal #:anisotropy #f)
+  (uniform scene SceneUniforms uniforms)
+
+  ;; Shared between frames to save memory: the next frame's shadow pass waits for this frame's lit
+  ;; pass to finish reading it
+  (image shadowMap d32 (fixed 2048 2048) #:frames shared)
+  ;; Per frame, so a frame's lit pass can overlap the previous frame's tonemap. It follows the
+  ;; surface's size (headless, the extent given to the graph).
+  (image hdr rgba16f (surface 1.0) #:frames per-frame)
+  (image depth d32 (surface 1.0) #:frames shared)
+  (image offscreen rgba8-srgb (surface 1.0) #:frames shared #:when headless)
+
+  (target shadowTarget (depth shadowMap #:store store))
+  ;; The clear colour is the sky, in linear HDR like everything drawn
+  (target hdrTarget (color hdr #:clear (0.4 0.55 0.8 1.0)) (depth depth))
+  (target display (if headless (color offscreen) (surface #:depth none)))
+
+  (material shadow Shadow scene)
+  (material lit Lit scene shadowMap shadowSampler
+            ;; When the shadow pass is disabled, its map is stale
+            #:push ((shadowsEnabled (if shadows 1 0))))
+  (material tonemap Tonemap hdr (hdrSampler linearSampler)
+            #:push ((exposure exposure)))
+
+  (draw-meshes shadowPass shadowTarget meshes shadow)
+  (draw-meshes litPass hdrTarget meshes lit)
+  ;; A fullscreen triangle, without vertex buffers
+  (draw tonemapPass display tonemap 3)
+  (readback readback offscreen #:when capture))
+
+;; ---------------------------------------------------------------------------------------------
+;; The app: an orbit camera and an animated sun, as state the handlers compute the next of
+
+;; The camera orbits this point (orbit, from the camera module)
+(define cameraTarget (vec3 0.0 0.75 0.0))
+
+
+;; The shadow map covers a sphere around the origin of this radius
+(define sceneRadius 7.0)
+
+(app SceneApp
+  (state
+   (yaw float (radians 30.0))
+   (pitch float (radians 25.0))
+   (orbitRadius float 11.0)
+   (dragging bool #f)
+   (cursor vec2 (vec2 0.0))     ; Where the drag last was
+   (azimuth float (radians -60.0))
+   (elevation float (radians 50.0))
+   (animated bool #t)           ; Whether the sun moves
+   (shadows bool #t)
+   (exposure float 1.0)
+   (fullSize uvec2 (uvec2 0))) ; The view's size before a smoke test shrinks it
+
+  ;; Dragging with the left button orbits the camera; scrolling zooms
+  (on (mouse-pressed left cursor) (with state #:dragging #t #:cursor cursor))
+  (on (mouse-released left cursor) (with state #:dragging #f))
+  (on (cursor-moved cursor)
+    (if state.dragging
+        (let* ([delta (* (- cursor state.cursor) 4.0)])
+          (with state #:cursor cursor
+                      #:yaw (- state.yaw delta.x)
+                      #:pitch (clamp (+ state.pitch delta.y) (radians 2.0) (radians 85.0))))
+        state))
+  (on (scrolled offset)
+    (with state #:orbitRadius (clamp (* state.orbitRadius (pow 0.9 offset.y)) 3.0 40.0)))
+  (on (key-pressed l) (with state #:animated (not state.animated)))
+  (on (key-pressed s) (with state #:shadows (not state.shadows)))
+  (on (key-pressed equal keypad-add) (with state #:exposure (* state.exposure 1.25)))
+  (on (key-pressed minus keypad-subtract) (with state #:exposure (/ state.exposure 1.25)))
+  (on (key-pressed escape) (quit!))
+  ;; The sun moves unless paused. A smoke test (--frames N) scripts its frames: shadows off for the
+  ;; second quarter (the shadow pass drops out of the plan), and the view three quarters the size
+  ;; from halfway (headless, back to its full size for the last quarter).
+  (on (frame dt)
+    (let* ([scripted (> frameLimit 0)]
+           [quarter (and scripted (= frameNumber (/ frameLimit 4)))]
+           [halfway (and scripted (= frameNumber (/ frameLimit 2)))]
+           [threeQuarters (and scripted headless (= frameNumber (/ (* 3 frameLimit) 4)))]
+           [size (uvec2 surfaceSize)])
+      (when halfway (resize! (/ (* size.x 3) 4) (/ (* size.y 3) 4)))
+      (when threeQuarters (resize! state.fullSize.x state.fullSize.y))
+      (with state
+            #:azimuth (if state.animated (+ state.azimuth (* 0.4 dt)) state.azimuth)
+            #:shadows (if quarter #f (if halfway #t state.shadows))
+            #:fullSize (if halfway size state.fullSize))))
+
+  (run SceneGraph
+    (headless headless)
+    (capture capture)
+    (uniforms
+     (let* ([aspect (/ surfaceSize.x surfaceSize.y)]
+            [eye (orbit cameraTarget state.yaw state.pitch state.orbitRadius)]
+            [light (sunDirection state.azimuth state.elevation)])
+       (SceneUniforms (* (perspective (radians 45.0) aspect 0.1 100.0) (lookAt eye cameraTarget (vec3 0.0 1.0 0.0)))
+                      (* (ortho (- sceneRadius) sceneRadius (- sceneRadius) sceneRadius 0.1 (* 4.0 sceneRadius))
+                         (lookAt (* light 2.0 sceneRadius) (vec3 0.0) (vec3 0.0 1.0 0.0)))
+                      eye
+                      light
+                      (* (vec3 1.0 0.95 0.85) 3.0)
+                      (vec3 0.25 0.32 0.45)
+                      (vec3 0.10 0.09 0.08))))
+    (shadows state.shadows)
+    (exposure state.exposure)
+    ;; The lit pass reads a stale shadow map when shadows are off (its shadowsEnabled push constant)
+    #:enabled ((shadowPass state.shadows))))
+
+;; The program: a window (headless with --frames), the clock (real time interactively, a fixed step
+;; for a smoke test) and the last frame's capture
+(main SceneApp
+  (about "A lit 3D scene: a shadow map, PBR shading into HDR, and a tonemap")
+  (window "Scene example" 1280 720)
+  (timestep #:max 0.25 #:fixed 1/60)
+  (capture readback)
+  (controls "Controls:"
+            "  drag (left mouse)  orbit the camera"
+            "  scroll             zoom"
+            "  L                  toggle the light's animation"
+            "  S                  toggle shadows"
+            "  + / -              exposure"
+            "  Esc                quit"
+            "Shaders reload when their SPIR-V changes: edit examples/scene/scene.zgal and run `make shaders`."))

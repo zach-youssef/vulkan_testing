@@ -106,7 +106,8 @@ TEST_CASE("SwapChainSupportDetails::chooseSwapExtent clamps the framebuffer size
 TEST_CASE("DeviceFeatures reports the required features a device lacks") {
     DeviceFeatures none;
     auto missing = none.missingRequired();
-    CHECK(missing.size() == 13);
+    CHECK(missing.size() == 17);
+    CHECK(std::find(missing.begin(), missing.end(), "shaderSampledImageArrayNonUniformIndexing") != missing.end());
     CHECK(missing.front() == "samplerAnisotropy");
     CHECK(std::find(missing.begin(), missing.end(), "descriptorBindingUpdateUnusedWhilePending") != missing.end());
     CHECK(missing.back() == "dynamicRendering");
@@ -116,6 +117,19 @@ TEST_CASE("DeviceFeatures reports the required features a device lacks") {
     auto partial = DeviceFeatures::required();
     partial.vulkan13.dynamicRendering = VK_FALSE;
     CHECK(partial.missingRequired() == std::vector<std::string>{"dynamicRendering"});
+}
+
+TEST_CASE("Optional features are enabled where a device supports them") {
+    DeviceFeatures supported = DeviceFeatures::required();
+    CHECK(DeviceFeatures::optional().common(supported).missing(DeviceFeatures::optional())
+          == std::vector<std::string>{"drawIndirectCount"});
+    supported.vulkan12.drawIndirectCount = VK_TRUE;
+    supported.vulkan12.shaderInt8 = VK_TRUE;
+    const DeviceFeatures enabled = DeviceFeatures::optional().common(supported);
+    CHECK(enabled.missing(DeviceFeatures::optional()).empty());
+    // Only the optional ones
+    CHECK(enabled.vulkan12.shaderInt8 == VK_FALSE);
+    CHECK(enabled.core.features.samplerAnisotropy == VK_FALSE);
 }
 
 TEST_CASE("DeviceFeatures keeps its pNext chain intact when copied") {
@@ -132,6 +146,26 @@ TEST_CASE("DeviceFeatures keeps its pNext chain intact when copied") {
     CHECK(copy.vulkan13.dynamicRendering == VK_TRUE);
 }
 
+TEST_CASE("Extensions' features join the chain, with their extension, only when enabled") {
+    DeviceFeatures features = DeviceFeatures::required();
+    CHECK(features.extensions().empty());
+    features.chain();
+    CHECK(features.vulkan13.pNext == nullptr);
+
+    features.atomicFloat.shaderBufferFloat32AtomicAdd = VK_TRUE;
+    REQUIRE(features.extensions().size() == 1);
+    CHECK(std::string(features.extensions()[0]) == "VK_EXT_shader_atomic_float");
+    features.chain();
+    CHECK(features.vulkan13.pNext == &features.atomicFloat);
+    CHECK(features.atomicFloat.sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT);
+    CHECK(features.atomicFloat.pNext == nullptr);
+    // Copies keep it
+    DeviceFeatures copy = features;
+    CHECK(copy.vulkan13.pNext == &copy.atomicFloat);
+    // And a device without it lacks it by name
+    CHECK(DeviceFeatures::required().missing(features) == std::vector<std::string>{"shaderBufferFloat32AtomicAdd"});
+}
+
 TEST_CASE("DeviceFeatures names every feature of every structure") {
     // The first and last feature of each structure map to their names
     DeviceFeatures none;
@@ -144,11 +178,14 @@ TEST_CASE("DeviceFeatures names every feature of every structure") {
     needed.vulkan12.subgroupBroadcastDynamicId = VK_TRUE;
     needed.vulkan13.robustImageAccess = VK_TRUE;
     needed.vulkan13.maintenance4 = VK_TRUE;
+    needed.atomicFloat.shaderBufferFloat32Atomics = VK_TRUE;
+    needed.atomicFloat.sparseImageFloat32AtomicAdd = VK_TRUE;
     CHECK(none.missing(needed) == std::vector<std::string>{
         "robustBufferAccess", "inheritedQueries",
         "storageBuffer16BitAccess", "shaderDrawParameters",
         "samplerMirrorClampToEdge", "subgroupBroadcastDynamicId",
         "robustImageAccess", "maintenance4",
+        "shaderBufferFloat32Atomics", "sparseImageFloat32AtomicAdd",
     });
     CHECK(needed.missing(needed).empty());
     CHECK(needed.missing(none).empty());

@@ -1,0 +1,887 @@
+;; Interfaces for the ZGAL GPU tests (tests/gpu/ZgalTest.cpp)
+
+;; Structs exercising std430's rules: a scalar packed after a vec3, 8-byte alignment, a nested
+;; struct, arrays and matrices. Offsets are in the comments; ZgalTest checks the GPU agrees.
+(struct Inner
+  (a vec2)                      ; 0
+  (b float))                    ; 8; 12 bytes, aligned to 8: 16
+(struct Tricky
+  (s float)                     ; 0
+  (v3 vec3)                     ; 16
+  (f float)                     ; 28, packed after the vec3
+  (v2 vec2)                     ; 32
+  (i int)                       ; 40
+  (u uvec3)                     ; 48
+  (m2 mat2)                     ; 64
+  (inner Inner)                 ; 80
+  (scalars (array float 3))     ; 96
+  (inners (array Inner 2))      ; 112
+  (m4 mat4)                     ; 144
+  (last uint))                  ; 208; 212 bytes, aligned to 16: 224
+
+;; Copies its push constants and the elements of a buffer array into a Tricky
+(compute-material LayoutProbe
+  (shaders "shaders/layout_probe.comp")
+  (workgroup 1)
+  (bindings
+   (inputs (buffer-array float read))
+   (result (buffer Tricky write)))
+  (push
+   (seed float)                 ; 8, after the two indices
+   (shift vec3)                 ; 16
+   (tail uint)))                ; 28, packed after the vec3
+
+(vertex-format ColoredVertex
+  (position vec2)
+  (color vec3)
+  (id uint))
+
+;; Attributes stored in fewer bits than they're read as
+(vertex-format PackedVertex
+  (position vec2 #:as snorm16)
+  (color vec4 #:as unorm8)
+  (id uint #:as uint8)
+  (shade float #:as float16))
+
+;; Draws vertices in their colour times their shade, if their id is 7
+(graphics-material Packed
+  (vertex-input PackedVertex)
+  (varyings
+   (tinted vec4)
+   (match uint flat))
+  (outputs
+   (packedColor vec4))
+  (vertex (results #:position (vec4 position 0.0 1.0) #:tinted (* color shade) #:match (if (= id 7) 1 0)))
+  (fragment (if (= match 1) tinted (vec4 0.0))))
+
+;; Draws vertices in their colour times a tint, if their id (passed flat) is 7
+(graphics-material Tinted
+  (shaders "shaders/tinted.vert" "shaders/tinted.frag")
+  (vertex-input ColoredVertex)
+  (push
+   (tint vec4))
+  (varyings
+   (color vec3)
+   (id uint flat))
+  (outputs
+   (outColor vec4)))
+
+;; A texture and a sampler, for the runtime checks of a material's bindings
+(graphics-material Textured
+  (shaders "shaders/textured.vert" "shaders/textured.frag")
+  (bindings
+   (albedo texture #:stages (fragment))
+   (albedoSampler sampler))
+  (varyings
+   (uv vec2))
+  (outputs
+   (outColor vec4)))
+
+;; For the graph test: a tint written per frame, and a material filling its target with it
+(struct TintData
+  (color vec4))
+
+(graphics-material Fill
+  (shaders "shaders/fill.vert" "shaders/fill.frag")
+  (bindings
+   (tint (buffer TintData read) #:stages (fragment)))
+  (push
+   (scale float))
+  (outputs
+   (outColor vec4)))
+
+;; Two materials sharing a uniform (so it must be written once per frame), push constants computed
+;; from a parameter and a per-frame input, and a conditional readback
+(graph ProbeGraph
+  (parameter scale float)
+  (parameter withReadback bool)
+  (input tint (per-frame TintData))
+  (input brightness (per-frame float))
+  (uniform tints TintData tint)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target canvasTarget (color canvas))
+  (material first Fill (tint tints) #:push ((scale 0.0)))
+  (material second Fill (tint tints) #:push ((scale (* scale brightness))))
+  ;; Both draw the whole target; the second, drawn after, wins
+  (draw drawFirst canvasTarget first 3)
+  (draw drawSecond canvasTarget second 3)
+  (readback readback canvas #:when withReadback))
+
+;; A draw to the window only when there's one: headless, the graph has no surface target, nor the
+;; material and draw using it, and only paints its canvas
+(graph Shown
+  (parameter headless bool)
+  (input tint (per-frame TintData))
+  (uniform tints TintData tint)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target canvasTarget (color canvas))
+  (target screen (surface #:depth none) #:when (not headless))
+  (material painting Fill (tint tints) #:push ((scale 1.0)))
+  (material showing Fill (tint tints) #:push ((scale 1.0)) #:when (not headless))
+  (draw paint canvasTarget painting 3)
+  (draw show screen showing 3 #:when (not headless))
+  (readback readback canvas))
+
+;; For the dynamic dispatch test: stores a value at each invocation's pixel of a row
+(compute-material Mark
+  (shaders "shaders/mark.comp")
+  (workgroup 1)
+  (bindings
+   (row (storage-image write)))
+  (push
+   (value float)))
+
+;; Clears a row (as wide as the image), then marks as many pixels as a per-frame input says: the
+;; dispatch sizes are computed each frame
+(graph CountGraph
+  (input count (per-frame uint))
+  (image row rgba8 (fixed 8 1) #:frames shared)
+  (material clear Mark row #:push ((value 0.0)) #:invocations ((width row)))
+  (material mark Mark row #:push ((value 1.0)) #:invocations (count))
+  (dispatch clearRow clear)
+  (dispatch markRow mark)
+  (readback readback row))
+
+;; For the app test: an app running CountGraph, whose handlers change how many pixels are marked,
+;; and whether they are
+(app Counting
+  (parameter start uint)
+  (state
+   (count uint start)
+   (marking bool #t)
+   (frames uint 0)
+   (elapsed float 0.0))
+  (on (key-pressed up) (with state #:count (min (+ state.count 1) 8)))
+  (on (key-pressed down) (with state #:count (- state.count 1)))
+  (on (key-pressed m) (with state #:marking (not state.marking)))
+  ;; The cursor's x, from [-1, 1] across the window to [0, 8] pixels
+  (on (mouse-pressed left at) (with state #:count (uint (* (+ at.x 1.0) 4.0))))
+  (on (frame dt) (with state #:frames (+ state.frames 1) #:elapsed (+ state.elapsed dt)))
+  (run CountGraph
+    (count state.count)
+    #:enabled ((markRow state.marking))))
+
+;; For the CPU and GPU test: functions compiled for both (pcgHash from the standard library). Its
+;; integer part must match exactly, its floating point part to the GPU's precision.
+(import random)
+
+(define hashRange 1000)   ; Of integer literals: used as a uint below
+
+(define (evaluate [i : uint]) : vec4
+  (let* ([t (/ (float i) 7.0)]
+         [v (normalize (vec3 (sin t) (cos (* 2.0 t)) (+ 1.0 t)))]
+         [c (cross v (vec3 0.0 1.0 0.0))]
+         [s (sum ([k (range 0 4)]) (pow (+ 1.0 (* 0.1 (float k))) 1.5))]
+         [blend (mix c v (smoothstep 0.0 4.0 t))])
+    (vec4 blend.zx (+ s (exp (- t))) (float (remainder (pcgHash i) hashRange)))))
+
+;; Writes evaluate(i) for each invocation i (a ZGAL body)
+(compute-material Evaluate
+  (workgroup 64)
+  (bindings
+   (evaluated (buffer-array vec4)))
+  (push
+   (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (write! (at evaluated i) (evaluate i))))))
+
+;; 8- and 16-bit integers, with their std430 offsets (ZgalTest checks the GPU agrees)
+(struct Bytes
+  (small uint8)                 ; 0
+  (delta int16)                 ; 2
+  (many (array uint8 3))        ; 4
+  (tiny int8)                   ; 7
+  (wide uint)                   ; 8
+  (level uint16))               ; 12; 14 bytes, aligned to 4: 16
+
+;; b with from's array (the C++ copies a std::array field)
+(define (withMany [b : Bytes] [from : Bytes]) : Bytes
+  (with b #:many (.many from)))
+
+;; Sums each workgroup's elements through shared memory (a reduction, with barriers), and repacks
+;; the elements: reading small integers widens them, and writing them narrows explicitly
+(compute-material Reduce
+  (workgroup 64)
+  (bindings
+   (packed (buffer-array Bytes))
+   (sums (buffer-array uint)))
+  (shared
+   (partial (array uint 64)))
+  (compute
+   (let* ([x localInvocationId.x]
+          [i globalInvocationId.x]
+          [b (at packed i)])
+     (write! (at partial x)
+             (+ b.small (at b.many 0) (at b.many 1) (at b.many 2) b.wide b.level (uint (+ b.delta b.tiny 1000))))
+     (write! (at packed i) (with b #:small (uint8 (+ b.small 1)) #:delta (int16 (- b.delta))
+                                 #:tiny (int8 (- b.tiny)) #:level (uint16 (+ b.level 1))))
+     (barrier!)
+     (for ([level (range 0 6)])
+       (let* ([stride (shr 32 (uint level))])
+         (when (< x stride)
+           (write! (at partial x) (+ (at partial x) (at partial (+ x stride)))))
+         (barrier!)))
+     (when (= x 0)
+       (write! (at sums workgroupId.x) (at partial 0))))))
+
+;; The CPU fills a staging buffer the application owns, which is copied to the device, reduced, and
+;; the sums copied back after a placeholder (an offset copy); an extern node copies the repacked
+;; elements back too
+(graph ReduceGraph
+  (parameter count uint)        ; A multiple of 64
+  (input upload cpu)
+  (input copyBack extern)
+  (import-buffer staging Bytes)
+  (import-buffer results uint)
+  (import-buffer repacked Bytes)
+  (buffer packedBuffer Bytes count #:frames shared)
+  (buffer sumsBuffer uint (/ count 64) #:frames shared)
+  (material reduce Reduce (packed packedBuffer) (sums sumsBuffer) #:invocations (count))
+  (cpu fill upload #:writes (staging))
+  (copy toDevice staging packedBuffer)
+  (dispatch reduce reduce)
+  (copy toHost sumsBuffer results #:destination-offset 1)
+  (extern repack copyBack))
+
+;; For the data test: uploaded inputs, a clear, a buffer copied into an image, and buffer readbacks.
+;; The doubling is a GLSL function.
+(extern-glsl "shaders/twice.glsl" ((twice [x : uint]) : uint))
+
+(compute-material Double
+  (workgroup 64)
+  (bindings
+   (source (buffer-array uint))
+   (target (buffer-array uint)))
+  (push
+   (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (write! (at target i) (twice (at source i)))))))
+
+(graph DataGraph
+  (input values (data uint))
+  (input texels (data uint))      ; A 2x2 rgba8 image's texels, packed
+  (upload valuesBuffer values)
+  (upload texelBuffer texels)
+  (buffer doubled uint (count values) #:frames shared)
+  (buffer filled uint 4 #:frames shared)
+  (image picture rgba8 (fixed 2 2) #:frames shared)
+  (material doubling Double (source valuesBuffer) (target doubled)
+            #:push ((count (count values)))
+            #:invocations ((count values)))
+  (dispatch run doubling)
+  (clear fill filled #:value 7)
+  (copy toPicture texelBuffer picture)
+  ;; Then texel (1, 1) from the buffer's first texel: a region, which keeps the rest of the image
+  (copy patchTexel texelBuffer picture #:source-offset 0 #:destination-offset (1 1) #:extent (1 1))
+  (readback readDoubled doubled)
+  (readback readFilled filled)
+  (readback readPicture picture))
+
+;; For the extern function test: an app calling functions C++ gives
+(app Echo
+  (extern (scale [x : float]) : float)
+  (extern (record [x : float]) : void)
+  (state (value float 1.0))
+  (on (key-pressed space)
+    (record state.value)
+    (with state #:value (scale state.value))))
+
+;; For the stage 2 test: atomics on shared and buffer elements (a histogram, and a float sum),
+;; while loops, subgroup operations, strided ranges and early returns
+(compute-material Tally
+  (workgroup 64)
+  (bindings
+   (samples (buffer-array uint))
+   (counts (buffer-array uint))       ; 16 bins
+   (total (buffer-array float))       ; 1 element
+   (steps (buffer-array uint))        ; Per sample
+   (subgroupSums (buffer-array uint)))
+  (push
+   (count uint))
+  (shared
+   (local (array uint 16)))
+  (compute
+   (let* ([i globalInvocationId.x]
+          [lane localInvocationId.x])
+     (when (< lane 16) (write! (at local lane) 0))
+     (barrier!)
+     ;; A grid-stride loop over the samples
+     (for ([k (range i count (* 64 workgroupCount.x))])
+       (atomic-add! (at local (remainder (at samples k) 16)) 1))
+     (barrier!)
+     (when (< lane 16) (atomic-add! (at counts lane) (at local lane)))
+     (unless (< i count) (return!))
+     (atomic-add! (at total 0) (float (at samples i)))
+     ;; Collatz steps, up to 1000
+     (let* ([(n taken) (while ([n (at samples i)] [taken (uint 0)]) (and (> n 1) (< taken 1000))
+                         (values (if (= (remainder n 2) 0) (/ n 2) (+ (* 3 n) 1)) (+ taken 1)))])
+       (write! (at steps i) taken))
+     (write! (at subgroupSums i) (subgroupAdd (uint 1))))))
+
+;; Discards the left half of its target, and outputs how its fragment coordinate changes between
+;; neighbouring fragments (fwidth, 1 a pixel)
+(graphics-material Cut
+  (outputs (color vec4))
+  (vertex
+   (let* ([corner (vec2 (float (bitand vertexIndex 2)) (float (bitand (shl vertexIndex 1) 2)))])
+     (results #:position (vec4 (- (* corner 2.0) 1.0) 0.0 1.0))))
+  (fragment
+   (when (< fragCoord.x 2.0) (discard!))
+   (vec4 (fwidth fragCoord.x) 1.0 0.0 1.0)))
+
+(graph CutGraph
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target canvasTarget (color canvas #:clear (0.0 0.0 0.0 1.0)))
+  (material cut Cut)
+  (draw drawCut canvasTarget cut 3)
+  (readback readCanvas canvas))
+
+;; For the stage 3 tests: a buffer sized each frame from an app's state, which the graph recreates
+;; when the size changes
+(compute-material Squares
+  (workgroup 64)
+  (bindings (squares (buffer-array uint)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count) (write! (at squares i) (* i i))))))
+
+(graph SquaresGraph
+  (input amount (per-frame uint))
+  (buffer squares uint amount #:frames per-frame)
+  (material squaring Squares squares #:push ((count amount)) #:invocations (amount))
+  (dispatch square squaring)
+  (readback readSquares squares))
+
+(app Growing
+  (state (amount uint 3))
+  (on (key-pressed up) (with state #:amount (* state.amount 2)))
+  (on (key-pressed 0) (with state #:amount 0))
+  (run SquaresGraph (amount state.amount)))
+
+;; Arrays of bindings: textures and buffers chosen per invocation, and buffers written through an
+;; array
+(compute-material Gather
+  (workgroup 64)
+  (bindings
+   (layers (array texture))
+   (sources (array (buffer-array uint)))
+   (halves (array (buffer-array uint)))
+   (gathered (buffer-array uint)))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i (array-length sources))
+       (let* ([layer (at layers i)]
+              [extent (texture-size layer 0)]
+              [value (+ (* (at (at sources i) 0) 1000) (uint extent.x))])
+         (write! (at gathered i) value)
+         (write! (at (at halves (remainder i 2)) (/ i 2)) value))))))
+
+(graph GatherGraph
+  (import-images layers #:resting shader-read-only)
+  (buffer one uint 1 #:frames shared)
+  (buffer two uint 1 #:frames shared)
+  (buffer evens uint 2 #:frames shared)
+  (buffer odds uint 2 #:frames shared)
+  (buffer gathered uint 3 #:frames shared)
+  (clear fillOne one #:value 5)
+  (clear fillTwo two #:value 9)
+  (material gather Gather layers (sources (one two one)) (halves (evens odds)) gathered #:invocations (3))
+  (dispatch run gather)
+  (readback readGathered gathered)
+  (readback readEvens evens)
+  (readback readOdds odds))
+
+;; Arrays whose elements are chosen each frame, any number of them
+(graph SelectGraph
+  (input picks (per-frame (data uint)))
+  (import-images layers #:resting shader-read-only)
+  (buffer one uint 1 #:frames shared)
+  (buffer two uint 1 #:frames shared)
+  (buffer three uint 1 #:frames shared)
+  (buffer evens uint 4 #:frames shared)
+  (buffer odds uint 4 #:frames shared)
+  (buffer gathered uint 8 #:frames shared)
+  (clear fillOne one #:value 5)
+  (clear fillTwo two #:value 9)
+  (clear fillThree three #:value 7)
+  (material gather Gather (layers layers #:select picks) (sources (one two three) #:select picks) (halves (evens odds)) gathered
+            #:invocations ((count picks)))
+  (dispatch run gather)
+  (readback readGathered gathered))
+
+;; Phases: a graph computes seeds once and reads them back; the app keeps them in its state, then
+;; runs a graph uploading them whenever they change (and an extern function grows them)
+(compute-material Seed
+  (workgroup 64)
+  (bindings (seeds (buffer-array uint)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count) (write! (at seeds i) (+ (* i 10) 1))))))
+
+(graph SeedGraph
+  (buffer seeds uint 4 #:frames shared)
+  (material seeding Seed seeds #:push ((count 4)) #:invocations (4))
+  (dispatch seed seeding #:once #t)
+  (readback readSeeds seeds #:once #t))
+
+(graph UseGraph
+  (input seeds (per-frame (data uint)))
+  (upload seedBuffer seeds)
+  (buffer doubled uint (count seeds) #:frames per-frame)
+  (material doubling Double (source seedBuffer) (target doubled)
+            #:push ((count (count seeds))) #:invocations ((count seeds)))
+  (dispatch run doubling)
+  (readback readDoubled doubled))
+
+(app Phases
+  (extern (extend [d : (data uint)]) : (data uint))
+  (state
+   (seeds (data uint) (empty-data uint))
+   (ready bool #f)
+   (reads uint 0)
+   (lastTotal uint 0))
+  (on (read readSeeds copied) (with state #:seeds copied #:ready #t))
+  (on (read readDoubled copied)
+    (with state #:reads (+ state.reads 1)
+                #:lastTotal (sum ([i (range 0 (count copied))]) (at copied i))))
+  (on (key-pressed space) (with state #:seeds (extend state.seeds)))
+  ;; The seeds above 10, doubled, then a seed per step below their count
+  (on (key-pressed f) (with state #:seeds (collect ([x state.seeds]) (* x 2) #:when (> x 10))))
+  (on (key-pressed g) (with state #:seeds (collect ([i (range (uint 0) (count state.seeds))]) (+ i 100))))
+  ;; Seeds again: the seed graph's once nodes run in its next frame, which starts again
+  (on (key-pressed r)
+    (run-once! seed)
+    (run-once! readSeeds)
+    (with state #:ready #f))
+  (run SeedGraph #:when (not state.ready))
+  (run UseGraph (seeds state.seeds)))
+
+;; Copies a 2x2 texture's texels into a buffer, row by row
+(compute-material ReadTexels (workgroup 2 2)
+  (bindings (picture texture) (pick sampler) (texels (buffer-array vec4)))
+  (compute
+   (write! (at texels (+ (* globalInvocationId.y 2) globalInvocationId.x))
+           (fetch picture pick (ivec2 (int globalInvocationId.x) (int globalInvocationId.y)) 0))))
+
+;; The same image file read as sRGB colours and as linear data, one found by the path C++ gives
+(graph ImageFiles (input chosen path)
+  (image-file colors "quadrants.png" #:color srgb)
+  (image-file data chosen #:color linear)
+  (sampler pick #:filter nearest)
+  (buffer srgbTexels vec4 (* (width colors) (height colors)) #:frames shared)
+  (buffer linearTexels vec4 4 #:frames shared)
+  (material readSrgb ReadTexels (picture colors) pick (texels srgbTexels) #:invocations (2 2))
+  (material readLinear ReadTexels (picture data) pick (texels linearTexels) #:invocations (2 2))
+  (dispatch srgb readSrgb)
+  (dispatch linear readLinear)
+  (readback srgbRead srgbTexels)
+  (readback linearRead linearTexels))
+
+;; Pairs read from files, in order, then each one's first doubled in place
+(struct FilePair (first uint) (second uint))
+(compute-material DoubleFirsts (workgroup 4)
+  (bindings (pairs (buffer-array FilePair)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (let* ([p (at pairs i)])
+         (write! (at pairs i) (with p #:first (* p.first 2))))))))
+
+(graph BufferFiles (input dump path) (input more path)
+  (buffer-file pairs FilePair dump more)
+  (material doubling DoubleFirsts pairs #:push ((count 3)) #:invocations (3))
+  (dispatch doubleFirsts doubling)
+  (readback pairsRead pairs))
+
+;; An app choosing ImageFiles' file from its parameter, as a generated main's option would
+(app PickFile
+  (parameter picked path)
+  (run ImageFiles (chosen picked)))
+
+;; Vertices models fill by name: packed, and a colour that's white when a file has none
+(vertex-format ModelVertex
+  (position vec3)
+  (uv vec2 #:as float16)
+  (normal vec3 #:as snorm16)
+  (color vec4 #:as unorm8 #:default (vec4 1 1 1 1)))
+
+;; A model's base colours: each mesh's material is its instance index
+(graphics-material ModelColor
+  (vertex-input ModelVertex)
+  (bindings (baseColors (array texture)) (factors (buffer-array vec4)) (pick sampler))
+  (varyings (texCoord vec2) (material uint flat) (tint vec4))
+  (outputs (modelColor vec4))
+  (vertex (results #:position (vec4 position.xy 0.0 1.0) #:texCoord uv #:material (uint instanceIndex) #:tint color))
+  (fragment (* tint (at factors material) (sample (at baseColors material) pick texCoord))))
+
+;; Draws a model C++ names into a 4x4 image
+(graph Models (input file path)
+  (model halves file ModelVertex #:base-colors halfColors #:base-color-factors halfFactors)
+  (sampler pick #:filter nearest)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target onCanvas (color canvas #:clear (0 0 0 1)))
+  (material drawModel ModelColor (baseColors halfColors) (factors halfFactors) pick #:cull none)
+  (draw-meshes draw onCanvas halves drawModel)
+  (readback canvasRead canvas))
+
+;; The compute library: scans and reductions, counted by the CPU or by a GPU buffer (written by a
+;; clear node, as a shader would)
+(graph LibraryGraph
+  (parameter gpuCount uint)
+  (input values (data uint))
+  (input floats (data float))
+  (upload valuesBuffer values)
+  (upload floatsBuffer floats)
+  (buffer sums uint (count values) #:frames shared)
+  (buffer before uint (count values) #:frames shared)
+  (buffer maxima int (count values) #:frames shared)
+  (buffer signedValues int (count values) #:frames per-frame)
+  (buffer inPlace uint (count values) #:frames shared)
+  (buffer results uint 2 #:frames shared)
+  (buffer floatResults float 2 #:frames shared)
+  (buffer counts uint 2 #:frames shared)
+  (clear setCount counts #:value gpuCount)
+  (inclusive-scan sum valuesBuffer sums #:op add #:count (count values))
+  (exclusive-scan exclusive valuesBuffer before #:op add #:count (at counts 1))
+  (copy toInPlace valuesBuffer inPlace)
+  (inclusive-scan scanInPlace inPlace inPlace #:op add #:count (count values))
+  (clear minusOne signedValues #:value 4294967295)
+  (inclusive-scan running signedValues maxima #:op max #:count (count values))
+  (reduce total valuesBuffer (at results 0) #:op add #:count (count values))
+  (reduce smallest valuesBuffer (at results 1) #:op min #:count (at counts 0))
+  (reduce largest floatsBuffer (at floatResults 0) #:op max #:count (count floats))
+  (reduce floatSum floatsBuffer (at floatResults 1) #:op add #:count (count floats))
+  (readback readSums sums)
+  (readback readBefore before)
+  (readback readInPlace inPlace)
+  (readback readMaxima maxima)
+  (readback readResults results)
+  (readback readFloatResults floatResults))
+
+;; GPU-driven work: a shader writes a dispatch's size and draws (and how many to draw), which later
+;; nodes read
+(import indirect)
+
+(compute-material WriteCommands
+  (workgroup 1)
+  (bindings
+   (dispatches (buffer-array DispatchCommand))
+   (draws (buffer-array DrawCommand))
+   (drawCounts (buffer-array uint)))
+  (push (groups uint) (drawn uint))
+  (compute
+   (write! (at dispatches 1) (DispatchCommand groups 1 1))
+   (write! (at draws 0) (DrawCommand 3 1 0 0))
+   (write! (at draws 1) (DrawCommand 3 1 0 1))
+   (write! (at drawCounts 0) drawn)))
+
+(compute-material CountGroups
+  (workgroup 1)
+  (bindings (tally (buffer-array uint)))
+  (compute (atomic-add! (at tally 0) workgroupId.x)))
+
+;; A triangle covering the target: red for instance 0, green for the others
+(graphics-material InstanceColor
+  (varyings (instance uint flat))
+  (outputs (color vec4))
+  (vertex
+   (let* ([corner (vec2 (float (bitand vertexIndex 2)) (float (bitand (shl vertexIndex 1) 2)))])
+     (results #:position (vec4 (- (* corner 2.0) 1.0) 0.0 1.0) #:instance (uint instanceIndex))))
+  (fragment (if (= instance 0) (vec4 1.0 0.0 0.0 1.0) (vec4 0.0 1.0 0.0 1.0))))
+
+(graph IndirectGraph
+  (parameter groups uint)
+  (parameter drawn uint)
+  (buffer dispatches DispatchCommand 2 #:frames shared)
+  (buffer draws DrawCommand 2 #:frames per-frame)
+  (buffer drawCounts uint 1 #:frames per-frame)
+  (buffer tally uint 1 #:frames shared)
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  (target canvas (color picture #:clear (0.0 0.0 1.0 1.0)))
+  (material writing WriteCommands dispatches draws drawCounts #:push ((groups groups) (drawn drawn)) #:invocations (1))
+  (material counting CountGroups tally)
+  (material coloring InstanceColor)
+  (dispatch write writing)
+  (clear reset tally)
+  (dispatch count counting #:indirect (at dispatches 1))
+  (draw paint canvas coloring #:indirect (at draws 0) #:draws 2 #:count (at drawCounts 0))
+  (readback readTally tally)
+  (readback readPicture picture))
+
+;; Dispatches reading their sizes from commands C++ gives: an imported buffer, and an upload
+(graph GivenCommands
+  (import-buffer given DispatchCommand)
+  (input uploads (data DispatchCommand))
+  (upload uploaded uploads)
+  (buffer tally uint 1 #:frames shared)
+  (material counting CountGroups tally)
+  (clear reset tally)
+  (dispatch fromImport counting #:indirect (at given 0))
+  (dispatch fromUpload counting #:indirect (at uploaded 1))
+  (readback readTally tally))
+
+;; GPU culling: keeps the draws of a model whose bounds' centres are on one side (x's sign: side),
+;; appending them and counting them, then draws those
+(compute-material Cull
+  (workgroup 64)
+  (bindings
+   (draws (buffer-array DrawIndexedCommand))
+   (bounds (buffer-array vec4))
+   (kept (buffer-array DrawIndexedCommand))
+   (keptCount (buffer-array uint)))
+  (push (total uint) (side float))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (and (< i total) (> (* (.x (at bounds i)) side) 0.0))
+       (let* ([slot (atomic-add! (at keptCount 0) 1)])
+         (write! (at kept slot) (at draws i)))))))
+
+(graph CulledModels
+  (input file path)
+  (parameter side float)
+  (model halves file ModelVertex #:base-colors halfColors #:base-color-factors halfFactors
+         #:draws halfDraws #:bounds halfBounds)
+  (sampler pick #:filter nearest)
+  (buffer kept DrawIndexedCommand 2 #:frames per-frame)
+  (buffer keptCount uint 1 #:frames per-frame)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target onCanvas (color canvas #:clear (0 0 0 1)))
+  (material culling Cull (draws halfDraws) (bounds halfBounds) kept keptCount
+            #:push ((total 2) (side side)) #:invocations (2))
+  (material drawModel ModelColor (baseColors halfColors) (factors halfFactors) pick #:cull none)
+  (clear resetCount keptCount)
+  (dispatch cull culling)
+  (draw-meshes draw onCanvas halves drawModel #:indirect (at kept 0) #:draws 2 #:count (at keptCount 0))
+  (readback canvasRead canvas))
+
+;; The compute library's radix sort: keys with values (their indices), counted by the CPU, and keys
+;; alone, counted by the GPU; and float keys, from (import sorting)
+(import sorting)
+
+(compute-material Number
+  (workgroup 64)
+  (bindings (order (buffer-array uint)) (floats (buffer-array float)) (floatKeys (buffer-array uint)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (write! (at order i) i)
+       (write! (at floatKeys i) (floatSortKey (at floats i)))))))
+
+(graph SortGraph
+  (parameter gpuCount uint)
+  (input keys (data uint))
+  (input floats (data float))
+  (upload keysBuffer keys)
+  (upload floatsBuffer floats)
+  (buffer sorted uint (count keys) #:frames shared)
+  (buffer order uint (count keys) #:frames shared)
+  (buffer partial uint (count keys) #:frames per-frame)
+  (buffer floatKeys uint (count floats) #:frames shared)
+  (buffer counts uint 1 #:frames shared)
+  (material numbering Number order (floats floatsBuffer) floatKeys #:push ((count (count keys))) #:invocations ((count keys)))
+  (copy toSorted keysBuffer sorted)
+  (copy toPartial keysBuffer partial)
+  (dispatch number numbering)
+  (clear setCount counts #:value gpuCount)
+  (sort byKey sorted #:values order #:count (count keys))
+  (sort some partial #:count (at counts 0))
+  (sort byFloat floatKeys #:count (count floats))
+  (readback readSorted sorted)
+  (readback readOrder order)
+  (readback readPartial partial)
+  (readback readFloatKeys floatKeys))
+
+;; For the tests of nodes' own push constants and invocations: spans of a buffer to fill, a step
+;; applied to every element, and bands of an image drawn a row at a time. The materials leave out
+;; push constants their nodes give.
+(compute-material FillSpan
+  (workgroup 64)
+  (bindings (cells (buffer-array uint)))
+  (push (offset uint) (amount uint) (value uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i amount) (write! (at cells (+ offset i)) value)))))
+
+(compute-material Step
+  (workgroup 64)
+  (bindings (cells (buffer-array uint)))
+  (push (increment uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (write! (at cells i) (+ (* (at cells i) 2) increment)))))
+
+;; Row `row` of `rows` (and below it, which later rows cover), in `shade`
+(graphics-material Band
+  (push (row uint) (rows uint) (shade vec4))
+  (outputs (color vec4))
+  (vertex
+   (let* ([corner (vec2 (float (bitand vertexIndex 2)) (float (bitand (shl vertexIndex 1) 2)))]
+          [height (/ 2.0 (float rows))]
+          [top (+ -1.0 (* height (float row)))])
+     (results #:position (vec4 (- (* corner.x 2.0) 1.0) (+ top (* corner.y height)) 0.0 1.0))))
+  (fragment shade))
+
+(graph OverrideGraph
+  (input drawCommands (data DrawCommand))
+  (upload draws drawCommands)
+  (buffer drawCount uint 1 #:frames shared)
+  (buffer cells uint 64 #:frames shared)
+  (buffer command DispatchCommand 1 #:frames shared)
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  ;; Each band keeps what the others drew (the rows cover the whole image)
+  (target canvas (color picture #:load load))
+  (material filling FillSpan cells)
+  (material stepping Step cells #:push ((increment 1)) #:invocations (64))
+  (material banding Band #:push ((rows 4)))
+  (clear zero cells)
+  (dispatch fillFirst filling #:push ((offset 0) (amount 10) (value 5)) #:invocations (10))
+  (dispatch fillSecond filling #:push ((offset 30) (amount 4) (value 7)) #:invocations (4))
+  ;; One workgroup, from a command, with its own push constants
+  (clear oneGroup command #:value 1)
+  (dispatch tail filling #:indirect (at command 0) #:push ((offset 60) (amount 4) (value 3)))
+  ;; The material's increment, then the node's
+  (dispatch stepOne stepping)
+  (dispatch stepTwo stepping #:push ((increment 2)))
+  (draw top canvas banding 3 #:push ((row 0) (shade (vec4 1.0 0.0 0.0 1.0))))
+  ;; Drawn from commands C++ gave, and as many of them as a buffer says
+  (draw second canvas banding #:indirect (at draws 0) #:push ((row 1) (shade (vec4 0.0 1.0 0.0 1.0))))
+  (clear countOne drawCount #:value 1)
+  (draw third canvas banding #:indirect (at draws 0) #:draws 2 #:count (at drawCount 0)
+        #:push ((row 2) (shade (vec4 1.0 1.0 0.0 1.0))))
+  (draw bottom canvas banding 3 #:push ((row 3) (shade (vec4 0.0 0.0 1.0 1.0))))
+  (readback readCells cells)
+  (readback readPicture picture))
+
+;; For the node loop tests: spans to fill, steps, and a band per row, each a node per iteration
+(struct Span
+  (offset uint)
+  (amount uint)
+  (value uint))
+
+(graph LoopGraph
+  (parameter rows uint)
+  (input spans (data Span))
+  (input note (extern uint))
+  (input shades (data vec4))
+  (buffer cells uint 64 #:frames shared)
+  (buffer command DispatchCommand 1 #:frames shared)
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  ;; Each band keeps what earlier ones drew (the rows cover the whole image)
+  (target canvas (color picture #:load load))
+  (material filling FillSpan cells)
+  (material stepping Step cells #:push ((increment 0)) #:invocations (64))
+  (material banding Band)
+  (clear zero cells)
+  ;; A fill per span, skipping empty ones
+  (for ([s spans])
+    (dispatch fill filling #:push ((offset s.offset) (amount s.amount) (value s.value))
+              #:invocations (s.amount) #:when (> s.amount 0)))
+  ;; One workgroup, from a command, with its own push constants
+  (clear oneGroup command #:value 1)
+  (dispatch tail filling #:indirect (at command 0) #:push ((offset 60) (amount 4) (value 3)))
+  ;; Steps in order, each read back after it, and C++'s nodes for each, given its step
+  (for ([k (range 1 4)])
+    (dispatch stepping stepping #:push ((increment (uint k))))
+    (readback snapshot cells)
+    (extern noted note (uint k)))
+  (for ([r (range (uint 0) rows)])
+    (draw band canvas banding 3 #:push ((row r) (rows rows) (shade (at shades r)))))
+  (readback readPicture picture))
+
+;; Library nodes and counted draws in loops: per span, a sum of its first amount numbers (into
+;; sums at its value) and a sort of the first amount keys; per row, a band (from the row down)
+;; drawn as many times as its count says (0 or 1)
+(graph LoopLibraryGraph
+  (input spans (data Span))
+  (input numbers (data uint))
+  (input unsorted (data uint))
+  (input commands (data DrawCommand))
+  (input counts (data uint))
+  (upload numberBuffer numbers)
+  (upload keys unsorted)
+  (upload draws commands)
+  (upload drawCounts counts)
+  (buffer sums uint 4 #:frames shared)
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  (target canvas (color picture #:load load))
+  (material banding Band)
+  (draw background canvas banding 3 #:push ((row 0) (rows 4) (shade (vec4 0.0 0.0 0.0 1.0))))
+  (for ([s spans])
+    (reduce total numberBuffer (at sums s.value) #:op add #:count s.amount)
+    (sort order keys #:count s.amount))
+  (for ([r (range (uint 0) 4)])
+    (draw band canvas banding #:indirect (at draws r) #:draws 1 #:count (at drawCounts r)
+          #:push ((row r) (rows 4) (shade (vec4 1.0 1.0 1.0 1.0)))))
+  (readback readSums sums)
+  (readback readKeys keys)
+  (readback readPicture picture))
+
+;; Read events of looped and image readbacks: a buffer cleared to k and read back, for k = 1 and 2,
+;; and a red picture 2 pixels wide, read back
+(graph Readings
+  (buffer cells uint 2 #:frames shared)
+  (image picture rgba8 (fixed 2 1) #:frames shared)
+  (target canvas (color picture))
+  (material painting Band)
+  (for ([k (range (uint 1) 3)])
+    (clear fill cells #:value k)
+    (readback copy cells))
+  (draw paint canvas painting 3 #:push ((row 0) (rows 1) (shade (vec4 1.0 0.0 0.0 1.0))))
+  (readback shot picture))
+
+(app Reader
+  (state (first uint 0) (second uint 0) (texel uint 0) (width uint 0))
+  ;; Each iteration's copy, by its readback's index
+  (on (read copy values #:index i)
+    (if (= i 0) (with state #:first (at values 0)) (with state #:second (at values 1))))
+  (on (read shot texels #:size size)
+    (with state #:texel (at texels 1) #:width size.x))
+  (run Readings))
+
+;; For the run-mode test: an app scripting its frames from how it's run, as a smoke test would. It
+;; marks one more pixel of the row each frame (up to 4), and headless, halfway, shrinks the surface
+;; the row follows.
+(graph ScriptGraph
+  (parameter withCapture bool)
+  (input marked (per-frame uint))
+  (image canvas rgba8 (surface 1.0) #:frames shared)
+  (material clear Mark (row canvas) #:push ((value 0.0)) #:invocations ((width canvas)))
+  (material mark Mark (row canvas) #:push ((value 1.0)) #:invocations (marked))
+  (dispatch clearCanvas clear)
+  (dispatch markCanvas mark)
+  (readback captured canvas #:when withCapture))
+
+(app Scripted
+  (state (resizedAt uint 0))
+  (on (frame dt)
+    (let* ([halfway (and headless (= frameNumber (/ frameLimit 2)))])
+      (when halfway (resize! 4 1))
+      (if halfway (with state #:resizedAt frameNumber) state)))
+  (run ScriptGraph (withCapture capture) (marked (min (+ frameNumber 1) 4))))
+
+;; A material's functions read its bindings and push constants
+(compute-material ScaleWith
+  (workgroup 64)
+  (bindings (sources (buffer-array uint)) (scaled (buffer-array uint)))
+  (push (factor uint) (total uint))
+  (define (scaledAt [i : uint]) : uint (* (at sources i) factor))
+  (define (put [i : uint]) : void (write! (at scaled i) (+ (scaledAt i) (scaledAt 0))))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i total) (put i)))))
+
+(graph ScaleGraph
+  (input values (data uint))
+  (upload sources values)
+  (buffer scaled uint 4 #:frames shared)
+  (material scaling ScaleWith sources scaled #:push ((factor 3) (total 4)) #:invocations (4))
+  (dispatch run scaling)
+  (readback readScaled scaled))

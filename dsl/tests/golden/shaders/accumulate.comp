@@ -1,0 +1,5 @@
+void main() {
+    uvec2 texel = gl_GlobalInvocationID.xy;
+    sums()[texel.y * 8 + texel.x] += float(lights().count);
+    imageStore(target(), ivec2(texel), vec4(sums()[texel.x]));
+}

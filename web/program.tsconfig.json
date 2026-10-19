@@ -1,0 +1,20 @@
+{
+  "//": "Building a ZGAL program for the web (zgal.mk's zgal-web-program): its generated TypeScript and the runtime beside it, emitted as JavaScript with the imports' .ts rewritten to .js",
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "noEmitOnError": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "lib": ["es2022", "dom"],
+    "types": ["@webgpu/types", "node"]
+  },
+  "include": ["*.ts", "zgal/*.ts"],
+  "//exclude": "Nothing: the default excludes the output directory, which holds the sources",
+  "exclude": []
+}

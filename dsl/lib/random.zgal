@@ -1,0 +1,13 @@
+;; ZGAL's standard library: random numbers, from hashes, so shaders and the CPU agree on them.
+;; (import random)
+
+;; PCG hash: a well distributed random uint from a uint (seed it with an index, then hash the
+;; previous result for more)
+(define (pcgHash [v : uint]) : uint
+  (let* ([state (+ (* v 747796405) 2891336453)]
+         [word (* (bitxor (shr state (+ (shr state 28) 4)) state) 277803737)])
+    (bitxor (shr word 22) word)))
+
+;; A random float in [0, 1] from a random uint
+(define (unitFloat [random : uint]) : float
+  (/ (float random) 4294967295.0))

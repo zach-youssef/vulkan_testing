@@ -1,0 +1,405 @@
+;; Every feature of the language, for the golden tests (golden-test.rkt): the generated header and
+;; shaders are compared with expected/, and compiled by toolchain-test.rkt
+
+;; The standard library: its declarations become the file's
+(import camera)
+(import random)
+
+(struct Light
+  (direction vec3)
+  (intensity float)             ; Packed after the vec3
+  (color vec4))
+
+(struct Lights
+  (count uint)
+  (lights (array Light 4)))
+
+(vertex-format MeshVertex
+  (position vec3)
+  (normal vec3)
+  (uv vec2)
+  (material uint) (tangent vec4 #:as snorm8) (joints uvec4 #:as uint16))   ; The last two stored packed
+
+;; Every kind of binding, stages, push constants and every kind of varying
+(graphics-material Surface
+  (shaders "shaders/surface.vert" "shaders/surface.frag")
+  (vertex-input MeshVertex position uv material)
+  (bindings
+   (lights (buffer Lights read) #:stages (fragment))
+   (transforms (buffer-array mat4 read) #:stages (vertex))
+   (albedo texture #:stages (fragment))
+   (albedoSampler sampler)
+   (mask (storage-image read) #:stages (fragment)))
+  (push
+   (object uint)
+   (tint vec3))
+  (varyings
+   (uv vec2)
+   (screen vec2 noperspective)
+   (material uint flat))
+  (outputs
+   (color vec4)
+   (normalOut vec4)))
+
+;; Writes buffers and an image: no buffer block is readonly
+(compute-material Accumulate
+  (shaders "shaders/accumulate.comp")
+  (workgroup 8 8)
+  (bindings
+   (lights (buffer Lights read))
+   (sums (buffer-array float read-write))
+   (target (storage-image write))))
+
+;; No bindings or push constants at all
+(graphics-material Plain
+  (shaders "shaders/plain.vert" "shaders/plain.frag")
+  (outputs (color vec4)))
+
+;; Functions and constants: pure ones also compile to C++, and every form of the body language
+(define golden 1.618)
+(define offsets (array vec2 (vec2 0 1) (vec2 1 0)))
+
+(define (polish [x : vec3] [n : int]) : vec3
+  (let* ([(total count) (fold ([total (vec3 0.0)] [count 0])
+                              ([i (range 0 n)] [j (range i n)])
+                          (values (+ total (* x (float j))) (+ count 1)))]
+         [scaled (cond [(< count 2) total]
+                       [(< count 10) (* total 0.5)]
+                       [else (/ total (float count))])])
+    (+ scaled (vec3 (sum ([k (range 0 3)]) (at (at offsets (remainder k 2)) 0))
+                    golden
+                    (float (bitxor (shl 1 n) 3))))))
+
+;; Uses textures, so it's GLSL only
+(define (sampled [t : texture2D] [s : sampler] [uv : vec2]) : vec4
+  (+ (sample t s uv) (sample-lod t s uv 0.0) (fetch t s (ivec2 0) 0)
+     (vec4 (sample-compare t s uv 0.5)) (vec4 (vec2 (texture-size t 0)) 0.0 0.0)))
+
+;; Written in GLSL: shaders include its file, and functions calling it don't compile to C++
+(extern-glsl "shaders/noise.glsl" ((hashNoise [p : vec2]) : float))
+(define (grain [p : vec2]) : float (* 0.5 (hashNoise p)))
+
+;; Takes a storage image, so it's inlined where it's called
+(define (loadEdge [image : image2D] [texel : ivec2]) : vec4
+  (image-load image (min texel (- (image-size image) 1))))
+
+;; ZGAL bodies, with accesses and stages inferred
+(graphics-material Shaded
+  (vertex-input MeshVertex position uv material)
+  (bindings
+   (lights (buffer Lights))
+   (albedo texture)
+   (albedoSampler sampler))
+  (push
+   (tint vec3))
+  (varyings
+   (texCoord vec2)
+   (id uint flat))
+  (outputs
+   (color vec4)
+   (glow vec4))
+  (vertex
+   (let* ([p (vec4 position 1.0)])
+     (results #:position (* (mat4 1.0) p) #:texCoord uv #:id material)))
+  (fragment
+   (let* ([base (sampled albedo albedoSampler texCoord)]
+          [light (at lights.lights (int (min id 3)))])
+     (results #:color (vec4 (* (polish base.rgb 2) tint light.color.rgb) base.a)
+              #:glow (if (and (> light.intensity 0.5) (not frontFacing))
+                         (vec4 light.direction 1.0)
+                         (vec4 0.0))))))
+
+(compute-material Scatter
+  (workgroup 8 8)
+  (bindings
+   (sums (buffer-array float))
+   (target (storage-image))
+   (settings (buffer Lights)))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)]
+          [index (+ (* globalInvocationId.y 8) globalInvocationId.x)])
+     (begin
+       (unless (= settings.count 0)
+         (write! (at sums index) (+ (at sums index) (.r (loadEdge target texel)))))
+       (for ([i (range 0 2)])
+         (store! target (+ texel (ivec2 i 0)) (vec4 (+ (float i) (grain (vec2 texel))))))
+       (when (> index 0)
+         (write! (at sums 0) 0.0))))))
+
+;; 8- and 16-bit integers (read widened, written narrowed), workgroup shared memory and barriers
+(struct Packed
+  (flags uint8)
+  (level int16)                 ; Aligned to 2 bytes
+  (bytes (array uint8 3))
+  (offset int8)
+  (wide uint))                  ; Aligned to 4 bytes, after byte padding
+
+(compute-material Reduce
+  (workgroup 64)
+  (bindings
+   (packed (buffer-array Packed))
+   (total (buffer uint)))
+  (shared
+   (partial (array uint 64))
+   (marks (array uint8 64)))
+  (compute
+   (let* ([x localInvocationId.x]
+          [p (at packed globalInvocationId.x)])
+     (write! (at partial x) (+ p.flags (at p.bytes 2) (uint (+ p.level p.offset)) p.wide))
+     (write! (at marks x) (uint8 (bitand x 255)))
+     (write! (at packed globalInvocationId.x) (with p #:flags (uint8 1) #:level -3))
+     (barrier!)
+     (for ([level (range 0 6)])
+       (let* ([stride (shr 32 (uint level))])
+         (when (< x stride)
+           (write! (at partial x) (+ (at partial x) (at partial (+ x stride)))))
+         (barrier!)))
+     (when (= x 0)
+       (write! total (+ (at partial 0) (at marks 0)))))))
+
+;; Atomics (on shared and buffer elements, ints and floats), subgroups, strided ranges, while
+;; loops and early returns
+(compute-material Histogram
+  (workgroup 64)
+  (bindings
+   (samples (buffer-array uint))
+   (bins (buffer-array uint))
+   (weights (buffer-array float)))
+  (shared
+   (local (array uint 16)))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (unless (< i 4096) (return!))
+     (write! (at local localInvocationId.x) 0)
+     (for ([k (range i 4096 (* 64 workgroupCount.x))])
+       (atomic-add! (at local (remainder (at samples k) 16)) 1))
+     (let* ([(value steps) (while ([n (at samples i)] [steps (uint 0)]) (and (> n 1) (< steps 100))
+                              (values (if (= (remainder n 2) 0) (/ n 2) (+ (* 3 n) 1)) (+ steps 1)))]
+            [total (subgroupAdd steps)])
+       (when (subgroupElect)
+         (atomic-add! (at weights 0) (float total))
+         (atomic-max! (at bins 16) value))
+       (atomic-compare-exchange! (at bins 17) 0 subgroupSize)))))
+
+;; Discards and derivatives in a fragment shader
+(graphics-material Cutout
+  (varyings (coverage vec2))
+  (outputs (color vec4))
+  (vertex
+   (results #:position (vec4 0.0 0.0 0.0 1.0) #:coverage (vec2 0.5)))
+  (fragment
+   (when (< (length (fwidth coverage)) 0.001)
+     (discard!))
+   (vec4 coverage (dFdxFine coverage.x) 1.0)))
+
+;; Arrays of bindings: textures, uniforms' values and storage images chosen per invocation, through
+;; let* aliases, and written through an element
+(compute-material Pick
+  (workgroup 8 8)
+  (bindings
+   (decals (array texture))
+   (settings (array (buffer Lights)))
+   (targets (array (storage-image))))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)]
+          [which (remainder globalInvocationId.x (array-length decals))]
+          [decal (at decals which)]
+          [target (at targets (remainder which (array-length targets)))])
+     (store! target texel (vec4 (float (.x (texture-size decal 0))) (float (.count (at settings 0))) 0.0 1.0)))))
+
+;; Every graph item, node and option
+;; Dispatches give the push constant their material leaves out
+(compute-material Bump
+  (workgroup 64)
+  (bindings (sums (buffer-array float)))
+  (push (first uint) (amount float))
+  (compute
+   (let* ([i (+ first globalInvocationId.x)])
+     (write! (at sums i) (+ (at sums i) amount)))))
+
+(graph Everything
+  (parameter enabled bool)
+  (parameter count int)
+  (parameter size uint)
+  (parameter scale float)
+  (input meshes meshes)
+  (input frameLights (per-frame Lights))
+  (input tintNow (per-frame vec3))
+  (input logger cpu)
+  (input upload cpu)
+  (input custom extern)
+  (import-image picture #:resting shader-read-only)
+  (import-buffer packedInput Packed)
+  (import-buffer staging Packed)
+  (input seeds (data uint))
+  (upload seedBuffer seeds)
+  (image seedImage rgba8 (fixed 2 2) #:frames shared)
+  (constant pictureWidth (width picture))
+  (constant halfScale (/ scale 2.0))
+  (constant doubled (* (uint count) 2))
+  (sampler basic)
+  (sampler shadowed #:filter nearest #:mipmap nearest #:address clamp-to-border #:border opaque-white
+           #:compare less-or-equal #:anisotropy #f #:max-lod 4)
+  (uniform lightBuffer Lights frameLights)
+  (image colorImage rgba16f (surface 0.5) #:frames per-frame)
+  (image depthImage d32 (surface 0.5) #:frames shared)
+  (image maskImage r32f (fixed pictureWidth (+ size 1)) #:frames shared)
+  (image copy rgba8 (extent-of picture) #:frames shared #:when enabled)
+  (buffer sumBuffer float (* size size) #:frames shared)
+  (buffer transformBuffer mat4 doubled #:frames per-frame #:when (and enabled (> count 0)))
+  ;; Sized each frame, from a per-frame input: recreated when the size changes
+  (input sampleCount (per-frame uint))
+  (buffer samples uint (* sampleCount 2) #:frames per-frame)
+  (target scene (color colorImage #:clear (0.1 0.2 0.3 1.0) #:load clear #:store store)
+                (color copy #:load load)
+                (depth depthImage #:clear 0.0 #:store dont-care))
+  (target screen (if (not enabled) (surface #:clear (0 0 0 1) #:depth d32) (attachments (color copy))))
+  (material surface Surface (lights lightBuffer) (transforms transformBuffer) (albedo picture)
+            (albedoSampler basic) (mask maskImage)
+            #:push ((object (if enabled (max size 1) 0)) (tint (* tintNow (.zyx (vec3 halfScale 1 (float pictureWidth))))))
+            #:cull none #:front-face clockwise #:blend alpha #:depth-test #t #:depth-write #f
+            #:depth-compare greater-or-equal #:topology triangle-list)
+  ;; Invocations are computed each frame, so they can use graph images' current sizes. Created
+  ;; only for the dispatch using it.
+  (material accumulate Accumulate (lights lightBuffer) (sums sumBuffer) (target maskImage)
+            #:invocations ((width colorImage) (max (height maskImage) size)) #:when (>= count 2))
+  (material plain Plain)
+  (buffer packedCopy Packed 64 #:frames shared)
+  (buffer totalBuffer uint 1 #:frames shared)
+  (material reduce Reduce (packed packedCopy) (total totalBuffer) #:invocations (64))
+  ;; Array bindings: lists of resources (a uniform among them), and imported images
+  (import-images decals #:resting shader-read-only)
+  (material pick Pick decals (settings (lightBuffer lightBuffer)) (targets (maskImage copy)) #:invocations (8 8))
+  (draw-meshes drawSurface scene meshes surface #:enabled enabled #:push ((object 7)))
+  (dispatch accumulate accumulate #:when (>= count 2))
+  (draw drawPlain screen plain (* 3 size))
+  (readback readMask maskImage)
+  (cpu logFrame logger)
+  (cpu fillStaging upload #:reads (packedInput) #:writes (staging))
+  (copy copyAll packedInput packedCopy)
+  (copy copySome staging packedCopy #:count 32 #:source-offset 1 #:destination-offset (uint count) #:enabled enabled)
+  (dispatch reduce reduce)
+  (dispatch pick pick #:when enabled)
+  (extern customNodes custom #:when enabled)
+  ;; Data in and out: a clear, a buffer copied into an image, and readbacks of buffers
+  (clear clearTotal totalBuffer #:value (count seeds))
+  (copy toSeedImage seedBuffer seedImage)
+  (copy seedCorner seedBuffer seedImage #:source-offset 1 #:destination-offset (1 (uint count)) #:extent (1 1))
+  (readback readSeeds seedBuffer #:once #t)
+  (readback readTotal totalBuffer #:when enabled)
+  (readback readSamples samples)
+  ;; A dispatch giving the push constant its material leaves out, and its own size
+  (material bump Bump (sums sumBuffer) #:push ((amount halfScale)))
+  (dispatch bumpOnce bump #:push ((first (uint count))) #:invocations (size))
+  ;; Loops: nodes per seed and pass (with their own push constants and sizes), and per row
+  (for ([s seeds] [k (range 0 count 2)])
+    (dispatch bumpEach bump #:push ((first (+ s (uint k)))) #:invocations ((+ s 1)) #:when (> k 0))
+    (readback readEach sumBuffer))
+  (for ([i (range (uint 0) size)])
+    (draw drawEach screen plain (+ i 3))))
+
+;; Every event, effect and kind of graph binding: parameters computed once, per-frame inputs from
+;; the state, node enables (one of a #:when node), and the rest passed through from C++
+(app Explorer
+  (parameter level int)
+  (parameter gain float)
+  (extern (noise [p : vec2]) : float)
+  (extern (report [frame : uint] [view : mat4]) : void)
+  (state
+   (tint vec3 (vec3 gain))
+   (cursor vec2 (vec2 0.0))
+   (dragging bool #f)
+   (zoom float 1.0)
+   (frames uint 0)
+   (light Light (Light (vec3 0.0 1.0 0.0) gain (vec4 1.0))))
+  (on (key-pressed a 1 f12 keypad-add) (with state #:tint (* state.tint 2.0)))
+  (on (key-released space) (print! "frames: " state.frames ", dragging: " state.dragging))
+  (on (key-pressed escape) (quit!))
+  (on (key-pressed 3) (set-frames-in-flight! 3))
+  (on (mouse-pressed left at) (with state #:dragging #t #:cursor at))
+  (on (mouse-released right at) (with state #:dragging #f))
+  (on (cursor-moved at) (if state.dragging (with state #:cursor at) state))
+  (on (scrolled offset) (with state #:zoom (* state.zoom (.x (polish (vec3 offset.y) 1)))))
+  (on (frame dt)
+    (let* ([next (+ state.frames 1)])
+      (when (= (remainder next 100) 0)
+        (print! "frame " next " of " framesInFlight " in flight at " surfaceSize.x)
+        (report next (lookAt (vec3 (noise state.cursor) 0.0 (unitFloat (pcgHash next))) (vec3 0.0) (vec3 0.0 1.0 0.0))))
+      (with state #:frames next)))
+  (run Everything
+    (enabled (> level 0))
+    (count level)
+    (size (uint (* level 2)))
+    (scale gain)
+    (tintNow (* state.tint state.zoom))
+    (sampleCount state.frames)
+    #:enabled ((accumulate state.dragging)
+               (drawPlain (not state.dragging))
+               (drawEach state.dragging))))
+
+;; A program running Explorer: a window, its clock, options setting its parameters (C++ gives the
+;; externs and the graph's other inputs, through MainInputs), and a capture
+(main Explorer
+  (about "Explores everything")
+  (window "Explorer" 800 600)
+  (timestep #:max 0.1 #:fixed 1/60)
+  (capture readMask)
+  (controls "a        brighten" "escape   quit")
+  (option level "--level" "how much there is" #:default 2 #:range (0 8))
+  (option gain "--gain" "the light's gain" #:default 1.5))
+
+;; Phases: a graph uploading per-frame data and reading it back once, whose copy an app's read event
+;; keeps in the state until it switches to another graph
+(graph Warmup
+  (input lights (per-frame (data Light)))
+  (upload lightList lights)
+  (buffer lightCopy Light (count lights) #:frames per-frame)
+  (copy copyLights lightList lightCopy)
+  (readback readLights lightCopy #:once #t))
+
+(app Stages
+  (extern (brighten [l : (data Light)]) : (data Light))
+  (state
+   (lights (data Light) (empty-data Light))
+   (warm bool #f)
+   (seen uint 0))
+  (on (read readLights copied)
+    (with state #:warm #t #:lights (brighten copied) #:seen (+ (count copied) (uint (.intensity (at copied 0))))))
+  (run Warmup (lights state.lights) #:when (not state.warm))
+  (run Everything (enabled #t)))
+
+;; Vertices models fill by name (packed, or defaulted when a file lacks them, or always)
+(vertex-format ModelVertex
+  (position vec3)
+  (normal vec3 #:as snorm16)
+  (texCoord vec2)
+  (tint vec4 #:as unorm8 #:default (vec4 1 1 1 1))
+  (layer uint #:default 0))
+
+;; Models' base colours, chosen by the mesh's instance index (its material)
+(graphics-material ModelPaint
+  (vertex-input ModelVertex)
+  (bindings (colors (array texture)) (factors (buffer-array vec4)) (s sampler))
+  (varyings (uv vec2) (m uint flat))
+  (outputs (paint vec4))
+  (vertex (results #:position (vec4 position 1.0) #:uv texCoord #:m (+ (uint instanceIndex) layer)))
+  (fragment (* (at factors m) (sample (at colors m) s uv))))
+
+;; Assets: image files, buffer files and models, found by a path in the asset search paths or a path
+;; input C++ gives
+(graph Assets
+  (input decalPath path)
+  (image-file albedoMap "textures/albedo.png" #:color srgb)
+  (image-file decalMap decalPath #:color linear)
+  (buffer-file savedLights Lights "lights/day.bin" "lights/night.bin")
+  (input frameLights (per-frame Lights))
+  (uniform lightBuffer Lights frameLights)
+  (image mask rgba8 (extent-of decalMap) #:frames shared)
+  (material pick Pick (decals (albedoMap decalMap)) (settings (lightBuffer)) (targets (mask)) #:invocations ((width albedoMap) (height albedoMap)))
+  (dispatch pick pick)
+  (model ship "models/ship.glb" ModelVertex #:base-colors shipColors #:base-color-factors shipFactors)
+  (sampler linearSampler)
+  (image shipImage rgba8 (fixed 64 64) #:frames shared)
+  (target shipTarget (color shipImage))
+  (material paint ModelPaint (colors shipColors) (factors shipFactors) (s linearSampler))
+  (draw-meshes drawShip shipTarget ship paint))

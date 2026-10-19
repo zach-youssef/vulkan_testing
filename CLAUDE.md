@@ -16,11 +16,22 @@ Agents migrating code written against the pre-refactor wrapper (the `main` branc
 - `make approve-screenshots`: accept the screenshots of the last failed GPU run
   (`tests/gpu/approved/<device>/`). Never approve a changed screenshot without understanding why
   it changed.
+- `make test-dsl`: builds ZGAL's documentation and runs its compiler's tests (`make test` includes
+  it), installing the web backend's npm packages (`web/`) first. `make docs` only builds the documentation: `build/docs/zgal.html`, and
+  `build/docs/zgal.txt` to read in a terminal.
+- `make test-web`: compiles `web/tests/*.zgal` to TypeScript and WGSL in `build/web-tests` beside
+  a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node, then
+  builds the particles example for the web (`make web`) and runs it under Node (`make test`
+  includes it; `TEST_ARGS` go to `node --test`).
+- `zgal.mk`: the make rules building ZGAL programs (`zgal-rule`, `zgal-program`), which the Makefile
+  and other projects' Makefiles include.
 - `tools/verify_stack.sh <repo> <base> [head]`: builds and tests every commit in a range (builds and
-  CPU tests in parallel, GPU tests and example smoke tests one at a time). Check its exit codes, not
-  filtered output.
+  CPU and ZGAL tests in parallel, GPU tests, example smoke tests and web tests one at a time). Check its exit
+  codes, not filtered output.
 
-Requirements: the Vulkan SDK (path in the Makefile), `glslc`, GLFW and GLM. Development happens on an
+Requirements: the Vulkan SDK (path in the Makefile), `glslc`, GLFW, GLM and Racket 8 (`racket` and
+`raco`, with Scribble, as in the main distribution) for ZGAL, and Node 24 (which runs TypeScript)
+and npm for its web backend. Development happens on an
 Apple M4 with MoltenVK, which exposes four queue families of one queue each.
 
 GPU tests run headless on a shared `VulkanContext` with validation and synchronization validation
@@ -34,32 +45,41 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | Directory | Contents |
 |---|---|
 | `include/core` | `VulkanContext` (instance, device, queues, timelines, frames, deferred destruction), `ResourceManager`/`Handle`, `PerFrame`/`FrameBinding`, Vulkan object wrappers, device feature requirements |
-| `include/resources` | `Buffer<T>`, `Image` |
+| `include/resources` | `Buffer<T>`, `Image`, `Model` (glTF and OBJ loading: `ModelData`, `uploadModel`) |
 | `include/descriptors` | `DescriptorHeap`: the universal descriptor set and `DescriptorEntry` |
 | `include/shaders` | `ShaderLibrary` and `Shader` (SPIR-V loading and reloading), `SpirvReflection` (what shaders write) |
 | `include/materials` | `Material`, `ComputeMaterial`, `GraphicsMaterial`, `MaterialBinding`, `Renderable`, `Mesh`, `MeshRenderable`, `AttachmentFormats` |
-| `include/graph` | `RenderGraph` (runtime), `Node`/`NodeBuilder`, the pure compiler (`GraphCompiler.h`) and synchronization state machine (`GraphSync.h`), `nodes/` (`RenderablesNode`, `DispatchNode`, `ReadbackNode`) |
+| `include/graph` | `RenderGraph` (runtime), `Node`/`NodeBuilder`, the pure compiler (`GraphCompiler.h`) and synchronization state machine (`GraphSync.h`), `nodes/` (`RenderablesNode`, `DispatchNode`, `DispatchSequenceNode`, `IndirectDrawNode`, `ReadbackNode`, `BufferReadbackNode`) |
 | `include/targets` | `RenderTarget`, `Swapchain` |
 | `include/app` | `VulkanApp` (the only GLFW user) |
 | `include/glsl` | `bindless.glsl`, included by shaders (`glslc -I include/glsl`) |
 | `include/util` | `StbImageWrite.h`: `stb_image_write` without its deprecation warnings |
+| `include/zgal` | What code generated from ZGAL uses: `Material.h` for materials (checks and shaders every generated material shares), `Runtime.h` for graphs (`zgal::FrameInfo`, `FrameSource`, `Uniform`, material instances), `App.h` for apps (events, `Timestep`, `RunMode`), `Main.h` for generated mains (command line, validation, captures, headless runs), and `Window.h`, running an app in a `VulkanApp` (and windowed programs) |
+| `dsl` | ZGAL (Zach's Graphics Application Language), declaring shader interfaces and render graphs: its compiler (Racket), documentation (`dsl/docs`) and tests (`dsl/tests`) |
+| `web` | ZGAL's web backend (WebGPU): the TypeScript runtime generated code uses (`zgal/`: `Context`, `RenderGraph`, nodes, materials, layouts; `node.ts` and `png.ts` for Node), its tests (`tests/`), npm packages (TypeScript; Dawn, WebGPU for Node, for tests) and tools (`tools/check-wgsl.ts` compiles WGSL with Dawn; `tools/firefox.ts` runs a page in Firefox, which needs a window for WebGPU, and compares its canvas with an approved PNG) |
 
 Include headers relative to `include/`, e.g. `#include "graph/RenderGraph.h"`. Exactly one
 translation unit must `#define VK_WRAP_UTIL_IMPL` before including the wrapper and
-`#define STB_IMAGE_IMPLEMENTATION` before including `<stb_image.h>` (see the example). To write
+`#define STB_IMAGE_IMPLEMENTATION` before including `<stb_image.h>` (see the example). That
+translation unit must also include `"resources/Model.h"` if any uses it (directly, or through code
+generated for a ZGAL `model`), as it compiles cgltf's and tinyobjloader's implementations there. To write
 images, define `STB_IMAGE_WRITE_IMPLEMENTATION` in one translation unit and include
 `"util/StbImageWrite.h"` rather than `<stb_image_write.h>`.
 
 ## Writing an application
 
-Read `examples/simple/simple_example.cpp` first: it uses every major feature. The other examples
-show common kinds of application:
+Read `examples/simple/simple_example.cpp` first: it builds its graph with the C++ API, using
+materials and a small app generated from `simple.zgal`. Every example's shaders and app are written
+in ZGAL (see "Shaders, graphs and apps in ZGAL"), and the others declare their graphs there too.
+The other three are programs written entirely in ZGAL: their `main` is generated (`(main ...)`),
+with their options, window and smoke-test capture, and they have no C++. They show common kinds of
+application:
 
 | Example | Shows |
 |---|---|
-| `examples/image_filter` | Headless use without `VulkanApp`: a chain of compute passes, `setEnabled`, push constant parameters, `ReadbackNode` |
-| `examples/particles` | Compute writing a graph buffer that a graphics pass reads (across queues), per-frame parameters, input, changing frames in flight at runtime |
-| `examples/scene` | A 3D renderer: shadow map, HDR target that follows window resizes, tonemapping, orbit camera, shader hot reload |
+| `examples/image_filter` | Headless use without `VulkanApp` (a generated main without a window): a chain of compute passes enabled from the app's state, push constant parameters from command-line options, an image file named on the command line, readback written to a PNG |
+| `examples/particles` | Compute writing a graph buffer that a graphics pass reads (across queues), per-frame parameters computed from app state, input handlers, changing frames in flight at runtime (scripted by the app in its smoke test), a generated main with a window |
+| `examples/scene` | A 3D renderer: a glTF model (`assets/scene.gltf`, written by `make_scene.py`), shadow map, HDR target that follows window resizes, tonemapping, an orbit camera whose matrices are ZGAL functions, toggling a pass, shader hot reload, window or headless targets chosen by how it's run, a smoke test scripted by the app (resizes, a pass toggled) |
 
 ```cpp
 // Fallible calls return Result<T>; TRY / TRY_ASSIGN return errors to the caller
@@ -67,14 +87,16 @@ Result<void> runApp() {
     AppConfig config;
     config.window = WindowConfig{"My app", 1280, 720};   // std::nullopt for headless
     config.enableValidation = true;
-    config.shaderSearchPaths = {MY_SHADER_DIR};            // where <name>.spv files are
+    // SPIR-V (<name>.<stage>.spv) is found in shaders/ beside the executable by default
+    // (config.shaderSearchPaths)
+    // Assets (models, images) by relative path are found in assets/ beside it (config.assetSearchPaths)
     config.autoReloadShaders = true;                       // optional
     VulkanApp app;
     TRY(app.init(config));
     VulkanContext& ctx = app.getContext();
 
     // Resources are owned by the context's ResourceManager and shared through Handle<T>
-    TRY_ASSIGN(auto texture, Image::createFromFile(ctx, path));
+    TRY_ASSIGN(auto texture, Image::createFromFile(ctx, path, ColorSpace::Srgb));
     TRY_ASSIGN(auto sampler, VulkanSampler::createWithAddressMode(ctx, VK_SAMPLER_ADDRESS_MODE_REPEAT));
     TRY_ASSIGN(auto copyShader, ctx.shaders().get("copy.comp"));
 
@@ -123,7 +145,8 @@ int main() { return exitStatus(runApp()); }            // prints the error
 - **Creation:** fallible types have static factories returning `Result<Handle<T>>` (`Image::create*`,
   `Buffer<T>::create`, `Mesh::create`, `VulkanSampler::create`; `VulkanContext::create` returns a
   `std::unique_ptr`). Materials and nodes construct infallibly; see "Descriptors and materials".
-- **Device features:** the wrapper enables what it needs (`DeviceFeatures::required()`). Request
+- **Device features:** the wrapper enables what it needs (`DeviceFeatures::required()`), and what it
+  can do without when the device has it (`DeviceFeatures::optional()`: `drawIndirectCount`). Request
   anything else with `AppConfig::features` (`VulkanContextConfig::features`), e.g.
   `config.features.vulkan12.storageBuffer8BitAccess = VK_TRUE` for 8-bit types in storage buffers.
   Devices lacking a requested feature are rejected by name; `ctx.enabledFeatures()` lists what's on.
@@ -166,6 +189,12 @@ int main() { return exitStatus(runApp()); }            // prints the error
   ```
   `sampler` is a GLSL keyword, so don't name a member that. Storage images are declared without a
   format (`bindlessStorageImages[]`). Vertex and fragment shaders of one material share the block.
+  For a set of entries a shader chooses between (e.g. textures), `DescriptorArray::create(ctx,
+  {entry, ...})` keeps their indices in a small buffer per frame (the count, then the indices) and
+  `MaterialBinding::array(array, access)` pushes its index; shaders index the universal arrays with
+  `nonuniformEXT`, and a node using the material uses every element. `array->setElements(...)`
+  changes them (any number; buffers grow, and graphs declare the new uses before their next frame),
+  and `graph.setElementSource(array, fn)` chooses them each frame.
   Give every `BINDLESS_BUFFER` in a shader the same qualifiers: MoltenVK can't alias a `readonly`
   block with a writable one (pipeline creation fails).
 - **Declare every binding's access accurately.** The graph synchronizes only on declared accesses,
@@ -196,10 +225,17 @@ int main() { return exitStatus(runApp()); }            // prints the error
   owns. The graph returns them to their resting state at the end of every frame, so code outside the
   graph knows their layout. `createImage(name, FrameMode, format, FixedExtent | SurfaceRelative)` and
   `createBuffer(...)` create graph-owned resources. The frame mode is required, and usage is derived
-  from the declared uses. `graph.sampledEntry(id)`, `storageEntry(id)` and `storageBufferEntry(id)`
-  give materials entries for graph resources that follow recreation.
+  from the declared uses. A buffer's size can be a function of the frame (`createBuffer(name, mode,
+  [](const FrameContext&) { return bytes; })`), computed at the start of every frame: when it
+  changes the graph recreates the buffer, discarding its contents, and its entries follow. `graph.sampledEntry(id)`, `storageEntry(id)` and `storageBufferEntry(id)`
+  give materials entries for graph resources that follow recreation (and give them the usage).
 - **Nodes** declare what they use. `RenderablesNode`, `DispatchNode` and `ReadbackNode` cover common
-  cases. Per-frame work that can fail (creating resources) goes in `Node::prepareFrame`, which runs
+  cases. GPU-driven work reads commands shaders wrote: `DispatchNode(material, BufferOffset{buffer,
+  offset})` dispatches indirectly, and `IndirectDrawNode` draws `VkDraw(Indexed)IndirectCommand`s
+  (from a mesh's buffers for indexed ones), with a count from a buffer where the device has
+  `drawIndirectCount` (`ctx.enabledFeatures()`; the context enables it when it can).
+  `DispatchSequenceNode` dispatches several materials in order as one node, with barriers between
+  them (the steps of an algorithm), skipping steps with no workgroups that frame. Per-frame work that can fail (creating resources) goes in `Node::prepareFrame`, which runs
   before anything is acquired or submitted; `record` and `run` can't fail. For one-offs, use `addGraphics`, `addCompute`, `addTransfer` or `addCpu(name, setup, record/run)`.
   Subclass `GraphicsNode` / `ComputeNode` / `TransferNode` / `CpuNode` for reusable nodes.
   `NodeBuilder::uses(material)` declares the material's resource uses automatically. Declare
@@ -207,7 +243,7 @@ int main() { return exitStatus(runApp()); }            // prints the error
   Never touch a resource you haven't declared.
 - The graph derives order (insertion order is program order for conflicting uses), queues,
   barriers and semaphores, so there are no edges to add. `addDependency(before, after)` exists for
-  dependencies the graph can't see. Cycles, two surface writers, missing image usage and
+  dependencies the graph can't see. Cycles, two surface writers, missing image (or imported buffer) usage and
   material/target format mismatches fail `compile()`/`execute()` with `ErrorCode::InvalidGraph`.
   Errors before submission leave the frame unstarted, so it can be retried; errors after (a lost
   device, a failed present) are fatal.
@@ -219,19 +255,179 @@ int main() { return exitStatus(runApp()); }            // prints the error
 - Headless graphs can still have `SurfaceRelative` images: `graph.setSurfaceExtent(extent)` gives
   them (and materials' `update()`) an extent, and changing it recreates them like a window resize,
   so resize handling can be tested without a window.
-- `setEnabled(node, bool)` toggles nodes. Plans are cached per set of enabled nodes. CPU nodes
-  replace per-frame callbacks.
+- `setEnabled(node, bool)` toggles nodes; `runOnce(node)` runs one in the next frame only. Plans
+  are cached per set of enabled nodes. CPU nodes replace per-frame callbacks. `enableWith(follower,
+  leader)` makes a node that only prepares another's input follow its enabled state.
+- `BufferReadbackNode::contents<T>()` waits for the latest copy; `takeFinished<T>()` returns the newest
+  finished copy without waiting, for polling between frames.
+- Profiling: `graph.setTimingEnabled(true)` writes timestamps around every GPU node, and
+  `graph.timings()` returns the last timed frame's per-node GPU milliseconds (waiting for it).
+  Timestamps serialize work around timed nodes on their queue, so compare timings with each other;
+  other queues' work runs alongside and inflates a node's time, so time a node alone (disable the
+  others) for its own cost. `make run-bench` times ZGAL's library kernels (`tools/bench`). The graph
+  labels each node's commands with its name (`ctx.beginLabel`/`endLabel`, VK_EXT_debug_utils), so
+  GPU captures and Instruments' Metal System Trace show node names.
 - `VulkanApp` owns graphs: `createGraph()`, `setActiveGraph()`, `destroyGraph()`. Headless code can
   construct `RenderGraph(ctx)` directly and call `execute()`.
 - Input: `app.setInputHandlers({.key = ..., .mouseButton = ..., .cursorPos = ..., .scroll = ...})`
   receives window events during `runFrame()`; `app.window()` gives the `GLFWwindow*` for polling
   (`glfwGetKey`). Don't set GLFW callbacks or the user pointer yourself: the app owns them.
 
+### Shaders, graphs and apps in ZGAL
+
+A `.zgal` file declares materials (their interface, declared once instead of in both the shaders
+and C++: bindings, push constants, vertex input, varyings, outputs and the structs their buffers
+hold), their shaders, in ZGAL's expression language, render graphs using them, and apps running a
+graph. The compiler (`dsl/zgal.rkt`, run by `zgal.mk`'s `zgal-rule`, which also compiles the
+shaders) generates a header with a class per material, a struct per graph and a class per app (all
+in a namespace named after the file: `scene.zgal` gives `scene::SceneApp`), and the complete GLSL
+shaders. Prefer it
+for new applications; every example uses it. Read `build/docs/zgal.txt` (from `make docs`) before
+writing ZGAL: it has the language, what's generated and every error. In short:
+
+- `(import camera)` imports a standard library module (`dsl/lib`: `camera` with `lookAt`,
+  `perspective`, `ortho`, `orbit`; `color`; `random`; `math`), and `(import "file.zgal")` another
+  file's structs, functions, constants, materials, graphs and apps (so programs share them; a `main`
+  stays in its program's file). Use the library before writing your own.
+- For what bodies can't express yet, `(extern-glsl "file.glsl" ((f [x : T]) : R))` declares
+  pure GLSL functions bodies can call (shaders only; apps can't). Prefer ZGAL.
+- Shaders are `(vertex ...)`, `(fragment ...)` and `(compute ...)` clauses: expressions, with
+  immutable `let*` bindings, folds over ranges (`fold`, `sum`, `for`), and effects (`write!` to
+  buffers, `store!` to images). They name bindings, push constants, vertex attributes and varyings
+  directly (`scene.viewProjection`, `(sample hdr hdrSampler uv)`). A vertex shader gives
+  `(results #:position ... #:varying ...)`; a fragment shader its output's value.
+- Storage bindings' accesses and graphics bindings' stages are inferred from the shaders, so the
+  graph synchronizes what they actually do; don't declare them unless a shader is GLSL.
+- Compute materials can declare `(shared (name type) ...)` workgroup variables, written with
+  `write!` and synchronized with `(barrier!)` (`(buffer-barrier!)` for buffer writes too), which the
+  compiler checks every invocation reaches.
+- Also in bodies: atomics giving the previous value (`(atomic-add! (at bins b) 1)`, min, max, and,
+  or, xor, exchange, compare-exchange; float adds need `requiredFeatures()`), strided ranges
+  `(range from to step)`, `(while ([acc init] ...) condition next)` loops, `(return!)` in compute
+  and `(discard!)` in fragment shaders, subgroup built-ins (`subgroupAdd`, `subgroupElect`, ...,
+  checked against the device when shaders load) and derivatives (`fwidth`, fragment only).
+- `(name (array texture))` (or of storage images or buffers) binds any number of entries:
+  bodies choose with `(at name i)` and count with `(array-length name)`, and graphs give a list of
+  resources, `(name (a b c))`, or `(import-images name #:resting ...)` images C++ gives;
+  `(name (a b c) #:select picks)` chooses elements each frame by a `(per-frame (data uint))` input.
+- `uint8`, `int8`, `uint16` and `int16` pack buffers and shared memory. Bodies read them widened to
+  `uint`/`int` and narrow explicitly to write them (`(uint8 x)`). A material using them needs device
+  features: add its (or its graph's) `requiredFeatures()` to the context's features.
+- Graphs load assets when they're built: `(image-file name "file.png" #:color srgb)` (or `linear`)
+  imports an image file found in the asset search paths; `(buffer-file b T "dump.bin" ...)` reads
+  binary files of whole `T`s (e.g. memory dumps) into a buffer; `(model m "ship.gltf" Format
+  #:base-colors textures #:base-color-factors factors)` loads a glTF or OBJ model as meshes of a
+  vertex format, filling its attributes by name (`position`, `normal`, `uv`, `color`, `tangent`;
+  others need `#:default`), which `draw-meshes` draws; shaders read a mesh's material as
+  `instanceIndex` and index the textures (an `(array texture)`) and factors (a `buffer-array vec4`)
+  with it. An asset's path can be a `(input p path)` (`std::filesystem::path`) instead of a string.
+- Vertex attributes can be stored packed, `(color vec4 #:as unorm8)` (`float16`, `unorm8/16`,
+  `snorm8/16`, `uint8/16`, `int8/16`): shaders read the declared type, and the C++ struct holds
+  GLM's sized types (fill them with `glm::packUnorm` etc., as the generated comments say).
+- GPU-driven work: shaders write the commands of `(import indirect)` (`DispatchCommand`,
+  `DrawCommand`, `DrawIndexedCommand`) into graph buffers (or C++ gives them in uploads or imported
+  buffers created with indirect usage), and `(dispatch d m #:indirect (at cmds i))`
+  or `(draw d target m #:indirect (at cmds i) #:draws n #:count (at counts j))` read them;
+  `draw-meshes` of a model reads `DrawIndexedCommand`s a shader chose from the model's `#:draws` and
+  `#:bounds` (model options). Counts
+  use `drawIndirectCount` where the device has it, else a generated node first gives the commands
+  past the count no instances (MoltenVK lacks it).
+- The compute library: `(reduce n source (at dest i) #:op add|min|max #:count c)`,
+  `(inclusive-scan n source dest ...)` and `(exclusive-scan ...)` nodes over buffers of uints, ints
+  or floats, and `(sort n keys #:values v #:count c)`, a stable radix sort of uint keys (`(import
+  sorting)` maps floats and ints to them). `#:count` is an expression or a GPU-written `(at counts i)`. The compiler instantiates
+  their materials from `dsl/lib/kernels` (named `Zgal...`) and dispatches them as one
+  `DispatchSequenceNode`.
+- Node loops: `(for ([b batches] [pass (range 0 n)]) node ...)` repeats nodes when the graph is
+  built, over build-time ranges and `(data T)` inputs' elements (`b.first`, `(at batches i)`).
+  Dispatches and draws (indirect ones and `draw-meshes` too) give per-node `#:push ((field v))` (and dispatches `#:invocations`), so
+  iterations share a material and its pipeline; a material may leave out push constants every node
+  using it gives. A looped node's id is a `std::vector<NodeId>` (readback accessors take an index).
+  Library nodes and counted draws in loops share their materials and scratch buffers (each
+  iteration pushing its own values); extern inputs can take arguments, `(input f (extern uint T))`,
+  which extern nodes give, `(extern n f (uint k) b)`, e.g. a loop's variables. Draws looping into one target
+  need `#:load load`. Prefer loops to `extern` nodes where ZGAL has the nodes.
+- Top-level `(define (f [x : vec3]) : vec3 ...)` functions and `(define name value)` constants are
+  shared by the shaders, and those without textures, images or effects also compile to C++
+  (`sunDirection` in the scene example), so the CPU computes the same thing. A material's own
+  `(define (f ...) ...)` clauses read its bindings and push constants, and are inlined in its shaders.
+- GLSL bodies (a `(shaders "x.frag" ...)` clause) still work: they use bindings and push constants
+  through accessors, `name()`, and vertex inputs as `inName`. Prefer ZGAL bodies.
+- A `(graph Name ...)` declares parameters and inputs, samplers, uniforms (per-frame buffers the
+  graph writes from a C++ function, only when the value changes), images, buffers, imported images
+  and buffers, targets, material instances and nodes: dispatches, draws, readbacks, `cpu` nodes
+  (with `#:reads`/`#:writes` of imported buffers they map), `copy` nodes between buffers (or a buffer
+  into an image), `clear` nodes, readbacks of images and buffers (read through the generated
+  `nameContents(graph)` / `namePixels(graph)`), and `extern` nodes, where a C++ function adds nodes
+  that depend on the application's data. Data C++ computes goes in with `(input d (data T))` (a
+  `std::vector<T>`) and `(upload buf d)`, which creates and fills a buffer when the graph is built. Push
+  constants, dispatch sizes (`#:invocations`) and buffers' counts are computed each frame, so they
+  can follow per-frame inputs (e.g. an app's state) and images' current sizes; a buffer whose count
+  changes is recreated, its contents discarded. `Name::build(ctx, graph, Name::Inputs{...})` adds
+  them to a `RenderGraph` and returns their ids (`nodes.x` for `setEnabled` and readbacks). C++
+  supplies parameters, meshes, imported images and buffers, and functions (per-frame values,
+  `zgal::FrameSource<T>`; cpu work; extern nodes), which must outlive the graph. Images, buffers,
+  targets, materials and nodes take `#:when` (build-time): e.g. a window's surface target, the
+  material drawing into it and its draw `#:when (not headless)`, as headless graphs have no surface.
+- Outside a graph, C++ builds a generated material from `Name::loadShaders(ctx)` and
+  `Name::Bindings{.binding = entry, ...}`, and fills push constants by overriding
+  `writePush(frameIndex, Push&)`.
+- An `(app Name ...)` declares parameters, an immutable `(state (field type initial) ...)`, and
+  `(on event body)` handlers whose value is the next state (usually `(with state #:field v)`):
+  events are `key-pressed`/`key-released` (key names like `space`, `a`, `1`), `mouse-pressed`/
+  `mouse-released`, `cursor-moved` (positions in [-1, 1]), `scrolled` and `(frame dt)`. Handlers'
+  effects are `print!`, `set-frames-in-flight!`, `resize!` (the window, or headless the surface),
+  `quit!` and `run-once!` (a `#:once` node again). Bodies read `frameNumber`, and how the app is run: `headless`, `capture` and `frameLimit`
+  (C++ gives a `zgal::RunMode` in `Inputs`), e.g. to script a smoke test. `(on (read readback xs) ...)`
+  receives a readback's finished copy (a buffer's elements, or an image's texels with `#:size s`; a
+  looped readback's with `#:index i`) as `(data T)` (immutable shared elements,
+  `zgal::Data<T>`; `count`, `at`, `empty-data`, and `(collect ([x d] [i (range 0 n)]) e #:when c)`
+  mapping, filtering and building it), which state fields, externs and graphs'
+  `(input d (per-frame (data T)))` (uploaded again when it changes) take. `(run Graph (input expr) ...
+  #:enabled ((node expr) ...))` computes the graph's parameters once and per-frame inputs and node
+  enables each frame from the state; C++ gives the graph's other inputs through the app's
+  `Inputs`. Several `(run G ... #:when condition)` clauses are phases: each frame the first whose
+  condition holds (else the last) is `renderGraph()`, and `create` takes `Name::Graphs` (a
+  `RenderGraph*` per graph); nodes with `#:once #t` run in their graph's first frame.
+  `(extern (f [x : T]) : R)` declares a function C++ gives (a `std::function` in
+  `Inputs`) that bodies call, for what ZGAL can't do (reading datasets, saving files). C++ creates
+  it with `Name::create(ctx, graph, Name::Inputs{..., .timestep =
+  zgal::Timestep::realTime(max) or fixed(step)})` and runs it with `zgal::run(vulkanApp, *app)`
+  (`include/zgal/Window.h`), or headless calls `app->beginFrame()` (a `Result`) and executes `app->renderGraph()` each frame. Tests drive
+  it with `handle(zgal::Event{...})`, `state()` and `setState()`.
+- A `(main App ...)` makes the file a program: the compiler writes `name.zgal.main.cpp` too, with
+  the built-in options (`--frames N`, `--capture FILE`, `--size WxH`, `--window`, `--validation`,
+  `--plan`, `--timings` (per-node GPU time), `--capture-frames 1,2,60` (each to `<capture>/<frame>.png`), `--help`) and the app's `(flag p "--x" "help")`, `(option p "--x" "help" #:default v
+  #:range (lo hi) #:given flag)` and `(positional p "help")` setting its parameters (`path`
+  parameters too, passed to graphs' path inputs), a `(window "title" w h)` (without one, headless
+  only), the clock `(timestep #:max s #:fixed s)` and `(capture readback [#:to path-param])` written
+  to a PNG. What options can't give (externs, meshes, imports, other parameters) the program's own
+  C++ gives by defining `Result<name::MainInputs> name::mainInputs(VulkanContext&)`. `zgal.mk`'s
+  `zgal-program` builds one (its own C++ is the `.cpp` files beside the `.zgal` file); other projects'
+  Makefiles include `zgal.mk` too. Prefer it to a handwritten `main`.
+- Never edit generated files (under `build/`): change the `.zgal` file (or a GLSL body).
+- The web: `--web-out DIR` writes `FILE.zgal.ts` (structs' interfaces and layouts, materials'
+  descriptions with their WGSL, a class per graph whose `build(context, graph, inputs)` mirrors
+  the C++ one, the CPU-capable functions and constants, and a class per app like the C++ one) and a
+  WGSL module (WebGPU) per material shader. The TypeScript imports the runtime as
+  `./zgal/index.ts`: copy `web/zgal` beside it. Bodies keep C++'s arithmetic (floats rounded to 32
+  bits by `math.ts`/`glsl.ts`, integers wrapping); floats passed in must be 32-bit
+  (`Math.fround`). A program's main (`FILE.zgal.main.ts`) runs headless under Node with the
+  native options, or in its page (`FILE.zgal.html`); `zgal.mk`'s `zgal-web-program` builds it to
+  JavaScript (`make web`: `build/web/particles`). Vertex positions keep Vulkan's clip space (the
+  WGSL negates y). A material is a bind
+  group (binding i is its i'th binding, push constants a uniform buffer after them); buffers of
+  small integers or with atomics are 32-bit words at std430 offsets. GLSL bodies, `extern-glsl`,
+  array bindings, and (for now) image files, models, meshes, library kernels and indirect work
+  report `not-on-web`. Runtime code is erasable TypeScript (no parameter properties or enums), so
+  Node runs it directly.
+
 ### Shaders
 
 - The wrapper doesn't compile GLSL. Compile to SPIR-V (`glslc -I include/glsl --target-env=vulkan1.3`;
   the Makefile has rules) and load with `ctx.shaders().get("name.stage")`, which finds
-  `<name.stage>.spv` in the search paths. The stage comes from the extension.
+  `<name.stage>.spv` in the search paths. The stage comes from the extension. Shaders written in
+  ZGAL are named after their material, e.g. `Lit.frag`, and their generated classes load them.
 - `BINDLESS_BUFFER_ARRAY(qualifiers, Block, Type, name)` declares buffers holding arrays sized by the
   buffer (`name[i].data[j]`); pass element counts yourself, as MoltenVK can't compile `.length()`.
 - `app.reloadShaders()` (or `AppConfig::autoReloadShaders`) reloads changed SPIR-V. Materials rebuild
@@ -239,14 +435,22 @@ int main() { return exitStatus(runApp()); }            // prints the error
 
 ### Images and formats
 
-- `Image::createFromFile` / `createFromUcharBuffer` / `createEmptyRGBA` make sampled sRGB images.
+- `Image::createFromFile` / `createFromEncoded` / `createFromUcharBuffer` make sampled RGBA8 images
+  in the `ColorSpace` given (`Srgb` for colours, `Linear` for data); `createEmptyRGBA` makes sRGB
+  ones. `ctx.findAsset(path)` finds files in `assetSearchPaths`.
   `Image::createStorage` makes storage images, and fails (`ErrorCode::Unsupported`) for formats the
   device can't store to (e.g. any sRGB format). `Image::supportsUsage` checks a format first.
 - Samplers: `VulkanSampler::create(ctx, SamplerDesc{...})` (filter, address mode, a
   `compareOp` for shadow maps, anisotropy); `createWithAddressMode` is shorthand.
-- Meshes: `Mesh::create(ctx, vertices, indices)` (16- or 32-bit indices) holds the
+- Meshes: `Mesh::create(ctx, vertices, indices[, instanceIndex])` (16- or 32-bit indices) holds the
   buffers; `create<MeshRenderable>(mesh, material)` draws one with a material, so passes can share
-  geometry.
+  geometry. Vertex shaders read the mesh's instance index as `gl_InstanceIndex`.
+- Models: `ModelData::load(path)` reads a glTF or OBJ file (triangles with transforms baked in, and
+  base colour materials); `uploadModel<Vertex>(ctx, data, toVertices)` makes a `Model`: one mesh, a
+  draw per primitive (`VkDrawIndexedIndirectCommand`s whose first instance is the material, and
+  bounding spheres, for GPU culling), base colour factors and sRGB textures. `model.renderables(ctx,
+  material)` draws them with a `RenderablesNode`; `MeshRenderable(mesh, material, MeshRange{...})`
+  draws part of a mesh.
 - Colours: textures are sRGB and sampling decodes them to linear. The swapchain is preferably
   `B8G8R8A8_SRGB`, so shaders output linear values.
 
@@ -263,3 +467,21 @@ int main() { return exitStatus(runApp()); }            // prints the error
   a hazard is a bug.
 - Each commit must build and pass all tests on its own; verify a stack with `tools/verify_stack.sh`.
 - `docs/MIGRATING.md` describes the old API for consumers; update it if public APIs change.
+
+## Working on ZGAL
+
+- Its documentation (`dsl/docs/zgal.scrbl`) is part of the language: change it in the same commit
+  as the compiler, so it stays accurate. A new form or clause gets a grammar, a description and an
+  example; show generated code through the document's helpers (`zgal-example`, `generated-file`),
+  which compile it as the document builds, and quote repository files with `file-excerpt`, never by
+  pasting.
+- Every error the compiler reports has an id in the catalog (`dsl/private/errors.rkt`), with an
+  explanation and an example that reports it. The documentation renders the catalog, and the tests
+  check the catalog and the compiler agree.
+- The compiler's output is checked against golden files (`dsl/tests/golden/expected`). When it
+  changes on purpose, regenerate them (`ZGAL_UPDATE_GOLDEN=1 raco test dsl/tests/golden-test.rkt`)
+  and review the difference. Changes to generated C++ or GLSL also need GPU tests
+  (`tests/gpu/ZgalTest.cpp`, with interfaces in `tests/gpu/zgal`). Changes to generated WGSL or TypeScript, or
+  to the runtime (`web/zgal`), need web tests (`web/tests`, `make test-web`).
+- Keep the checked program (`dsl/private/ast.rkt`) independent of backends: GLSL and C++ are
+  emitters, and others (e.g. WebGL) are planned.

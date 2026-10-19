@@ -1,0 +1,3 @@
+void main() {
+    imageStore(row(), ivec2(gl_GlobalInvocationID.x, 0), vec4(vec3(value()), 1.0));
+}

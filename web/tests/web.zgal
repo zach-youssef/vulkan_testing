@@ -1,0 +1,268 @@
+;; The web backend's tests (web/tests/*.test.ts): materials and graphs compiled to WGSL and
+;; TypeScript, run on Dawn
+
+(import random)
+
+;; Layout: push constants (a uniform buffer) written into a struct of every size of field, which the
+;; TypeScript reads back at its std430 offsets
+(struct Mixed
+  (direction vec3)
+  (intensity float)             ; Packed after the vec3
+  (flags uint8)
+  (level int16)                 ; Aligned to 2 bytes
+  (bytes (array uint8 3))
+  (offset int8)
+  (wide uint)
+  (balance int)
+  (matrix mat2))
+
+(compute-material WriteMixed
+  (workgroup 1)
+  (bindings (result (buffer-array Mixed)))
+  (push (direction vec3) (intensity float) (base uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (write! (at result i)
+             (Mixed direction intensity (uint8 (+ base i)) (int16 (- 0 (int base))) (array uint8 (uint8 i) (uint8 255) (uint8 (+ i 300)))
+                    (int8 -5) (+ base 1000000) (- (int i) 7) (mat2 (float i) 2.0 3.0 4.0)))
+     ;; A field alone: a byte of a word another invocation writes
+     (write! (.offset (at result i)) (int8 (- (int i) 100))))))
+
+;; Shared memory and barriers: a workgroup's sum by halving, and bytes in shared words
+(compute-material SumWorkgroup
+  (workgroup 64)
+  (bindings
+   (values (buffer-array uint))
+   (sums (buffer-array uint))
+   (marks (buffer-array uint)))
+  (shared
+   (partial (array uint 64))
+   (seen (array uint8 64)))
+  (compute
+   (let* ([x localInvocationId.x])
+     (write! (at partial x) (at values globalInvocationId.x))
+     (write! (at seen x) (uint8 (+ x 1)))
+     (barrier!)
+     (for ([level (range 0 6)])
+       (let* ([stride (shr 32 (uint level))])
+         (when (< x stride)
+           (write! (at partial x) (+ (at partial x) (at partial (+ x stride)))))
+         (barrier!)))
+     (when (= x 0)
+       (write! (at sums workgroupId.x) (at partial 0)))
+     (write! (at marks globalInvocationId.x) (at seen (- 63 x))))))
+
+;; Atomics: unsigned ones directly, signed minimums and float adds by compare-exchange loops, a
+;; compare-exchange that must not fail spuriously, on buffers and shared memory
+(compute-material Tally
+  (workgroup 64)
+  (bindings
+   (counts (buffer-array uint))
+   (balances (buffer-array int))
+   (weights (buffer-array float)))
+  (shared (local (array uint 4)))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (= localInvocationId.x 0)
+       (for ([k (range 0 4)]) (write! (at local k) 0)))
+     (barrier!)
+     (atomic-add! (at local (remainder i 4)) 1)
+     (atomic-max! (at counts 0) i)
+     (atomic-min! (at balances 0) (- 0 (int i)))
+     (atomic-max! (at balances 1) (- (int i) 100))
+     (atomic-add! (at balances 2) -2)
+     (atomic-add! (at weights 0) 0.5)
+     (atomic-or! (at counts 1) (shl 1 (remainder i 32)))
+     (atomic-compare-exchange! (at counts 2) 0 (+ i 1))
+     (barrier!)
+     (when (= localInvocationId.x 0)
+       (for ([k (range 0 4)])
+         (atomic-add! (at counts (+ 3 k)) (at local k)))))))
+
+;; Subgroups, with the scans and counts WGSL lacks built from others
+(compute-material Lanes
+  (workgroup 64)
+  (bindings (result (buffer-array uvec4)) (sizes (buffer-array uint)))
+  (compute
+   (let* ([i globalInvocationId.x]
+          [ballot (subgroupBallot (= (remainder i 3) 0))])
+     (write! (at sizes i) subgroupSize)
+     (write! (at result i)
+             (uvec4 (subgroupInclusiveMax (* (remainder i 5) 3))
+                    (subgroupExclusiveOr (shl 1 (remainder i 16)))
+                    (subgroupBallotExclusiveBitCount ballot)
+                    (+ (subgroupBallotBitCount ballot) (if (subgroupAllEqual 7) 1000 0)))))))
+
+;; Expressions WGSL spells differently, through functions also compiled to TypeScript later
+(define negativeZero (uintBitsToFloat #x80000000))
+
+(define (spelled [x : float] [n : int]) : vec4
+  (let* ([v (vec3 x (* x 2.0) -1.5)]
+         [m (mat2 2.0 0.0 0.0 4.0)]
+         [inv (inverse m)])
+    (vec4 (.x (mod v 2.0))
+          (float (shl 1 n))
+          (+ (at (at inv 1) 1) (if (= (vec2 x) (vec2 x)) 1.0 0.0) negativeZero)
+          (float (- (uint n))))))
+
+(compute-material Spell
+  (workgroup 1)
+  (bindings (result (buffer-array vec4)))
+  (push (x float) (n int))
+  (compute (write! (at result 0) (spelled x n))))
+
+;; Graphics: a triangle covering the target, with a flat integer varying, a depth test and a sampled
+;; image filled by a copy
+(graphics-material Paint
+  (bindings (source texture) (sourceSampler sampler))
+  (push (depth float) (tint vec4))
+  (varyings (uv vec2) (corner uint flat))
+  (outputs (color vec4))
+  (vertex
+   (let* ([at (vec2 (float (bitand (shl vertexIndex 1) 2)) (float (bitand vertexIndex 2)))])
+     (results #:position (vec4 (- (* at 2.0) 1.0) depth 1.0) #:uv at #:corner (uint vertexIndex))))
+  ;; The corner is the first vertex's (0), the provoking one
+  (fragment
+   (* tint (sample source sourceSampler (* uv 0.5)) (float (+ corner 1)))))
+
+;; Copies a struct holding small integers: read and written as words
+(compute-material CopyMixed
+  (workgroup 1)
+  (bindings (source (buffer Mixed)) (result (buffer-array Mixed)))
+  (compute (write! (at result 0) source)))
+
+(graph Shapes
+  (parameter size uint)
+  (input seeds (data uint))
+  (input tint (per-frame vec4))
+  (input frameLights (per-frame Mixed))
+  (upload seedBuffer seeds)
+  (uniform mixed Mixed frameLights)
+  ;; Layout
+  (buffer mixedBuffer Mixed 4 #:frames shared)
+  (material writeMixed WriteMixed (result mixedBuffer)
+            #:push ((direction (vec3 1.0 2.0 3.0)) (intensity 0.5) (base 3))
+            #:invocations (4))
+  (dispatch writeMixed writeMixed)
+  (readback readMixed mixedBuffer)
+  ;; Shared memory
+  (buffer valueBuffer uint (* size 64) #:frames shared)
+  (buffer sumBuffer uint size #:frames shared)
+  (buffer markBuffer uint (* size 64) #:frames shared)
+  (copy copySeeds seedBuffer valueBuffer)
+  (material summing SumWorkgroup (values valueBuffer) (sums sumBuffer) (marks markBuffer) #:invocations ((* size 64)))
+  (dispatch sum summing)
+  (readback readSums sumBuffer)
+  (readback readMarks markBuffer)
+  ;; Atomics
+  (buffer countBuffer uint 8 #:frames shared)
+  (buffer balanceBuffer int 3 #:frames shared)
+  (buffer weightBuffer float 1 #:frames shared)
+  (clear clearCounts countBuffer #:value 0)
+  (clear clearBalances balanceBuffer #:value 0)
+  (clear clearWeights weightBuffer #:value 0)
+  (material tallying Tally (counts countBuffer) (balances balanceBuffer) (weights weightBuffer) #:invocations (256))
+  (dispatch tally tallying)
+  (readback readCounts countBuffer)
+  (readback readBalances balanceBuffer)
+  (readback readWeights weightBuffer)
+  ;; Subgroups
+  (buffer laneBuffer uvec4 64 #:frames shared)
+  (buffer sizeBuffer uint 64 #:frames shared)
+  (material lanes Lanes (result laneBuffer) (sizes sizeBuffer) #:invocations (64))
+  (dispatch lanes lanes)
+  (readback readLanes laneBuffer)
+  (readback readSizes sizeBuffer)
+  ;; Spelling
+  (buffer spellBuffer vec4 1 #:frames shared)
+  (material spelling Spell (result spellBuffer) #:push ((x 3.5) (n 3)) #:invocations (1))
+  (dispatch spell spelling)
+  (readback readSpell spellBuffer)
+  ;; Graphics
+  (image sourceImage rgba8 (fixed 2 2) #:frames shared)
+  (buffer sourceTexels uint 4 #:frames shared)
+  (clear fillTexels sourceTexels #:value #xFF4080C0)
+  (copy toSource sourceTexels sourceImage)
+  (sampler nearest #:filter nearest #:address clamp-to-edge)
+  (image canvas rgba8 (fixed 8 8) #:frames shared)
+  (image depthImage d32 (fixed 8 8) #:frames shared)
+  (target scene (color canvas #:clear (0 0 0 1)) (depth depthImage #:clear 0.75 #:store store))
+  (target again (color canvas #:load load) (depth depthImage #:load load))
+  (material painting Paint (source sourceImage) (sourceSampler nearest) #:push ((tint tint)) #:depth-compare less)
+  (material paintingAgain Paint (source sourceImage) (sourceSampler nearest) #:push ((tint (vec4 0 1 0 1))) #:depth-compare less)
+  ;; The first draw passes the depth test, the second (farther) fails it
+  (draw paint scene painting 3 #:push ((depth 0.5)))
+  (draw hidden again paintingAgain 3 #:push ((depth 0.9)))
+  (readback readCanvas canvas)
+  ;; Uniforms: the per-frame Mixed, copied out
+  (buffer uniformCopy Mixed 1 #:frames shared)
+  (material copyingUniform CopyMixed (source mixed) (result uniformCopy) #:invocations (1))
+  (dispatch copyUniform copyingUniform)
+  (readback readUniform uniformCopy))
+
+;; Clip space and winding: a triangle in the top left quarter (Vulkan's clip space, y down), its
+;; vertices in either order. Right, then down and left is clockwise on the screen.
+(graphics-material Corner
+  (push (reversed uint))
+  (outputs (color vec4))
+  (vertex
+   (let* ([corner (if (= vertexIndex 0)
+                      (vec2 -1.0 -1.0)
+                      (if (= (= vertexIndex 1) (= reversed 0)) (vec2 0.0 -1.0) (vec2 -1.0 0.0)))])
+     (results #:position (vec4 corner 0.5 1.0))))
+  (fragment (vec4 1.0 1.0 1.0 1.0)))
+
+(graph Winding
+  (image clockwise rgba8 (fixed 8 8) #:frames shared)
+  (image counterClockwise rgba8 (fixed 8 8) #:frames shared)
+  (target clockwiseTarget (color clockwise #:clear (0 0 0 1)))
+  (target counterTarget (color counterClockwise #:clear (0 0 0 1)))
+  (material culling Corner #:cull back)
+  (material cullingAgain Corner #:cull back)
+  (draw drawClockwise clockwiseTarget culling 3 #:push ((reversed 0)))
+  (draw drawCounter counterTarget cullingAgain 3 #:push ((reversed 1)))
+  (readback readClockwise clockwise)
+  (readback readCounter counterClockwise))
+
+;; Adds a push constant to a buffer's elements: one per invocation, as many as the dispatch's
+(compute-material Bump
+  (workgroup 1)
+  (bindings (sums (buffer-array uint)))
+  (push (first uint) (amount uint))
+  (compute
+   (let* ([i (+ first globalInvocationId.x)])
+     (write! (at sums i) (+ (at sums i) amount)))))
+
+;; How graphs run: loops of nodes, conditions, enables, once nodes, buffers sized each frame, copies
+;; with offsets and counts, per-frame data uploads, buffer files, and cpu and extern nodes
+(graph Flow
+  (parameter extra bool)
+  (input steps (data uint))
+  (input count (per-frame uint))
+  (input bumpBy (per-frame uint))
+  (input values (per-frame (data uint)))
+  (input tick cpu)
+  (input more (extern uint))
+  (buffer-file saved uint "saved.bin" "more.bin")
+  (upload valueBuffer values)
+  (buffer sums uint 16 #:frames shared)
+  (buffer sized uint count #:frames shared)
+  (buffer optional uint 4 #:frames shared #:when extra)
+  (clear zero sums #:value 0)
+  (material bump Bump (sums sums) #:push ((amount 1)))
+  ;; A node per step: each adds its step to its own element
+  (for ([s steps] [k (range 0 2)])
+    (dispatch bumpEach bump #:push ((first (+ s (uint k))) (amount (+ s 1))) #:invocations (1)))
+  (dispatch bumpAll bump #:push ((first 0) (amount bumpBy)) #:invocations (16))
+  (dispatch bumpDisabled bump #:push ((first 0)) #:invocations (16) #:enabled extra)
+  (dispatch bumpOnce bump #:push ((first 15) (amount 100)) #:invocations (1) #:once #t)
+  (dispatch bumpExtra bump #:push ((first 14)) #:invocations (1) #:when extra)
+  (readback readSums sums)
+  (clear fillSized sized #:value 9)
+  (readback readSized sized)
+  (copy copyValues valueBuffer sums #:count 2 #:source-offset 1 #:destination-offset 8)
+  (readback readCopied sums)
+  (readback readSaved saved)
+  (cpu ticking tick)
+  (extern added more 7)
+  (readback readLast sums))

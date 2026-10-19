@@ -11,6 +11,14 @@
 
 #include <filesystem>
 
+// How an image's 8-bit channels encode colour. Colour textures (photos, albedo and base colours)
+// are usually sRGB, which sampling decodes to linear; data (normal maps, masks, lookup tables) is
+// linear, read as stored.
+enum class ColorSpace {
+    Srgb,
+    Linear,
+};
+
 class Image {
 public:
     // Creates an image owned by the context's ResourceManager. Fails with ErrorCode::Unsupported if
@@ -64,7 +72,12 @@ public:
         return **image_;
     }
 
+    // The image's view. Images used only for transfers (copies) have none, which Vulkan forbids
+    // for their usage: asking for it is a contract violation.
     VkImageView getImageView() {
+        if (!imageView_) {
+            contractViolation("The image has no view: its usage is only transfers");
+        }
         return **imageView_;
     }
 
@@ -88,13 +101,24 @@ public:
     // formats are a contract violation.
     static VkDeviceSize bytesPerPixel(VkFormat format) {
         switch (format) {
+            case VK_FORMAT_R8_UNORM:
+                return 1;
+            case VK_FORMAT_R8G8_UNORM:
+            case VK_FORMAT_R16_SFLOAT:
+            case VK_FORMAT_D16_UNORM:
+                return 2;
             case VK_FORMAT_R8G8B8A8_UNORM:
             case VK_FORMAT_R8G8B8A8_SRGB:
             case VK_FORMAT_B8G8R8A8_UNORM:
             case VK_FORMAT_B8G8R8A8_SRGB:
+            case VK_FORMAT_R16G16_SFLOAT:
+            case VK_FORMAT_R32_SFLOAT:
+            case VK_FORMAT_R32_UINT:
+            case VK_FORMAT_R32_SINT:
             case VK_FORMAT_D32_SFLOAT:
                 return 4;
             case VK_FORMAT_R16G16B16A16_SFLOAT:
+            case VK_FORMAT_R32G32_SFLOAT:
                 return 8;
             case VK_FORMAT_R32G32B32A32_SFLOAT:
                 return 16;
@@ -103,40 +127,59 @@ public:
         }
     }
 
-    // Loads an RGBA8 sRGB image for sampling from a file, leaving it in SHADER_READ_ONLY_OPTIMAL.
-    // Fails with ErrorCode::NotFound if the file doesn't exist, InvalidData if it can't be decoded.
-    static Result<Handle<Image>> createFromFile(VulkanContext& context,
-                                                const std::string& filePath) {
-        if (!std::filesystem::exists(filePath)) {
-            return Error(ErrorCode::NotFound, "Image '" + filePath + "' not found");
-        }
-
-        int width, height, channels;
-
-        stbi_uc* pixels = stbi_load((filePath).c_str(), &width, &height, &channels, STBI_rgb_alpha);
-
-        if (!pixels) {
-            return Error(ErrorCode::InvalidData, "Failed to load image '" + filePath + "': " + stbi_failure_reason());
-        }
-
-        VkDeviceSize imageSize = width * height * 4;
-
-        auto image = createFromUcharBuffer(context, pixels, width, height, imageSize);
-
-        stbi_image_free(pixels);
-        return std::move(image).withContext("loading image '" + filePath + "'");
+    // The RGBA8 format holding 8-bit colours in a colour space
+    static VkFormat rgba8Format(ColorSpace colorSpace) {
+        return colorSpace == ColorSpace::Srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     }
 
-    // Creates an RGBA8 sRGB image for sampling from tightly packed pixels, leaving it in
+    // Loads an RGBA8 image for sampling from a file (any format stb_image reads: PNG, JPEG, ...),
+    // leaving it in SHADER_READ_ONLY_OPTIMAL. Fails with ErrorCode::NotFound if the file doesn't
+    // exist, InvalidData if it can't be decoded.
+    static Result<Handle<Image>> createFromFile(VulkanContext& context,
+                                                const std::filesystem::path& filePath,
+                                                ColorSpace colorSpace) {
+        const std::string name = filePath.string();
+        if (!std::filesystem::exists(filePath)) {
+            return Error(ErrorCode::NotFound, "Image '" + name + "' not found");
+        }
+        int width, height, channels;
+        stbi_uc* pixels = stbi_load(name.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+        if (!pixels) {
+            return Error(ErrorCode::InvalidData, "Failed to load image '" + name + "': " + stbi_failure_reason());
+        }
+        auto image = createFromUcharBuffer(context, pixels, width, height, VkDeviceSize(width) * height * 4, colorSpace);
+        stbi_image_free(pixels);
+        return std::move(image).withContext("loading image '" + name + "'");
+    }
+
+    // Like createFromFile, from an encoded file's bytes in memory (e.g. an image embedded in a
+    // model). description names it in errors.
+    static Result<Handle<Image>> createFromEncoded(VulkanContext& context,
+                                                   const uint8_t* data,
+                                                   size_t size,
+                                                   ColorSpace colorSpace,
+                                                   const std::string& description) {
+        int width, height, channels;
+        stbi_uc* pixels = stbi_load_from_memory(data, static_cast<int>(size), &width, &height, &channels, STBI_rgb_alpha);
+        if (!pixels) {
+            return Error(ErrorCode::InvalidData, "Failed to decode " + description + ": " + stbi_failure_reason());
+        }
+        auto image = createFromUcharBuffer(context, pixels, width, height, VkDeviceSize(width) * height * 4, colorSpace);
+        stbi_image_free(pixels);
+        return std::move(image).withContext("loading " + description);
+    }
+
+    // Creates an RGBA8 image for sampling from tightly packed pixels, leaving it in
     // SHADER_READ_ONLY_OPTIMAL
     static Result<Handle<Image>> createFromUcharBuffer(VulkanContext& context,
                                                        unsigned char* pixels,
                                                        uint32_t width,
                                                        uint32_t height,
-                                                       VkDeviceSize imageSize) {
+                                                       VkDeviceSize imageSize,
+                                                       ColorSpace colorSpace) {
         TRY_ASSIGN(auto image, Image::create(context,
                                              width, height,
-                                             VK_FORMAT_R8G8B8A8_SRGB,
+                                             rgba8Format(colorSpace),
                                              VK_IMAGE_TILING_OPTIMAL,
                                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
@@ -426,8 +469,15 @@ private:
 
         VK_TRY(vkBindImageMemory(device, **image_, **memory_, 0), "Failed to bind image memory");
 
-        VK_TRY(VulkanImageView::createForImageWithFormat(imageView_, device, **image_, format_, aspect),
-               "Failed to create image view");
+        constexpr VkImageUsageFlags viewUsages = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT
+                                                 | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                                                 | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                                 | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT
+                                                 | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+        if (usage_ & viewUsages) {
+            VK_TRY(VulkanImageView::createForImageWithFormat(imageView_, device, **image_, format_, aspect),
+                   "Failed to create image view");
+        }
         return {};
     }
 

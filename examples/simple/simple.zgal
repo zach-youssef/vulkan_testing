@@ -1,0 +1,55 @@
+;; The simple example's shaders and app, in ZGAL (dsl/; `make docs` for the language). Its graph
+;; is built in C++ (simple_example.cpp), to show the C++ API; the build generates simple.zgal.h,
+;; with a class per material and the app, and the complete shaders.
+
+;; The camera, written per frame by TutorialMaterial::update, from the app's angle
+(struct Camera
+  (mvp mat4))                   ; Projection * view * model
+
+(vertex-format Vertex
+  (position vec2)
+  (color vec3)
+  (texCoord vec2))
+
+;; Draws a texture on the vertices, seen through a rotating camera
+(graphics-material Tutorial
+  (vertex-input Vertex)
+  (bindings
+   (camera (buffer Camera))
+   (albedo texture)
+   (albedoSampler sampler))
+  (varyings
+   (fragColor vec3)
+   (fragTexCoord vec2))
+  (outputs
+   (outColor vec4))
+  (vertex
+   (results #:position (* camera.mvp (vec4 position 0.0 1.0))
+            #:fragColor color
+            #:fragTexCoord texCoord))
+  (fragment
+   (sample albedo albedoSampler fragTexCoord)))
+
+;; Copies a texture into a storage image, a pixel per invocation. Sampling an sRGB texture decodes
+;; it to linear colour; storage images can't be sRGB.
+(compute-material CopyTexture
+  (workgroup 32 32)
+  (bindings
+   (source texture)
+   (sourceSampler sampler)
+   (copy (storage-image)))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)])
+     ;; The dispatch is rounded up to whole workgroups
+     (when (all (lessThan texel (image-size copy)))
+       (store! copy texel (fetch source sourceSampler texel 0))))))
+
+;; The app: the quads' rotation, which space pauses. It has no graph of its own: simple_example.cpp
+;; builds one, and TutorialMaterial reads the angle from the app's state.
+(app SimpleApp
+  (state
+   (angle float 0.0)            ; Radians, a quarter turn a second
+   (spinning bool #t))
+  (on (key-pressed space) (with state #:spinning (not state.spinning)))
+  (on (frame dt)
+    (if state.spinning (with state #:angle (+ state.angle (* (radians 90.0) dt))) state)))

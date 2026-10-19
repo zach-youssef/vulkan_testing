@@ -56,8 +56,12 @@ struct AppConfig {
     uint32_t framesInFlight = 2;
     // Device features the application needs beyond the wrapper's; see VulkanContextConfig::features
     DeviceFeatures features;
-    // Directories the shader library loads SPIR-V from (see ShaderLibrary)
-    std::vector<std::string> shaderSearchPaths;
+    // Directories the shader library loads SPIR-V from (see ShaderLibrary). By default, the
+    // directory "shaders" beside the executable.
+    std::vector<std::string> shaderSearchPaths = defaultShaderSearchPaths();
+    // Directories assets loaded by relative path are found in (see VulkanContext::findAsset). By
+    // default, the directory "assets" beside the executable.
+    std::vector<std::string> assetSearchPaths = defaultAssetSearchPaths();
     // Reload shaders whose SPIR-V files change on disk, checking between frames (errors are printed
     // to std::cerr). Otherwise call reloadShaders().
     bool autoReloadShaders = false;
@@ -132,14 +136,22 @@ public:
     // Processes window events and, unless the window has been asked to close, draws a frame.
     // Headless apps always draw.
     Result<FrameOutcome> runFrame() {
-        if (hasWindow()) {
-            glfwPollEvents();
-            if (glfwWindowShouldClose(window_.get())) {
-                return FrameOutcome::WindowClosed;
-            }
+        if (!pollEvents()) {
+            return FrameOutcome::WindowClosed;
         }
         TRY(drawFrame());
         return FrameOutcome::Drawn;
+    }
+
+    // Processes window events (calling the input handlers), returning whether the app should keep
+    // drawing: false once the window has been asked to close. For loops that do work between events
+    // and drawing; runFrame() is both. Headless apps have no events and keep drawing.
+    bool pollEvents() {
+        if (!hasWindow()) {
+            return true;
+        }
+        glfwPollEvents();
+        return !glfwWindowShouldClose(window_.get());
     }
 
     // Waits, without drawing, until the window is closed
@@ -320,6 +332,7 @@ private:
         config.framesInFlight = config_.framesInFlight;
         config.features = config_.features;
         config.shaderSearchPaths = config_.shaderSearchPaths;
+        config.assetSearchPaths = config_.assetSearchPaths;
 
         if (hasWindow()) {
             uint32_t glfwExtensionCount = 0;

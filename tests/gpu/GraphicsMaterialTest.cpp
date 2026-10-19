@@ -130,6 +130,23 @@ TEST_CASE_FIXTURE(GpuTest, "Graphics materials need one blend mode, or one per c
                     ContractViolation);
 }
 
+TEST_CASE_FIXTURE(GpuTest, "Graphics materials fail to build pipelines reading vertex formats the device can't") {
+    auto& ctx = context();
+    // 64-bit attributes are optional (Metal has none); use one only if this device lacks it
+    const VkFormat format = VK_FORMAT_R64G64B64A64_SFLOAT;
+    VkFormatProperties properties;
+    vkGetPhysicalDeviceFormatProperties(ctx.physicalDevice(), format, &properties);
+    if (properties.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) {
+        MESSAGE("This device reads 64-bit vertex attributes; nothing to check");
+        return;
+    }
+    auto material = ctx.resources().create<ColorMaterial>(
+        ctx, AttachmentFormats{{VK_FORMAT_R8G8B8A8_UNORM}},
+        GraphicsPipelineOptions{.vertexLayout = VertexLayout::interleaved(32, {{0, 0, format, 0}})}, glm::vec4(1.0f));
+    CHECK_ERROR(material->ensurePipeline(), ErrorCode::Unsupported,
+                "Vertex attribute 0's format VK_FORMAT_R64G64B64A64_SFLOAT can't be read from vertex buffers on this device");
+}
+
 TEST_CASE_FIXTURE(GpuTest, "Renderables share meshes, which may have 32-bit indices") {
     auto& ctx = context();
     RenderGraph graph(ctx);

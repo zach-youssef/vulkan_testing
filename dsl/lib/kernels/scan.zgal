@@ -1,0 +1,49 @@
+;; ZGAL's compute library: the last step of prefix sums (see reduce.zgal, whose substitutions it
+;; takes), scanning each workgroup's run of tiles from the exclusive scan of the runs' partials.
+;; The flag exclusive chooses an exclusive scan (each element gets what comes before it) over an
+;; inclusive one (what comes before it, and itself).
+
+(compute-material ZgalScanApply
+  (workgroup 256)
+  (bindings
+   (source (buffer-array T))
+   (destination (buffer-array T))
+   (partials (buffer-array T))
+   (%if gpu-count (counts (buffer-array uint))))
+  (push (%if gpu-count (countIndex uint) (count uint)))
+  ;; carry: what comes before the tile, the same for the whole workgroup
+  (shared (totals (array T 64)) (carry (array T 1)))
+  (compute
+   (let* ([n (%if gpu-count (at counts countIndex) count)]
+          [tiles (/ (+ n 255) 256)]
+          [run (/ (+ tiles (- workgroupCount.x 1)) workgroupCount.x)]
+          [first (* workgroupId.x run)]
+          [last (min tiles (+ first run))]
+          [lane localInvocationId.x])
+     (when (= lane 0) (write! (at carry 0) (at partials workgroupId.x)))
+     (for ([t (range first last)])
+       (let* ([i (+ (* t 256) lane)]
+              [value (if (< i n) (at source i) IDENTITY)]
+              [inclusive (%if native-scan
+                         (SUBGROUP_INCLUSIVE value)
+                         ;; Hillis-Steele from shuffles: Metal has subgroup scans of sums only
+                         (let* ([(x stride) (while ([x value] [stride (uint 1)]) (< stride subgroupSize)
+                                            (values (let* ([other (subgroupShuffle x (- subgroupInvocationId stride))])
+                                                      (if (>= subgroupInvocationId stride) (COMBINE x other) x))
+                                                    (* stride 2)))])
+                           x))]
+          [before (%if native-scan
+                       (SUBGROUP_EXCLUSIVE value)
+                       (let* ([other (subgroupShuffle inclusive (- subgroupInvocationId 1))])
+                         (if (= subgroupInvocationId 0) IDENTITY other)))])
+         (let* ([total (SUBGROUP_ALL value)])
+           (when (subgroupElect) (write! (at totals subgroupId) total)))
+         (barrier!)
+         (let* ([c (at carry 0)]
+                [prefix (fold ([acc c]) ([k (range 0 subgroupId)]) (COMBINE acc (at totals k)))]
+                [tile (fold ([acc IDENTITY]) ([k (range 0 subgroupCount)]) (COMBINE acc (at totals k)))])
+           (when (< i n)
+             (write! (at destination i) (%if exclusive (COMBINE prefix before) (COMBINE prefix inclusive))))
+           ;; Everyone has read the carry and the totals before they change
+           (barrier!)
+           (when (= lane 0) (write! (at carry 0) (COMBINE c tile)))))))))

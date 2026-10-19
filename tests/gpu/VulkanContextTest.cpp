@@ -113,6 +113,24 @@ TEST_CASE("VulkanContext::submitImmediate runs commands to completion") {
     CHECK(readFirst(*buffer) == 0xC0FFEE);
 }
 
+TEST_CASE("VulkanContext labels spans of commands where the instance has debug utils") {
+    ValidatedContext validated;
+    auto& ctx = *validated.context;
+    // Validation needs debug utils, so a validated context has them
+    CHECK(ctx.labelsEnabled() == (ctx.labelsEnabled() || ctx.validationEnabled()));
+
+    // Labels nest, and the commands inside them run
+    auto buffer = createHostBuffer(ctx, 4);
+    ctx.submitImmediate([&](VkCommandBuffer commandBuffer) {
+        ctx.beginLabel(commandBuffer, "outer");
+        ctx.beginLabel(commandBuffer, "fill");
+        vkCmdFillBuffer(commandBuffer, buffer->getBuffer(), 0, VK_WHOLE_SIZE, 7);
+        ctx.endLabel(commandBuffer);
+        ctx.endLabel(commandBuffer);
+    }).value();
+    CHECK(readFirst(*buffer) == 7);
+}
+
 TEST_CASE("VulkanContext supports recording on per-thread pools and submitting concurrently") {
     ValidatedContext validated;
     auto& ctx = *validated.context;

@@ -3,8 +3,10 @@
 #   tools/verify_stack.sh <repo> <base> [head]
 # e.g. tools/verify_stack.sh . main HEAD
 #
-# Prints one line per commit with the CPU and GPU test exit codes and summaries; the per-commit
-# build and test logs are kept in the temporary directory printed at the end.
+# Prints one line per commit with the CPU and GPU test exit codes and summaries (and those of the
+# ZGAL tests, example smoke tests and web tests where a commit has them); the per-commit
+# build and test logs are kept in the temporary directory printed at the end. Exits 1 if any commit
+# fails to build or fails a test.
 # Each commit is exported to its own directory. All builds and CPU test runs happen in
 # parallel; GPU tests run one commit at a time (they share the device) on a separate worker,
 # starting as soon as each commit's build has finished.
@@ -19,6 +21,10 @@ build_and_cpu_test() {
     mkdir -p $d && git -C $repo archive $c | tar -x -C $d
     if (cd $d && make >build.log 2>&1 && make build/tests/cpu_tests build/tests/gpu_tests >>build.log 2>&1); then
         (cd $d && ./build/tests/cpu_tests >cpu.log 2>&1); echo $? > $d/cpu.exit
+        # ZGAL's compiler tests and documentation; commits before ZGAL have none
+        if grep -q '^test-dsl:' $d/Makefile; then
+            (cd $d && make test-dsl >dsl.log 2>&1); echo $? > $d/dsl.exit
+        fi
         echo ok > $d/build.status
     else
         echo failed > $d/build.status
@@ -35,6 +41,10 @@ gpu_worker() {
             if grep -q '^test-examples:' $d/Makefile; then
                 (cd $d && make test-examples >examples.log 2>&1); echo $? > $d/examples.exit
             fi
+            # The web runtime's tests run on the GPU through Dawn
+            if grep -q '^test-web:' $d/Makefile; then
+                (cd $d && make test-web >web.log 2>&1); echo $? > $d/web.exit
+            fi
         fi
     done
 }
@@ -43,13 +53,20 @@ for c in $commits; do build_and_cpu_test $c & done
 gpu_worker &
 wait
 
+failed=0
 summary() { grep -h 'test cases' $1 2>/dev/null | sed 's/.*test cases: *//; s/ | 0 skipped//'; }
 for c in $commits; do
     d=$out/$c
     line=$(git -C $repo log --oneline -1 $c | cut -c1-64)
-    if [[ $(cat $d/build.status) != ok ]]; then echo "$line: BUILD FAILED ($d/build.log)"; continue; fi
+    if [[ $(cat $d/build.status) != ok ]]; then echo "$line: BUILD FAILED ($d/build.log)"; failed=1; continue; fi
+    for f in $d/*.exit; do [[ $(cat $f) == 0 ]] || failed=1; done
     examples=""
     if [[ -f $d/examples.exit ]]; then examples=", examples exit $(cat $d/examples.exit)"; fi
-    echo "$line: cpu exit $(cat $d/cpu.exit) [$(summary $d/cpu.log)], gpu exit $(cat $d/gpu.exit) [$(summary $d/gpu.log)]$examples"
+    dsl=""
+    if [[ -f $d/dsl.exit ]]; then dsl=", zgal exit $(cat $d/dsl.exit)"; fi
+    web=""
+    if [[ -f $d/web.exit ]]; then web=", web exit $(cat $d/web.exit)"; fi
+    echo "$line: cpu exit $(cat $d/cpu.exit) [$(summary $d/cpu.log)], gpu exit $(cat $d/gpu.exit) [$(summary $d/gpu.log)]$dsl$examples$web"
 done
 echo "Logs: $out"
+exit $failed

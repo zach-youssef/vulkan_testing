@@ -1,0 +1,165 @@
+;; What compiling for the web (WebGPU) does differently, for the golden tests (golden-test.rkt):
+;; the generated WGSL is compared with expected/, and compiled by Dawn in toolchain-test.rkt
+
+(import random)
+
+;; Small integers, which WGSL lacks: buffers and shared memory holding them are 32-bit words
+(struct Texel
+  (r uint8)
+  (g uint8)
+  (b uint8)
+  (a uint8))
+
+(struct Packed
+  (flags uint8)
+  (level int16)
+  (bytes (array uint8 3))
+  (offset int8)
+  (wide uint))
+
+;; Names WGSL reserves are spelled with a prefix
+(struct Settings
+  (target uint)
+  (loop float)
+  (scale vec4))
+
+;; Reads and writes small integers: whole words where a value fills them (a Texel at a multiple of
+;; 4), else a byte at a time, atomically, as other invocations write the word's other bytes
+(compute-material Repack
+  (workgroup 64)
+  (bindings
+   (texels (buffer-array Texel))
+   (packed (buffer-array Packed))
+   (settings (buffer Settings)))
+  (shared
+   (staged (array Texel 64))
+   (marks (array uint8 64)))
+  (compute
+   (let* ([i globalInvocationId.x]
+          [x localInvocationId.x]
+          [texel (at texels i)]
+          [p (at packed i)])
+     (write! (at staged x) (with texel #:r (uint8 (+ texel.g 1))))
+     (write! (at marks x) (uint8 x))
+     (barrier!)
+     (write! (at texels i) (at staged (- 63 x)))
+     (write! (at packed i) (with p #:flags (uint8 (+ (at marks 0) settings.target)) #:level (int16 -3)))
+     (write! (.offset (at packed i)) (int8 p.level))
+     (write! (at (.bytes (at packed i)) 1) (uint8 (+ p.wide (at p.bytes 2)))))))
+
+;; Atomics: on words of buffers and shared memory, unsigned directly, signed minimums and float adds
+;; by compare-exchange loops, and compare-exchanges retried until they don't fail spuriously
+(compute-material Tally
+  (workgroup 64)
+  (bindings
+   (counts (buffer-array uint))
+   (balances (buffer-array int))
+   (weights (buffer-array float)))
+  (shared
+   (local (array uint 16)))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (atomic-add! (at local (remainder i 16)) 1)
+     (atomic-max! (at counts 0) i)
+     (atomic-min! (at balances 0) (- (int i)))
+     (atomic-add! (at balances 1) 2)
+     (atomic-add! (at weights 0) 0.5)
+     (atomic-exchange! (at weights 1) (float i))
+     (atomic-compare-exchange! (at counts 1) 0 i)
+     (barrier!)
+     (when (< i 16)
+       (write! (at counts (+ i 2)) (at local i))))))
+
+;; Subgroups: the scans WGSL lacks are shuffles, ballot counts count bits, and subgroup ids are
+;; local indexes over the subgroup size
+(compute-material Lanes
+  (workgroup 64)
+  (bindings
+   (result (buffer-array uvec4)))
+  (compute
+   (let* ([i globalInvocationId.x]
+          [ballot (subgroupBallot (= (remainder i 3) 0))])
+     (write! (at result i)
+             (uvec4 (subgroupInclusiveMax i)
+                    (subgroupExclusiveOr i)
+                    (+ (subgroupBallotExclusiveBitCount ballot) (subgroupBallotBitCount ballot))
+                    (+ subgroupId (if (subgroupAllEqual subgroupSize) 1 0)))))))
+
+;; Expressions WGSL spells differently: vector comparisons, mixed scalars and vectors, conversions,
+;; negated uints, shifts by ints, matrix inverses, mod, bitcasts of constants (kept out of WGSL's
+;; constant evaluation), the smallest int, and ifs of structs (statements, as select can't give one)
+(define negativeInfinity (uintBitsToFloat #xFF800000))
+
+(define (shade [v : vec3] [n : int] [m : mat4]) : vec4
+  (let* ([flipped (- (uint n))]
+         [s (if (= v (vec3 0.0)) (Settings 1 0.5 (vec4 1.0)) (Settings 2 (float flipped) (vec4 v 1.0)))]
+         [w (* (inverse m) s.scale)])
+    (vec4 (mix (mod v 2.0) (min v 0.5) (lessThan v (vec3 0.25)))
+          (+ w.x s.loop (float (shl 1 n)) (float (int -2147483648)) (max negativeInfinity 0.0)))))
+
+;; Vertex attributes stored packed: WebGPU's vertex formats convert them
+(vertex-format Vertex
+  (position vec3)
+  (color vec4 #:as unorm8))
+
+;; Depth comparisons: the texture is a depth texture and its sampler a comparison sampler, also
+;; through a function; sampling a depth texture gives (depth, 0, 0, 1)
+(define (shadowed [map : texture2D] [s : sampler] [uv : vec2]) : float
+  (sample-compare map s uv 0.5))
+
+(graphics-material Lit
+  (vertex-input Vertex position color)
+  (bindings
+   (shadowMap texture)
+   (shadowSampler sampler)
+   (albedo texture)
+   (albedoSampler sampler)
+   (picture (storage-image)))
+  (push
+   (transform mat4)
+   (layer uint))
+  (varyings
+   (tint vec4)
+   (screen vec2 noperspective)
+   (id uint flat))
+  (outputs
+   (color vec4)
+   (glow vec4))
+  (vertex
+   (results #:position (* transform (vec4 position 1.0))
+            #:tint color
+            #:screen position.xy
+            #:id (+ (uint vertexIndex) layer)))
+  (fragment
+   (let* ([lit (shadowed shadowMap shadowSampler screen)]
+          [depth (sample shadowMap albedoSampler screen)])
+     (when (< lit 0.1) (discard!))
+     (results #:color (* tint (sample albedo albedoSampler screen) lit (image-load picture (ivec2 fragCoord.xy)))
+              #:glow (+ (shade tint.rgb (int id) transform) depth (vec4 (dFdx screen.x) (fwidth screen.y) 0.0 1.0))))))
+
+;; Graphs and apps compile to TypeScript: per-frame inputs and enables from an app's state, its
+;; handlers and effects, and the file's functions the CPU can run
+(graph Tallying
+  (parameter size uint)
+  (input rounds (per-frame uint))
+  (buffer counts uint size #:frames shared)
+  (buffer balances int size #:frames shared)
+  (buffer weights float 1 #:frames shared)
+  (clear zero counts #:value 0)
+  (material tallying Tally (counts counts) (balances balances) (weights weights) #:invocations ((* rounds 64)))
+  (dispatch tally tallying)
+  (readback readCounts counts))
+
+(app Counter
+  (parameter size uint)
+  (state
+   (rounds uint 1)
+   (paused bool #f)
+   (tint vec4 (shade (vec3 0.5) 2 (mat4 1.0)))
+   (counts (data uint) (empty-data uint)))
+  (on (key-pressed space) (with state #:paused (not state.paused)))
+  (on (key-pressed escape) (quit!))
+  (on (scrolled by) (with state #:rounds (max 1 (+ state.rounds (uint by.y)))))
+  (on (frame dt) (when (> dt 1.0) (print! "slow frame: " dt)) state)
+  (on (read readCounts copied) (with state #:counts copied))
+  (run Tallying (size size) (rounds state.rounds) #:enabled ((tally (not state.paused)))))

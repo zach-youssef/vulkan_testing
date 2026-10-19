@@ -28,6 +28,12 @@ public:
     VkDeviceSize getSize() {
         return size_;
     }
+
+    // What it was created for (e.g. VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT), which a graph importing it
+    // checks its uses against
+    VkBufferUsageFlags getUsage() const {
+        return usage_;
+    }
     
     // Creates a buffer owned by the context's ResourceManager
     static Result<Handle<Buffer>> create(VulkanContext& context,
@@ -121,6 +127,7 @@ private:
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = size_;
         bufferInfo.usage = usage;
+        usage_ = usage;
         // Usable from any of the context's queues without ownership transfers
         const auto& families = context.queueFamilies();
         bufferInfo.sharingMode = families.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
@@ -145,6 +152,23 @@ private:
     
     VkDevice device_;
     VkDeviceSize size_;
+    VkBufferUsageFlags usage_ = 0;
     std::unique_ptr<VulkanBuffer> buffer_;
     std::unique_ptr<VulkanMemory> memory_;
 };
+
+// Memory the CPU writes and shaders read: device local where the device can also map it (all
+// memory on unified memory architectures such as Apple's, and resizable BAR on discrete GPUs), so
+// shaders read video memory rather than across the bus; otherwise host memory
+inline VkMemoryPropertyFlags mappedMemoryFor(VulkanContext& context) {
+    constexpr VkMemoryPropertyFlags mapped = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    VkPhysicalDeviceMemoryProperties properties;
+    vkGetPhysicalDeviceMemoryProperties(context.physicalDevice(), &properties);
+    for (uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
+        const VkMemoryPropertyFlags flags = properties.memoryTypes[i].propertyFlags;
+        if ((flags & (mapped | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) == (mapped | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            return mapped | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        }
+    }
+    return mapped;
+}

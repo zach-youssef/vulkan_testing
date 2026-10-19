@@ -1,0 +1,13 @@
+#version 450
+#include "bindless.glsl"
+
+// Counts the workgroups dispatched (element 0) and adds up their x ids (element 1)
+layout(push_constant) uniform Indices { uint counts; } indices;
+BINDLESS_BUFFER_ARRAY(, Counts, uint, counts);
+
+layout(local_size_x = 1) in;
+
+void main() {
+    atomicAdd(counts[indices.counts].data[0], 1);
+    atomicAdd(counts[indices.counts].data[1], gl_WorkGroupID.x);
+}
