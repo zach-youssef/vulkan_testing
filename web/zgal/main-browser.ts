@@ -1,7 +1,8 @@
 // Running a generated main in a page: its options from the query string (?blur&level=3&frames=60;
 // arg=... for positional arguments, in order), drawing into the page's canvas (#zgal, else a new one)
 // each animation frame, with the canvas's keyboard, mouse and wheel events going to the app's
-// handlers.
+// handlers. The page's state is in <html data-zgal="running|stopped|failed"> (stopped: the app quit
+// or ran its --frames), so tools (web/tools/firefox.ts) can wait for it.
 
 import { Context } from './context.ts';
 import { RenderGraph } from './graph.ts';
@@ -23,7 +24,11 @@ function buttonOf(button: number): MouseButton | null {
   return button === 0 ? 'left' : button === 2 ? 'right' : button === 1 ? 'middle' : null;
 }
 
-// Shows a message over the page (errors), and in the console
+function setState(state: 'running' | 'stopped' | 'failed'): void {
+  document.documentElement.dataset.zgal = state;
+}
+
+// Shows a message over the page (errors and usage), and in the console
 function show(text: string): void {
   console.log(text);
   let element = document.getElementById('zgal-message');
@@ -45,6 +50,7 @@ export async function runPage<A extends RunnableApp, I>(program: Program<A, I>, 
   const parsed = parseCommandLine(program, args, inputs, 'page');
   if (!(parsed instanceof Launch)) {
     show(parsed.text);
+    setState(parsed.status === 0 ? 'stopped' : 'failed');
     return;
   }
   const launch = parsed;
@@ -83,11 +89,13 @@ export async function runPage<A extends RunnableApp, I>(program: Program<A, I>, 
   } catch (error) {
     // E.g. no WebGPU adapter (headless browsers)
     show(`${program.name}: ${error instanceof Error ? error.message : String(error)}`);
+    setState('failed');
     return;
   }
   const surface = target.getContext('webgpu');
   if (!surface) {
     show('This browser has no WebGPU canvas');
+    setState('failed');
     return;
   }
   let app: A;
@@ -99,8 +107,10 @@ export async function runPage<A extends RunnableApp, I>(program: Program<A, I>, 
     });
   } catch (error) {
     show(`${program.name}: ${error instanceof Error ? error.message : String(error)}`);
+    setState('failed');
     return;
   }
+  setState('running');
   for (const line of program.controls) console.log(line);
 
   const cursor = (event: MouseEvent): [number, number] => {
@@ -134,10 +144,14 @@ export async function runPage<A extends RunnableApp, I>(program: Program<A, I>, 
     app.handle({ kind: 'scrolled', offset: [Math.fround(-event.deltaX * lines), Math.fround(-event.deltaY * lines)] });
   }, { passive: false });
 
-  // Until the app quits, or for --frames
+  // Until the app quits, or for --frames. WebGPU errors don't stop it, but it ends failed.
   let frame = 0;
+  let gpuErrors = false;
   const step = async () => {
-    if (app.quitRequested() || (launch.frames !== null && frame >= launch.frames)) return;
+    if (app.quitRequested() || (launch.frames !== null && frame >= launch.frames)) {
+      setState(gpuErrors ? 'failed' : 'stopped');
+      return;
+    }
     frame++;
     try {
       app.beginFrame();
@@ -146,10 +160,12 @@ export async function runPage<A extends RunnableApp, I>(program: Program<A, I>, 
       await app.renderGraph().execute();
     } catch (error) {
       show(`${program.name}: ${error instanceof Error ? error.message : String(error)}`);
+      setState('failed');
       return;
     }
     if (context.errors.length > 0) {
       for (const error of context.errors.splice(0)) show(`[WebGPU] ${error}`);
+      gpuErrors = true;
     }
     requestAnimationFrame(step);
   };

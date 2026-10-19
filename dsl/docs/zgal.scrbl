@@ -2237,7 +2237,12 @@ mouse and wheel events, and options from the query string (@tt{?frames=60&level=
 for positional arguments). Serve the directory over HTTP (modules don't load from @tt{file:} URLs)
 and open the page in a browser with WebGPU (e.g. Firefox or Safari); headless browsers usually
 have no WebGPU adapter, which the page reports. Assets are found in @tt{assets/} beside the main,
-as native programs find theirs.
+as native programs find theirs. The page's state is in its root element's @tt{data-zgal} attribute
+(@tt{running}, then @tt{stopped} when the app quits or runs its @tt{frames}, or @tt{failed}), and
+@tt{web/tools/firefox.ts} uses it to check a page in Firefox: it serves a directory, opens the page
+(in a window, for WebGPU), prints its console, presses keys and compares the canvas with an
+approved PNG, e.g. @tt{node web/tools/firefox.ts --serve build/web/smb3 --compare 120.png
+'smb3.zgal.html?frames=120'}.
 
 Graphs on the web can't yet use image files, models, meshes, the compute library's nodes, or
 indirect dispatches and draws; apps can't yet read images' copies; and programs whose own code
@@ -2344,7 +2349,7 @@ under Node; next is what graphs on the web can't use yet.
   (list @tt{include/zgal/Window.h} "running an app in a VulkanApp's window, and windowed programs")
   (list @tt{dsl/docs/} "this document, and the helpers compiling its examples")
   (list @tt{web/zgal/} "what the generated TypeScript uses at runtime: Context, RenderGraph, nodes, materials, types' layouts, apps' events and clocks, C++'s arithmetic (math.ts) and built-in functions (glsl.ts), mains (main.ts, main-node.ts, main-browser.ts); node.ts and png.ts for Node")
-  (list @tt{web/} "the web backend's packages (npm: TypeScript, and Dawn, WebGPU for Node), tools (tools/check-wgsl.ts compiles WGSL with Dawn) and tests")
+  (list @tt{web/} "the web backend's packages (npm: TypeScript, and Dawn, WebGPU for Node), tools (tools/check-wgsl.ts compiles WGSL with Dawn; tools/firefox.ts checks a page in Firefox) and tests")
   (list @tt{dsl/tests/} "the compiler's tests (make test-dsl)"))]
 
 @subsection{Keeping this document accurate}

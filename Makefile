@@ -254,7 +254,7 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	rm -rf $(WEB_TEST_OUT)
 	@mkdir -p $(WEB_TEST_OUT)
 	for f in $(WEB_DIR)/tests/*.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) $$f || exit 1; done
-	cp -R $(WEB_DIR)/zgal $(WEB_DIR)/tests $(WEB_DIR)/package.json $(WEB_DIR)/tsconfig.json $(WEB_TEST_OUT)/
+	cp -R $(WEB_DIR)/zgal $(WEB_DIR)/tests $(WEB_DIR)/tools $(WEB_DIR)/package.json $(WEB_DIR)/tsconfig.json $(WEB_TEST_OUT)/
 	ln -s $(CURDIR)/$(WEB_DIR)/node_modules $(WEB_TEST_OUT)/node_modules
 	cd $(WEB_TEST_OUT) && $(NODE) node_modules/typescript/bin/tsc -p . && $(NODE) --test $(TEST_ARGS) 'tests/*.test.ts'
 	$(MAKE) web
