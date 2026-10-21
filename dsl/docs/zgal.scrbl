@@ -2248,6 +2248,29 @@ and @tt{make test-pages} checks the examples' pages with it. Headless Chromium s
 of a SwiftShader device only when its compositor runs on SwiftShader too
 (@tt{--use-angle=swiftshader}), which the tool passes.
 
+Other pages embed programs: the main of a program with a window exports @tt{mount(canvas, options)},
+which runs it in a canvas of the page (@tt{zgal.mountProgram}) and returns an object whose
+@tt{stop()} stops it and frees its WebGPU device, its graphs and its listeners (while it starts,
+too). The options are @tt{scaling} (required: @tt{'whole-multiples'} shows the canvas at the largest
+whole multiple of its size that fits, pixelated, @tt{'fit'} at the largest size, smoothly),
+@tt{args} (its command line, as under Node), @tt{keys} (@tt{'canvas'}, the default, takes key
+presses while the canvas has focus, which it takes when clicked; @tt{'page'} takes the whole
+page's), @tt{onState} (called with @tt{running}, @tt{stopped} or @tt{failed}) and @tt{onMessage}
+(errors and usage, by default to the console). The canvas is shown at the centre of its parent,
+which must have a size of its own. Each mounted program has its own device, so a page can run
+several, e.g.
+
+@verbatim{
+import { mount } from './particles/particles.zgal.main.js';
+const particles = mount(document.querySelector('canvas'), { scaling: 'fit', args: ['--particles', '20000'] });
+// ... later
+await particles.stop();
+}
+
+Its own page calls the main's @tt{run()}, which mounts the program in the page's canvas, and Node
+runs the main when it is the program run (not imported). @tt{make test-pages} checks mounting with
+@tt{web/tests/mount.html}.
+
 Graphs on the web can't yet use image files, models, meshes, the compute library's nodes, or
 indirect dispatches and draws; apps can't yet read images' copies; and programs whose own code
 gives the app inputs (externs, imports, parameters no option sets) don't run on the web yet. WebGPU's samplers have no border colour, and its buffers can't be

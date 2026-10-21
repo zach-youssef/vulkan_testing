@@ -152,7 +152,21 @@
      (line! "  capture: (app) => ({ graph: app.renderGraph(), node: ~a })," id)])
   (line! "};")
   (line! "")
-  (line! "await zgal.runProgram(program, import.meta.url);")
+  (when window
+    (line! "// Runs the program in a canvas of a page (zgal.mountProgram), its assets in assets/ beside this module")
+    (line! "export function mount(canvas: HTMLCanvasElement, options: zgal.MountOptions): zgal.MountedProgram {")
+    (line! "  return zgal.mountProgram(canvas, program, new URL('assets/', import.meta.url), options);")
+    (line! "}")
+    (line! ""))
+  (line! (if window
+             (format "// Runs the program where it is: under Node with its command line, or as its page (~a)" (ts-page-file-name (program-source prog)))
+             "// Runs the program under Node with its command line"))
+  (line! "export function run(): Promise<void> {")
+  (line! "  return zgal.runProgram(program, import.meta.url);")
+  (line! "}")
+  (line! "")
+  (line! "// Run by Node (not imported), it runs; pages call run() or mount()")
+  (line! "if (import.meta.main) await run();")
   (string-append (string-join (reverse out) "\n") "\n"))
 
 ;; The page running a program with a window: its canvas, and the main built to JavaScript
@@ -171,13 +185,12 @@
    (format "<title>~a</title>\n" (html title))
    "<style>\n"
    "  html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 14px system-ui, sans-serif; }\n"
-   "  body { display: grid; place-items: center; overflow: hidden; }\n"
-   "  canvas { display: block; image-rendering: pixelated; }\n"
+   "  body { overflow: hidden; }\n"
    "  #zgal-message { position: fixed; left: 1em; bottom: 1em; margin: 0; white-space: pre-wrap; }\n"
    "</style>\n"
    "</head>\n"
    "<body>\n"
    "<canvas id=\"zgal\"></canvas>\n"
-   (format "<script type=\"module\" src=\"./~a\"></script>\n" (html main-js))
+   (format "<script type=\"module\">import { run } from './~a'; run();</script>\n" (html main-js))
    "</body>\n"
    "</html>\n"))

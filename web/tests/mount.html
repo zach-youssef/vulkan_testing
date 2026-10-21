@@ -1,0 +1,73 @@
+<!doctype html>
+<!-- Embedding programs with their mains' mount (zgal.mountProgram), checked headless by make
+     test-pages (web/tools/chromium.ts): two particles programs side by side, one stopped while the
+     other runs its frames, and a third stopped while it starts. The page's state is in
+     <html data-zgal>, as a program's own page's is. Served from build/web, beside particles/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL mount test</title>
+<style>
+  body { margin: 0; display: flex; gap: 8px; }
+  div { width: 320px; height: 240px; background: #000; }
+</style>
+</head>
+<body>
+<div><canvas id="first"></canvas></div>
+<div><canvas id="second"></canvas></div>
+<div><canvas id="third"></canvas></div>
+<pre id="zgal-message"></pre>
+<script type="module">
+import { mount } from './particles/particles.zgal.main.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+const finish = (state) => { document.documentElement.dataset.zgal = state; };
+const fail = (text) => { log(text); finish('failed'); };
+
+// Resolves once a mounted program reaches a state
+function mounted(id, args) {
+  const states = [];
+  const waiting = [];
+  const program = mount(document.getElementById(id), {
+    scaling: 'fit',
+    args: ['--size', '320x240', '--particles', '20000', ...args],
+    onState: (state) => {
+      states.push(state);
+      for (const w of waiting.splice(0)) w();
+    },
+    onMessage: (text) => log(`${id}: ${text}`),
+  });
+  const reached = async (state) => {
+    while (!states.includes(state)) await new Promise((done) => waiting.push(done));
+  };
+  return { program, states, reached };
+}
+
+try {
+  const first = mounted('first', []);
+  const second = mounted('second', ['--frames', '90']);
+  const third = mounted('third', []);
+  await third.program.stop();
+  if (third.states.join() !== 'stopped') throw new Error(`stopped while starting, the third went ${third.states.join(' -> ')}`);
+
+  await first.reached('running');
+  await second.reached('running');
+  await first.program.stop();
+  await second.reached('stopped');
+  if (first.states.join() !== 'running,stopped') throw new Error(`the first went ${first.states.join(' -> ')}`);
+  if (second.states.includes('failed')) throw new Error('the second failed');
+  // Stopping again changes nothing
+  await first.program.stop();
+  await second.program.stop();
+  if (second.states.join() !== 'running,stopped') throw new Error(`the second went ${second.states.join(' -> ')}`);
+  const box = document.getElementById('second').getBoundingClientRect();
+  if (box.width !== 320 || box.height !== 240) throw new Error(`the second canvas is shown at ${box.width}x${box.height}, not its parent's 320x240`);
+  log('mounted, stopped and ran as expected');
+  finish('stopped');
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
+</script>
+</body>
+</html>

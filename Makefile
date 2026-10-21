@@ -262,10 +262,12 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	$(MAKE) test-pages
 
 # The examples' pages in headless Chromium on SwiftShader (web/tools/chromium.ts), skipped when
-# there's no Chromium (exit status 3)
+# there's no Chromium (exit status 3), and embedding programs (web/tests/mount.html, served beside them)
 test-pages: web
+	cp $(WEB_DIR)/tests/mount.html $(OUT)/web/mount.html
 	$(NODE) $(WEB_DIR)/tools/chromium.ts --serve $(PARTICLES_WEB) --keys ' 2' 'particles.zgal.html?frames=60'; \
-	  status=$$?; if [ $$status -eq 3 ]; then echo 'test-pages: skipped (no Chromium)'; else exit $$status; fi
+	  status=$$?; if [ $$status -eq 3 ]; then echo 'test-pages: skipped (no Chromium)'; exit 0; elif [ $$status -ne 0 ]; then exit $$status; fi; \
+	  $(NODE) $(WEB_DIR)/tools/chromium.ts --serve $(OUT)/web mount.html
 
 # The examples whose programs run on the web (the others' graphs load assets the web can't yet)
 web: $(PARTICLES_WEB)

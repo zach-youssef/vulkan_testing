@@ -22,7 +22,8 @@ Agents migrating code written against the pre-refactor wrapper (the `main` branc
 - `make test-web`: compiles `web/tests/*.zgal` to TypeScript and WGSL in `build/web-tests` beside
   a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node, then
   builds the particles example for the web (`make web`) and runs it under Node, then its page in headless
-  Chromium (`make test-pages`, skipped without a Chromium: Playwright's headless shell or `CHROMIUM`)
+  Chromium with `web/tests/mount.html`, which mounts two programs and stops one (`make test-pages`,
+  skipped without a Chromium: Playwright's headless shell or `CHROMIUM`)
   (`make test` includes it; `TEST_ARGS` go to `node --test`).
 - `zgal.mk`: the make rules building ZGAL programs (`zgal-rule`, `zgal-program`), which the Makefile
   and other projects' Makefiles include.
@@ -414,7 +415,9 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   `./zgal/index.ts`: copy `web/zgal` beside it. Bodies keep C++'s arithmetic (floats rounded to 32
   bits by `math.ts`/`glsl.ts`, integers wrapping); floats passed in must be 32-bit
   (`Math.fround`). A program's main (`FILE.zgal.main.ts`) runs headless under Node with the
-  native options, or in its page (`FILE.zgal.html`); `zgal.mk`'s `zgal-web-program` builds it to
+  native options, or in its page (`FILE.zgal.html`, which calls its `run()`); other pages embed it
+  with its `mount(canvas, options)` (`mountProgram` in `web/zgal/main-browser.ts`, which `runPage`
+  wraps; `stop()` frees it); `zgal.mk`'s `zgal-web-program` builds it to
   JavaScript (`make web`: `build/web/particles`). Vertex positions keep Vulkan's clip space (the
   WGSL negates y). A material is a bind
   group (binding i is its i'th binding, push constants a uniform buffer after them); buffers of
