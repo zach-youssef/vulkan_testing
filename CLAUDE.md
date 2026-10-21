@@ -21,8 +21,9 @@ Agents migrating code written against the pre-refactor wrapper (the `main` branc
   `build/docs/zgal.txt` to read in a terminal.
 - `make test-web`: compiles `web/tests/*.zgal` to TypeScript and WGSL in `build/web-tests` beside
   a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node, then
-  builds the particles example for the web (`make web`) and runs it under Node (`make test`
-  includes it; `TEST_ARGS` go to `node --test`).
+  builds the particles example for the web (`make web`) and runs it under Node, then its page in headless
+  Chromium (`make test-pages`, skipped without a Chromium: Playwright's headless shell or `CHROMIUM`)
+  (`make test` includes it; `TEST_ARGS` go to `node --test`).
 - `zgal.mk`: the make rules building ZGAL programs (`zgal-rule`, `zgal-program`), which the Makefile
   and other projects' Makefiles include.
 - `tools/verify_stack.sh <repo> <base> [head]`: builds and tests every commit in a range (builds and
@@ -56,7 +57,7 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | `include/util` | `StbImageWrite.h`: `stb_image_write` without its deprecation warnings |
 | `include/zgal` | What code generated from ZGAL uses: `Material.h` for materials (checks and shaders every generated material shares), `Runtime.h` for graphs (`zgal::FrameInfo`, `FrameSource`, `Uniform`, material instances), `App.h` for apps (events, `Timestep`, `RunMode`), `Main.h` for generated mains (command line, validation, captures, headless runs), and `Window.h`, running an app in a `VulkanApp` (and windowed programs) |
 | `dsl` | ZGAL (Zach's Graphics Application Language), declaring shader interfaces and render graphs: its compiler (Racket), documentation (`dsl/docs`) and tests (`dsl/tests`) |
-| `web` | ZGAL's web backend (WebGPU): the TypeScript runtime generated code uses (`zgal/`: `Context`, `RenderGraph`, nodes, materials, layouts; `node.ts` and `png.ts` for Node), its tests (`tests/`), npm packages (TypeScript; Dawn, WebGPU for Node, for tests) and tools (`tools/check-wgsl.ts` compiles WGSL with Dawn; `tools/firefox.ts` runs a page in Firefox, which needs a window for WebGPU, and compares its canvas with an approved PNG) |
+| `web` | ZGAL's web backend (WebGPU): the TypeScript runtime generated code uses (`zgal/`: `Context`, `RenderGraph`, nodes, materials, layouts; `node.ts` and `png.ts` for Node), its tests (`tests/`), npm packages (TypeScript; Dawn, WebGPU for Node, for tests) and tools (`tools/check-wgsl.ts` compiles WGSL with Dawn; `tools/firefox.ts` runs a page in Firefox, which needs a window for WebGPU, and compares its canvas with an approved PNG; `tools/chromium.ts` does the same in headless Chromium on SwiftShader, sharing `tools/pages.ts`) |
 
 Include headers relative to `include/`, e.g. `#include "graph/RenderGraph.h"`. Exactly one
 translation unit must `#define VK_WRAP_UTIL_IMPL` before including the wrapper and

@@ -2,7 +2,7 @@
 // arg=... for positional arguments, in order), drawing into the page's canvas (#zgal, else a new one)
 // each animation frame, with the canvas's keyboard, mouse and wheel events going to the app's
 // handlers. The page's state is in <html data-zgal="running|stopped|failed"> (stopped: the app quit
-// or ran its --frames), so tools (web/tools/firefox.ts) can wait for it.
+// or ran its --frames), so tools (web/tools/firefox.ts, chromium.ts) can wait for it.
 
 import { Context } from './context.ts';
 import { RenderGraph } from './graph.ts';

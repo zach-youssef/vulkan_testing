@@ -259,6 +259,13 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	cd $(WEB_TEST_OUT) && $(NODE) node_modules/typescript/bin/tsc -p . && $(NODE) --test $(TEST_ARGS) 'tests/*.test.ts'
 	$(MAKE) web
 	$(NODE) $(PARTICLES_WEB)/particles.zgal.main.js --frames 120 --size 1024x768 --capture $(PARTICLES_WEB)/smoke.png
+	$(MAKE) test-pages
+
+# The examples' pages in headless Chromium on SwiftShader (web/tools/chromium.ts), skipped when
+# there's no Chromium (exit status 3)
+test-pages: web
+	$(NODE) $(WEB_DIR)/tools/chromium.ts --serve $(PARTICLES_WEB) --keys ' 2' 'particles.zgal.html?frames=60'; \
+	  status=$$?; if [ $$status -eq 3 ]; then echo 'test-pages: skipped (no Chromium)'; else exit $$status; fi
 
 # The examples whose programs run on the web (the others' graphs load assets the web can't yet)
 web: $(PARTICLES_WEB)
@@ -280,7 +287,7 @@ approve-screenshots:
 	done
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
-.PHONY: clean examples shaders test test-cpu test-gpu test-dsl test-web web docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main bench run-bench test-bench
+.PHONY: clean examples shaders test test-cpu test-gpu test-dsl test-web test-pages web docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main bench run-bench test-bench
 
 
 clean:
