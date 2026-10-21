@@ -1427,7 +1427,8 @@ then combines the partials, and a scan scans them and scans each run again, star
 comes before it. Workgroups scan with subgroup operations (so the device's subgroups need arithmetic
 operations, and shuffles for minima and maxima, which Metal can't scan natively), then combine the
 subgroups' totals in shared memory. With a count on the GPU all 256 workgroups are dispatched,
-and those without elements finish at once.
+and those without elements finish at once. A scan in place (from a buffer to itself) reads and
+writes its destination, so it binds the buffer once.
 
 A sort is a radix sort, 4 bits a pass, so 8 passes of three dispatches: counting each workgroup's
 keys by digit, scanning those counts into where each workgroup's keys of each digit go, and moving
@@ -2279,7 +2280,10 @@ Read-write storage images other than @tt{r32float}, @tt{r32uint} and @tt{r32sint
 @tt{texture-formats-tier2} feature, which the runtime requests when the adapter has it; without it,
 a material binding one reports which image to bind read or write instead.
 
-Graphs on the web can't yet use models, meshes, the compute library's nodes, or
+Graphs on the web can use the compute library's nodes (@secref["compute-library"]). Where the device has no
+subgroups (WebGPU's @tt{subgroups} feature is optional), the runtime runs their materials'
+variants scanning, reducing and ranking in shared memory instead, which the compiler generates
+beside them. Graphs on the web can't yet use models, meshes, or
 indirect dispatches and draws, and programs whose own code gives the app inputs (externs,
 imports, parameters no option sets) don't run on the web yet. WebGPU's samplers have no border colour, and its buffers can't be
 mapped while the GPU uses them, so samplers clamping to a border and cpu nodes reading or writing

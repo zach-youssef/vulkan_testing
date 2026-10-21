@@ -116,7 +116,9 @@
 ;; source: the .zgal file's path. Declarations are in file order.
 ;; main: the main-decl generating a program's main, or #f.
 ;; imports: the paths of the files it imports (directly or not), as their declarations' locs name them.
-(struct program (source structs vertex-formats materials graphs functions apps main imports) #:transparent)
+;; fallbacks: a hash from the names of library kernels' materials using subgroup operations to their
+;; variants without them (template flag subgroups unset), for WebGPU devices without the feature.
+(struct program (source structs vertex-formats materials graphs functions apps main imports fallbacks) #:transparent)
 
 ;; ---------------------------------------------------------------------------------------------
 ;; Apps: state, the handlers changing it, and the graph they run. Bodies are typed expressions

@@ -1,18 +1,20 @@
 ;; ZGAL's compute library: the last step of prefix sums (see reduce.zgal, whose substitutions it
 ;; takes), scanning each workgroup's run of tiles from the exclusive scan of the runs' partials.
 ;; The flag exclusive chooses an exclusive scan (each element gets what comes before it) over an
-;; inclusive one (what comes before it, and itself).
+;; inclusive one (what comes before it, and itself); in-place, a scan of the destination (WebGPU
+;; can't bind a buffer both read-only and writable). Without the flag subgroups, the workgroup scans
+;; each tile in shared memory.
 
 (compute-material ZgalScanApply
   (workgroup 256)
   (bindings
-   (source (buffer-array T))
+   (%unless in-place (source (buffer-array T)))
    (destination (buffer-array T))
    (partials (buffer-array T))
    (%if gpu-count (counts (buffer-array uint))))
   (push (%if gpu-count (countIndex uint) (count uint)))
   ;; carry: what comes before the tile, the same for the whole workgroup
-  (shared (totals (array T 64)) (carry (array T 1)))
+  (shared (%if subgroups (totals (array T 64)) (lanes (array T 256))) (carry (array T 1)))
   (compute
    (let* ([n (%if gpu-count (at counts countIndex) count)]
           [tiles (/ (+ n 255) 256)]
@@ -23,27 +25,47 @@
      (when (= lane 0) (write! (at carry 0) (at partials workgroupId.x)))
      (for ([t (range first last)])
        (let* ([i (+ (* t 256) lane)]
-              [value (if (< i n) (at source i) IDENTITY)]
-              [inclusive (%if native-scan
-                         (SUBGROUP_INCLUSIVE value)
-                         ;; Hillis-Steele from shuffles: Metal has subgroup scans of sums only
-                         (let* ([(x stride) (while ([x value] [stride (uint 1)]) (< stride subgroupSize)
-                                            (values (let* ([other (subgroupShuffle x (- subgroupInvocationId stride))])
-                                                      (if (>= subgroupInvocationId stride) (COMBINE x other) x))
-                                                    (* stride 2)))])
-                           x))]
-          [before (%if native-scan
-                       (SUBGROUP_EXCLUSIVE value)
-                       (let* ([other (subgroupShuffle inclusive (- subgroupInvocationId 1))])
-                         (if (= subgroupInvocationId 0) IDENTITY other)))])
-         (let* ([total (SUBGROUP_ALL value)])
-           (when (subgroupElect) (write! (at totals subgroupId) total)))
-         (barrier!)
-         (let* ([c (at carry 0)]
-                [prefix (fold ([acc c]) ([k (range 0 subgroupId)]) (COMBINE acc (at totals k)))]
-                [tile (fold ([acc IDENTITY]) ([k (range 0 subgroupCount)]) (COMBINE acc (at totals k)))])
-           (when (< i n)
-             (write! (at destination i) (%if exclusive (COMBINE prefix before) (COMBINE prefix inclusive))))
-           ;; Everyone has read the carry and the totals before they change
-           (barrier!)
-           (when (= lane 0) (write! (at carry 0) (COMBINE c tile)))))))))
+              [value (if (< i n) (at (%if in-place destination source) i) IDENTITY)])
+         (%if subgroups
+              (let* ([inclusive (%if native-scan
+                                     (SUBGROUP_INCLUSIVE value)
+                                     ;; Hillis-Steele from shuffles: Metal has subgroup scans of sums only
+                                     (let* ([(x stride) (while ([x value] [stride (uint 1)]) (< stride subgroupSize)
+                                                        (values (let* ([other (subgroupShuffle x (- subgroupInvocationId stride))])
+                                                                  (if (>= subgroupInvocationId stride) (COMBINE x other) x))
+                                                                (* stride 2)))])
+                                       x))]
+                     [before (%if native-scan
+                                  (SUBGROUP_EXCLUSIVE value)
+                                  (let* ([other (subgroupShuffle inclusive (- subgroupInvocationId 1))])
+                                    (if (= subgroupInvocationId 0) IDENTITY other)))])
+                (let* ([total (SUBGROUP_ALL value)])
+                  (when (subgroupElect) (write! (at totals subgroupId) total)))
+                (barrier!)
+                (let* ([c (at carry 0)]
+                       [prefix (fold ([acc c]) ([k (range 0 subgroupId)]) (COMBINE acc (at totals k)))]
+                       [tile (fold ([acc IDENTITY]) ([k (range 0 subgroupCount)]) (COMBINE acc (at totals k)))])
+                  (when (< i n)
+                    (write! (at destination i) (%if exclusive (COMBINE prefix before) (COMBINE prefix inclusive))))
+                  ;; Everyone has read the carry and the totals before they change
+                  (barrier!)
+                  (when (= lane 0) (write! (at carry 0) (COMBINE c tile)))))
+              (begin
+                (write! (at lanes lane) value)
+                (barrier!)
+                ;; Hillis-Steele: lane l combines l - stride's sum into its own
+                (for ([s (range 0 8)])
+                  (let* ([stride (shl (uint 1) (uint s))]
+                         [x (if (>= lane stride) (COMBINE (at lanes (- lane (min lane stride))) (at lanes lane)) (at lanes lane))])
+                    (barrier!)
+                    (write! (at lanes lane) x)
+                    (barrier!)))
+                (let* ([c (at carry 0)]
+                       [inclusive (at lanes lane)]
+                       [before (if (= lane 0) IDENTITY (at lanes (- lane (min lane 1))))]
+                       [tile (at lanes 255)])
+                  (when (< i n)
+                    (write! (at destination i) (%if exclusive (COMBINE c before) (COMBINE c inclusive))))
+                  ;; Everyone has read the carry and the lanes before they change
+                  (barrier!)
+                  (when (= lane 0) (write! (at carry 0) (COMBINE c tile)))))))))))

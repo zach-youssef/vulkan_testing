@@ -269,8 +269,8 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(IMAGE_FILTER_WEB)/blur_edges.png 2
 	$(MAKE) test-pages
 
-# The examples' pages, embedding programs (web/tests/mount.html) and loading image files
-# (web/tests/image-file.html) in headless Chromium on SwiftShader and in Firefox (in a window: it has
+# The examples' pages, embedding programs (web/tests/mount.html), loading image files
+# (web/tests/image-file.html) and the compute library (web/tests/kernels.html) in headless Chromium on SwiftShader and in Firefox (in a window: it has
 # no WebGPU adapter headless), each skipped when it isn't installed (the tools exit with 3)
 TEST_PAGES = $(OUT)/web/tests
 test-pages: web
@@ -278,11 +278,17 @@ test-pages: web
 	@mkdir -p $(TEST_PAGES)/assets
 	cp $(WEB_DIR)/tests/*.html $(TEST_PAGES)/
 	cp $(WEB_DIR)/tests/assets/texels.png $(SIMPLE_DIR)/textures/texture.jpg $(TEST_PAGES)/assets/
+	$(ZGAL) --web-out $(TEST_PAGES)/kernels/src $(WEB_DIR)/tests/kernels.zgal
+	cp -R $(WEB_DIR)/zgal $(TEST_PAGES)/kernels/src/zgal
+	cp $(WEB_DIR)/program.tsconfig.json $(TEST_PAGES)/kernels/src/tsconfig.json
+	echo '{"type": "module"}' > $(TEST_PAGES)/kernels/src/package.json
+	ln -sfn $(abspath $(WEB_DIR)/node_modules) $(TEST_PAGES)/kernels/src/node_modules
+	$(NODE) $(WEB_DIR)/node_modules/typescript/bin/tsc -p $(TEST_PAGES)/kernels/src --outDir $(TEST_PAGES)/kernels --rootDir $(TEST_PAGES)/kernels/src
 	for browser in chromium firefox; do \
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(PARTICLES_WEB) --keys ' 2' 'particles.zgal.html?frames=60'; \
 	  status=$$?; if [ $$status -eq 3 ]; then echo "test-pages: $$browser skipped (not installed)"; continue; fi; \
 	  [ $$status -eq 0 ] || exit $$status; \
-	  for page in mount image-file; do \
+	  for page in mount image-file kernels; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \
 	done

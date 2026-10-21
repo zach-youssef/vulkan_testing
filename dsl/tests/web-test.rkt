@@ -74,14 +74,7 @@
   (check-not-on-web
    "(vertex-format V (position vec3))
     (graph G (model ship \"ship.glb\" V))"
-   "models")
-  (check-not-on-web
-   (string-append fill
-                  "(graph G
-                     (buffer values uint 64 #:frames shared)
-                     (buffer sums uint 1 #:frames shared)
-                     (reduce r values (at sums 0) #:op add #:count 64))")
-   "compute library"))
+   "models"))
 
 (test-case "Apps and programs the web backend doesn't run yet"
   (check-not-on-web

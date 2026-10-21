@@ -341,7 +341,10 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   or floats, and `(sort n keys #:values v #:count c)`, a stable radix sort of uint keys (`(import
   sorting)` maps floats and ints to them). `#:count` is an expression or a GPU-written `(at counts i)`. The compiler instantiates
   their materials from `dsl/lib/kernels` (named `Zgal...`) and dispatches them as one
-  `DispatchSequenceNode`.
+  `DispatchSequenceNode`. Kernel templates' `(%if flag ...)`/`(%unless flag ...)` choose by flags;
+  each kernel material is instantiated with and without `subgroups`, and the variant without
+  (`program-fallbacks`, the web desc's `withoutSubgroups`) runs on WebGPU devices lacking them
+  (`ContextOptions.withoutFeatures` forces that in `web/tests/kernels.test.ts`).
 - Node loops: `(for ([b batches] [pass (range 0 n)]) node ...)` repeats nodes when the graph is
   built, over build-time ranges and `(data T)` inputs' elements (`b.first`, `(at batches i)`).
   Dispatches and draws (indirect ones and `draw-meshes` too) give per-node `#:push ((field v))` (and dispatches `#:invocations`), so
@@ -424,7 +427,7 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   WGSL negates y). A material is a bind
   group (binding i is its i'th binding, push constants a uniform buffer after them); buffers of
   small integers or with atomics are 32-bit words at std430 offsets. GLSL bodies, `extern-glsl`,
-  array bindings, and (for now) models, meshes, library kernels and indirect work
+  array bindings, and (for now) models, meshes and indirect work
   report `not-on-web`. Runtime code is erasable TypeScript (no parameter properties or enums), so
   Node runs it directly.
 

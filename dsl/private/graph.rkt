@@ -1303,9 +1303,11 @@
                           (hash "groups" groups "index" (element-ref-index destination)) one-group))]
         [else
          (define exclusive? (eq? head 'exclusive-scan))
+         (define in-place? (equal? source destination))
          (define apply-materials
-           (instantiate-kernel "scan.zgal" (operator-substitutions op t) (append flags (if exclusive? '(exclusive) '()))
-                               (string-append suffix (if exclusive? "Exclusive" "Inclusive"))))
+           (instantiate-kernel "scan.zgal" (operator-substitutions op t)
+                               (append flags (if exclusive? '(exclusive) '()) (if in-place? '(in-place) '()))
+                               (string-append suffix (if exclusive? "Exclusive" "Inclusive") (if in-place? "InPlace" ""))))
          (define-values (apply-bindings apply-push)
            (counted (hash "source" source "destination" destination "partials" partials) (hash)))
          (list reduce-step

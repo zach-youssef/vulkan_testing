@@ -11,6 +11,9 @@ export interface ContextOptions {
   // Features to enable when the adapter has them, besides those ZGAL uses (subgroups,
   // float32-filterable, and texture-formats-tier1 and -tier2 for more storage image formats)
   features?: GPUFeatureName[];
+  // Features not to enable even when the adapter has them, e.g. to check what devices without them
+  // run (library kernels' variants without subgroups)
+  withoutFeatures?: GPUFeatureName[];
 }
 
 // Optional features ZGAL enables when the adapter has them
@@ -52,7 +55,7 @@ export class Context {
     const adapter = await gpu.requestAdapter();
     if (!adapter) throw new Error('No WebGPU adapter');
     const wanted = [...zgalFeatures, ...(options.features ?? [])];
-    const requiredFeatures = wanted.filter((f) => adapter.features.has(f));
+    const requiredFeatures = wanted.filter((f) => adapter.features.has(f) && !options.withoutFeatures?.includes(f));
     const device = await adapter.requestDevice({ requiredFeatures });
     const assets = options.assets ?? (async (path: string) => {
       const response = await fetch(new URL(`assets/${path}`, globalThis.location?.href));

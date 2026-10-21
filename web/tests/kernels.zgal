@@ -1,0 +1,80 @@
+;; The compute library's nodes on the web (web/tests/kernels.test.ts): scans, reductions and sorts,
+;; counted by the CPU or by a GPU buffer, and in loops, as tests/gpu/zgal/interfaces.zgal's
+;; LibraryGraph and SortGraph check natively. The tests run them with subgroups and without (the
+;; kernels' shared-memory variants).
+
+(import sorting)
+
+;; Scans and reductions; the GPU's counts are written by a clear node, as a shader would
+(graph LibraryGraph
+  (parameter gpuCount uint)
+  (input values (data uint))
+  (input floats (data float))
+  (upload valuesBuffer values)
+  (upload floatsBuffer floats)
+  (buffer sums uint (count values) #:frames shared)
+  (buffer before uint (count values) #:frames shared)
+  (buffer maxima int (count values) #:frames shared)
+  (buffer signedValues int (count values) #:frames per-frame)
+  (buffer inPlace uint (count values) #:frames shared)
+  (buffer results uint 2 #:frames shared)
+  (buffer floatResults float 2 #:frames shared)
+  (buffer prefixSums uint 3 #:frames shared)
+  (buffer counts uint 2 #:frames shared)
+  (clear setCount counts #:value gpuCount)
+  (inclusive-scan sum valuesBuffer sums #:op add #:count (count values))
+  (exclusive-scan exclusive valuesBuffer before #:op add #:count (at counts 1))
+  (copy toInPlace valuesBuffer inPlace)
+  (inclusive-scan scanInPlace inPlace inPlace #:op add #:count (count values))
+  (clear minusOne signedValues #:value 4294967295)
+  (inclusive-scan running signedValues maxima #:op max #:count (count values))
+  (reduce total valuesBuffer (at results 0) #:op add #:count (count values))
+  (reduce smallest valuesBuffer (at results 1) #:op min #:count (at counts 0))
+  (reduce largest floatsBuffer (at floatResults 0) #:op max #:count (count floats))
+  (reduce floatSum floatsBuffer (at floatResults 1) #:op add #:count (count floats))
+  ;; A node per iteration, each with its own count: the sums of the first 1, 2 and 3 thirds
+  (for ([third (range (uint 0) (uint 3))])
+    (reduce prefixSum valuesBuffer (at prefixSums third) #:op add #:count (/ (* (count values) (+ third 1)) 3)))
+  (readback readSums sums)
+  (readback readBefore before)
+  (readback readInPlace inPlace)
+  (readback readMaxima maxima)
+  (readback readResults results)
+  (readback readFloatResults floatResults)
+  (readback readPrefixSums prefixSums))
+
+(compute-material Number
+  (workgroup 64)
+  (bindings (order (buffer-array uint)) (floats (buffer-array float)) (floatKeys (buffer-array uint)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (write! (at order i) i)
+       (write! (at floatKeys i) (floatSortKey (at floats i)))))))
+
+;; Keys with values (their indices), counted by the CPU (few in one workgroup, more in passes); keys
+;; alone, counted by the GPU; and float keys, from (import sorting)
+(graph SortGraph
+  (parameter gpuCount uint)
+  (input keys (data uint))
+  (input floats (data float))
+  (upload keysBuffer keys)
+  (upload floatsBuffer floats)
+  (buffer sorted uint (count keys) #:frames shared)
+  (buffer order uint (count keys) #:frames shared)
+  (buffer partial uint (count keys) #:frames per-frame)
+  (buffer floatKeys uint (count floats) #:frames shared)
+  (buffer counts uint 1 #:frames shared)
+  (material numbering Number order (floats floatsBuffer) floatKeys #:push ((count (count keys))) #:invocations ((count keys)))
+  (copy toSorted keysBuffer sorted)
+  (copy toPartial keysBuffer partial)
+  (dispatch number numbering)
+  (clear setCount counts #:value gpuCount)
+  (sort byKey sorted #:values order #:count (count keys))
+  (sort some partial #:count (at counts 0))
+  (sort byFloat floatKeys #:count (count floats))
+  (readback readSorted sorted)
+  (readback readOrder order)
+  (readback readPartial partial)
+  (readback readFloatKeys floatKeys))

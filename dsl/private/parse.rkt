@@ -205,12 +205,16 @@
                      (string-join (make-list (vector-t-size t) "0") " ") (show stx)))
        (map number-of (cdr items))]))
 
+  ;; Parsing another variant of a material already declared (a kernel's without subgroups), whose
+  ;; names (its own and its shaders') aren't declared again
+  (define parsing-variant? (make-parameter #f))
   (define (parse-material stx items kind)
+    (define variant? (parsing-variant?))
     (define form-name (if (eq? kind 'graphics) "graphics-material" "compute-material"))
     (match items
       [(list* _ name-stx all-clause-stxs)
        (define name (parse-name name-stx "the material's name"))
-       (top-level name name-stx)
+       (unless variant? (top-level name name-stx))
        ;; Its functions, (define ...) clauses, can repeat
        (define-values (define-stxs clause-stxs) (partition (λ (c) (eq? (head-symbol c) 'define)) all-clause-stxs))
        (define clauses (parse-clauses clause-stxs kind form-name))
@@ -280,7 +284,7 @@
        (check-stages stx kind name shaders)
        (define m (material kind name shaders (infer-accesses bindings shaders kind) push input varyings outputs
                            workgroup shared (stx->loc stx)))
-       (hash-set! materials name m)
+       (unless variant? (hash-set! materials name m))
        m]
       [_ (zgal-error 'malformed stx "expected (~a Name clause ...)" form-name)]))
 
@@ -302,7 +306,7 @@
 
   ;; A shader's name, which the shader library finds it by: unique in the file
   (define (claim-shader-name! name material-name where)
-    (match (hash-ref shader-names name #f)
+    (match (and (not (parsing-variant?)) (hash-ref shader-names name #f))
       [(cons other previous)
        (zgal-error 'shader-reused where "~a is already a shader of material ~a (line ~a)"
                    name other (loc-line previous))]
@@ -772,10 +776,13 @@
   (define kernel-instances (make-hash))   ; (list file suffix) -> hash of template name -> material
   (define kernel-materials '())           ; instantiated, in order
   (define kernel-files '())               ; the templates read, as locations name them
+  (define kernel-fallbacks (make-hash))   ; material name -> its variant without subgroups
   ;; The materials of the template `file` (in dsl/lib/kernels) with symbols replaced by
-  ;; substitutions (a hash of symbol -> datum), (%if flag then [else]) chosen by flags, and each
-  ;; material's name followed by suffix. Returns a hash from the template's material names to the
-  ;; instances; instantiating the same file and suffix again gives the same materials.
+  ;; substitutions (a hash of symbol -> datum), (%if flag then [else]) and (%unless flag then)
+  ;; chosen by flags (and the flag
+  ;; subgroups), and each material's name followed by suffix. Returns a hash from the template's
+  ;; material names to the instances; instantiating the same file and suffix again gives the same
+  ;; materials. Materials choosing by subgroups get a variant without them in kernel-fallbacks.
   (define (instantiate-kernel file substitutions flags suffix)
     (hash-ref! kernel-instances (list file suffix)
                (λ ()
@@ -789,8 +796,14 @@
                      (values n (string->symbol (format "~a~a" n suffix)))))
                  (parameterize ([library-names-allowed? #t])
                    (for/hash ([f (in-list forms)])
-                     (define instance (substitute-template f (hash-union* substitutions names) flags))
-                     (define m (parse-material instance (syntax->list instance) 'compute))
+                     (define (instance flags) (substitute-template f (hash-union* substitutions names) flags))
+                     (define with (instance (cons 'subgroups flags)))
+                     (define without (instance flags))
+                     (define m (parse-material with (syntax->list with) 'compute))
+                     (define fallback
+                       (and (not (equal? (syntax->datum with) (syntax->datum without)))
+                            (parameterize ([parsing-variant? #t]) (parse-material without (syntax->list without) 'compute))))
+                     (when fallback (hash-set! kernel-fallbacks (material-name m) fallback))
                      (set! kernel-materials (append kernel-materials (list m)))
                      (values (symbol->string (syntax-e (cadr (syntax->list f)))) m))))))
 
@@ -831,7 +844,8 @@
                  #:key (λ (d) (hash-ref declaration-order (if (function-decl? d) (function-decl-name d) (constant-decl-name d)))))
            apps-out
            main-out
-           (append imports kernel-files)))
+           (append imports kernel-files)
+           (for/hash ([(k v) (in-hash kernel-fallbacks)]) (values k v))))
 
 ;; ---------------------------------------------------------------------------------------------
 ;; Imports
@@ -917,6 +931,9 @@
                (match (cdr items)
                  [(list flag then) (if (memq (syntax-e flag) flags) (walk then) dropped)]
                  [(list flag then else) (walk (if (memq (syntax-e flag) flags) then else))])]
+              [(and (pair? items) (eq? (syntax-e (car items)) '%unless))
+               (match (cdr items)
+                 [(list flag then) (if (memq (syntax-e flag) flags) dropped (walk then))])]
               [else
                (datum->syntax #f (filter (λ (x) (not (eq? x dropped))) (map walk items)) stx)]))]
       [else stx]))

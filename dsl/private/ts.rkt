@@ -121,8 +121,15 @@
    (case kind
      [(compute)
       (match-define (list x y z) (material-workgroup m))
-      (list (format "  workgroup: [~a, ~a, ~a]," x y z)
-            (format "  compute: (formats) => ~a," (shader-template prog m (material-shader m 'compute))))]
+      (define fallback (hash-ref (program-fallbacks prog) (material-name m) #f))
+      (when (and fallback (not (equal? (wgsl-bindings prog fallback) bindings)))
+        (error 'emit-material "~a's variant without subgroups binds its resources differently" (material-name m)))
+      (append
+       (list (format "  workgroup: [~a, ~a, ~a]," x y z)
+             (format "  compute: (formats) => ~a," (shader-template prog m (material-shader m 'compute))))
+       (if fallback
+           (list (format "  withoutSubgroups: (formats) => ~a," (shader-template prog fallback (material-shader fallback 'compute))))
+           '()))]
      [(graphics)
       (define input (material-vertex-input m))
       (append

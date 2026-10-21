@@ -203,7 +203,8 @@ export class MaterialInstance {
     let p = this.pipelines.get(key) as GPUComputePipeline | undefined;
     if (!p) {
       const device = this.graph.context.device;
-      const module = device.createShaderModule({ label: `${desc.name}.comp`, code: desc.compute(storageFormats(desc, formats)) });
+      const source = desc.withoutSubgroups && !this.graph.context.hasFeature('subgroups') ? desc.withoutSubgroups : desc.compute;
+      const module = device.createShaderModule({ label: `${desc.name}.comp`, code: source(storageFormats(desc, formats)) });
       p = device.createComputePipeline({ label: desc.name, layout: this.layout(formats).pipeline, compute: { module, entryPoint: 'main' } });
       this.pipelines.set(key, p);
     }
@@ -685,6 +686,52 @@ export class DispatchNode implements Node {
   }
   destroy(): void {
     this.binder.destroy();
+  }
+}
+
+// A step of a DispatchSequenceNode: a material instance dispatched with its push constants, the
+// node's own (override) replacing its, over its invocations (or the instance's)
+export interface DispatchStep {
+  readonly material: MaterialInstance;
+  readonly override?: PushSource | null;
+  readonly invocations?: FrameSource<number[]> | null;
+}
+
+// Dispatches steps in order, in one compute pass, each seeing what those before it wrote (WebGPU
+// orders a pass's dispatches), as the compute library's nodes need; steps with no workgroups are
+// skipped. Each step has its own push constants, so a material may be several steps.
+export class DispatchSequenceNode implements Node {
+  private readonly binders: MaterialBinder[];
+  private workgroups: [number, number, number][] = [];
+  readonly name: string;
+  readonly steps: readonly DispatchStep[];
+  constructor(name: string, steps: readonly DispatchStep[]) {
+    if (steps.length === 0) throw new Error(`${name}: a dispatch sequence needs steps`);
+    this.name = name;
+    this.steps = steps;
+    this.binders = steps.map((step, i) => step.material.binder(`${name} step ${i}`));
+  }
+  prepare(frame: FrameInfo): void {
+    this.workgroups = this.steps.map((step, i) => {
+      this.binders[i].prepare(frame, step.override ?? null);
+      const invocations = step.invocations ?? step.material.invocations;
+      if (!invocations) throw new Error(`${this.name}: material ${step.material.desc.name} has no dispatch size`);
+      return workgroupsFor(step.material.desc as ComputeMaterialDesc, invocations(frame));
+    });
+  }
+  record(encoder: GPUCommandEncoder): void {
+    const running = this.steps.map((_, i) => i).filter((i) => this.workgroups[i].every((n) => n > 0));
+    if (running.length === 0) return;
+    const pass = encoder.beginComputePass({ label: this.name });
+    for (const i of running) {
+      pass.setPipeline(this.steps[i].material.computePipeline());
+      pass.setBindGroup(0, this.binders[i].bindGroup());
+      pass.dispatchWorkgroups(...this.workgroups[i]);
+    }
+    pass.end();
+  }
+  destroy(): void {
+    for (const binder of this.binders) binder.destroy();
   }
 }
 

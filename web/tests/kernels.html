@@ -1,0 +1,84 @@
+<!doctype html>
+<!-- The compute library's nodes in a browser: scans, reductions and sorts of web/tests/kernels.zgal
+     give what web/tests/kernels.test.ts checks under Node, with the browser's subgroups (when it
+     has them) and without (the kernels' shared-memory variants). Checked by make test-pages
+     (web/tools/chromium.ts and firefox.ts); the page's state is in <html data-zgal>. Served from
+     build/web/tests, with kernels.zgal's program built into kernels/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL kernels test</title>
+</head>
+<body>
+<pre id="zgal-message"></pre>
+<script type="module">
+import * as zgal from './kernels/zgal/index.js';
+import { LibraryGraph, SortGraph } from './kernels/kernels.zgal.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+const check = (got, expected, what) => {
+  if (got.join() !== expected.join()) throw new Error(`${what}: got ${got.slice(0, 8).join(' ')}..., expected ${expected.slice(0, 8).join(' ')}...`);
+};
+const inclusiveScan = (xs) => xs.map(((sum) => (x) => (sum = (sum + x) >>> 0))(0));
+
+async function scans(context, variant, size) {
+  const at = `${variant}, ${size} elements`;
+  const values = Array.from({ length: size }, (_, i) => ((i * 7919) % 100) + 3);
+  const floats = Array.from({ length: size }, (_, i) => Math.fround(((i * 31) % 1000) / 8 - 20));
+  const gpuCount = size - Math.floor(size / 3);
+  const graph = new zgal.RenderGraph(context);
+  const library = await LibraryGraph.build(context, graph, { gpuCount, values, floats });
+  for (let frame = 0; frame < 2; frame++) await graph.execute();
+  const sums = inclusiveScan(values);
+  check(await library.readSumsContents(graph), sums, `${at}: sums`);
+  check(await library.readInPlaceContents(graph), sums, `${at}: in place`);
+  const before = [0, ...inclusiveScan(values.slice(0, gpuCount - 1)), ...new Array(size - gpuCount).fill(0)];
+  check(await library.readBeforeContents(graph), before, `${at}: exclusive`);
+  const results = await library.readResultsContents(graph);
+  check([...results], [sums[size - 1], Math.min(...values.slice(0, gpuCount))], `${at}: reductions`);
+  graph.destroy();
+}
+
+async function sorts(context, variant, size) {
+  const at = `${variant}, ${size} keys`;
+  const keys = [];
+  const floats = [];
+  let state = 12345;
+  for (let i = 0; i < size; i++) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    keys.push(state % 1000);
+    floats.push(Math.fround((((state >>> 8) % 20001) - 10000) * Math.fround(0.37)));
+  }
+  const gpuCount = size - Math.floor(size / 4);
+  const graph = new zgal.RenderGraph(context);
+  const sorting = await SortGraph.build(context, graph, { gpuCount, keys, floats });
+  for (let frame = 0; frame < 2; frame++) await graph.execute();
+  const order = keys.map((_, i) => i).sort((a, b) => keys[a] - keys[b] || a - b);
+  check(await sorting.readOrderContents(graph), order, `${at}: order`);
+  graph.destroy();
+}
+
+try {
+  for (const withoutFeatures of [[], ['subgroups']]) {
+    const context = await zgal.Context.create({ withoutFeatures });
+    const variant = context.hasFeature('subgroups') ? 'with subgroups' : 'without subgroups';
+    try {
+      for (const size of [256, 70001]) await scans(context, variant, size);
+      // One workgroup, and passes
+      for (const size of [4096, 100003]) await sorts(context, variant, size);
+      await context.device.queue.onSubmittedWorkDone();
+      if (context.errors.length > 0) throw new Error(`${variant}: WebGPU errors:\n${context.errors.join('\n')}`);
+      log(`kernels ran as expected ${variant}`);
+    } finally {
+      context.destroy();
+    }
+  }
+  document.documentElement.dataset.zgal = 'stopped';
+} catch (error) {
+  log(error instanceof Error ? error.message : String(error));
+  document.documentElement.dataset.zgal = 'failed';
+}
+</script>
+</body>
+</html>

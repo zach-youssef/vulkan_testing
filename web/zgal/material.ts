@@ -55,6 +55,9 @@ export interface ComputeMaterialDesc extends MaterialDescBase {
   readonly kind: 'compute';
   readonly workgroup: readonly [number, number, number];
   readonly compute: ShaderSource;
+  // For a library kernel using subgroup operations, the same kernel without them (shared memory
+  // instead), for devices without the subgroups feature
+  readonly withoutSubgroups?: ShaderSource;
 }
 
 export interface GraphicsMaterialDesc extends MaterialDescBase {

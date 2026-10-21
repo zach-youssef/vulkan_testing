@@ -143,7 +143,6 @@
   (for ([n (in-list nodes)])
     (define l (g-node-loc n))
     (match (g-node-kind n)
-      ['kernel (web-error l "the compute library's nodes don't run on the web yet (~a)" (g-node-name n))]
       ['draw-meshes (web-error l "meshes aren't drawn on the web yet (~a)" (g-node-name n))]
       ['cpu (unless (and (null? (g-node-reads n)) (null? (g-node-writes n)))
               (web-error l "cpu node ~a maps buffers, which WebGPU's buffers can't be while the GPU uses them" (g-node-name n)))]
@@ -411,20 +410,36 @@
           (format "`~a ${result.nodes.~a.length}`" node-name node-name)
           (ts-string node-name)))
     (define overrides (g-node-overrides n))
-    (define (override-text)
-      (if (and overrides (pair? (node-overrides-push overrides)))
+    (define (push-override-text pairs)
+      (if (pair? pairs)
           (format "(frame, push) => { ~a }"
-                  (string-join (for/list ([pair (in-list (node-overrides-push overrides))])
+                  (string-join (for/list ([pair (in-list pairs)])
                                  (format "push.~a = ~a;" (field-name (car pair)) (expr (cdr pair) (field-type (car pair)))))
                                " "))
+          "null"))
+    (define (override-text) (push-override-text (if overrides (node-overrides-push overrides) '())))
+    (define (invocations-text overrides)
+      (if (and overrides (node-overrides-invocations overrides))
+          (format "(frame) => [~a]" (string-join (map uint-expr (node-overrides-invocations overrides)) ", "))
           "null"))
     (define create
       (match (g-node-kind n)
         ['dispatch
          (format "new zgal.DispatchNode(~a, ~a, ~a, ~a)" label (instance-ref "material" (g-node-material n)) (override-text)
-                 (if (and overrides (node-overrides-invocations overrides))
-                     (format "(frame) => [~a]" (string-join (map uint-expr (node-overrides-invocations overrides)) ", "))
-                     "null"))]
+                 (invocations-text overrides))]
+        ['kernel
+         ;; A step's push constant pass (a sort's) is its own; in loops, its overrides give it
+         (format "new zgal.DispatchSequenceNode(~a, [~a])" label
+                 (string-join
+                  (for/list ([step (in-list (g-node-extra n))])
+                    (match-define (k-step m pass step-overrides) step)
+                    (format "{ material: ~a, override: ~a, invocations: ~a }" (instance-ref "material" m)
+                            (cond
+                              [step-overrides (push-override-text (node-overrides-push step-overrides))]
+                              [pass (format "(frame, push) => { push.pass = ~a; }" pass)]
+                              [else "null"])
+                            (invocations-text step-overrides)))
+                  ", "))]
         ['draw
          (format "new zgal.DrawNode(~a, ~a, ~a, (frame) => ~a, ~a)" label (instance-ref "target" (g-node-target n))
                  (instance-ref "material" (g-node-material n)) (uint-expr (g-node-count n)) (override-text))]

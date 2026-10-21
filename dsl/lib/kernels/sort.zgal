@@ -1,7 +1,7 @@
 ;; ZGAL's compute library: radix sorts, which graphs' sort nodes dispatch. Not a module to import:
 ;; the compiler instantiates these materials, substituting T (the values' type: uint, int or float)
-;; and choosing (%if flag then [else]) by the flags values (the sort moves values with its keys) and
-;; gpu-count (the count is a buffer element). Material names get a suffix naming the instance.
+;; and choosing (%if flag then [else]) by the flags values (the sort moves values with its keys),
+;; gpu-count (the count is a buffer element) and subgroups (see reduce.zgal). Material names get a suffix naming the instance.
 ;;
 ;; A least significant digit radix sort of uint keys, 4 bits a pass, so 8 passes, each stable: keys
 ;; move between the sorted buffer and a scratch one (even passes from keys to scratch, odd ones
@@ -10,7 +10,8 @@
 ;;   ZgalSortCount counts each workgroup's keys by digit, into a histogram, digit major;
 ;;   ZgalSortOffsets scans the histogram (one workgroup): where each workgroup's keys of each digit go;
 ;;   ZgalSortScatter moves each workgroup's keys there in order: within a tile, a key's place among
-;;   those of its digit is counted with subgroup ballots, then across the tile's subgroups.
+;;   those of its digit is counted with subgroup ballots, then across the tile's subgroups (without
+;;   subgroups, by counting the earlier lanes' digits in shared memory).
 ;; The pass is a push constant each step replaces (DispatchSequenceNode). For few keys, one
 ;; workgroup of ZgalSortScatter runs every pass (passes 8), counting the keys itself.
 ;;
@@ -54,24 +55,40 @@
   (workgroup 256)
   (bindings (histogram (buffer-array uint)))
   (push (groups uint))
-  (shared (totals (array uint 64)) (carry (array uint 1)))
+  (shared (%if subgroups (totals (array uint 64)) (lanes (array uint 256))) (carry (array uint 1)))
   (compute
    (let* ([lane localInvocationId.x]
           [entries (* groups 16)])
      (when (= lane 0) (write! (at carry 0) 0))
      (for ([t (range 0 (/ (+ entries 255) 256))])
        (let* ([i (+ (* t 256) lane)]
-              [value (if (< i entries) (at histogram i) 0)]
-              [before (subgroupExclusiveAdd value)])
-         (let* ([total (subgroupAdd value)])
-           (when (subgroupElect) (write! (at totals subgroupId) total)))
-         (barrier!)
-         (let* ([c (at carry 0)]
-                [prefix (fold ([acc c]) ([k (range 0 subgroupId)]) (+ acc (at totals k)))]
-                [tile (fold ([acc (uint 0)]) ([k (range 0 subgroupCount)]) (+ acc (at totals k)))])
-           (when (< i entries) (write! (at histogram i) (+ prefix before)))
-           (barrier!)
-           (when (= lane 0) (write! (at carry 0) (+ c tile)))))))))
+              [value (if (< i entries) (at histogram i) 0)])
+         (%if subgroups
+              (let* ([before (subgroupExclusiveAdd value)])
+                (let* ([total (subgroupAdd value)])
+                  (when (subgroupElect) (write! (at totals subgroupId) total)))
+                (barrier!)
+                (let* ([c (at carry 0)]
+                       [prefix (fold ([acc c]) ([k (range 0 subgroupId)]) (+ acc (at totals k)))]
+                       [tile (fold ([acc (uint 0)]) ([k (range 0 subgroupCount)]) (+ acc (at totals k)))])
+                  (when (< i entries) (write! (at histogram i) (+ prefix before)))
+                  (barrier!)
+                  (when (= lane 0) (write! (at carry 0) (+ c tile)))))
+              (begin
+                (write! (at lanes lane) value)
+                (barrier!)
+                ;; Hillis-Steele, as reduce.zgal's kernels without subgroups
+                (for ([s (range 0 8)])
+                  (let* ([stride (shl (uint 1) (uint s))]
+                         [x (if (>= lane stride) (+ (at lanes (- lane (min lane stride))) (at lanes lane)) (at lanes lane))])
+                    (barrier!)
+                    (write! (at lanes lane) x)
+                    (barrier!)))
+                (let* ([c (at carry 0)]
+                       [tile (at lanes 255)])
+                  (when (< i entries) (write! (at histogram i) (+ c (- (at lanes lane) value))))
+                  (barrier!)
+                  (when (= lane 0) (write! (at carry 0) (+ c tile)))))))))))
 
 (compute-material ZgalSortScatter
   (workgroup 256)
@@ -85,8 +102,9 @@
   (push (%if gpu-count (countIndex uint) (count uint)) (pass uint) (passes uint))
   ;; subgroupCounts: each subgroup's keys of each digit in the tile, in alternate sides by tile (so
   ;; one tile's are cleared while the last's are read); next: where the workgroup's next key of
-  ;; each digit goes; bins: with several passes, the pass's keys of each digit
-  (shared (subgroupCounts (array uint 2048)) (next (array uint 16)) (bins (array uint 16)))
+  ;; each digit goes; bins: with several passes, the pass's keys of each digit; digits: without
+  ;; subgroups, the tile's keys' digits (16 for none)
+  (shared (%if subgroups (subgroupCounts (array uint 2048)) (digits (array uint 256))) (next (array uint 16)) (bins (array uint 16)))
   (compute
    (let* ([n (%if gpu-count (at counts countIndex) count)]
           [tiles (/ (+ n 255) 256)]
@@ -94,7 +112,7 @@
           [first (* workgroupId.x run)]
           [last (min tiles (+ first run))]
           [lane localInvocationId.x]
-          [used (* subgroupCount 16)])
+          [used (%if subgroups (* subgroupCount 16) 0)])
      (for ([p (range pass (+ pass passes))])
        (let* ([shift (* p 4)]
               [even (= (bitand p 1) 0)])
@@ -113,41 +131,62 @@
                  (write! (at next lane) (fold ([acc (uint 0)]) ([d (range 0 lane)]) (+ acc (at bins d))))))
              (when (< lane 16)
                (write! (at next lane) (at histogram (+ (* lane workgroupCount.x) workgroupId.x)))))
-         (for ([s (range lane used 256)]) (write! (at subgroupCounts s) 0))
+         (%if subgroups (for ([s (range lane used 256)]) (write! (at subgroupCounts s) 0)))
          (barrier!)
          (for ([t (range first last)])
            (let* ([i (+ (* t 256) lane)]
                   [valid (< i n)]
                   [key (if valid (if even (at keys i) (at scratchKeys i)) 0)]
-                  [digit (bitand (shr key shift) 15)]
-                  [side (* (bitand (- t first) 1) 1024)]
-                  [other (- 1024 side)]
-                  ;; The subgroup's keys of the same digit: those agreeing with it on each bit
-                  [peers (fold ([m (subgroupBallot valid)]) ([b (range 0 4)])
-                           (let* ([set (= (bitand (shr digit (uint b)) 1) 1)]
-                                  [ballot (subgroupBallot set)])
-                             (bitand m (if set ballot (bitnot ballot)))))]
-                  ;; Its place among them, in order
-                  [rank (subgroupBallotExclusiveBitCount peers)])
-             (when (and valid (= rank 0))
-               (write! (at subgroupCounts (+ side (* subgroupId 16) digit)) (subgroupBallotBitCount peers)))
-             (barrier!)
-             (when valid
-               (let* ([earlier (fold ([acc (uint 0)]) ([s (range 0 subgroupId)]) (+ acc (at subgroupCounts (+ side (* s 16) digit))))]
-                      [place (+ (at next digit) earlier rank)])
-                 (if even
-                     (begin
-                       (write! (at scratchKeys place) key)
-                       (%if values (write! (at scratchItems place) (at items i))))
-                     (begin
-                       (write! (at keys place) key)
-                       (%if values (write! (at items place) (at scratchItems i)))))))
-             ;; Everyone has placed their key before the places move on
-             (barrier!)
-             (when (< lane 16)
-               (write! (at next lane)
-                       (+ (at next lane) (fold ([acc (uint 0)]) ([s (range 0 subgroupCount)]) (+ acc (at subgroupCounts (+ side (* s 16) lane)))))))
-             (for ([s (range lane used 256)]) (write! (at subgroupCounts (+ other s)) 0))
-             (barrier!)))
+                  [digit (bitand (shr key shift) 15)])
+             (%if subgroups
+                  (let* ([side (* (bitand (- t first) 1) 1024)]
+                         [other (- 1024 side)]
+                         ;; The subgroup's keys of the same digit: those agreeing with it on each bit
+                         [peers (fold ([m (subgroupBallot valid)]) ([b (range 0 4)])
+                                  (let* ([set (= (bitand (shr digit (uint b)) 1) 1)]
+                                         [ballot (subgroupBallot set)])
+                                    (bitand m (if set ballot (bitnot ballot)))))]
+                         ;; Its place among them, in order
+                         [rank (subgroupBallotExclusiveBitCount peers)])
+                    (when (and valid (= rank 0))
+                      (write! (at subgroupCounts (+ side (* subgroupId 16) digit)) (subgroupBallotBitCount peers)))
+                    (barrier!)
+                    (when valid
+                      (let* ([earlier (fold ([acc (uint 0)]) ([s (range 0 subgroupId)]) (+ acc (at subgroupCounts (+ side (* s 16) digit))))]
+                             [place (+ (at next digit) earlier rank)])
+                        (if even
+                            (begin
+                              (write! (at scratchKeys place) key)
+                              (%if values (write! (at scratchItems place) (at items i))))
+                            (begin
+                              (write! (at keys place) key)
+                              (%if values (write! (at items place) (at scratchItems i)))))))
+                    ;; Everyone has placed their key before the places move on
+                    (barrier!)
+                    (when (< lane 16)
+                      (write! (at next lane)
+                              (+ (at next lane) (fold ([acc (uint 0)]) ([s (range 0 subgroupCount)]) (+ acc (at subgroupCounts (+ side (* s 16) lane)))))))
+                    (for ([s (range lane used 256)]) (write! (at subgroupCounts (+ other s)) 0))
+                    (barrier!))
+                  (begin
+                    (write! (at digits lane) (if valid digit 16))
+                    (barrier!)
+                    (when valid
+                      ;; Its place among the tile's keys of its digit: the earlier lanes'
+                      (let* ([rank (fold ([acc (uint 0)]) ([k (range 0 lane)]) (if (= (at digits k) digit) (+ acc 1) acc))]
+                             [place (+ (at next digit) rank)])
+                        (if even
+                            (begin
+                              (write! (at scratchKeys place) key)
+                              (%if values (write! (at scratchItems place) (at items i))))
+                            (begin
+                              (write! (at keys place) key)
+                              (%if values (write! (at items place) (at scratchItems i)))))))
+                    (barrier!)
+                    (when (< lane 16)
+                      (write! (at next lane)
+                              (+ (at next lane) (fold ([acc (uint 0)]) ([k (range 0 256)]) (if (= (at digits k) lane) (+ acc 1) acc)))))
+                    ;; The digits are counted and the places moved on before the next tile
+                    (barrier!)))))
          ;; The next pass reads the keys this one wrote
          (buffer-barrier!))))))
