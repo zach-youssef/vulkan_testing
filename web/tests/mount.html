@@ -1,24 +1,29 @@
 <!doctype html>
-<!-- Embedding programs with their mains' mount (zgal.mountProgram), checked headless by make
-     test-pages (web/tools/chromium.ts): two particles programs side by side, one stopped while the
-     other runs its frames, and a third stopped while it starts. The page's state is in
-     <html data-zgal>, as a program's own page's is. Served from build/web, beside particles/. -->
+<!-- Embedding programs with their mains' mount (zgal.mountProgram), checked by make test-pages
+     (web/tools/chromium.ts and firefox.ts): two particles programs side by side, one stopped while
+     the other runs its frames, and a third stopped while it starts. The page's state is in
+     <html data-zgal>, as a program's own page's is. Served from build/web/tests, beside
+     particles/. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>ZGAL mount test</title>
 <style>
-  body { margin: 0; display: flex; gap: 8px; }
-  div { width: 320px; height: 240px; background: #000; }
+  body { margin: 0; }
+  /* Fixed sizes, whatever the browser's window */
+  #programs { display: flex; gap: 8px; }
+  #programs div { flex: none; width: 320px; height: 240px; background: #000; }
 </style>
 </head>
 <body>
-<div><canvas id="first"></canvas></div>
-<div><canvas id="second"></canvas></div>
-<div><canvas id="third"></canvas></div>
+<div id="programs">
+  <div><canvas id="first"></canvas></div>
+  <div><canvas id="second"></canvas></div>
+  <div><canvas id="third"></canvas></div>
+</div>
 <pre id="zgal-message"></pre>
 <script type="module">
-import { mount } from './particles/particles.zgal.main.js';
+import { mount } from '../particles/particles.zgal.main.js';
 
 const message = document.getElementById('zgal-message');
 const log = (text) => { console.log(text); message.textContent += `${text}\n`; };

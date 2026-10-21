@@ -21,9 +21,10 @@ Agents migrating code written against the pre-refactor wrapper (the `main` branc
   `build/docs/zgal.txt` to read in a terminal.
 - `make test-web`: compiles `web/tests/*.zgal` to TypeScript and WGSL in `build/web-tests` beside
   a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node, then
-  builds the particles example for the web (`make web`) and runs it under Node, then its page in headless
-  Chromium with `web/tests/mount.html`, which mounts two programs and stops one (`make test-pages`,
-  skipped without a Chromium: Playwright's headless shell or `CHROMIUM`)
+  builds the particles example for the web (`make web`) and runs it under Node, then its page and
+  `web/tests/mount.html` (mounts two programs and stops one) in headless Chromium and in Firefox,
+  which opens a window (`make test-pages`; a browser that isn't installed is skipped: Playwright's
+  headless shell or `CHROMIUM`, and `FIREFOX`)
   (`make test` includes it; `TEST_ARGS` go to `node --test`).
 - `zgal.mk`: the make rules building ZGAL programs (`zgal-rule`, `zgal-program`), which the Makefile
   and other projects' Makefiles include.

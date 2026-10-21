@@ -1,7 +1,7 @@
 // Runs a ZGAL page (FILE.zgal.html) in Firefox and checks it: prints the page's console and messages,
 // optionally presses keys, screenshots its canvas and compares it with an approved PNG. Exits with 0
 // when the page ran without errors (and matched), 1 when it failed, didn't match or timed out, 2 for a
-// bad command line.
+// bad command line, 3 when there's no Firefox.
 //
 //     node web/tools/firefox.ts [options] PAGE
 //
@@ -19,7 +19,7 @@
 //
 // Firefox is driven with WebDriver BiDi in a fresh profile, deleted afterwards. chromium.ts checks
 // pages the same way in headless Chromium; pages.ts has what they share.
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Browser, JsonSocket, jsonExpression, runChecker, startBrowser } from './pages.ts';
 
@@ -42,6 +42,10 @@ await runChecker<Options>('firefox', {
   },
   usage: '[--headless] [--firefox PATH]',
   async launch(options, log): Promise<Browser> {
+    if (!existsSync(options.firefox)) {
+      console.error(`No Firefox at ${options.firefox}: set FIREFOX or --firefox`);
+      process.exit(3);
+    }
     // Port 0: Firefox picks a free one and prints it. A fresh profile and instance, so a Firefox
     // already open isn't touched; the window is large enough to show a 256x240 canvas at 3x.
     const firefox = await startBrowser('Firefox', options.firefox, (profile) => {

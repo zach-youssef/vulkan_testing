@@ -2244,7 +2244,8 @@ as native programs find theirs. The page's state is in its root element's @tt{da
 approved PNG, e.g. @tt{node web/tools/firefox.ts --serve build/web/smb3 --compare 120.png
 'smb3.zgal.html?frames=120'}. @tt{web/tools/chromium.ts} does the same in headless Chromium (by
 default Playwright's headless shell) on SwiftShader, its software adapter, needing no window or GPU,
-and @tt{make test-pages} checks the examples' pages with it. Headless Chromium shows WebGPU canvases
+and @tt{make test-pages} checks the examples' pages and its test pages with both (skipping a
+browser that isn't installed). Headless Chromium shows WebGPU canvases
 of a SwiftShader device only when its compositor runs on SwiftShader too
 (@tt{--use-angle=swiftshader}), which the tool passes.
 
