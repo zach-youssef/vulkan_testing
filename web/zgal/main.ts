@@ -56,6 +56,8 @@ export interface Program<A extends RunnableApp, I> {
   about: string;
   window: { title: string; width: number; height: number } | null;
   captureOption: boolean;
+  // Where a program capturing to a parameter (capture #:to) writes it, from the command line
+  captureTo: ((inputs: I) => string) | null;
   controls: string[];
   options: ProgramOption<I>[];
   // The parameters before the command line: the options' defaults
@@ -153,6 +155,7 @@ export function parseCommandLine<A extends RunnableApp, I>(program: Program<A, I
     }
   }
   if (positional < positionals.length) return fail(`expected ${positionals[positional].metavar}`);
+  if (program.captureTo && where === 'node') launch.capture = program.captureTo(inputs);
   // Capturing several frames runs as many frames as the last one needs
   if (launch.captureFrames.length > 0) {
     const last = launch.captureFrames[launch.captureFrames.length - 1];

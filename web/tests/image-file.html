@@ -1,0 +1,76 @@
+<!doctype html>
+<!-- Loading graphs' image files (zgal.loadImageFile) in a browser: texels.png's texels arrive
+     exactly, not premultiplied (the runtime decodes PNGs, since Firefox's decoder premultiplies), as
+     web/tests/assets.test.ts checks under Node, and a JPEG loads at its size (the browser decodes it). Checked by make test-pages (web/tools/chromium.ts and
+     firefox.ts); the page's state is in <html data-zgal>. Served from build/web/tests, beside
+     particles/ (whose runtime it uses) and assets/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL image file test</title>
+</head>
+<body>
+<pre id="zgal-message"></pre>
+<script type="module">
+import * as zgal from '../particles/zgal/index.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+const expected = [255, 0, 0, 255, 0, 255, 0, 128, 10, 20, 30, 0, 200, 100, 50, 255,
+  1, 2, 3, 4, 128, 128, 128, 255, 255, 255, 255, 255, 0, 0, 0, 255];
+
+// A 4x2 RGBA8 texture's texels
+async function texels(context, texture) {
+  const device = context.device;
+  const buffer = device.createBuffer({ size: 256 * 2, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const encoder = device.createCommandEncoder();
+  encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow: 256 }, [4, 2]);
+  device.queue.submit([encoder.finish()]);
+  await buffer.mapAsync(GPUMapMode.READ);
+  const bytes = new Uint8Array(buffer.getMappedRange());
+  const result = [...bytes.subarray(0, 16), ...bytes.subarray(256, 272)];
+  buffer.destroy();
+  return result;
+}
+
+let context;
+try {
+  context = await zgal.Context.create({
+    assets: async (path) => {
+      const response = await fetch(new URL(`assets/${path}`, import.meta.url));
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      return new Uint8Array(await response.arrayBuffer());
+    },
+  });
+  for (const [color, format] of [['srgb', 'rgba8unorm-srgb'], ['linear', 'rgba8unorm']]) {
+    const graph = new zgal.RenderGraph(context);
+    const image = await zgal.loadImageFile(context, graph, 'picture', 'texels.png', color);
+    if (image.format !== format) throw new Error(`a ${color} image is ${image.format}, not ${format}`);
+    const got = await texels(context, image.texture);
+    if (got.join() !== expected.join()) throw new Error(`${color} texels.png's texels are ${got.join(' ')}, not ${expected.join(' ')}`);
+    graph.destroy();
+  }
+  const graph = new zgal.RenderGraph(context);
+  const jpeg = await zgal.loadImageFile(context, graph, 'photo', 'texture.jpg', 'srgb');
+  if (jpeg.size.join('x') !== '512x512') throw new Error(`texture.jpg loaded at ${jpeg.size.join('x')}, not 512x512`);
+  graph.destroy();
+  let failed = false;
+  try {
+    await zgal.loadImageFile(context, new zgal.RenderGraph(context), 'picture', 'missing.png', 'srgb');
+  } catch (error) {
+    failed = /image-file picture \(missing\.png\)/.test(error.message);
+  }
+  if (!failed) throw new Error('a missing image file wasn\'t reported');
+  await context.device.queue.onSubmittedWorkDone();
+  if (context.errors.length > 0) throw new Error(`WebGPU errors:\n${context.errors.join('\n')}`);
+  log('image files loaded as expected');
+  document.documentElement.dataset.zgal = 'stopped';
+} catch (error) {
+  log(error instanceof Error ? error.message : String(error));
+  document.documentElement.dataset.zgal = 'failed';
+} finally {
+  context?.destroy();
+}
+</script>
+</body>
+</html>

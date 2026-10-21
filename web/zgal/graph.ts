@@ -426,9 +426,11 @@ export class RenderGraph {
     return image;
   }
 
-  importImage(name: string, texture: GPUTexture): GraphImage {
+  // A texture the application owns, or the graph if owned (destroyed with it)
+  importImage(name: string, texture: GPUTexture, owned = false): GraphImage {
     const image = new GraphImage(name, texture.format, null, texture);
     this.images.push(image);
+    if (owned) this.owned.push(texture);
     return image;
   }
 

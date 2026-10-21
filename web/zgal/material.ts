@@ -78,6 +78,10 @@ const stageFlags: Record<Stage, number> = {
   compute: 0x4, // GPUShaderStage.COMPUTE
 };
 
+// Formats storage images can be read and written in on any WebGPU device (others need the
+// texture-formats-tier2 feature)
+const readWriteCore = new Set<GPUTextureFormat>(['r32float', 'r32uint', 'r32sint']);
+
 // Formats sampling can't filter without the float32-filterable feature
 const unfilterable = new Set<GPUTextureFormat>(['r32float', 'rg32float', 'rgba32float', 'r32uint', 'r32sint']);
 
@@ -113,15 +117,20 @@ export function layoutEntries(device: GPUDevice, m: MaterialDesc, formats: Bound
       }
       case 'sampler':
         return { binding: i, visibility, sampler: { type: b.depth ? 'comparison' : (formats.samplers[b.name] ?? 'filtering') } };
-      case 'storage-image':
+      case 'storage-image': {
+        const format = formats.textures[b.name];
+        if (b.access !== 'read' && b.access !== 'write' && format && !readWriteCore.has(format) && !device.features.has('texture-formats-tier2')) {
+          throw new Error(`material ${m.name}: storage image ${b.name} is read-write, which this WebGPU device only allows for r32float, r32uint and r32sint images (not ${format}) without the texture-formats-tier2 feature: bind it read or write`);
+        }
         return {
           binding: i,
           visibility,
           storageTexture: {
             access: b.access === 'read' ? 'read-only' : b.access === 'write' ? 'write-only' : 'read-write',
-            format: formats.textures[b.name],
+            format,
           },
         };
+      }
       case 'buffer':
       case 'buffer-array':
         return { binding: i, visibility, buffer: { type: b.access === 'read' ? 'read-only-storage' : 'storage' } };

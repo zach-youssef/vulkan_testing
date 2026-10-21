@@ -13,6 +13,6 @@ GLSL and C++ for the wrapper, or to WGSL and TypeScript for WebGPU.
 ## Building
 
 `make` builds the examples (`examples/`) into `build/examples/<name>/`, `make web` builds the
-particles example for the web, and `make test` runs every test. Building needs the Vulkan SDK,
+particles and image_filter examples for the web, and `make test` runs every test. Building needs the Vulkan SDK,
 `glslc`, GLFW, GLM, Racket 8 with Scribble, and Node 24 with npm. `CLAUDE.md` describes the
 targets, the layout and the wrapper's conventions in detail.

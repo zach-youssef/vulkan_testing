@@ -1072,7 +1072,10 @@ stb_image) into an RGBA8 image for sampling, imported like an @racket[import-ima
 shader-read-only: textures and arrays of them bind it, and its size is known when the graph is built
 (@racket[(width name)], @tt{(extent-of name)}). Shaders only sample it. The colour space is required,
 since it changes what shaders read: @tt{srgb} for colours (photos, albedo), which sampling decodes
-to linear, and @tt{linear} for data (normal maps, masks, lookup tables), read as stored.
+to linear, and @tt{linear} for data (normal maps, masks, lookup tables), read as stored. On the web,
+8-bit PNGs without interlacing are decoded by the runtime, so transparent texels keep their colour
+(browsers' decoders may premultiply alpha), and other images by the browser; under Node only those
+PNGs are read.
 
 @(zgal-example image-file-source)
 @(generated-file image-file-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto file_albedo" #:to #rx"result.images.mask")
@@ -2272,7 +2275,11 @@ Its own page calls the main's @tt{run()}, which mounts the program in the page's
 runs the main when it is the program run (not imported). @tt{make test-pages} checks mounting with
 @tt{web/tests/mount.html}.
 
-Graphs on the web can't yet use image files, models, meshes, the compute library's nodes, or
+Read-write storage images other than @tt{r32float}, @tt{r32uint} and @tt{r32sint} need WebGPU's
+@tt{texture-formats-tier2} feature, which the runtime requests when the adapter has it; without it,
+a material binding one reports which image to bind read or write instead.
+
+Graphs on the web can't yet use models, meshes, the compute library's nodes, or
 indirect dispatches and draws; apps can't yet read images' copies; and programs whose own code
 gives the app inputs (externs, imports, parameters no option sets) don't run on the web yet. WebGPU's samplers have no border colour, and its buffers can't be
 mapped while the GPU uses them, so samplers clamping to a border and cpu nodes reading or writing

@@ -107,6 +107,7 @@
                           [#f "null"]
                           [(list title w h) (format "{ title: ~a, width: ~a, height: ~a }" (ts-string title) w h)]))
   (line! "  captureOption: ~a," (if (and capture (not (third capture))) "true" "false"))
+  (line! "  captureTo: ~a," (if (and capture (third capture)) (format "(inputs) => inputs.~a" (third capture)) "null"))
   (line! "  controls: [~a]," (string-join (map ts-string (main-decl-controls m)) ", "))
   (line! "  options: [~a" (if (null? options) "]," ""))
   (for ([o (in-list options)])

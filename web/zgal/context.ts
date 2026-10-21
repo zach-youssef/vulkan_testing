@@ -9,12 +9,12 @@ export interface ContextOptions {
   // Assets by path. Browsers fetch them from assets/ beside the page by default.
   assets?: AssetLoader;
   // Features to enable when the adapter has them, besides those ZGAL uses (subgroups,
-  // float32-filterable)
+  // float32-filterable, and texture-formats-tier1 and -tier2 for more storage image formats)
   features?: GPUFeatureName[];
 }
 
 // Optional features ZGAL enables when the adapter has them
-const zgalFeatures: GPUFeatureName[] = ['subgroups', 'float32-filterable'] as GPUFeatureName[];
+const zgalFeatures: GPUFeatureName[] = ['subgroups', 'float32-filterable', 'texture-formats-tier1', 'texture-formats-tier2'] as GPUFeatureName[];
 
 export class Context {
   readonly device: GPUDevice;

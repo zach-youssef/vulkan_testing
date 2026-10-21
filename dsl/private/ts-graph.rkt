@@ -134,7 +134,6 @@
     (match item
       [(or (g-model _ _ _ l) (g-model-textures _ _ l) (g-model-factors _ _ l) (g-model-draws _ _ _ l) (g-model-bounds _ _ l))
        (web-error l "models aren't loaded on the web yet")]
-      [(g-image-file n _ _ l) (web-error l "image files aren't loaded on the web yet (~a)" n)]
       [(g-import-images n _ l) (web-error l "WebGPU has no arrays of bindings, so ~a's images can't be imported for one" n)]
       [(g-input n 'meshes _ l) (web-error l "meshes aren't drawn on the web yet (~a)" n)]
       [(g-sampler n o l)
@@ -181,7 +180,7 @@
     (for/list ([i (in-list items)] #:when (and (pred i) (not (internal? (name-of i)))))
       (format "~a: zgal.~a~a" (name-of i) kind (if (conditional? i) " | undefined" ""))))
   (define image-members
-    (append (members "GraphImage" g-import? graph-item-name (λ (_) #f))
+    (append (members "GraphImage" (λ (i) (or (g-import? i) (g-image-file? i))) graph-item-name (λ (_) #f))
             (members "GraphImage" g-image? graph-item-name g-image-when)))
   (define buffer-members
     (append (members "GraphBuffer" (λ (i) (or (g-import-buffer? i) (g-upload? i) (g-buffer-file? i))) graph-item-name (λ (_) #f))
@@ -240,7 +239,7 @@
     (define-values (variable conditional?)
       (match (entry-item e)
         [(g-image _ _ _ _ when _) (values (format "image_~a" n) when)]
-        [(g-import _ _ _) (values (format "image_~a" n) #f)]
+        [(or (g-import _ _ _) (g-image-file _ _ _ _)) (values (format "image_~a" n) #f)]
         [(g-buffer _ _ _ _ when _) (values (format "buffer_~a" n) when)]
         [_ (values (format "buffer_~a" n) #f)]))
     (if conditional? (format "need(~a, ~a)" variable (ts-string n)) variable))
@@ -256,6 +255,11 @@
     (match item
       [(g-import n _ _)
        (line! "    const image_~a = graph.importImage(~a, inputs.~a);" n (ts-string n) n)
+       (line! "    result.images.~a = image_~a;" n n)]
+      [(g-image-file n source color _)
+       (line! "    const image_~a = await zgal.loadImageFile(context, graph, ~a, ~a, '~a');" n (ts-string n)
+              (if (asset-source-path source) (ts-string (asset-source-path source)) (format "inputs.~a" (asset-source-input source)))
+              color)
        (line! "    result.images.~a = image_~a;" n n)]
       [(g-import-buffer n t _)
        (line! "    const buffer_~a = graph.importBuffer(~a, ~a, inputs.~a);" n (ts-string n) (ts-layout-type t) n)

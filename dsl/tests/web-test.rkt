@@ -72,8 +72,9 @@
 
 (test-case "Graphs using what the web backend doesn't do yet"
   (check-not-on-web
-   "(graph G (image-file picture \"picture.png\" #:color srgb))"
-   "image files")
+   "(vertex-format V (position vec3))
+    (graph G (model ship \"ship.glb\" V))"
+   "models")
   (check-not-on-web
    (string-append fill
                   "(graph G

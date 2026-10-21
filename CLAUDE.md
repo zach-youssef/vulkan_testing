@@ -21,10 +21,11 @@ Agents migrating code written against the pre-refactor wrapper (the `main` branc
   `build/docs/zgal.txt` to read in a terminal.
 - `make test-web`: compiles `web/tests/*.zgal` to TypeScript and WGSL in `build/web-tests` beside
   a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node, then
-  builds the particles example for the web (`make web`) and runs it under Node, then its page and
-  `web/tests/mount.html` (mounts two programs and stops one) in headless Chromium and in Firefox,
-  which opens a window (`make test-pages`; a browser that isn't installed is skipped: Playwright's
-  headless shell or `CHROMIUM`, and `FIREFOX`)
+  builds the particles and image_filter examples for the web (`make web`) and runs them under Node
+  (image_filter's outputs compared with `web/tools/image-diff.ts`), then the particles page,
+  `web/tests/mount.html` (mounts two programs and stops one) and `web/tests/image-file.html` in
+  headless Chromium and in Firefox, which opens a window (`make test-pages`; a browser that isn't
+  installed is skipped: Playwright's headless shell or `CHROMIUM`, and `FIREFOX`)
   (`make test` includes it; `TEST_ARGS` go to `node --test`).
 - `zgal.mk`: the make rules building ZGAL programs (`zgal-rule`, `zgal-program`), which the Makefile
   and other projects' Makefiles include.
@@ -59,7 +60,7 @@ flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the exa
 | `include/util` | `StbImageWrite.h`: `stb_image_write` without its deprecation warnings |
 | `include/zgal` | What code generated from ZGAL uses: `Material.h` for materials (checks and shaders every generated material shares), `Runtime.h` for graphs (`zgal::FrameInfo`, `FrameSource`, `Uniform`, material instances), `App.h` for apps (events, `Timestep`, `RunMode`), `Main.h` for generated mains (command line, validation, captures, headless runs), and `Window.h`, running an app in a `VulkanApp` (and windowed programs) |
 | `dsl` | ZGAL (Zach's Graphics Application Language), declaring shader interfaces and render graphs: its compiler (Racket), documentation (`dsl/docs`) and tests (`dsl/tests`) |
-| `web` | ZGAL's web backend (WebGPU): the TypeScript runtime generated code uses (`zgal/`: `Context`, `RenderGraph`, nodes, materials, layouts; `node.ts` and `png.ts` for Node), its tests (`tests/`), npm packages (TypeScript; Dawn, WebGPU for Node, for tests) and tools (`tools/check-wgsl.ts` compiles WGSL with Dawn; `tools/firefox.ts` runs a page in Firefox, which needs a window for WebGPU, and compares its canvas with an approved PNG; `tools/chromium.ts` does the same in headless Chromium on SwiftShader, sharing `tools/pages.ts`) |
+| `web` | ZGAL's web backend (WebGPU): the TypeScript runtime generated code uses (`zgal/`: `Context`, `RenderGraph`, nodes, materials, layouts; `node.ts` and `png.ts` for Node, `png-pixels.ts` reading PNGs anywhere), its tests (`tests/`), npm packages (TypeScript; Dawn, WebGPU for Node, for tests) and tools (`tools/check-wgsl.ts` compiles WGSL with Dawn; `tools/firefox.ts` runs a page in Firefox, which needs a window for WebGPU, and compares its canvas with an approved PNG; `tools/chromium.ts` does the same in headless Chromium on SwiftShader, sharing `tools/pages.ts`; `tools/image-diff.ts` compares PNGs as `image_diff.cpp` does) |
 
 Include headers relative to `include/`, e.g. `#include "graph/RenderGraph.h"`. Exactly one
 translation unit must `#define VK_WRAP_UTIL_IMPL` before including the wrapper and
@@ -419,11 +420,11 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   native options, or in its page (`FILE.zgal.html`, which calls its `run()`); other pages embed it
   with its `mount(canvas, options)` (`mountProgram` in `web/zgal/main-browser.ts`, which `runPage`
   wraps; `stop()` frees it); `zgal.mk`'s `zgal-web-program` builds it to
-  JavaScript (`make web`: `build/web/particles`). Vertex positions keep Vulkan's clip space (the
+  JavaScript (`make web`: `build/web/particles`, `build/web/image_filter`). Vertex positions keep Vulkan's clip space (the
   WGSL negates y). A material is a bind
   group (binding i is its i'th binding, push constants a uniform buffer after them); buffers of
   small integers or with atomics are 32-bit words at std430 offsets. GLSL bodies, `extern-glsl`,
-  array bindings, and (for now) image files, models, meshes, library kernels and indirect work
+  array bindings, and (for now) models, meshes, library kernels and indirect work
   report `not-on-web`. Runtime code is erasable TypeScript (no parameter properties or enums), so
   Node runs it directly.
 

@@ -91,6 +91,10 @@ test-example-image_filter: $(IMAGE_FILTER_BIN) $(IMAGE_FILTER_DIFF)
 		--blur 2 --edges --validation
 	./$(IMAGE_FILTER_DIFF) $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(IMAGE_FILTER_TEST_OUT)/blur_edges.png 2
 
+# For the web: build/web/image_filter (runs headless under Node)
+IMAGE_FILTER_WEB = $(OUT)/web/image_filter
+$(eval $(call zgal-web-program,$(IMAGE_FILTER_DIR)/image_filter.zgal,$(IMAGE_FILTER_WEB)))
+
 # ---------------------------------------------------------------------------
 # Example: particles
 #   GPU particle simulation drawn in a window
@@ -259,27 +263,33 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	cd $(WEB_TEST_OUT) && $(NODE) node_modules/typescript/bin/tsc -p . && $(NODE) --test $(TEST_ARGS) 'tests/*.test.ts'
 	$(MAKE) web
 	$(NODE) $(PARTICLES_WEB)/particles.zgal.main.js --frames 120 --size 1024x768 --capture $(PARTICLES_WEB)/smoke.png
+	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png
+	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png 1
+	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/blur_edges.png --blur 2 --edges
+	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(IMAGE_FILTER_WEB)/blur_edges.png 2
 	$(MAKE) test-pages
 
-# The examples' pages and embedding programs (web/tests/mount.html) in headless Chromium on
-# SwiftShader and in Firefox (in a window: it has no WebGPU adapter headless), each skipped when it
-# isn't installed (the tools exit with 3)
+# The examples' pages, embedding programs (web/tests/mount.html) and loading image files
+# (web/tests/image-file.html) in headless Chromium on SwiftShader and in Firefox (in a window: it has
+# no WebGPU adapter headless), each skipped when it isn't installed (the tools exit with 3)
 TEST_PAGES = $(OUT)/web/tests
 test-pages: web
 	rm -rf $(TEST_PAGES)
-	@mkdir -p $(TEST_PAGES)
+	@mkdir -p $(TEST_PAGES)/assets
 	cp $(WEB_DIR)/tests/*.html $(TEST_PAGES)/
+	cp $(WEB_DIR)/tests/assets/texels.png $(SIMPLE_DIR)/textures/texture.jpg $(TEST_PAGES)/assets/
 	for browser in chromium firefox; do \
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(PARTICLES_WEB) --keys ' 2' 'particles.zgal.html?frames=60'; \
 	  status=$$?; if [ $$status -eq 3 ]; then echo "test-pages: $$browser skipped (not installed)"; continue; fi; \
 	  [ $$status -eq 0 ] || exit $$status; \
-	  for page in mount; do \
+	  for page in mount image-file; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \
 	done
 
-# The examples whose programs run on the web (the others' graphs load assets the web can't yet)
-web: $(PARTICLES_WEB)
+# The examples whose programs run on the web (scene's graph loads models, which the web can't yet;
+# simple's app is C++)
+web: $(PARTICLES_WEB) $(IMAGE_FILTER_WEB)
 
 # build/docs/zgal.html, and zgal.txt for reading in a terminal
 docs: $(ZGAL_COMPILED)
