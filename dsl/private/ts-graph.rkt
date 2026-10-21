@@ -132,10 +132,7 @@
   ;; What the web can't do yet
   (for ([item (in-list items)])
     (match item
-      [(or (g-model _ _ _ l) (g-model-textures _ _ l) (g-model-factors _ _ l) (g-model-draws _ _ _ l) (g-model-bounds _ _ l))
-       (web-error l "models aren't loaded on the web yet")]
       [(g-import-images n _ l) (web-error l "WebGPU has no arrays of bindings, so ~a's images can't be imported for one" n)]
-      [(g-input n 'meshes _ l) (web-error l "meshes aren't drawn on the web yet (~a)" n)]
       [(g-sampler n o l)
        (when (eq? (cond [(assq 'address o) => cdr] [else #f]) 'clamp-to-border)
          (web-error l "WebGPU's samplers have no border colour, so sampler ~a can't clamp to one" n))]
@@ -143,7 +140,6 @@
   (for ([n (in-list nodes)])
     (define l (g-node-loc n))
     (match (g-node-kind n)
-      ['draw-meshes (web-error l "meshes aren't drawn on the web yet (~a)" (g-node-name n))]
       ['cpu (unless (and (null? (g-node-reads n)) (null? (g-node-writes n)))
               (web-error l "cpu node ~a maps buffers, which WebGPU's buffers can't be while the GPU uses them" (g-node-name n)))]
       [_ (void)]))
@@ -168,7 +164,8 @@
                 ['cpu "(frame: zgal.FrameInfo) => void"]
                 ['extern (format "(graph: zgal.RenderGraph, ids: ~a~a) => zgal.NodeId[]" name
                                  (string-append* (for/list ([a (in-list t)] [i (in-naturals)]) (format ", a~a: ~a" i (ts-value-type a)))))]
-                ['path "string"]))]
+                ['path "string"]
+                ['meshes "readonly zgal.Mesh[]"]))]
       [(g-import n _ _) (line! "  ~a: GPUTexture;" n)]
       [(g-import-buffer n _ _) (line! "  ~a: GPUBuffer;" n)]
       [_ (void)]))
@@ -178,10 +175,11 @@
     (for/list ([i (in-list items)] #:when (and (pred i) (not (internal? (name-of i)))))
       (format "~a: zgal.~a~a" (name-of i) kind (if (conditional? i) " | undefined" ""))))
   (define image-members
-    (append (members "GraphImage" (λ (i) (or (g-import? i) (g-image-file? i))) graph-item-name (λ (_) #f))
+    (append (members "GraphImage" (λ (i) (or (g-import? i) (g-image-file? i) (g-model-textures? i))) graph-item-name (λ (_) #f))
             (members "GraphImage" g-image? graph-item-name g-image-when)))
   (define buffer-members
-    (append (members "GraphBuffer" (λ (i) (or (g-import-buffer? i) (g-upload? i) (g-buffer-file? i))) graph-item-name (λ (_) #f))
+    (append (members "GraphBuffer" (λ (i) (or (g-import-buffer? i) (g-upload? i) (g-buffer-file? i) (g-model-factors? i) (g-model-draws? i) (g-model-bounds? i)))
+                     graph-item-name (λ (_) #f))
             (members "GraphBuffer" g-buffer? graph-item-name g-buffer-when)))
   (define node-members
     (for/list ([n (in-list nodes)])
@@ -237,7 +235,7 @@
     (define-values (variable conditional?)
       (match (entry-item e)
         [(g-image _ _ _ _ when _) (values (format "image_~a" n) when)]
-        [(or (g-import _ _ _) (g-image-file _ _ _ _)) (values (format "image_~a" n) #f)]
+        [(or (g-import _ _ _) (g-image-file _ _ _ _) (g-model-textures _ _ _)) (values (format "image_~a" n) #f)]
         [(g-buffer _ _ _ _ when _) (values (format "buffer_~a" n) when)]
         [_ (values (format "buffer_~a" n) #f)]))
     (if conditional? (format "need(~a, ~a)" variable (ts-string n)) variable))
@@ -259,6 +257,23 @@
               (if (asset-source-path source) (ts-string (asset-source-path source)) (format "inputs.~a" (asset-source-input source)))
               color)
        (line! "    result.images.~a = image_~a;" n n)]
+      [(g-model n source f _)
+       (line! "    const model_~a = await zgal.loadModel(context, graph, ~a, ~a, ~a, ~a);" n (ts-string n)
+              (if (asset-source-path source) (ts-string (asset-source-path source)) (format "inputs.~a" (asset-source-input source)))
+              (vertex-format-name f) (ts-string (format "~a's model ~a" name n)))]
+      [(g-model-textures n model _)
+       ;; A texture array, a layer per material (arrays of textures are texture arrays on the web)
+       (line! "    const image_~a = graph.importImage(~a, model_~a.baseColors);" n (ts-string n) model)
+       (line! "    result.images.~a = image_~a;" n n)]
+      [(g-model-factors n model _)
+       (line! "    const buffer_~a = graph.upload(~a, ~a, model_~a.baseColorFactors);" n (ts-string n) (ts-layout-type (vector-t 'float 4)) model)
+       (line! "    result.buffers.~a = buffer_~a;" n n)]
+      [(g-model-draws n model t _)
+       (line! "    const buffer_~a = graph.upload(~a, ~a, model_~a.draws);" n (ts-string n) (ts-layout-type t) model)
+       (line! "    result.buffers.~a = buffer_~a;" n n)]
+      [(g-model-bounds n model _)
+       (line! "    const buffer_~a = graph.upload(~a, ~a, model_~a.bounds);" n (ts-string n) (ts-layout-type (vector-t 'float 4)) model)
+       (line! "    result.buffers.~a = buffer_~a;" n n)]
       [(g-import-buffer n t _)
        (line! "    const buffer_~a = graph.importBuffer(~a, ~a, inputs.~a);" n (ts-string n) (ts-layout-type t) n)
        (line! "    result.buffers.~a = buffer_~a;" n n)]
@@ -339,11 +354,34 @@
        (define (option k) (cond [(assq k options) => cdr] [else #f]))
        ;; (cond, as this clause's `when` is the instance's condition)
        (cond [(eq? (option 'cull) 'front-and-back) (web-error l "WebGPU can't cull both faces (material ~a)" n)])
+       ;; Arrays of textures are texture arrays: a model's base colours, or image files' texels copied
+       ;; into one when the graph is built
+       (for ([pair (in-list bindings)] #:when (eq? (binding-kind (car pair)) 'array))
+         (match-define (cons b resource) pair)
+         (match resource
+           [(g-selection _ _)
+            (web-error l "WebGPU has no arrays of bindings, so material ~a's binding ~a can't #:select its elements" n (binding-name b))]
+           [(list rs ...)
+            (define files
+              (for/list ([r (in-list rs)])
+                (match (entry-item (hash-ref env r))
+                  [(g-image-file _ _ color _) color]
+                  [_ (web-error l "WebGPU has no arrays of bindings, so material ~a's binding ~a is a texture array, which only image files' (and models') images are copied into, not ~a's"
+                                n (binding-name b) r)])))
+            (unless (= (length (remove-duplicates files)) 1)
+              (web-error l "material ~a's binding ~a is a texture array on the web, so its images need the same #:color" n (binding-name b)))
+            (line! "    const array_~a_~a = graph.importImage(~a, zgal.textureArray(context.device, ~a, image_~a.format, [~a]), true);"
+                   n (binding-name b) (ts-string (format "~a's ~a" n (binding-name b))) (ts-string (format "~a's ~a" n (binding-name b))) (first rs)
+                   (string-join (for/list ([r (in-list rs)]) (format "graph.textureOf(image_~a)" r)) ", "))]
+           [_ (void)]))
        (define bound
          (for/list ([pair (in-list bindings)])
            (match-define (cons b resource) pair)
            (format "~a: ~a" (binding-name b)
-                   (match (entry-kind (hash-ref env resource))
+                   (match (if (eq? (binding-kind b) 'array) 'array (entry-kind (hash-ref env resource)))
+                     ['array (if (list? resource)
+                                 (format "{ image: array_~a_~a }" n (binding-name b))
+                                 (format "{ image: ~a }" (resource-ref resource)))]
                      ['sampler (format "{ sampler: sampler_~a, filtering: filtering_~a }" resource resource)]
                      ['uniform (format "{ uniform: uniform_~a }" resource)]
                      [(or 'image 'import) (format "{ image: ~a }" (resource-ref resource))]
@@ -449,14 +487,24 @@
                               [else "null"])
                             (invocations-text step-overrides)))
                   ", "))]
-        ['draw
+        [(or 'draw 'draw-meshes)
          #:when spec
-         (format "new zgal.IndirectDrawNode(~a, ~a, ~a, ~a, (frame) => ~a, ~a)" label (instance-ref "target" (g-node-target n))
+         (format "new zgal.IndirectDrawNode(~a, ~a, ~a, ~a, (frame) => ~a, ~a~a)" label (instance-ref "target" (g-node-target n))
                  (instance-ref "material" (g-node-material n))
                  (if limit
                      (format "{ buffer: ~a, index: () => 0 }" (resource-ref (indirect-limited spec)))
                      (command-text (indirect-command spec)))
-                 (uint-expr (indirect-draws spec)) (override-text))]
+                 (uint-expr (indirect-draws spec)) (override-text)
+                 ;; (Only models' meshes are drawn indirectly)
+                 (if (eq? (g-node-kind n) 'draw-meshes) (format ", model_~a.mesh" (g-node-subject n)) ""))]
+        ['draw-meshes
+         (define subject (g-node-subject n))
+         (format "new zgal.MeshDrawNode(~a, ~a, ~a, ~a, ~a)" label (instance-ref "target" (g-node-target n))
+                 (instance-ref "material" (g-node-material n))
+                 (if (eq? (entry-kind (hash-ref env subject)) 'model)
+                     (format "model_~a.draws.map((d) => ({ ...d, mesh: model_~a.mesh }))" subject subject)
+                     (format "inputs.~a.map(zgal.wholeMesh)" subject))
+                 (override-text))]
         ['draw
          (format "new zgal.DrawNode(~a, ~a, ~a, (frame) => ~a, ~a)" label (instance-ref "target" (g-node-target n))
                  (instance-ref "material" (g-node-material n)) (uint-expr (g-node-count n)) (override-text))]

@@ -28,13 +28,19 @@
      (vertex (results #:position (vec4 0.0 0.0 0.0 1.0)))
      (fragment (vec4 1.0)))\n")
 
+(define layered
+  "(compute-material Layered
+     (workgroup 1)
+     (bindings (layers (array texture)) (counts (buffer-array uint)))
+     (compute (write! (at counts 0) (uint (.x (texture-size (at layers 1) 0))))))\n")
+
 (test-case "Materials WebGPU can't express"
   (check-not-on-web
    "(compute-material Pick
       (workgroup 1)
-      (bindings (textures (array texture)) (counts (buffer-array uint)))
-      (compute (write! (at counts 0) (array-length textures))))"
-   "array")
+      (bindings (sources (array (buffer-array uint))) (counts (buffer-array uint)))
+      (compute (write! (at counts 0) (array-length sources))))"
+   "can't be an array of buffer-arrays")
   (check-not-on-web
    "(struct Pair (a uint) (b uint))
     (compute-material Fill
@@ -70,11 +76,18 @@
                      (cpu c write #:writes (staging)))")
    "maps buffers"))
 
-(test-case "Graphs using what the web backend doesn't do yet"
-  (check-not-on-web
-   "(vertex-format V (position vec3))
-    (graph G (model ship \"ship.glb\" V))"
-   "models"))
+(test-case "Graphs binding arrays of textures to what isn't copied into a texture array"
+  (define (graph . items)
+    (string-append layered "(graph G\n  (buffer counts uint 1 #:frames shared)\n  " (string-join items "\n  ")
+                   "\n  (dispatch d m #:invocations (1)))"))
+  (check-not-on-web (graph "(image a rgba8 (fixed 4 4) #:frames shared)" "(image b rgba8 (fixed 4 4) #:frames shared)"
+                           "(material m Layered (layers (a b)) counts)")
+                    "only image files' (and models') images")
+  (check-not-on-web (graph "(image-file a \"a.png\" #:color srgb)" "(image-file b \"b.png\" #:color linear)"
+                           "(material m Layered (layers (a b)) counts)")
+                    "the same #:color")
+  (check-not-on-web (graph "(import-images given #:resting shader-read-only)" "(material m Layered (layers given) counts)")
+                    "can't be imported"))
 
 (test-case "Apps and programs the web backend doesn't run yet"
   (check-not-on-web

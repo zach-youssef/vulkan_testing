@@ -23,8 +23,8 @@ Agents migrating code written against the pre-refactor wrapper (the `main` branc
   a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node, then
   builds the particles and image_filter examples for the web (`make web`) and runs them under Node
   (image_filter's outputs compared with `web/tools/image-diff.ts`), then the particles page,
-  `web/tests/mount.html` (mounts two programs and stops one) and `web/tests/image-file.html` in
-  headless Chromium and in Firefox, which opens a window (`make test-pages`; a browser that isn't
+  `web/tests/mount.html` (mounts two programs and stops one), `web/tests/image-file.html` and the
+  kernels, indirect and models pages in headless Chromium and in Firefox, which opens a window (`make test-pages`; a browser that isn't
   installed is skipped: Playwright's headless shell or `CHROMIUM`, and `FIREFOX`)
   (`make test` includes it; `TEST_ARGS` go to `node --test`).
 - `zgal.mk`: the make rules building ZGAL programs (`zgal-rule`, `zgal-program`), which the Makefile
@@ -427,9 +427,12 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   JavaScript (`make web`: `build/web/particles`, `build/web/image_filter`). Vertex positions keep Vulkan's clip space (the
   WGSL negates y). A material is a bind
   group (binding i is its i'th binding, push constants a uniform buffer after them); buffers of
-  small integers or with atomics are 32-bit words at std430 offsets. GLSL bodies, `extern-glsl`,
-  array bindings, and (for now) models and meshes
-  report `not-on-web`. Runtime code is erasable TypeScript (no parameter properties or enums), so
+  small integers or with atomics are 32-bit words at std430 offsets. Models load with the runtime's
+  own glTF/OBJ parsers (`web/zgal/model.ts`, mirroring `resources/Model.h`); the TypeScript has a
+  `VertexFormatDesc` per vertex format, which `encodeVertices` lays meshes inputs' vertices out
+  with (`createMesh`). An array of textures is a `texture_2d_array` (layers resized to the
+  largest), bound only to a model's base colours or to image files (copied in at build). GLSL
+  bodies, `extern-glsl` and other array bindings report `not-on-web`. Runtime code is erasable TypeScript (no parameter properties or enums), so
   Node runs it directly.
 
 ### Shaders

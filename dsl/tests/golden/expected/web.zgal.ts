@@ -25,6 +25,11 @@ export interface Settings {
 }
 export const Settings: zgal.Type<Settings> = zgal.struct<Settings>('Settings', [['target', zgal.uint], ['loop', zgal.float], ['scale', zgal.vec4]]);
 
+export const Vertex: zgal.VertexFormatDesc = { name: 'Vertex', stride: 16, attributes: [
+  { name: 'position', offset: 0, format: 'float32x3', components: 3, model: { member: 'positions', size: 3, fill: 1.0 }, default: null },
+  { name: 'color', offset: 12, format: 'unorm8x4', components: 4, model: { member: 'colors', size: 4, fill: 0.0 }, default: null },
+] };
+
 // The file's functions and constants, compiled for the CPU too (those using no textures, images
 // or stage variables)
 export function pcgHash(v: number): number {

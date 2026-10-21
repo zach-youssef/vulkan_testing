@@ -253,12 +253,15 @@ test-dsl: $(ZGAL_COMPILED) $(WEB_PACKAGES) docs
 # The web runtime's tests: web/tests/*.zgal compiled to TypeScript and WGSL beside a copy of the
 # runtime (as an application would have it), type checked, then run on Dawn
 WEB_TEST_OUT = $(OUT)/web-tests
+# The models web/tests/models.zgal draws, shared with the native tests
+MODEL_ASSETS = $(addprefix tests/gpu/assets/,halves.gltf broken.gltf quad.obj quad.mtl quadrants.png)
 
 test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	rm -rf $(WEB_TEST_OUT)
 	@mkdir -p $(WEB_TEST_OUT)
 	for f in $(WEB_DIR)/tests/*.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) $$f || exit 1; done
 	cp -R $(WEB_DIR)/zgal $(WEB_DIR)/tests $(WEB_DIR)/tools $(WEB_DIR)/package.json $(WEB_DIR)/tsconfig.json $(WEB_TEST_OUT)/
+	cp $(MODEL_ASSETS) $(WEB_TEST_OUT)/tests/assets/
 	ln -s $(CURDIR)/$(WEB_DIR)/node_modules $(WEB_TEST_OUT)/node_modules
 	cd $(WEB_TEST_OUT) && $(NODE) node_modules/typescript/bin/tsc -p . && $(NODE) --test $(TEST_ARGS) 'tests/*.test.ts'
 	$(MAKE) web
@@ -270,15 +273,15 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	$(MAKE) test-pages
 
 # The examples' pages, embedding programs (web/tests/mount.html), loading image files
-# (web/tests/image-file.html), the compute library (web/tests/kernels.html) and indirect work
-# (web/tests/indirect.html), with web/tests' graphs built into graphs/, in headless Chromium on SwiftShader and in Firefox (in a window: it has
+# (web/tests/image-file.html), the compute library (web/tests/kernels.html), indirect work
+# (web/tests/indirect.html) and models (web/tests/models.html), with web/tests' graphs built into graphs/, in headless Chromium on SwiftShader and in Firefox (in a window: it has
 # no WebGPU adapter headless), each skipped when it isn't installed (the tools exit with 3)
 TEST_PAGES = $(OUT)/web/tests
 test-pages: web
 	rm -rf $(TEST_PAGES)
 	@mkdir -p $(TEST_PAGES)/assets
 	cp $(WEB_DIR)/tests/*.html $(TEST_PAGES)/
-	cp $(WEB_DIR)/tests/assets/texels.png $(SIMPLE_DIR)/textures/texture.jpg $(TEST_PAGES)/assets/
+	cp $(WEB_DIR)/tests/assets/texels.png $(SIMPLE_DIR)/textures/texture.jpg $(MODEL_ASSETS) $(TEST_PAGES)/assets/
 	for f in $(WEB_DIR)/tests/*.zgal; do $(ZGAL) --web-out $(TEST_PAGES)/graphs/src $$f || exit 1; done
 	cp -R $(WEB_DIR)/zgal $(TEST_PAGES)/graphs/src/zgal
 	cp $(WEB_DIR)/program.tsconfig.json $(TEST_PAGES)/graphs/src/tsconfig.json
@@ -289,7 +292,7 @@ test-pages: web
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(PARTICLES_WEB) --keys ' 2' 'particles.zgal.html?frames=60'; \
 	  status=$$?; if [ $$status -eq 3 ]; then echo "test-pages: $$browser skipped (not installed)"; continue; fi; \
 	  [ $$status -eq 0 ] || exit $$status; \
-	  for page in mount image-file kernels indirect; do \
+	  for page in mount image-file kernels indirect models; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \
 	done

@@ -27,40 +27,57 @@ export async function loadBufferFile(context: Context, graph: RenderGraph, name:
   return graph.importBuffer(name, t, buffer, true);
 }
 
+// An image decoded: its RGBA8 texels, or (decoded by the browser) a bitmap
+export type DecodedImage =
+  | { readonly width: number; readonly height: number; readonly rgba: Uint8Array; readonly bitmap?: undefined }
+  | { readonly width: number; readonly height: number; readonly bitmap: ImageBitmap; readonly rgba?: undefined };
+
+// An image file's bytes decoded. Browsers decode any image they show (PNG, JPEG, WebP, ...), without
+// colour management; under Node only PNGs (8-bit, not interlaced) are read.
+export async function decodeImage(bytes: Uint8Array): Promise<DecodedImage> {
+  // PNGs are read here, so transparent texels keep their colour (browsers' decoders may
+  // premultiply); other images (JPEGs, and 16-bit, palette or interlaced PNGs) by the browser
+  let png: Png | null = null;
+  if (isPng(bytes)) {
+    try {
+      png = readPng(bytes);
+    } catch (error) {
+      if (typeof createImageBitmap !== 'function') throw error;
+    }
+  } else if (typeof createImageBitmap !== 'function') {
+    throw new Error('only PNG files are read under Node');
+  }
+  if (png) {
+    const stream = new Blob([png.compressed]).stream().pipeThrough(new DecompressionStream('deflate'));
+    const image = pngPixels(png, new Uint8Array(await new Response(stream).arrayBuffer()));
+    return { width: image.width, height: image.height, rgba: image.rgba };
+  }
+  const bitmap = await createImageBitmap(new Blob([bytes as Uint8Array<ArrayBuffer>]), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+  return { width: bitmap.width, height: bitmap.height, bitmap };
+}
+
+// Writes a decoded image (closing its bitmap) into a texture's layer, which is its size. A bitmap
+// needs the texture to have RENDER_ATTACHMENT usage.
+export function writeImage(device: GPUDevice, texture: GPUTexture, image: DecodedImage, layer = 0): void {
+  if (image.rgba) {
+    device.queue.writeTexture({ texture, origin: [0, 0, layer] }, image.rgba as Uint8Array<ArrayBuffer>, { bytesPerRow: image.width * 4 }, [image.width, image.height]);
+  } else {
+    device.queue.copyExternalImageToTexture({ source: image.bitmap }, { texture, origin: [0, 0, layer], premultipliedAlpha: false }, [image.width, image.height]);
+    image.bitmap.close();
+  }
+}
+
 // An image file's texels in an RGBA8 texture for sampling, sRGB-encoded (decoded when sampled) or
-// linear, as native graphs load theirs. Browsers decode any image they show (PNG, JPEG, WebP, ...),
-// without colour management; under Node only PNGs (8-bit, not interlaced) are read.
+// linear, as native graphs load theirs (see decodeImage for the formats read)
 export async function loadImageFile(context: Context, graph: RenderGraph, name: string, path: string, color: 'srgb' | 'linear'): Promise<GraphImage> {
   const format: GPUTextureFormat = color === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm';
   // TEXTURE_BINDING | COPY_SRC | COPY_DST, and RENDER_ATTACHMENT for copying an ImageBitmap in
   const usage = 0x04 | 0x01 | 0x02 | 0x10;
-  const device = context.device;
   let texture: GPUTexture;
   try {
-    const bytes = await context.loadAsset(path);
-    // PNGs are read here, so transparent texels keep their colour (browsers' decoders may
-    // premultiply); other images (JPEGs, and 16-bit, palette or interlaced PNGs) by the browser
-    let png: Png | null = null;
-    if (isPng(bytes)) {
-      try {
-        png = readPng(bytes);
-      } catch (error) {
-        if (typeof createImageBitmap !== 'function') throw error;
-      }
-    } else if (typeof createImageBitmap !== 'function') {
-      throw new Error('only PNG files are read under Node');
-    }
-    if (png) {
-      const stream = new Blob([png.compressed]).stream().pipeThrough(new DecompressionStream('deflate'));
-      const image = pngPixels(png, new Uint8Array(await new Response(stream).arrayBuffer()));
-      texture = device.createTexture({ label: name, size: [image.width, image.height], format, usage });
-      device.queue.writeTexture({ texture }, image.rgba, { bytesPerRow: image.width * 4 }, [image.width, image.height]);
-    } else {
-      const bitmap = await createImageBitmap(new Blob([bytes]), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-      texture = device.createTexture({ label: name, size: [bitmap.width, bitmap.height], format, usage });
-      device.queue.copyExternalImageToTexture({ source: bitmap }, { texture, premultipliedAlpha: false }, [bitmap.width, bitmap.height]);
-      bitmap.close();
-    }
+    const image = await decodeImage(await context.loadAsset(path));
+    texture = context.device.createTexture({ label: name, size: [image.width, image.height], format, usage });
+    writeImage(context.device, texture, image);
   } catch (error) {
     throw new Error(`image-file ${name} (${path}): ${error instanceof Error ? error.message : String(error)}`);
   }

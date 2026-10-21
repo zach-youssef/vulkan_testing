@@ -172,7 +172,7 @@ export class MaterialInstance {
       const bound = this.bindings[b.name];
       if ('image' in bound) {
         textures[b.name] = bound.image.format;
-        if (b.kind === 'texture' && !b.depth && (isDepthFormat(bound.image.format) || (!filterable && /32float|32uint|32sint/.test(bound.image.format)))) {
+        if ((b.kind === 'texture' || b.kind === 'texture-array') && !b.depth && (isDepthFormat(bound.image.format) || (!filterable && /32float|32uint|32sint/.test(bound.image.format)))) {
           unfilterable = true;
         }
       }
@@ -324,7 +324,7 @@ export class MaterialBinder {
     if (!this.group || key !== this.key) {
       const entries: GPUBindGroupEntry[] = desc.bindings.map((b, i) => {
         const bound = instance.bindings[b.name];
-        if ('image' in bound) return { binding: i, resource: graph.viewOf(bound.image) };
+        if ('image' in bound) return { binding: i, resource: graph.viewOf(bound.image, b.kind === 'texture-array' ? '2d-array' : '2d') };
         if ('buffer' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.buffer) } };
         if ('uniform' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.uniform.resource) } };
         return { binding: i, resource: bound.sampler };
@@ -384,7 +384,7 @@ export class RenderGraph {
   private surfaceTexture: GPUTexture | null = null;
   private surfaceView: GPUTextureView | null = null;
   private headlessExtent: [number, number] = [0, 0];
-  private views = new Map<GraphImage, { generation: number; view: GPUTextureView }>();
+  private views = new Map<GraphImage, { generation: number; '2d'?: GPUTextureView; '2d-array'?: GPUTextureView }>();
   private inFlight: Promise<undefined>[] = [];
   private owned: { destroy(): void }[] = [];
 
@@ -449,6 +449,11 @@ export class RenderGraph {
     this.buffers.push(b);
     if (owned) this.owned.push(buffer);
     return b;
+  }
+
+  // Destroys a resource with the graph (e.g. a model's mesh's buffers)
+  own(resource: { destroy(): void }): void {
+    this.owned.push(resource);
   }
 
   // A buffer created now holding elements
@@ -543,12 +548,14 @@ export class RenderGraph {
     return image.texture!;
   }
 
-  viewOf(image: GraphImage): GPUTextureView {
+  // A view of the image: of its first layer, or (for texture-array bindings) all its layers
+  viewOf(image: GraphImage, dimension: '2d' | '2d-array' = '2d'): GPUTextureView {
     const texture = this.textureOf(image);
-    const cached = this.views.get(image);
-    if (cached && cached.generation === image.generation) return cached.view;
-    const view = texture.createView();
-    this.views.set(image, { generation: image.generation, view });
+    const views = this.views.get(image);
+    const cached = views?.[dimension];
+    if (views && cached && views.generation === image.generation) return cached;
+    const view = texture.createView({ dimension, ...(dimension === '2d' ? { arrayLayerCount: 1 } : {}) });
+    this.views.set(image, { ...(views && views.generation === image.generation ? views : {}), generation: image.generation, [dimension]: view });
     return view;
   }
 
@@ -815,10 +822,106 @@ export class DrawNode implements Node {
   }
 }
 
+// Vertices and indices drawn with materials of a vertex-input (draw-meshes), as resources/Mesh's
+// natively: vertices laid out as a vertex format's (see encodeVertices), and triangles' indices
+export interface Mesh {
+  readonly vertices: GPUBuffer;
+  readonly indices: GPUBuffer;
+  readonly indexFormat: GPUIndexFormat;
+  readonly indexCount: number;
+  // Vertex shaders' instanceIndex drawing it whole, e.g. to choose its material
+  readonly instanceIndex: number;
+}
+
+// A mesh created now from vertex bytes (encodeVertices') and indices (uint16 ones if a Uint16Array),
+// which the caller destroys (destroyMesh), or a graph it gives them (own)
+export function createMesh(device: GPUDevice, vertices: Uint8Array, indices: Uint16Array | Uint32Array | readonly number[], instanceIndex = 0, label = 'mesh'): Mesh {
+  const typed = Array.isArray(indices) ? new Uint32Array(indices) : (indices as Uint16Array | Uint32Array);
+  const bytes = (data: ArrayBufferView) => {
+    const padded = new Uint8Array(Math.max(4, Math.ceil(data.byteLength / 4) * 4));
+    padded.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+    return padded;
+  };
+  const upload = (data: ArrayBufferView, usage: number, what: string) => {
+    const b = bytes(data);
+    const buffer = device.createBuffer({ label: `${label} ${what}`, size: b.length, usage: usage | 0x8 }); // | COPY_DST
+    device.queue.writeBuffer(buffer, 0, b);
+    return buffer;
+  };
+  return {
+    vertices: upload(vertices, 0x20, 'vertices'), // VERTEX
+    indices: upload(typed, 0x10, 'indices'), // INDEX
+    indexFormat: typed instanceof Uint16Array ? 'uint16' : 'uint32',
+    indexCount: typed.length,
+    instanceIndex,
+  };
+}
+
+export function destroyMesh(mesh: Mesh): void {
+  mesh.vertices.destroy();
+  mesh.indices.destroy();
+}
+
+// A range of a mesh's indices drawn as one draw (a model's primitive): a DrawIndexedCommand's fields
+export interface MeshDraw {
+  readonly mesh: Mesh;
+  readonly indexCount: number;
+  readonly firstIndex: number;
+  readonly vertexOffset: number;
+  readonly firstInstance: number;
+}
+
+// A mesh's draw drawing all of it
+export function wholeMesh(mesh: Mesh): MeshDraw {
+  return { mesh, indexCount: mesh.indexCount, firstIndex: 0, vertexOffset: 0, firstInstance: mesh.instanceIndex };
+}
+
+function setMesh(pass: GPURenderPassEncoder, mesh: Mesh): void {
+  pass.setVertexBuffer(0, mesh.vertices);
+  pass.setIndexBuffer(mesh.indices, mesh.indexFormat);
+}
+
+// Draws meshes (ranges of them) with a graphics material reading their vertices into a target
+export class MeshDrawNode implements Node {
+  private readonly binder: MaterialBinder;
+  readonly name: string;
+  readonly target: Target;
+  readonly material: MaterialInstance;
+  readonly draws: readonly MeshDraw[];
+  readonly override: PushSource | null;
+  constructor(name: string, target: Target, material: MaterialInstance, draws: readonly MeshDraw[], override: PushSource | null = null) {
+    this.name = name;
+    this.target = target;
+    this.material = material;
+    this.draws = draws;
+    this.override = override;
+    this.binder = material.binder(name);
+  }
+  prepare(frame: FrameInfo): void {
+    this.binder.prepare(frame, this.override);
+  }
+  record(encoder: GPUCommandEncoder): void {
+    const pass = beginRenderPass(this.material.graph, encoder, this.target, this.name);
+    pass.setPipeline(this.material.renderPipeline(this.target));
+    pass.setBindGroup(0, this.binder.bindGroup());
+    let bound: Mesh | null = null;
+    for (const d of this.draws) {
+      if (d.indexCount === 0) continue;
+      if (d.mesh !== bound) setMesh(pass, (bound = d.mesh));
+      pass.drawIndexed(d.indexCount, 1, d.firstIndex, d.vertexOffset, d.firstInstance);
+    }
+    pass.end();
+  }
+  destroy(): void {
+    this.binder.destroy();
+  }
+}
+
 // Draws `draws` indirect commands, one after another from the first (WebGPU has no multi-draw:
 // each is its own draw call), of a graphics material into a target. A draw of as many as a
 // buffer says draws commands a ZgalLimitDraws dispatch copied, those past the count with no
-// instances (WebGPU has no indirect counts).
+// instances (WebGPU has no indirect counts). With a mesh (a model's), the commands are indexed
+// draws of it.
 export class IndirectDrawNode implements Node {
   private readonly binder: MaterialBinder;
   private place: [GPUBuffer, number] | null = null;
@@ -829,14 +932,17 @@ export class IndirectDrawNode implements Node {
   readonly command: IndirectCommand;
   readonly draws: FrameSource<number>;
   readonly override: PushSource | null;
+  // For indexed draws (DrawIndexedCommands) of a mesh: the mesh
+  readonly mesh: Mesh | null;
   constructor(name: string, target: Target, material: MaterialInstance, command: IndirectCommand, draws: FrameSource<number>,
-    override: PushSource | null = null) {
+    override: PushSource | null = null, mesh: Mesh | null = null) {
     this.name = name;
     this.target = target;
     this.material = material;
     this.command = command;
     this.draws = draws;
     this.override = override;
+    this.mesh = mesh;
     this.binder = material.binder(name);
   }
   prepare(frame: FrameInfo): void {
@@ -850,7 +956,12 @@ export class IndirectDrawNode implements Node {
     pass.setBindGroup(0, this.binder.bindGroup());
     const [buffer, offset] = this.place!;
     const size = stride(this.command.buffer.element);
-    for (let i = 0; i < this.count; i++) pass.drawIndirect(buffer, offset + i * size);
+    if (this.mesh) {
+      setMesh(pass, this.mesh);
+      for (let i = 0; i < this.count; i++) pass.drawIndexedIndirect(buffer, offset + i * size);
+    } else {
+      for (let i = 0; i < this.count; i++) pass.drawIndirect(buffer, offset + i * size);
+    }
     pass.end();
   }
   destroy(): void {

@@ -42,6 +42,30 @@
                           (format "[~a, ~a]" (ts-string (field-name f)) (ts-layout-type (field-type f))))
                         ", ")))
 
+  ;; Vertex formats: how vertex buffers lay them out (for models, and meshes' encodeVertices)
+  (for ([f (in-list (program-vertex-formats prog))])
+    (define-values (stride placed) (vertex-layout f))
+    (line! "")
+    (line! "export const ~a: zgal.VertexFormatDesc = { name: ~a, stride: ~a, attributes: [" (vertex-format-name f)
+           (ts-string (vertex-format-name f)) stride)
+    (for ([entry (in-list placed)])
+      (match-define (cons a offset) entry)
+      (define t (field-type a))
+      (define components (match t [(vector-t _ n) n] [_ 1]))
+      (define m (model-attribute-of a))
+      (define (number n) (if (exact-integer? n) (number->string n) (number->string (exact->inexact n))))
+      (line! "  { name: ~a, offset: ~a, format: '~a', components: ~a, model: ~a, default: ~a },"
+             (ts-string (field-name a)) offset (vertex-format-of a) components
+             (if m
+                 (format "{ member: '~a', size: ~a, fill: ~a }" (model-attribute-member m) (model-attribute-size m)
+                         (exact->inexact (or (model-attribute-fill m) 0)))
+                 "null")
+             (match (attribute-default a)
+               [#f "null"]
+               [(list ns ...) (format "[~a]" (string-join (map number ns) ", "))]
+               [n (format "[~a]" (string-join (for/list ([_ (in-range components)]) (number n)) ", "))])))
+    (line! "] };"))
+
   ;; Functions and constants the CPU can use too
   (define cpu-declarations
     (filter (λ (d) (if (function-decl? d) (function-decl-cpu? d) (constant-decl-cpu? d))) (program-functions prog)))

@@ -5,7 +5,9 @@
 import type { Type } from './types.ts';
 
 export type Stage = 'vertex' | 'fragment' | 'compute';
-export type BindingKind = 'texture' | 'sampler' | 'storage-image' | 'buffer' | 'buffer-array';
+// A texture-array is an array binding of textures (WebGPU has no arrays of bindings): a
+// texture_2d_array, each layer an element
+export type BindingKind = 'texture' | 'texture-array' | 'sampler' | 'storage-image' | 'buffer' | 'buffer-array';
 export type Access = 'read' | 'write' | 'read-write';
 
 export interface BindingDesc {
@@ -109,14 +111,15 @@ export function layoutEntries(device: GPUDevice, m: MaterialDesc, formats: Bound
   const entries: GPUBindGroupLayoutEntry[] = m.bindings.map((b, i) => {
     const visibility = stagesOf(b);
     switch (b.kind) {
-      case 'texture': {
+      case 'texture':
+      case 'texture-array': {
         const format = formats.textures[b.name];
         const sampleType: GPUTextureSampleType = b.depth
           ? 'depth'
           : format && (isDepthFormat(format) || (!filterable && unfilterable.has(format)))
             ? 'unfilterable-float'
             : 'float';
-        return { binding: i, visibility, texture: { sampleType } };
+        return { binding: i, visibility, texture: { sampleType, viewDimension: b.kind === 'texture' ? '2d' : '2d-array' } };
       }
       case 'sampler':
         return { binding: i, visibility, sampler: { type: b.depth ? 'comparison' : (formats.samplers[b.name] ?? 'filtering') } };

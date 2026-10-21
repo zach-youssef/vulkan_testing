@@ -1,0 +1,106 @@
+<!doctype html>
+<!-- Models, meshes and texture arrays in a browser: web/tests/models.zgal's graphs give what
+     web/tests/models.test.ts checks under Node (models' base colours, with images the browser
+     decodes, GPU-culled draws, meshes the page makes and image files in one texture array).
+     Checked by make test-pages (web/tools/chromium.ts and firefox.ts); the page's state is in
+     <html data-zgal>. Served from build/web/tests, with web/tests' graphs built into graphs/ and
+     tests/gpu/assets' models in assets/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL models test</title>
+</head>
+<body>
+<pre id="zgal-message"></pre>
+<script type="module">
+import * as zgal from './graphs/zgal/index.js';
+import { Corner, CulledModels, LayerGraph, Meshes, Models } from './graphs/models.zgal.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+const check = (got, expected, what) => {
+  if ([...got].join() !== expected.join()) throw new Error(`${what}: got ${[...got].join(' ')}, expected ${expected.join(' ')}`);
+};
+const pixel = (pixels, x, y) => pixels.subarray((y * 4 + x) * 4, (y * 4 + x) * 4 + 4);
+const red = [255, 0, 0, 255];
+const black = [0, 0, 0, 255];
+const green = [0, 128, 0, 255];
+
+let context;
+try {
+  context = await zgal.Context.create({
+    assets: async (path) => {
+      const response = await fetch(new URL(`assets/${path}`, import.meta.url));
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      return new Uint8Array(await response.arrayBuffer());
+    },
+  });
+
+  // The left half samples quadrants.png (sRGB, decoded), the right half is the green factor
+  let graph = new zgal.RenderGraph(context);
+  const models = await Models.build(context, graph, { file: 'halves.gltf' });
+  check([graph.textureOf(models.images.halfColors).depthOrArrayLayers], [3], 'halves.gltf\'s materials');
+  await graph.execute();
+  const halves = await models.canvasReadPixels(graph);
+  check(pixel(halves, 0, 0), red, 'halves.gltf at (0, 0)');
+  check(pixel(halves, 1, 1), [0, 255, 0, 255], 'halves.gltf at (1, 1)');
+  check(pixel(halves, 0, 3), [0, 0, 255, 255], 'halves.gltf at (0, 3)');
+  check(pixel(halves, 1, 2), [55, 55, 55, 255], 'halves.gltf at (1, 2)');
+  for (let y = 0; y < 4; y++) check(pixel(halves, 3, y), green, `halves.gltf at (3, ${y})`);
+  graph.destroy();
+
+  graph = new zgal.RenderGraph(context);
+  const obj = await Models.build(context, graph, { file: 'quad.obj' });
+  check([graph.textureOf(obj.images.halfColors).depthOrArrayLayers], [2], 'quad.obj\'s materials');
+  await graph.execute();
+  graph.destroy();
+
+  // Only the half on the chosen side
+  for (const side of [1, -1]) {
+    graph = new zgal.RenderGraph(context);
+    const culled = await CulledModels.build(context, graph, { file: 'halves.gltf', side });
+    for (let frame = 0; frame < 3; frame++) await graph.execute();
+    const pixels = await culled.canvasReadPixels(graph);
+    check(pixel(pixels, 3, 1), side > 0 ? green : black, `culling to side ${side}, the right half`);
+    check(pixel(pixels, 0, 0), side > 0 ? black : red, `culling to side ${side}, the left half`);
+    graph.destroy();
+  }
+
+  // Meshes the page made: the left half instance 0 (red), the right instance 1 (green)
+  const half = (left, instanceIndex) => zgal.createMesh(context.device,
+    zgal.encodeVertices(Corner, [[left, -1], [left + 1, -1], [left + 1, 1], [left, 1]].map((position) => ({ position }))),
+    [0, 1, 2, 0, 2, 3], instanceIndex);
+  const shapes = [half(-1, 0), half(0, 1)];
+  graph = new zgal.RenderGraph(context);
+  const meshes = await Meshes.build(context, graph, { shapes });
+  await graph.execute();
+  const drawn = await meshes.canvasReadPixels(graph);
+  check(pixel(drawn, 0, 2), red, 'the first mesh');
+  check(pixel(drawn, 3, 2), [0, 255, 0, 255], 'the second mesh');
+  graph.destroy();
+  shapes.forEach(zgal.destroyMesh);
+
+  // texels.png's rows on top; quadrants.png's widened below, its ends the original texels
+  graph = new zgal.RenderGraph(context);
+  const layers = await LayerGraph.build(context, graph, {});
+  await graph.execute();
+  const layered = await layers.canvasReadPixels(graph);
+  check(layered.subarray(0, 32), [255, 0, 0, 255, 0, 255, 0, 128, 10, 20, 30, 0, 200, 100, 50, 255,
+    1, 2, 3, 4, 128, 128, 128, 255, 255, 255, 255, 255, 0, 0, 0, 255], 'the texture array\'s first layer');
+  check([...pixel(layered, 0, 2), ...pixel(layered, 3, 2), ...pixel(layered, 0, 3), ...pixel(layered, 3, 3)],
+    [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 128, 128, 128, 255], 'the texture array\'s widened layer');
+  graph.destroy();
+
+  await context.device.queue.onSubmittedWorkDone();
+  if (context.errors.length > 0) throw new Error(`WebGPU errors:\n${context.errors.join('\n')}`);
+  log('models drew as expected');
+  document.documentElement.dataset.zgal = 'stopped';
+} catch (error) {
+  log(error instanceof Error ? error.message : String(error));
+  document.documentElement.dataset.zgal = 'failed';
+} finally {
+  context?.destroy();
+}
+</script>
+</body>
+</html>

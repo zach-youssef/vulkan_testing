@@ -109,8 +109,9 @@
 ;; ---------------------------------------------------------------------------------------------
 ;; Bindings and push constants, as the runtime lays out the bind group
 
-;; A binding as WebGPU binds it. index: its @binding. kind: 'texture 'sampler 'storage-image
-;; 'buffer 'buffer-array. access: 'read 'write 'read-write (buffers, storage images) or #f.
+;; A binding as WebGPU binds it. index: its @binding. kind: 'texture 'texture-array 'sampler
+;; 'storage-image 'buffer 'buffer-array ('texture-array: an array binding of textures, which WebGPU
+;; has no arrays of bindings for, as a texture_2d_array whose layers are its elements). access: 'read 'write 'read-write (buffers, storage images) or #f.
 ;; stages: the stages using it ('vertex 'fragment 'compute). depth?: a texture sampled with a
 ;; comparison (texture_depth_2d) or a comparison sampler.
 (struct wgsl-binding (name index kind access stages depth?) #:transparent)
@@ -119,13 +120,14 @@
 (define (wgsl-bindings prog m)
   (define uses (for/hash ([s (in-list (material-shaders m))]) (values (shader-stage s) (stage-usage prog m s))))
   (for/list ([b (in-list (material-bindings m))] [i (in-naturals)])
-    (when (eq? (binding-kind b) 'array)
-      (web-error (binding-loc b) "WebGPU has no arrays of bindings (descriptor indexing), so ~a can't be ~a" (binding-name b) "an array"))
+    (when (and (eq? (binding-kind b) 'array) (not (eq? (binding-resource-kind b) 'texture)))
+      (web-error (binding-loc b) "WebGPU has no arrays of bindings (descriptor indexing), so ~a can't be an array of ~as (arrays of textures are texture arrays on the web)"
+                 (binding-name b) (binding-resource-kind b)))
     (define stages
       (for/list ([s (in-list (material-shaders m))]
                  #:when (set-member? (usage-bindings (hash-ref uses (shader-stage s))) (binding-name b)))
         (shader-stage s)))
-    (wgsl-binding (binding-name b) i (binding-kind b) (binding-access b) stages
+    (wgsl-binding (binding-name b) i (if (eq? (binding-kind b) 'array) 'texture-array (binding-kind b)) (binding-access b) stages
                   (for/or ([u (in-hash-values uses)]) (set-member? (usage-depth u) (binding-name b))))))
 
 ;; The binding index of m's push constants' uniform buffer
@@ -341,6 +343,7 @@
            (wgsl-name (binding-name b))
            (match (binding-kind b)
              ['texture (if (wgsl-binding-depth? wb) "texture_depth_2d" "texture_2d<f32>")]
+             ['array "texture_2d_array<f32>"]
              ['sampler (if (wgsl-binding-depth? wb) "sampler_comparison" "sampler")]
              ['storage-image (format "texture_storage_2d<~a, ~a>" (storage-format b)
                                      (case (binding-access b) [(read) "read"] [(write) "write"] [else "read_write"]))]
@@ -623,7 +626,10 @@
           [else (format "-~a" text)])]
        [(t-op 'not (list a) _ _) (format "!~a" (operand a))]
        [(t-op 'bitnot (list a) _ _) (format "~~~a" (operand a))]
-       [(t-op 'array-length _ _ l) (web-error l "WebGPU has no arrays of bindings")]
+       ;; Only arrays of textures (texture arrays) reach here
+       [(t-op 'array-length (list a) _ _) (format "textureNumLayers(~a)" (p a))]
+       [(t-index (and b (t-global 'binding name _ (binding-array-t _) _)) _ _ l)
+        (web-error l "~a's elements are layers of a texture array on the web, so they can only be used directly in texture operations (sample, sample-lod, fetch and texture-size)" name)]
        [(t-op (and op (or 'shl 'shr)) (list a b) _ _)
         (format "~a ~a ~a" (operand a) (if (eq? op 'shl) "<<" ">>")
                 (match (texpr-type b)
@@ -871,7 +877,31 @@
                (opaque-name (second as))))
   ;; Sampling a depth texture gives its depth, which Vulkan gives as (depth, 0, 0, 1)
   (define (depth-texel t text) (if (depth? t) (format "vec4f(~a, 0.0f, 0.0f, 1.0f)" text) text))
+  ;; An element of an array of textures: a texture array and its layer
+  (define layer
+    (match (first as)
+      [(t-index (t-global 'binding _ _ (binding-array-t _) _) i _ _) i]
+      [_ #f]))
+  (define (layer-arg) (if layer (format ", ~a" (p layer)) ""))
+  (define (p-texture t) (if layer (p (t-index-base t)) (p t)))
   (match* (op as)
+    [((or 'image-load 'image-size 'sample-compare) _)
+     #:when layer
+     (web-error where "~a can't be used on an element of an array on the web" op)]
+    [('sample (list t s uv))
+     #:when layer
+     (if fragment?
+         (format "textureSample(~a, ~a, ~a~a)" (p-texture t) (p s) (p uv) (layer-arg))
+         (format "textureSampleLevel(~a, ~a, ~a~a, 0.0f)" (p-texture t) (p s) (p uv) (layer-arg)))]
+    [('sample-lod (list t s uv lod))
+     #:when layer
+     (format "textureSampleLevel(~a, ~a, ~a~a, ~a)" (p-texture t) (p s) (p uv) (layer-arg) (p lod))]
+    [('fetch (list t _ texel lod))
+     #:when layer
+     (format "textureLoad(~a, ~a~a, ~a)" (p-texture t) (p texel) (layer-arg) (p lod))]
+    [('texture-size (list t lod))
+     #:when layer
+     (format "vec2i(textureDimensions(~a, ~a))" (p-texture t) (p lod))]
     [('sample (list t s uv))
      (depth-texel t (if fragment?
                   (format "textureSample(~a, ~a, ~a)" (p t) (p s) (p uv))

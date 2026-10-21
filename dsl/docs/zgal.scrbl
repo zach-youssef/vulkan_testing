@@ -2109,10 +2109,16 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
  @item{A storage image's texel format is part of its WGSL type: modules are written with
        @tt{rgba8unorm}.}
  @item{Names WGSL reserves (e.g. @tt{target}, @tt{type}) are spelled with a @tt{zgal_} prefix.}
+ @item{An array of textures is a @tt{texture_2d_array}, a layer per element, so its elements are
+       only used in texture operations (@racket[sample], @racket[sample-lod], @racket[fetch] and
+       @racket[texture-size]), and @racket[array-length] counts its layers. Bound to a model's base colours, it is their layers (a texture array the model's
+       images are resized into, the largest's size); bound to image files of one colour space,
+       they are copied into one when the graph is built, resized the same way.}
 ]
 
-GLSL bodies, @racket[extern-glsl] functions and arrays of bindings have no WebGPU equivalent, so
-compiling them for the web reports @secref["error-not-on-web"]. The example's TypeScript follows in
+GLSL bodies, @racket[extern-glsl] functions and other arrays of bindings (of buffers or storage
+images, or chosen with @racket[#:select] or from imports) have no WebGPU equivalent, so compiling
+them for the web reports @secref["error-not-on-web"]. The example's TypeScript follows in
 the next section.
 
 @zgal-example[#:web? #t #:show '("Copy.comp.wgsl")
@@ -2139,6 +2145,9 @@ it is, and browsers after @tt{tsc} or a bundler strips the types. The module exp
  @item{per struct, an interface of its values (numbers, arrays of numbers for vectors, arrays of
        columns for matrices) and a constant of the same name describing its std430 layout, which
        the runtime encodes and decodes buffers' elements with;}
+ @item{per vertex format, a constant of the same name describing its attributes (offsets, formats,
+       defaults and what models fill them from), which models' vertices are laid out with, and
+       @tt{encodeVertices} lays out a meshes input's;}
  @item{per material, a description: its bindings (with the accesses and stages inferred from its
        shaders), its push constants' offsets, and its WGSL, which the runtime builds bind group
        layouts and pipelines from;}
@@ -2289,8 +2298,11 @@ a material binding one reports which image to bind read or write instead.
 Graphs on the web can use the compute library's nodes (@secref["compute-library"]). Where the device has no
 subgroups (WebGPU's @tt{subgroups} feature is optional), the runtime runs their materials'
 variants scanning, reducing and ranking in shared memory instead, which the compiler generates
-beside them. Indirect dispatches and draws run on the web too (@secref["indirect"]). Graphs on
-the web can't yet use models or meshes, and programs whose own code gives the app inputs (externs,
+beside them. Indirect dispatches and draws run on the web too (@secref["indirect"]), and so do
+models and meshes: the runtime loads glTF (@tt{.gltf}, @tt{.glb}) and OBJ files itself, as the
+C++ does, and a meshes input is an array of the runtime's @tt{Mesh}es, which @tt{createMesh} makes
+from vertices @tt{encodeVertices} lays out as the module's vertex format descriptions (a constant
+per vertex format) say. Programs whose own code gives the app inputs (externs,
 imports, parameters no option sets) don't run on the web yet. WebGPU's samplers have no border colour, and its buffers can't be
 mapped while the GPU uses them, so samplers clamping to a border and cpu nodes reading or writing
 imported buffers can't be either. Compiling any of them for the web reports

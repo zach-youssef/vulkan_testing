@@ -213,8 +213,8 @@
          (hash "fill.comp" "#version 450\nvoid main() {}\n"))
    (kind 'not-on-web
          "WebGPU can't do this"
-         "Compiled for the web, ZGAL generates WGSL and TypeScript for WebGPU, which lacks some of what Vulkan has: shaders written in GLSL (bodies in `shaders`, and `extern-glsl` functions), arrays of bindings (descriptor indexing), push constants other than scalars, vectors and matrices, a texture both sampled and compared with depths, culling both faces, samplers clamping to a border, cpu nodes mapping buffers, and (for now) graphs' models and meshes. The message says which; write that part in ZGAL, or another way."
-         "(compute-material Pick\n  (workgroup 1)\n  (bindings (textures (array texture)) (counts (buffer-array uint)))\n  (compute (write! (at counts 0) (array-length textures))))"
+         "Compiled for the web, ZGAL generates WGSL and TypeScript for WebGPU, which lacks some of what Vulkan has: shaders written in GLSL (bodies in `shaders`, and `extern-glsl` functions), arrays of bindings (descriptor indexing) other than arrays of textures (which are texture arrays), push constants other than scalars, vectors and matrices, a texture both sampled and compared with depths, culling both faces, samplers clamping to a border, and cpu nodes mapping buffers. The message says which; write that part in ZGAL, or another way."
+         "(compute-material Pick\n  (workgroup 1)\n  (bindings (sources (array (buffer-array uint))) (counts (buffer-array uint)))\n  (compute (write! (at counts 0) (array-length sources))))"
          #:web? #t)))
 
 (define catalog-by-id

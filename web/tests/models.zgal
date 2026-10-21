@@ -1,0 +1,109 @@
+;; Models, meshes and texture arrays on the web, as tests/gpu/zgal/interfaces.zgal's Models and
+;; CulledModels check them natively (web/tests/models.test.ts)
+(import indirect)
+
+;; Vertices models fill by name: packed, and a colour that's white when a file has none
+(vertex-format ModelVertex
+  (position vec3)
+  (uv vec2 #:as float16)
+  (normal vec3 #:as snorm16)
+  (color vec4 #:as unorm8 #:default (vec4 1 1 1 1)))
+
+;; A model's base colours: each mesh's material is its instance index
+(graphics-material ModelColor
+  (vertex-input ModelVertex)
+  (bindings (baseColors (array texture)) (factors (buffer-array vec4)) (pick sampler))
+  (varyings (texCoord vec2) (material uint flat) (tint vec4))
+  (outputs (modelColor vec4))
+  (vertex (results #:position (vec4 position.xy 0.0 1.0) #:texCoord uv #:material (uint instanceIndex) #:tint color))
+  (fragment (* tint (at factors material) (sample (at baseColors material) pick texCoord))))
+
+;; Draws a model the page names into a 4x4 image
+(graph Models (input file path)
+  (model halves file ModelVertex #:base-colors halfColors #:base-color-factors halfFactors)
+  (sampler pick #:filter nearest)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target onCanvas (color canvas #:clear (0 0 0 1)))
+  (material drawModel ModelColor (baseColors halfColors) (factors halfFactors) pick #:cull none)
+  (draw-meshes draw onCanvas halves drawModel)
+  (readback canvasRead canvas))
+
+;; GPU culling: keeps the draws of a model whose bounds' centres are on one side (x's sign: side),
+;; appending them and counting them, then draws those
+(compute-material Cull
+  (workgroup 64)
+  (bindings
+   (draws (buffer-array DrawIndexedCommand))
+   (bounds (buffer-array vec4))
+   (kept (buffer-array DrawIndexedCommand))
+   (keptCount (buffer-array uint)))
+  (push (total uint) (side float))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (and (< i total) (> (* (.x (at bounds i)) side) 0.0))
+       (let* ([slot (atomic-add! (at keptCount 0) 1)])
+         (write! (at kept slot) (at draws i)))))))
+
+(graph CulledModels
+  (input file path)
+  (parameter side float)
+  (model halves file ModelVertex #:base-colors halfColors #:base-color-factors halfFactors
+         #:draws halfDraws #:bounds halfBounds)
+  (sampler pick #:filter nearest)
+  (buffer kept DrawIndexedCommand 2 #:frames per-frame)
+  (buffer keptCount uint 1 #:frames per-frame)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target onCanvas (color canvas #:clear (0 0 0 1)))
+  (material culling Cull (draws halfDraws) (bounds halfBounds) kept keptCount
+            #:push ((total 2) (side side)) #:invocations (2))
+  (material drawModel ModelColor (baseColors halfColors) (factors halfFactors) pick #:cull none)
+  (clear resetCount keptCount)
+  (dispatch cull culling)
+  (draw-meshes draw onCanvas halves drawModel #:indirect (at kept 0) #:draws 2 #:count (at keptCount 0))
+  (readback canvasRead canvas))
+
+;; Meshes the page made: red for instance 0, green for the others
+(vertex-format Corner
+  (position vec2))
+
+(graphics-material MeshColor
+  (vertex-input Corner)
+  (varyings (instance uint flat))
+  (outputs (color vec4))
+  (vertex (results #:position (vec4 position 0.0 1.0) #:instance (uint instanceIndex)))
+  (fragment (if (= instance 0) (vec4 1.0 0.0 0.0 1.0) (vec4 0.0 1.0 0.0 1.0))))
+
+(graph Meshes
+  (input shapes meshes)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target onCanvas (color canvas #:clear (0 0 0 1)))
+  (material meshing MeshColor #:cull none)
+  (draw-meshes draw onCanvas shapes meshing)
+  (readback canvasRead canvas))
+
+;; Image files of different sizes in one texture array: the top half samples texels.png's texels
+;; (4x2), the bottom half quadrants.png's (2x2, widened to 4x2); anything but 2 layers is magenta
+(graphics-material Layers
+  (bindings (layers (array texture)) (pick sampler))
+  (varyings (texCoord vec2))
+  (outputs (color vec4))
+  (vertex
+   (let* ([corner (vec2 (float (bitand vertexIndex 2)) (float (bitand (shl vertexIndex 1) 2)))])
+     (results #:position (vec4 (- (* corner 2.0) 1.0) 0.0 1.0) #:texCoord corner)))
+  (fragment
+   (let* ([row (* texCoord.y 2.0)]
+          [uv (vec2 texCoord.x (- row (floor row)))])
+     (cond
+       [(not (= (array-length layers) 2)) (vec4 1.0 0.0 1.0 1.0)]
+       [(< row 1.0) (sample (at layers 0) pick uv)]
+       [else (sample (at layers 1) pick uv)]))))
+
+(graph LayerGraph
+  (image-file small "quadrants.png" #:color linear)
+  (image-file wide "texels.png" #:color linear)
+  (sampler pick #:filter nearest)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target onCanvas (color canvas #:clear (0 0 0 1)))
+  (material layering Layers (layers (wide small)) pick #:cull none)
+  (draw paint onCanvas layering 3)
+  (readback canvasRead canvas))
