@@ -43,7 +43,8 @@
   (vec3 (* (cos elevation) (sin azimuth)) (sin elevation) (* (cos elevation) (cos azimuth))))
 
 ;; Fraction of light reaching a point, filtered over 3x3 bilinear comparisons (PCF). The sampler
-;; compares: sampling returns the fraction of texels closer to the light than the reference.
+;; compares: sampling returns the fraction of texels closer to the light than the reference. Taps
+;; outside the map are lit (a white border would be, but WebGPU's samplers have no border colour).
 (define (shadowFactor [shadowMap : texture2D] [shadowSampler : sampler] [lightViewProjection : mat4]
                       [position : vec3] [normal : vec3] [toLight : vec3]) : float
   (let* ([texelSize (/ 1.0 (vec2 (texture-size shadowMap 0)))]
@@ -56,7 +57,9 @@
          [uv (+ (* ndc.xy 0.5) 0.5)]
          [reference (- ndc.z 0.001)])
     (/ (sum ([y (range -1 2)] [x (range -1 2)])
-            (sample-compare shadowMap shadowSampler (+ uv (* (vec2 x y) texelSize)) reference))
+            (let* ([tap (+ uv (* (vec2 x y) texelSize))]
+                   [outside (or (< tap.x 0.0) (> tap.x 1.0) (< tap.y 0.0) (> tap.y 1.0))])
+              (max (sample-compare shadowMap shadowSampler tap reference) (if outside 1.0 0.0))))
        9.0)))
 
 ;; Cook-Torrance GGX specular for a dielectric (F0 = 0.04) plus Lambert diffuse
@@ -158,10 +161,10 @@
   (input exposure (per-frame float))
 
   ;; Bilinear for the HDR image, and a comparison sampler for the shadow map, which returns how
-  ;; much of the bilinear footprint is closer to the light than the reference depth. Outside the
-  ;; map the white border reads as lit.
+  ;; much of the bilinear footprint is closer to the light than the reference depth (shadowFactor
+  ;; treats taps outside the map as lit).
   (sampler linearSampler #:filter linear #:address clamp-to-edge)
-  (sampler shadowSampler #:filter linear #:mipmap nearest #:address clamp-to-border #:border opaque-white
+  (sampler shadowSampler #:filter linear #:mipmap nearest #:address clamp-to-edge
            #:compare less-or-equal #:anisotropy #f)
   (uniform scene SceneUniforms uniforms)
 

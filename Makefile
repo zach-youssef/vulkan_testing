@@ -131,6 +131,10 @@ $(eval $(call zgal-program,$(SCENE_DIR)/scene.zgal,$(SCENE_OUT),scene_example,$(
 test-example-scene: $(SCENE_OUT)/scene_example
 	./$< --frames 60 --size 640x360 --capture $(SCENE_OUT)/smoke.png --validation
 
+# For the web: build/web/scene (serve it and open scene.zgal.html, or run it under Node)
+SCENE_WEB = $(OUT)/web/scene
+$(eval $(call zgal-web-program,$(SCENE_DIR)/scene.zgal,$(SCENE_WEB)))
+
 # All the examples' smoke tests
 test-examples: test-example-image_filter test-example-particles test-example-scene test-main test-bench
 
@@ -266,6 +270,7 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	cd $(WEB_TEST_OUT) && $(NODE) node_modules/typescript/bin/tsc -p . && $(NODE) --test $(TEST_ARGS) 'tests/*.test.ts'
 	$(MAKE) web
 	$(NODE) $(PARTICLES_WEB)/particles.zgal.main.js --frames 120 --size 1024x768 --capture $(PARTICLES_WEB)/smoke.png
+	$(NODE) $(SCENE_WEB)/scene.zgal.main.js --frames 60 --size 640x360 --capture $(SCENE_WEB)/smoke.png
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png 1
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/blur_edges.png --blur 2 --edges
@@ -292,14 +297,14 @@ test-pages: web
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(PARTICLES_WEB) --keys ' 2' 'particles.zgal.html?frames=60'; \
 	  status=$$?; if [ $$status -eq 3 ]; then echo "test-pages: $$browser skipped (not installed)"; continue; fi; \
 	  [ $$status -eq 0 ] || exit $$status; \
+	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(SCENE_WEB) 'scene.zgal.html?frames=60' || exit 1; \
 	  for page in mount image-file kernels indirect models; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \
 	done
 
-# The examples whose programs run on the web (scene's graph loads models, which the web can't yet;
-# simple's app is C++)
-web: $(PARTICLES_WEB) $(IMAGE_FILTER_WEB)
+# The examples whose programs run on the web (simple's app is C++)
+web: $(PARTICLES_WEB) $(IMAGE_FILTER_WEB) $(SCENE_WEB)
 
 # build/docs/zgal.html, and zgal.txt for reading in a terminal
 docs: $(ZGAL_COMPILED)
