@@ -146,8 +146,7 @@
       ['draw-meshes (web-error l "meshes aren't drawn on the web yet (~a)" (g-node-name n))]
       ['cpu (unless (and (null? (g-node-reads n)) (null? (g-node-writes n)))
               (web-error l "cpu node ~a maps buffers, which WebGPU's buffers can't be while the GPU uses them" (g-node-name n)))]
-      [_ (when (indirect? (g-node-extra n))
-           (web-error l "indirect dispatches and draws don't run on the web yet (~a)" (g-node-name n)))]))
+      [_ (void)]))
 
   (define parameters (of-type g-parameter?))
   (define inputs (of-type g-input?))
@@ -422,11 +421,21 @@
       (if (and overrides (node-overrides-invocations overrides))
           (format "(frame) => [~a]" (string-join (map uint-expr (node-overrides-invocations overrides)) ", "))
           "null"))
+    (define spec (and (indirect? (g-node-extra n)) (g-node-extra n)))
+    ;; An indirect command's place (an element-ref)
+    (define (command-text ref)
+      (format "{ buffer: ~a, index: (frame) => ~a }" (resource-ref (element-ref-buffer ref)) (uint-expr (element-ref-index ref))))
+    ;; A counted draw draws the commands its limiting dispatch copied (WebGPU has no indirect counts)
+    (define limit
+      (and spec (indirect-count spec)
+           (format "new zgal.DispatchNode(~a + ' (limit)', ~a, ~a, ~a)" label (instance-ref "material" (indirect-limit spec))
+                   (push-override-text (match (indirect-limit-overrides spec) [#f '()] [o (node-overrides-push o)]))
+                   (invocations-text (indirect-limit-overrides spec)))))
     (define create
       (match (g-node-kind n)
         ['dispatch
-         (format "new zgal.DispatchNode(~a, ~a, ~a, ~a)" label (instance-ref "material" (g-node-material n)) (override-text)
-                 (invocations-text overrides))]
+         (format "new zgal.DispatchNode(~a, ~a, ~a, ~a~a)" label (instance-ref "material" (g-node-material n)) (override-text)
+                 (invocations-text overrides) (if spec (string-append ", " (command-text (indirect-command spec))) ""))]
         ['kernel
          ;; A step's push constant pass (a sort's) is its own; in loops, its overrides give it
          (format "new zgal.DispatchSequenceNode(~a, [~a])" label
@@ -440,6 +449,14 @@
                               [else "null"])
                             (invocations-text step-overrides)))
                   ", "))]
+        ['draw
+         #:when spec
+         (format "new zgal.IndirectDrawNode(~a, ~a, ~a, ~a, (frame) => ~a, ~a)" label (instance-ref "target" (g-node-target n))
+                 (instance-ref "material" (g-node-material n))
+                 (if limit
+                     (format "{ buffer: ~a, index: () => 0 }" (resource-ref (indirect-limited spec)))
+                     (command-text (indirect-command spec)))
+                 (uint-expr (indirect-draws spec)) (override-text))]
         ['draw
          (format "new zgal.DrawNode(~a, ~a, ~a, (frame) => ~a, ~a)" label (instance-ref "target" (g-node-target n))
                  (instance-ref "material" (g-node-material n)) (uint-expr (g-node-count n)) (override-text))]
@@ -473,7 +490,9 @@
            (line! "~a  result.nodes.~a.push(...~a);" pad node-name call)
            (line! "~a  result.nodes.~a = ~a;" pad node-name call))]
       [else
+       (when limit (line! "~a  const limit = graph.add(~a);" pad limit))
        (line! "~a  const node = graph.add(~a);" pad create)
+       (when limit (line! "~a  graph.enableWith(limit, node);" pad))
        (when (g-node-enabled n)
          (line! "~a  graph.setEnabled(node, ~a);" pad (bool-expr (g-node-enabled n))))
        (when (g-node-once? n)

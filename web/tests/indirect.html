@@ -1,0 +1,69 @@
+<!doctype html>
+<!-- Indirect dispatches and draws in a browser: web/tests/indirect.zgal's graphs give what
+     web/tests/indirect.test.ts checks under Node (commands shaders wrote, uploaded commands, and
+     draws counted by a buffer). Checked by make test-pages (web/tools/chromium.ts and firefox.ts);
+     the page's state is in <html data-zgal>. Served from build/web/tests, with web/tests' graphs
+     built into graphs/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL indirect test</title>
+</head>
+<body>
+<pre id="zgal-message"></pre>
+<script type="module">
+import * as zgal from './graphs/zgal/index.js';
+import { IndirectGraph, LoopDraws, OverrideGraph } from './graphs/indirect.zgal.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+const check = (got, expected, what) => {
+  if ([...got].join() !== expected.join()) throw new Error(`${what}: got ${[...got].join(' ')}, expected ${expected.join(' ')}`);
+};
+const pixel = (pixels, x, y) => pixels.subarray((y * 4 + x) * 4, (y * 4 + x) * 4 + 4);
+const draw = { vertexCount: 3, instanceCount: 1, firstVertex: 0, firstInstance: 0 };
+
+let context;
+try {
+  context = await zgal.Context.create();
+  // The second draw's first instance (1) draws green (with indirect-first-instance); none draws
+  // nothing, leaving the clear blue
+  const firstInstance = context.hasFeature('indirect-first-instance');
+  for (const [drawn, color] of [[1, [255, 0, 0, 255]], [2, firstInstance ? [0, 255, 0, 255] : [255, 0, 0, 255]], [0, [0, 0, 255, 255]]]) {
+    const graph = new zgal.RenderGraph(context);
+    const ids = await IndirectGraph.build(context, graph, { groups: 5, drawn });
+    for (let frame = 0; frame < 3; frame++) await graph.execute();
+    check(await ids.readTallyContents(graph), [10], `${drawn} drawn: workgroups`);
+    check(pixel(await ids.readPicturePixels(graph), 0, 0), color, `${drawn} drawn: colour`);
+    graph.destroy();
+  }
+
+  let graph = new zgal.RenderGraph(context);
+  const overrides = await OverrideGraph.build(context, graph, { drawCommands: [draw, draw] });
+  await graph.execute();
+  const rows = [[255, 0, 0, 255], [0, 255, 0, 255], [255, 255, 0, 255], [0, 0, 255, 255]];
+  const picture = await overrides.readPicturePixels(graph);
+  for (let y = 0; y < 4; y++) check(pixel(picture, 0, y), rows[y], `overriding draws, row ${y}`);
+  check((await overrides.readCellsContents(graph)).slice(60), [16, 16, 16, 16], 'an indirect dispatch\'s push constants');
+  graph.destroy();
+
+  graph = new zgal.RenderGraph(context);
+  const loops = await LoopDraws.build(context, graph, { commands: [draw, draw, draw, draw], counts: [0, 0, 1, 1] });
+  await graph.execute();
+  const bands = await loops.readPicturePixels(graph);
+  for (let y = 0; y < 4; y++) check(pixel(bands, 0, y), y < 2 ? [0, 0, 0, 255] : [255, 255, 255, 255], `counted draws in a loop, row ${y}`);
+  graph.destroy();
+
+  await context.device.queue.onSubmittedWorkDone();
+  if (context.errors.length > 0) throw new Error(`WebGPU errors:\n${context.errors.join('\n')}`);
+  log(`indirect work ran as expected${firstInstance ? '' : ' (without indirect-first-instance)'}`);
+  document.documentElement.dataset.zgal = 'stopped';
+} catch (error) {
+  log(error instanceof Error ? error.message : String(error));
+  document.documentElement.dataset.zgal = 'failed';
+} finally {
+  context?.destroy();
+}
+</script>
+</body>
+</html>

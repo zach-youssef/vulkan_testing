@@ -335,7 +335,8 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   `draw-meshes` of a model reads `DrawIndexedCommand`s a shader chose from the model's `#:draws` and
   `#:bounds` (model options). Counts
   use `drawIndirectCount` where the device has it, else a generated node first gives the commands
-  past the count no instances (MoltenVK lacks it).
+  past the count no instances (MoltenVK lacks it). The web (`IndirectDrawNode` in `web/zgal/graph.ts`)
+  always limits counted draws so, and draws several commands as a draw call each.
 - The compute library: `(reduce n source (at dest i) #:op add|min|max #:count c)`,
   `(inclusive-scan n source dest ...)` and `(exclusive-scan ...)` nodes over buffers of uints, ints
   or floats, and `(sort n keys #:values v #:count c)`, a stable radix sort of uint keys (`(import
@@ -427,7 +428,7 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   WGSL negates y). A material is a bind
   group (binding i is its i'th binding, push constants a uniform buffer after them); buffers of
   small integers or with atomics are 32-bit words at std430 offsets. GLSL bodies, `extern-glsl`,
-  array bindings, and (for now) models, meshes and indirect work
+  array bindings, and (for now) models and meshes
   report `not-on-web`. Runtime code is erasable TypeScript (no parameter properties or enums), so
   Node runs it directly.
 

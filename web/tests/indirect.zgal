@@ -1,0 +1,135 @@
+;; Indirect dispatches and draws on the web, as tests/gpu/zgal/interfaces.zgal's IndirectGraph,
+;; GivenCommands, OverrideGraph and LoopLibraryGraph check them natively (web/tests/indirect.test.ts)
+(import indirect)
+
+(compute-material WriteCommands
+  (workgroup 1)
+  (bindings
+   (dispatches (buffer-array DispatchCommand))
+   (draws (buffer-array DrawCommand))
+   (drawCounts (buffer-array uint)))
+  (push (groups uint) (drawn uint))
+  (compute
+   (write! (at dispatches 1) (DispatchCommand groups 1 1))
+   (write! (at draws 0) (DrawCommand 3 1 0 0))
+   (write! (at draws 1) (DrawCommand 3 1 0 1))
+   (write! (at drawCounts 0) drawn)))
+
+(compute-material CountGroups
+  (workgroup 1)
+  (bindings (tally (buffer-array uint)))
+  (compute (atomic-add! (at tally 0) workgroupId.x)))
+
+;; A triangle covering the target: red for instance 0, green for the others
+(graphics-material InstanceColor
+  (varyings (instance uint flat))
+  (outputs (color vec4))
+  (vertex
+   (let* ([corner (vec2 (float (bitand vertexIndex 2)) (float (bitand (shl vertexIndex 1) 2)))])
+     (results #:position (vec4 (- (* corner 2.0) 1.0) 0.0 1.0) #:instance (uint instanceIndex))))
+  (fragment (if (= instance 0) (vec4 1.0 0.0 0.0 1.0) (vec4 0.0 1.0 0.0 1.0))))
+
+(graph IndirectGraph
+  (parameter groups uint)
+  (parameter drawn uint)
+  (buffer dispatches DispatchCommand 2 #:frames shared)
+  (buffer draws DrawCommand 2 #:frames per-frame)
+  (buffer drawCounts uint 1 #:frames per-frame)
+  (buffer tally uint 1 #:frames shared)
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  (target canvas (color picture #:clear (0.0 0.0 1.0 1.0)))
+  (material writing WriteCommands dispatches draws drawCounts #:push ((groups groups) (drawn drawn)) #:invocations (1))
+  (material counting CountGroups tally)
+  (material coloring InstanceColor)
+  (dispatch write writing)
+  (clear reset tally)
+  (dispatch count counting #:indirect (at dispatches 1))
+  (draw paint canvas coloring #:indirect (at draws 0) #:draws 2 #:count (at drawCounts 0))
+  (readback readTally tally)
+  (readback readPicture picture))
+
+;; Dispatches reading their sizes from commands C++ gives: an imported buffer, and an upload
+(graph GivenCommands
+  (import-buffer given DispatchCommand)
+  (input uploads (data DispatchCommand))
+  (upload uploaded uploads)
+  (buffer tally uint 1 #:frames shared)
+  (material counting CountGroups tally)
+  (clear reset tally)
+  (dispatch fromImport counting #:indirect (at given 0))
+  (dispatch fromUpload counting #:indirect (at uploaded 1))
+  (readback readTally tally))
+
+(compute-material FillSpan
+  (workgroup 64)
+  (bindings (cells (buffer-array uint)))
+  (push (offset uint) (amount uint) (value uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i amount) (write! (at cells (+ offset i)) value)))))
+
+(compute-material Step
+  (workgroup 64)
+  (bindings (cells (buffer-array uint)))
+  (push (increment uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (write! (at cells i) (+ (* (at cells i) 2) increment)))))
+
+;; Row `row` of `rows` (and below it, which later rows cover), in `shade`
+(graphics-material Band
+  (push (row uint) (rows uint) (shade vec4))
+  (outputs (color vec4))
+  (vertex
+   (let* ([corner (vec2 (float (bitand vertexIndex 2)) (float (bitand (shl vertexIndex 1) 2)))]
+          [height (/ 2.0 (float rows))]
+          [top (+ -1.0 (* height (float row)))])
+     (results #:position (vec4 (- (* corner.x 2.0) 1.0) (+ top (* corner.y height)) 0.0 1.0))))
+  (fragment shade))
+
+(graph OverrideGraph
+  (input drawCommands (data DrawCommand))
+  (upload draws drawCommands)
+  (buffer drawCount uint 1 #:frames shared)
+  (buffer cells uint 64 #:frames shared)
+  (buffer command DispatchCommand 1 #:frames shared)
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  ;; Each band keeps what the others drew (the rows cover the whole image)
+  (target canvas (color picture #:load load))
+  (material filling FillSpan cells)
+  (material stepping Step cells #:push ((increment 1)) #:invocations (64))
+  (material banding Band #:push ((rows 4)))
+  (clear zero cells)
+  (dispatch fillFirst filling #:push ((offset 0) (amount 10) (value 5)) #:invocations (10))
+  (dispatch fillSecond filling #:push ((offset 30) (amount 4) (value 7)) #:invocations (4))
+  ;; One workgroup, from a command, with its own push constants
+  (clear oneGroup command #:value 1)
+  (dispatch tail filling #:indirect (at command 0) #:push ((offset 60) (amount 4) (value 3)))
+  ;; The material's increment, then the node's
+  (dispatch stepOne stepping)
+  (dispatch stepTwo stepping #:push ((increment 2)))
+  (draw top canvas banding 3 #:push ((row 0) (shade (vec4 1.0 0.0 0.0 1.0))))
+  ;; Drawn from commands C++ gave, and as many of them as a buffer says
+  (draw second canvas banding #:indirect (at draws 0) #:push ((row 1) (shade (vec4 0.0 1.0 0.0 1.0))))
+  (clear countOne drawCount #:value 1)
+  (draw third canvas banding #:indirect (at draws 0) #:draws 2 #:count (at drawCount 0)
+        #:push ((row 2) (shade (vec4 1.0 1.0 0.0 1.0))))
+  (draw bottom canvas banding 3 #:push ((row 3) (shade (vec4 0.0 0.0 1.0 1.0))))
+  (readback readCells cells)
+  (readback readPicture picture))
+
+;; Counted draws in a loop: per row, a band (from the row down) drawn as many times as its count
+;; says (0 or 1)
+(graph LoopDraws
+  (input commands (data DrawCommand))
+  (input counts (data uint))
+  (upload draws commands)
+  (upload drawCounts counts)
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  (target canvas (color picture #:load load))
+  (material banding Band)
+  (draw background canvas banding 3 #:push ((row 0) (rows 4) (shade (vec4 0.0 0.0 0.0 1.0))))
+  (for ([r (range (uint 0) 4)])
+    (draw band canvas banding #:indirect (at draws r) #:draws 1 #:count (at drawCounts r)
+          #:push ((row r) (rows 4) (shade (vec4 1.0 1.0 1.0 1.0)))))
+  (readback readPicture picture))

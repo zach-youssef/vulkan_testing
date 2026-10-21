@@ -3,7 +3,7 @@
      give what web/tests/kernels.test.ts checks under Node, with the browser's subgroups (when it
      has them) and without (the kernels' shared-memory variants). Checked by make test-pages
      (web/tools/chromium.ts and firefox.ts); the page's state is in <html data-zgal>. Served from
-     build/web/tests, with kernels.zgal's program built into kernels/. -->
+     build/web/tests, with web/tests' graphs built into graphs/. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -12,8 +12,8 @@
 <body>
 <pre id="zgal-message"></pre>
 <script type="module">
-import * as zgal from './kernels/zgal/index.js';
-import { LibraryGraph, SortGraph } from './kernels/kernels.zgal.js';
+import * as zgal from './graphs/zgal/index.js';
+import { LibraryGraph, SortGraph } from './graphs/kernels.zgal.js';
 
 const message = document.getElementById('zgal-message');
 const log = (text) => { console.log(text); message.textContent += `${text}\n`; };

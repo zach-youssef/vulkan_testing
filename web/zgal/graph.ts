@@ -655,33 +655,58 @@ function textureUsage(context: Context, format: GPUTextureFormat): number {
 // ---------------------------------------------------------------------------------------------
 // Nodes
 
-// Dispatches a compute material: its own push constants (override) and size, or its instance's
+// An indirect dispatch's or draw's first command: the index'th element of a buffer of commands,
+// the structs of (import indirect), which are WebGPU's indirect arguments field for field
+export interface IndirectCommand {
+  readonly buffer: GraphBuffer;
+  readonly index: FrameSource<number>;
+}
+
+// Where an indirect command is: its buffer, which must allow indirect use (the graph's own and
+// uploaded buffers do; imported ones are checked), and the command's byte offset in it
+function commandPlace(graph: RenderGraph, node: string, command: IndirectCommand, frame: FrameInfo): [GPUBuffer, number] {
+  const buffer = graph.bufferOf(command.buffer);
+  if ((buffer.usage & 0x100) === 0) throw new Error(`${node}: buffer ${command.buffer.name} wasn't created with GPUBufferUsage.INDIRECT, so it can't hold commands`);
+  return [buffer, command.index(frame) * stride(command.buffer.element)];
+}
+
+// Dispatches a compute material: its own push constants (override) and size, or its instance's,
+// or as many workgroups as an indirect command says
 export class DispatchNode implements Node {
   private readonly binder: MaterialBinder;
   readonly name: string;
   readonly material: MaterialInstance;
   readonly override: PushSource | null;
   readonly invocations: FrameSource<number[]> | null;
-  constructor(name: string, material: MaterialInstance, override: PushSource | null = null, invocations: FrameSource<number[]> | null = null) {
+  readonly indirect: IndirectCommand | null;
+  constructor(name: string, material: MaterialInstance, override: PushSource | null = null, invocations: FrameSource<number[]> | null = null,
+    indirect: IndirectCommand | null = null) {
     this.name = name;
     this.material = material;
     this.override = override;
     this.invocations = invocations;
+    this.indirect = indirect;
     this.binder = material.binder(name);
   }
   private workgroups: [number, number, number] = [0, 0, 0];
+  private command: [GPUBuffer, number] | null = null;
   prepare(frame: FrameInfo): void {
     this.binder.prepare(frame, this.override);
+    if (this.indirect) {
+      this.command = commandPlace(this.material.graph, this.name, this.indirect, frame);
+      return;
+    }
     const invocations = this.invocations ?? this.material.invocations;
     if (!invocations) throw new Error(`${this.name}: material ${this.material.desc.name} has no dispatch size`);
     this.workgroups = workgroupsFor(this.material.desc as ComputeMaterialDesc, invocations(frame));
   }
   record(encoder: GPUCommandEncoder): void {
-    if (this.workgroups.some((n) => n === 0)) return;
+    if (!this.command && this.workgroups.some((n) => n === 0)) return;
     const pass = encoder.beginComputePass({ label: this.name });
     pass.setPipeline(this.material.computePipeline());
     pass.setBindGroup(0, this.binder.bindGroup());
-    pass.dispatchWorkgroups(...this.workgroups);
+    if (this.command) pass.dispatchWorkgroupsIndirect(...this.command);
+    else pass.dispatchWorkgroups(...this.workgroups);
     pass.end();
   }
   destroy(): void {
@@ -783,6 +808,49 @@ export class DrawNode implements Node {
     pass.setPipeline(this.material.renderPipeline(this.target));
     pass.setBindGroup(0, this.binder.bindGroup());
     if (this.vertices > 0) pass.draw(this.vertices);
+    pass.end();
+  }
+  destroy(): void {
+    this.binder.destroy();
+  }
+}
+
+// Draws `draws` indirect commands, one after another from the first (WebGPU has no multi-draw:
+// each is its own draw call), of a graphics material into a target. A draw of as many as a
+// buffer says draws commands a ZgalLimitDraws dispatch copied, those past the count with no
+// instances (WebGPU has no indirect counts).
+export class IndirectDrawNode implements Node {
+  private readonly binder: MaterialBinder;
+  private place: [GPUBuffer, number] | null = null;
+  private count = 0;
+  readonly name: string;
+  readonly target: Target;
+  readonly material: MaterialInstance;
+  readonly command: IndirectCommand;
+  readonly draws: FrameSource<number>;
+  readonly override: PushSource | null;
+  constructor(name: string, target: Target, material: MaterialInstance, command: IndirectCommand, draws: FrameSource<number>,
+    override: PushSource | null = null) {
+    this.name = name;
+    this.target = target;
+    this.material = material;
+    this.command = command;
+    this.draws = draws;
+    this.override = override;
+    this.binder = material.binder(name);
+  }
+  prepare(frame: FrameInfo): void {
+    this.binder.prepare(frame, this.override);
+    this.place = commandPlace(this.material.graph, this.name, this.command, frame);
+    this.count = this.draws(frame);
+  }
+  record(encoder: GPUCommandEncoder): void {
+    const pass = beginRenderPass(this.material.graph, encoder, this.target, this.name);
+    pass.setPipeline(this.material.renderPipeline(this.target));
+    pass.setBindGroup(0, this.binder.bindGroup());
+    const [buffer, offset] = this.place!;
+    const size = stride(this.command.buffer.element);
+    for (let i = 0; i < this.count; i++) pass.drawIndirect(buffer, offset + i * size);
     pass.end();
   }
   destroy(): void {

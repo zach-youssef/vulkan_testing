@@ -1343,6 +1343,12 @@ for any imported buffer used in a way its usage doesn't allow):
        and copies them into a graph buffer. Their first instances are materials, so the graph's
        @tt{requiredFeatures()} lists @tt{drawIndirectFirstInstance}.}
 ]
+On the web, WebGPU's indirect arguments are the same structs. WebGPU has neither multi-draw nor
+indirect counts, so a draw of several commands is a draw call each, and a counted draw always
+draws the commands a dispatch copied, those past the count with no instances (as Vulkan devices
+without @tt{drawIndirectCount} do). Commands' first instances other than 0 need WebGPU's
+@tt{indirect-first-instance}, which the runtime requests when the adapter has it. An imported
+buffer of commands needs @tt{GPUBufferUsage.INDIRECT}, which the node checks when it runs.
 @(define indirect-source #<<ZGAL
 (import indirect)
 
@@ -2283,8 +2289,8 @@ a material binding one reports which image to bind read or write instead.
 Graphs on the web can use the compute library's nodes (@secref["compute-library"]). Where the device has no
 subgroups (WebGPU's @tt{subgroups} feature is optional), the runtime runs their materials'
 variants scanning, reducing and ranking in shared memory instead, which the compiler generates
-beside them. Graphs on the web can't yet use models, meshes, or
-indirect dispatches and draws, and programs whose own code gives the app inputs (externs,
+beside them. Indirect dispatches and draws run on the web too (@secref["indirect"]). Graphs on
+the web can't yet use models or meshes, and programs whose own code gives the app inputs (externs,
 imports, parameters no option sets) don't run on the web yet. WebGPU's samplers have no border colour, and its buffers can't be
 mapped while the GPU uses them, so samplers clamping to a border and cpu nodes reading or writing
 imported buffers can't be either. Compiling any of them for the web reports
