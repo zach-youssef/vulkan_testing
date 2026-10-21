@@ -2280,8 +2280,8 @@ Read-write storage images other than @tt{r32float}, @tt{r32uint} and @tt{r32sint
 a material binding one reports which image to bind read or write instead.
 
 Graphs on the web can't yet use models, meshes, the compute library's nodes, or
-indirect dispatches and draws; apps can't yet read images' copies; and programs whose own code
-gives the app inputs (externs, imports, parameters no option sets) don't run on the web yet. WebGPU's samplers have no border colour, and its buffers can't be
+indirect dispatches and draws, and programs whose own code gives the app inputs (externs,
+imports, parameters no option sets) don't run on the web yet. WebGPU's samplers have no border colour, and its buffers can't be
 mapped while the GPU uses them, so samplers clamping to a border and cpu nodes reading or writing
 imported buffers can't be either. Compiling any of them for the web reports
 @secref["error-not-on-web"].

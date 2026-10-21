@@ -132,3 +132,20 @@
     (value state.presses)
     (extra (+ state.presses 100))
     #:enabled ((extraFilling state.extraOn))))
+
+;; Read events of an image's copies: a 3x2 RGBA8 image (rows narrower than WebGPU's 256-byte copy
+;; rows) of texels value + index, each texel's bits a uint
+(graph Pictured
+  (buffer texelBuffer uint 6 #:frames shared)
+  (material fillTexels Fill (filled texelBuffer) #:push ((value #x01020300)) #:invocations (6))
+  (dispatch filling fillTexels)
+  (image picture rgba8 (fixed 3 2) #:frames shared)
+  (copy toPicture texelBuffer picture)
+  (readback readPicture picture))
+
+(app Picturing
+  (state
+   (texels (data uint) (empty-data uint))
+   (pictureSize uvec2 (uvec2 0)))
+  (on (read readPicture copied #:size s) (with state #:texels copied #:pictureSize s))
+  (run Pictured))

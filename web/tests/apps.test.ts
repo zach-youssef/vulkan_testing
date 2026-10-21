@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
-import { Evaluating, Probe, collatz, evaluate, exact, triangle } from '../apps.zgal.ts';
+import { Evaluating, Picturing, Probe, collatz, evaluate, exact, triangle } from '../apps.zgal.ts';
 
 let context: zgal.Context;
 const printed: string[] = [];
@@ -158,6 +158,19 @@ test('read events give the state readbacks\' finished copies', async () => {
   await frame();
   assert.deepEqual(app.state.seen, [10, 11]);
   destroy();
+});
+
+test('read events give images\' copies as their texels\' bits, with their size', async () => {
+  const graph = new zgal.RenderGraph(context);
+  const app = await Picturing.create(context, graph, {});
+  app.beginFrame();
+  await app.renderGraph().execute();
+  await graph.finish();
+  assert.deepEqual(app.state.texels, []);
+  app.beginFrame();
+  assert.deepEqual(app.state.texels, [0, 1, 2, 3, 4, 5].map((i) => 0x01020300 + i));
+  assert.deepEqual(app.state.pictureSize, [3, 2]);
+  graph.destroy();
 });
 
 test('WebGPU reports no validation errors', async () => {

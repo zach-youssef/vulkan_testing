@@ -72,9 +72,6 @@
       [(g-node-when n) (format "if (~a !== undefined) ~a" ids (statement (each ids)))]
       [else (statement (each ids))]))
 
-  (for ([h (in-list read-handlers)] #:when (read-event-image? (event-readback (handler-event h))))
-    (zgal-error 'not-on-web (handler-loc h) "apps on the web can't read images' copies yet (~a)" (read-event-node (event-readback (handler-event h)))))
-
   (parameterize ([ts-struct-name (let ([outer (ts-struct-name)]) (λ (d) (if (eq? d state) state-type (outer d))))]
                  [ts-host-value host-value]
                  [ts-call-target (λ (f) (if (member f extern-names) (format "this.inputs.~a" f) (ts-name f)))])
@@ -244,15 +241,21 @@
     (line! "  beginFrame(): void {")
     (line! "    this.frameNumber = this.framesBegun++;")
     (for ([h (in-list read-handlers)])
-      (match-define (read-event g-name node-name element looped? _ _ _) (event-readback (handler-event h)))
+      (match-define (read-event g-name node-name element looped? image? _ _) (event-readback (handler-event h)))
       (define r (run-of-graph g-name))
       (define n (node-of r node-name))
-      (define (take id) (format "~a.node<zgal.BufferReadbackNode>(~a).takeFinished<~a>()" (graph-member r) id (ts-value-type element)))
+      ;; An image's copy is its texels' bits, read as the texel type, and its size
+      (define (take id)
+        (if image?
+            (format "~a.node<zgal.ReadbackNode>(~a).takeFinished()" (graph-member r) id)
+            (format "~a.node<zgal.BufferReadbackNode>(~a).takeFinished<~a>()" (graph-member r) id (ts-value-type element))))
       (line! "    ~a"
              (for-node r n (λ (id)
-                             (format "{ const copied = ~a; if (copied) this.current = this.~a(this.current, copied~a); }"
+                             (format "{ const copied = ~a; if (copied) this.current = this.~a(this.current, ~a~a~a); }"
                                      (take id) (handler-name h)
-                                     (if looped? (format ", ~a.nodes.~a.indexOf(~a)" (ids-member r) node-name id) ""))))))
+                                     (if image? (format "zgal.decode<~a>(~a, copied.pixels)" (ts-value-type element) (ts-layout-type element)) "copied")
+                                     (if looped? (format ", ~a.nodes.~a.indexOf(~a)" (ids-member r) node-name id) "")
+                                     (if image? ", copied.size" ""))))))
     (when frame-handler
       (line! "    this.current = this.~a(this.current, this.inputs.timestep.next());" (handler-name frame-handler)))
     (unless (or single? (null? runs))
@@ -304,7 +307,8 @@
         (append (list (format "state: ~a" state-type))
                 (if (memq (kind-of h) '(key-pressed key-released)) '()
                     (list (format "~a: ~a" (if binding (ts-name binding) "_value") binding-type)))
-                (if (and r (read-event-looped? r)) (list (format "~a: number" (if (read-event-index r) (ts-name (read-event-index r)) "_index"))) '())))
+                (if (and r (read-event-looped? r)) (list (format "~a: number" (if (read-event-index r) (ts-name (read-event-index r)) "_index"))) '())
+                (if (and r (read-event-image? r)) (list (format "~a: ~a" (if (read-event-size r) (ts-name (read-event-size r)) "_size") (ts-value-type (vector-t 'uint 2)))) '())))
       (line! "")
       (lines! (ts-body-function (format "private ~a(~a): ~a" (handler-name h) (string-join parameters ", ") state-type)
                                 (handler-body h) "  ")))
