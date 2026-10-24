@@ -148,14 +148,17 @@ struct VulkanContextConfig {
     std::vector<const char*> instanceExtensions;
 
     // Enables the Khronos validation layer. If the layer is unavailable a warning is printed
-    // and the context is created without it.
+    // and the context is created without it: callers that require it check validationEnabled().
     bool enableValidation = false;
 
     // With validation, also enables synchronization validation, which reports missing or
-    // insufficient barriers and semaphores (hazards) as errors. Slower.
+    // insufficient barriers and semaphores (hazards) as errors. Slower. If the layer lacks
+    // VK_EXT_validation_features a warning is printed and the context is created without it:
+    // callers that require it check synchronizationValidationEnabled().
     bool enableSynchronizationValidation = false;
 
-    // Receives validation messages (warnings and errors). Defaults to printing to std::cerr.
+    // Receives validation messages: warnings and errors only, as info and verbose messages are
+    // the loader's and layers' chatter. Defaults to printing to std::cerr.
     // May be called from any thread that calls into Vulkan.
     std::function<void(VkDebugUtilsMessageSeverityFlagBitsEXT, const char*)> onValidationMessage;
 
@@ -280,7 +283,10 @@ public: // Accessors
         return **surface_;
     }
 
-    bool validationEnabled() { return messenger_ != VK_NULL_HANDLE; }
+    // Whether the validation layer is on (it may be unavailable; see VulkanContextConfig)
+    bool validationEnabled() const { return messenger_ != VK_NULL_HANDLE; }
+    // Whether synchronization validation is on, which implies validationEnabled()
+    bool synchronizationValidationEnabled() const { return synchronizationValidation_; }
 
     // Names the commands recorded between beginLabel and endLabel (which nest) for debuggers and
     // profilers, e.g. GPU captures and Instruments' Metal traces. Does nothing where the instance
@@ -818,6 +824,7 @@ private:
         createInfo.ppEnabledLayerNames = layers.data();
 
         VK_TRY(VulkanInstance::create(instance_, createInfo), "Failed to create instance");
+        synchronizationValidation_ = useSyncValidation;
         if (useDebugUtils) {
             beginLabel_ = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
                 vkGetInstanceProcAddr(**instance_, "vkCmdBeginDebugUtilsLabelEXT"));
@@ -832,6 +839,7 @@ private:
         if (useValidation) {
             VkDebugUtilsMessengerCreateInfoEXT messengerInfo{};
             messengerInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+            // Not info or verbose: the loader reports its layer and driver search there
             messengerInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
                                             | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
             messengerInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
@@ -1042,6 +1050,7 @@ private:
 
     std::unique_ptr<VulkanInstance> instance_;
     VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
+    bool synchronizationValidation_ = false;
     PFN_vkCmdBeginDebugUtilsLabelEXT beginLabel_ = nullptr;   // Null without VK_EXT_debug_utils
     PFN_vkCmdEndDebugUtilsLabelEXT endLabel_ = nullptr;
     std::unique_ptr<VulkanSurface> surface_;

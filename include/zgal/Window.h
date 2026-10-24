@@ -153,9 +153,7 @@ int runWindowed(const CommandLine& commandLine, const Launch& launch, Create&& c
         VulkanApp vulkanApp;
         TRY(vulkanApp.init(config));
         VulkanContext& context = vulkanApp.getContext();
-        if (launch.validation && !context.validationEnabled()) {
-            return Error(ErrorCode::Unsupported, "--validation was given, but the validation layer is unavailable");
-        }
+        TRY(requireValidation(launch, context));
         // Destroyed before the VulkanApp and its graphs
         TRY_ASSIGN(auto app, create(context, launch, std::function<RenderGraph&()>([&]() -> RenderGraph& {
             RenderGraph& graph = vulkanApp.createGraph();

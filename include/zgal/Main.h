@@ -31,8 +31,8 @@
  zgal/Window.h runs programs with a window. Free of windowing, so headless programs don't need a
  window system.
 
- Exit statuses: 0, 1 for an error or validation messages (with --validation), 2 for a bad command
- line.
+ Exit statuses: 0, 1 for an error or validation messages (with --validation, which also fails when
+ validation or synchronization validation is unavailable), 2 for a bad command line.
  */
 namespace zgal {
 
@@ -293,7 +293,7 @@ public:
             lines.emplace_back("--capture FILE", "write the last frame to a PNG file (with --frames)");
             lines.emplace_back("--capture-frames N,...", "write those frames instead, to <FILE>/<frame>.png (FILE a directory)");
         }
-        lines.emplace_back("--validation", "enable Vulkan validation; any message fails the run");
+        lines.emplace_back("--validation", "enable validation and synchronization validation (the run fails without either); any message fails the run");
         lines.emplace_back("--plan", "print the render graph's plan");
         lines.emplace_back("--timings", "print each node's GPU time at the end (timestamps; each frame is waited for)");
         size_t width = 0;
@@ -346,6 +346,19 @@ public:
 private:
     std::atomic<uint32_t> count_ = 0;
 };
+
+// --validation asks for validation and synchronization validation: a context lacking either fails
+// the run, rather than passing without the checks
+inline Result<void> requireValidation(const Launch& launch, const VulkanContext& context) {
+    if (launch.validation && !context.validationEnabled()) {
+        return Error(ErrorCode::Unsupported, "--validation was given, but the validation layer is unavailable");
+    }
+    if (launch.validation && !context.synchronizationValidationEnabled()) {
+        return Error(ErrorCode::Unsupported,
+                     "--validation was given, but synchronization validation (VK_EXT_validation_features) is unavailable");
+    }
+    return {};
+}
 
 // An image's pixels, RGBA8 tightly packed, as a capture copies them
 struct Captured {
@@ -480,9 +493,7 @@ int runHeadless(const CommandLine& commandLine, const Launch& launch, Create&& c
         config.onValidationMessage = validation.handler();
         config.features = App::requiredFeatures();
         TRY_ASSIGN(auto context, VulkanContext::create(std::move(config)));
-        if (launch.validation && !context->validationEnabled()) {
-            return Error(ErrorCode::Unsupported, "--validation was given, but the validation layer is unavailable");
-        }
+        TRY(requireValidation(launch, *context));
         // Destroyed before the context, after the app
         std::list<RenderGraph> graphs;
         TimingTable timings;
