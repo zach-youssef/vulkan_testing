@@ -51,6 +51,8 @@ jobs:
           sparse-checkout: .github
 
       - uses: ./.ci/.github/actions/setup-zgal
+        with:
+          toolchain: native
 
       - name: Build
         run: make -j"$(nproc)" examples build/tests/cpu_tests build/tests/gpu_tests

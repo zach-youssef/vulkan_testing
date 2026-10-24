@@ -1,15 +1,20 @@
 # Sets up an ubuntu-24.04 runner to build and test the wrapper and ZGAL (or a project using them,
-# such as ppu, with this repository as a submodule):
-#   - apt: lavapipe (Mesa's software Vulkan driver), GLFW, GLM, clang and ccache;
-#   - the LunarG Vulkan SDK (headers, loader, glslc, validation layers), its tarball cached by
+# such as ppu, with this repository as a submodule). The native toolchain has all of the below; the
+# web one only what ZGAL's compiler and its web backend need (lavapipe, which Dawn runs on, Racket
+# and Node), so a job that builds no C++ neither downloads the SDK nor saves a ccache:
+#   - apt: lavapipe (Mesa's software Vulkan driver), and for native, GLFW, GLM, clang and ccache;
+#   - native: the LunarG Vulkan SDK (headers, loader, glslc, validation layers), its tarball cached by
 #     version, with VULKAN_SDK, PATH, LD_LIBRARY_PATH and VK_ADD_LAYER_PATH exported;
-#   - clang++ through ccache as CXX, with the ccache directory cached per branch (falling back to
+#   - native: clang++ through ccache as CXX, with the ccache directory cached per branch (falling back to
 #     the default branch's) and keyed by the checked-out commit;
 #   - Racket (full distribution, with Scribble) for ZGAL's compiler and docs;
 #   - Node with npm's cache keyed by the web backend's lockfile.
 name: setup-zgal
 description: Installs the toolchain the wrapper, ZGAL and its web backend build and test with.
 inputs:
+  toolchain:
+    description: "native (the C++ toolchain, the SDK and ccache too) or web (lavapipe, Racket and Node only)."
+    required: true
   npm-lockfile:
     description: The web backend's package-lock.json, relative to the workspace (e.g. external/vulkan_test/web/package-lock.json in a project with this repository as a submodule).
     default: web/package-lock.json
@@ -28,13 +33,21 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install lavapipe, GLFW, GLM, clang and ccache
+    - name: Install lavapipe, and for native, GLFW, GLM, clang and ccache
       shell: bash
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
       run: |
+        case "$TOOLCHAIN" in
+          native) native="libglfw3-dev libglm-dev clang ccache" ;;
+          web) native= ;;
+          *) echo "::error::setup-zgal: toolchain is native or web, not '$TOOLCHAIN'"; exit 1 ;;
+        esac
         sudo apt-get update -q
-        sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libglfw3-dev libglm-dev clang ccache
+        sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libvulkan1 $native
 
     - name: Cache the Vulkan SDK
+      if: inputs.toolchain == 'native'
       id: sdk-cache
       uses: actions/cache@v6
       with:
@@ -42,7 +55,7 @@ runs:
         key: vulkan-sdk-linux-${{ inputs.vulkan-sdk-version }}
 
     - name: Download the Vulkan SDK
-      if: steps.sdk-cache.outputs.cache-hit != 'true'
+      if: inputs.toolchain == 'native' && steps.sdk-cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         SDK_VERSION: ${{ inputs.vulkan-sdk-version }}
@@ -51,6 +64,7 @@ runs:
     # setup-env.sh leaves VK_LAYER_PATH empty, and exporting that empty value would hide the layers
     # VK_ADD_LAYER_PATH adds, so it isn't exported
     - name: Unpack the Vulkan SDK
+      if: inputs.toolchain == 'native'
       shell: bash
       env:
         SDK_VERSION: ${{ inputs.vulkan-sdk-version }}
@@ -66,6 +80,7 @@ runs:
     # ccache runs as clang++ (a symlink first on PATH), so CXX stays a single program, which ZGAL's
     # toolchain tests run directly
     - name: Use clang++ through ccache
+      if: inputs.toolchain == 'native'
       id: ccache
       shell: bash
       env:
@@ -83,6 +98,7 @@ runs:
         echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
     - name: Cache ccache
+      if: inputs.toolchain == 'native'
       uses: actions/cache@v6
       with:
         path: ~/.ccache
@@ -105,11 +121,15 @@ runs:
 
     - name: Show the toolchain
       shell: bash
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
       run: |
-        echo "VULKAN_SDK=$VULKAN_SDK"
-        clang++ --version | head -1
-        ccache --version | head -1
-        glslc --version | head -1
+        if [ "$TOOLCHAIN" = native ]; then
+          echo "VULKAN_SDK=$VULKAN_SDK"
+          clang++ --version | head -1
+          ccache --version | head -1
+          glslc --version | head -1
+          ccache -z > /dev/null
+        fi
         racket --version
         node --version
-        ccache -z > /dev/null

@@ -60,12 +60,16 @@ Gotchas:
 GitHub Actions (`.github/workflows/ci.yml`) checks every pushed commit, not only the tip: the
 commits a working branch has beyond `main`, or those a push to `main` brings (at most the newest
 20). Each one is built on Ubuntu 24.04 with clang++ and lavapipe (`make examples` and both test
-programs), then runs `make test-cpu` and `make test-dsl`, and gets a `cpu` commit status. The
-toolchain (apt packages, the LunarG SDK, ccache, Racket, Node) comes from
-`.github/actions/setup-zgal`.
+programs), then runs `make test-cpu` and `make test-dsl`, and gets a `cpu` commit status. Each one also
+runs `make test-web BROWSERS=chromium` (`.github/workflows/web.yml`): Dawn under Node on lavapipe,
+and the pages in Playwright's Chromium headless shell on SwiftShader (`CHROMIUM` names it, so a
+missing one fails), and gets a `web` status. Firefox is skipped there, as it has no WebGPU on
+Linux; commits from before `web.yml` existed get no `web` status. The toolchain (apt packages, the
+LunarG SDK, ccache, Racket, Node) comes from `.github/actions/setup-zgal`, whose `toolchain` input
+is `native` or `web` (no SDK, clang or ccache).
 
-The GPU tests, example smoke tests and web tests don't run in CI yet: run them locally, one GPU run
-at a time on a machine.
+The GPU tests and example smoke tests don't run in CI yet, nor the web pages in Firefox: run them
+locally, one GPU run at a time on a machine.
 
 Gotchas:
 
@@ -75,6 +79,13 @@ Gotchas:
   `clang++` symlink rather than setting `CXX="ccache clang++"`.
 - Each commit's job takes its actions from the pushed tip's `.github` (checked out into `.ci`), as
   older commits have none or older ones.
+- Ubuntu 24.04's AppArmor forbids the unprivileged user namespaces Chromium's sandbox needs: the
+  web job runs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` first.
+- `cancelled()` and `failure()` work only in `if:`; in `env:` the workflow fails to parse. Use
+  `job.status` there.
+- Jobs that build no C++ use setup-zgal's `web` toolchain, which saves no ccache: saving it under
+  the commit's key before the cpu job does would make the cpu job's save, with its new objects,
+  fail.
 - make's `$(if)` splits its arguments on commas, so flags like `-Wl,-rpath,...` inside it use
   zgal.mk's `$(ZGAL_COMMA)`.
 

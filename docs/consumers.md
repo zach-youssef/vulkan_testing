@@ -13,8 +13,10 @@ To try PPU against wrapper changes that aren't pushed yet, point its build at th
 PPU's submodule only after the wrapper change is pushed.
 
 Its CI can reuse this repository's actions from the submodule:
-`./external/vulkan_test/.github/actions/setup-zgal` (with `npm-lockfile:
-external/vulkan_test/web/package-lock.json`) and `./external/vulkan_test/.github/actions/commits`.
+`./external/vulkan_test/.github/actions/setup-zgal` (with `toolchain: native`, or `web` for jobs
+that build no C++, and `npm-lockfile: external/vulkan_test/web/package-lock.json`) and
+`./external/vulkan_test/.github/actions/commits`. `toolchain` is required, but GitHub doesn't
+enforce that for composite actions: a job that omits it fails in setup-zgal's first step.
 
 ## personal-site (`~/code/personal-site`)
 

@@ -36,3 +36,13 @@ jobs:
     uses: ./.github/workflows/cpu.yml
     with:
       commits: ${{ needs.commits.outputs.commits }}
+
+  web:
+    needs: commits
+    # Each commit's job posts its status
+    permissions:
+      contents: read
+      statuses: write
+    uses: ./.github/workflows/web.yml
+    with:
+      commits: ${{ needs.commits.outputs.commits }}
