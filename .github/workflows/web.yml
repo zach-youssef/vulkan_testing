@@ -1,7 +1,8 @@
 # Runs the web backend's tests on each commit (make test-web): the runtime's tests and the web
 # examples under Node on Dawn, which runs on lavapipe, then the test pages in headless Chromium on
-# SwiftShader. Firefox is skipped: it has no WebGPU on Linux. Each commit's job posts a "web"
-# commit status on it. Commits from before this workflow existed get none: they can't pass it.
+# SwiftShader. Firefox is skipped: it has no WebGPU on Linux. Its token can't post statuses: ci.yml
+# posts each commit's "web" status from its job's conclusion, found by the job's name, and passes
+# only the commits that have this workflow, as older ones can't pass it.
 name: web
 on:
   workflow_call:
@@ -27,57 +28,30 @@ jobs:
     name: web ${{ matrix.sha }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    permissions:
-      contents: read
-      statuses: write
     strategy:
       fail-fast: false
       matrix:
         sha: ${{ fromJSON(inputs.commits) }}
-    env:
-      STATUS_URL: repos/${{ github.repository }}/statuses/${{ matrix.sha }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    # The token reaches only the steps posting statuses, and no checkout keeps it in .git/config: the
-    # commit's own code (make test-web) runs without it
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ matrix.sha }}
           persist-credentials: false
 
-      - name: Check the commit has the web check
-        id: applies
-        run: |
-          if [ -e .github/workflows/web.yml ]; then
-            echo "applies=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::$(git rev-parse --short HEAD) predates the web check (no .github/workflows/web.yml): not checked, no web status"
-            echo "applies=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Mark the commit's check pending
-        if: steps.applies.outputs.applies == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api "$STATUS_URL" -f state=pending -f context=web -f target_url="$RUN_URL" -f description="Testing the web backend" > /dev/null
-
       # The actions come from the pushed workflow's commit, not the checked-out one, so every commit
       # is checked with the same setup
-      - if: steps.applies.outputs.applies == 'true'
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           path: .ci
           sparse-checkout: .github
           persist-credentials: false
 
-      - if: steps.applies.outputs.applies == 'true'
-        uses: ./.ci/.github/actions/setup-zgal
+      - uses: ./.ci/.github/actions/setup-zgal
         with:
           toolchain: web
 
       - name: Cache Playwright's browsers
-        if: steps.applies.outputs.applies == 'true'
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
@@ -86,7 +60,6 @@ jobs:
       # Ubuntu 24.04's AppArmor forbids the unprivileged user namespaces Chromium's sandbox needs.
       # CHROMIUM names the shell, so the pages fail rather than being skipped if it's missing.
       - name: Install Chromium's headless shell
-        if: steps.applies.outputs.applies == 'true'
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           npx --yes "playwright@$PLAYWRIGHT_VERSION" install --with-deps chromium-headless-shell
@@ -98,21 +71,6 @@ jobs:
           echo "CHROMIUM=${shells[0]}" >> "$GITHUB_ENV"
 
       - name: Web tests (Firefox skipped, no WebGPU on Linux)
-        if: steps.applies.outputs.applies == 'true'
         run: |
           echo "::notice::Firefox skipped: it has no WebGPU on Linux"
           make test-web BROWSERS=chromium
-
-      - name: Post the commit's status
-        # Also when the commit's checkout failed, before the check could tell whether it applies
-        if: always() && steps.applies.outputs.applies != 'false'
-        env:
-          JOB_STATUS: ${{ job.status }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          case "$JOB_STATUS" in
-            success) state=success description="Tested the web backend (Chromium; Firefox skipped)" ;;
-            failure) state=failure description="Failed" ;;
-            *) state=error description="Cancelled or timed out" ;;
-          esac
-          gh api "$STATUS_URL" -f state=$state -f context=web -f target_url="$RUN_URL" -f description="$description" > /dev/null

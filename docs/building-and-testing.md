@@ -64,9 +64,10 @@ programs), then runs `make test-cpu` and `make test-dsl`, and gets a `cpu` commi
 runs `make test-web BROWSERS=chromium` (`.github/workflows/web.yml`): Dawn under Node on lavapipe,
 and the pages in Playwright's Chromium headless shell on SwiftShader (`CHROMIUM` names it, so a
 missing one fails), and gets a `web` status. Firefox is skipped there, as it has no WebGPU on
-Linux; commits from before `web.yml` existed get no `web` status. The toolchain (apt packages, the
-LunarG SDK, ccache, Racket, Node) comes from `.github/actions/setup-zgal`, whose `toolchain` input
-is `native` or `web` (no SDK, clang or ccache).
+Linux; commits from before `web.yml` existed get no `web` check (the commits job leaves them out).
+The toolchain (apt packages, the LunarG SDK, ccache, Racket, Node) comes from
+`.github/actions/setup-zgal`, whose `toolchain` input is `native` or `web` (no SDK, clang or
+ccache).
 
 The GPU tests and example smoke tests don't run in CI yet, nor the web pages in Firefox: run them
 locally, one GPU run at a time on a machine.
@@ -79,6 +80,13 @@ Gotchas:
   `clang++` symlink rather than setting `CXX="ccache clang++"`.
 - Each commit's job takes its actions from the pushed tip's `.github` (checked out into `.ci`), as
   older commits have none or older ones.
+- Only jobs that run no code from the commits, npm or third-party actions hold a token that can post
+  statuses, as a job's steps share one user and file system (a build could plant a `gh` that a
+  later step runs with the token). The cpu and web jobs get `contents: read`; ci.yml's `pending`
+  job marks their checks pending and its `statuses` job, needing them all, posts each commit's
+  status from its job's conclusion in the run's jobs API, matched by the name `<context> <sha>`
+  (anything but success or failure is an error, so none stays pending). Those two check nothing
+  out, and no checkout persists its credentials.
 - Ubuntu 24.04's AppArmor forbids the unprivileged user namespaces Chromium's sandbox needs: the
   web job runs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` first.
 - `cancelled()` and `failure()` work only in `if:`; in `env:` the workflow fails to parse. Use
