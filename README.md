@@ -14,5 +14,6 @@ GLSL and C++ for the wrapper, or to WGSL and TypeScript for WebGPU.
 
 `make` builds the examples (`examples/`) into `build/examples/<name>/`, `make web` builds the
 particles, image_filter and scene examples for the web, and `make test` runs every test. Building needs the Vulkan SDK,
-`glslc`, GLFW, GLM, Racket 8 with Scribble, and Node 24 with npm. `CLAUDE.md` describes the
-targets, the layout and the wrapper's conventions in detail.
+`glslc`, GLFW, GLM, Racket 8 with Scribble, and Node 24 with npm. [`docs/`](docs/) describes the
+targets, the wrapper and ZGAL's development in detail
+([building and testing](docs/building-and-testing.md), [the wrapper](docs/wrapper.md)).
