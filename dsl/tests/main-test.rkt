@@ -137,3 +137,19 @@
   (check-zgal-error (with-main "(main Painter (title \"x\"))") 'unknown-clause "title")
   (check-zgal-error (with-main "(main Painter) (main Painter)") 'duplicate-clause "one main")
   (check-zgal-error (string-append clocked "(main Clock)") 'missing-clause "chooses its clock"))
+
+(test-case "On the web, the program's TypeScript gives what options don't"
+  (define (web text suffix)
+    (define o (for/first ([o (in-list (compile-text text #:web-dir "web"))] #:when (string-suffix? (output-path o) suffix)) o))
+    (and o (output-text o)))
+  (define text (string-append painter painter-main))
+  (define main (web text ".zgal.main.ts"))
+  (check-true (string-contains? main "import { mainInputs } from './test.inputs.ts';"))
+  (check-true (string-contains? main "Painter.create(context, newGraph(), { ...parameters, ...(await mainInputs(context)) })"))
+  (define module (web text ".zgal.ts"))
+  (check-true (string-contains? module "export interface MainInputs {\n  scale: number;\n  note: PainterInputs['note'];\n  seed: PainterInputs['seed'];\n}"))
+  ;; Without a main, or anything to give, neither
+  (define clock (string-append clocked "(main Clock (window \"Clock\" 640 360) (timestep #:max 0.25 #:fixed 1/60))\n"))
+  (check-false (string-contains? (web clock ".zgal.main.ts") "mainInputs"))
+  (check-false (string-contains? (web clock ".zgal.ts") "MainInputs"))
+  (check-false (string-contains? (web painter ".zgal.ts") "MainInputs")))

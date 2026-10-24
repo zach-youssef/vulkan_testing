@@ -88,17 +88,19 @@ $(ZGAL_WEB_PACKAGES): $(ZGAL_WEB_DIR)/package.json $(ZGAL_WEB_DIR)/package-lock.
 	@touch $@
 
 # A program for the web (a .zgal file with a main): generates its TypeScript into <out>/src beside a
-# copy of the runtime (web/zgal), and builds it to JavaScript in <out>: <name>.zgal.main.js, the
-# program, and for one with a window its page, <name>.zgal.html. The files under <dir>/assets are
-# copied to <out>/assets, where it finds them. Serve <out> and open the page, or run it headless
+# copy of the runtime (web/zgal) and the program's own TypeScript, the .ts files beside the .zgal file
+# (<name>.inputs.ts defining its mainInputs, if it has MainInputs), and builds it to JavaScript in
+# <out>: <name>.zgal.main.js, the program, and for one with a window its page, <name>.zgal.html. The
+# files under <dir>/assets are copied to <out>/assets, where it finds them. Serve <out> and open the page, or run it headless
 # under Node: node <out>/<name>.zgal.main.js --frames N.
 #   $(call zgal-web-program,<dir>/<name>.zgal,<out>)
 define zgal-web-program
-$(2)/src/$(notdir $(1)).stamp: $(1) $(ZGAL_COMPILED) $(ZGAL_WEB_RUNTIME) $(ZGAL_WEB_DIR)/program.tsconfig.json
+$(2)/src/$(notdir $(1)).stamp: $(1) $(wildcard $(dir $(1))*.ts) $(ZGAL_COMPILED) $(ZGAL_WEB_RUNTIME) $(ZGAL_WEB_DIR)/program.tsconfig.json
 	rm -rf $(2)/src
 	@mkdir -p $(2)/src
 	$(ZGAL) --web-out $(2)/src --depfile $(2)/src/$(notdir $(1)).d --dep-target $$@ $$<
 	cp -R $(ZGAL_WEB_DIR)/zgal $(2)/src/zgal
+	$(if $(wildcard $(dir $(1))*.ts),cp $(wildcard $(dir $(1))*.ts) $(2)/src/)
 	cp $(ZGAL_WEB_DIR)/program.tsconfig.json $(2)/src/tsconfig.json
 	echo '{"type": "module"}' > $(2)/src/package.json
 	ln -sfn $$(abspath $(ZGAL_WEB_DIR)/node_modules) $(2)/src/node_modules

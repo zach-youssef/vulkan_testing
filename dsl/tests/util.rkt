@@ -20,10 +20,11 @@
                       #:source [source "test.zgal"]
                       #:bodies [bodies (hash)]
                       #:header-dir [header-dir "out"]
-                      #:shader-dir [shader-dir "out/shaders"])
+                      #:shader-dir [shader-dir "out/shaders"]
+                      #:web-dir [web-dir #f])
   (define-values (_prog outputs)
     (compile-zgal source #:text text #:read-body (λ (path) (hash-ref bodies path #f))
-                  #:header-dir header-dir #:shader-dir shader-dir))
+                  #:header-dir header-dir #:shader-dir shader-dir #:web-dir web-dir))
   outputs)
 
 ;; The exn:zgal compiling text raises (for the web with web?), or #f

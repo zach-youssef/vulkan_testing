@@ -14,6 +14,7 @@
          "ts-body.rkt"
          "ts-common.rkt"
          "ts-graph.rkt"
+         "ts-main.rkt"
          "wgsl.rkt")
 
 (provide emit-typescript
@@ -84,6 +85,8 @@
 
   (for ([a (in-list (program-apps prog))])
     (for ([l (in-list (emit-ts-app prog a))]) (line! "~a" l)))
+  (when (program-main prog)
+    (for ([l (in-list (emit-ts-main-inputs prog (program-main prog)))]) (line! "~a" l)))
   (string-append (string-join (reverse out) "\n") "\n"))
 
 ;; A TypeScript template literal of WGSL, with the storage images' formats from `formats`

@@ -212,6 +212,12 @@ MAIN_TEST_BIN = $(MAIN_TEST_OUT)/painter
 
 $(eval $(call zgal-program,$(TEST_DIR)/main/painter.zgal,$(MAIN_TEST_OUT),painter,))
 
+# The same program for the web, its TypeScript giving the inputs (painter.inputs.ts); make test-web
+# runs it as test-main runs the native one
+MAIN_TEST_WEB = $(OUT)/web/main
+
+$(eval $(call zgal-web-program,$(TEST_DIR)/main/painter.zgal,$(MAIN_TEST_WEB)))
+
 test-main: $(MAIN_TEST_BIN) $(IMAGE_FILTER_DIFF)
 	./$(MAIN_TEST_BIN) --help > /dev/null
 	./$(MAIN_TEST_BIN) > /dev/null 2>&1; test $$? -eq 2
@@ -271,6 +277,12 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	$(MAKE) web
 	$(NODE) $(PARTICLES_WEB)/particles.zgal.main.js --frames 120 --size 1024x768 --capture $(PARTICLES_WEB)/smoke.png
 	$(NODE) $(SCENE_WEB)/scene.zgal.main.js --frames 60 --size 640x360 --capture $(SCENE_WEB)/smoke.png
+	$(MAKE) $(MAIN_TEST_WEB)
+	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js --help > /dev/null
+	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js > /dev/null 2>&1; test $$? -eq 2
+	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js $(TEST_DIR)/gpu/assets/missing.png $(MAIN_TEST_WEB)/out.png > /dev/null 2>&1; test $$? -eq 1
+	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_WEB)/out.png --level 0.5 --side 6 --frames 3 | grep -qx "level 0.25"
+	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/main/painted.approved.png $(MAIN_TEST_WEB)/out.png 0
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png 1
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/blur_edges.png --blur 2 --edges

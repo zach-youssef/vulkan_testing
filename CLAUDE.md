@@ -22,7 +22,8 @@ Agents migrating code written against the pre-refactor wrapper (the `main` branc
 - `make test-web`: compiles `web/tests/*.zgal` to TypeScript and WGSL in `build/web-tests` beside
   a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node, then
   builds the particles, image_filter and scene examples for the web (`make web`) and runs them under Node
-  (image_filter's outputs compared with `web/tools/image-diff.ts`), then the particles and scene pages,
+  (image_filter's outputs compared with `web/tools/image-diff.ts`) and `tests/main/painter.zgal` as
+  `make test-main` runs it natively (its TypeScript giving its `MainInputs`), then the particles and scene pages,
   `web/tests/mount.html` (mounts two programs and stops one), `web/tests/image-file.html` and the
   kernels, indirect and models pages in headless Chromium and in Firefox, which opens a window (`make test-pages`; a browser that isn't
   installed is skipped: Playwright's headless shell or `CHROMIUM`, and `FIREFOX`)
@@ -424,7 +425,10 @@ writing ZGAL: it has the language, what's generated and every error. In short:
   native options, or in its page (`FILE.zgal.html`, which calls its `run()`); other pages embed it
   with its `mount(canvas, options)` (`mountProgram` in `web/zgal/main-browser.ts`, which `runPage`
   wraps; `stop()` frees it); `zgal.mk`'s `zgal-web-program` builds it to
-  JavaScript (`make web`: `build/web/particles`, `build/web/image_filter`, `build/web/scene`). Vertex positions keep Vulkan's clip space (the
+  JavaScript (`make web`: `build/web/particles`, `build/web/image_filter`, `build/web/scene`).
+  What options can't give, the program's TypeScript gives: the module declares `MainInputs`, and
+  `NAME.inputs.ts` beside the `.zgal` file (with any other `.ts` there, copied into the build)
+  exports `mainInputs(context)` returning it or a promise of it (`tests/main/painter.inputs.ts`). Vertex positions keep Vulkan's clip space (the
   WGSL negates y). A material is a bind
   group (binding i is its i'th binding, push constants a uniform buffer after them); buffers of
   small integers or with atomics are 32-bit words at std430 offsets. Models load with the runtime's

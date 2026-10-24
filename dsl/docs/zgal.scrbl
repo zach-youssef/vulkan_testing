@@ -1955,7 +1955,7 @@ script (changing the frames in flight) is in its app's frame handler:
 @tt{Launch}), counting validation messages, captures and running a headless program
 (@tt{zgal::runHeadless}); @tt{include/zgal/Window.h} runs one with a window (@tt{zgal::runWindowed}).
 
-@subsection[#:tag "main-inputs"]{What C++ gives}
+@subsection[#:tag "main-inputs"]{What the program's code gives}
 
 What the command line can't give the app (its @racket[extern] functions, its graphs' inputs it
 doesn't compute, such as meshes, and parameters no option sets), the program's own C++ does: the
@@ -1983,6 +1983,23 @@ ZGAL
 
 Result<example::MainInputs> example::mainInputs(VulkanContext&) {
     return MainInputs{.limit = 10, .report = [](uint32_t x) { std::cout << x << std::endl; }};
+}
+}
+
+On the web, the program's TypeScript gives them: its module declares @tt{interface MainInputs},
+and @tt{example.inputs.ts}, beside @tt{example.zgal}, exports @tt{mainInputs(context)}, returning
+them or a promise of them, which the generated main (@tt{example.zgal.main.ts}) imports. The
+@tt{.ts} files beside the @tt{.zgal} file are the program's own TypeScript, which
+@tt{zgal-web-program} builds with it:
+
+@(generated-file hooked-source "example.zgal.ts" #:web? #t #:from #rx"^// What the program's TypeScript gives" #:to #rx"^}")
+
+@verbatim{
+import type * as zgal from './zgal/index.ts';
+import type { MainInputs } from './example.zgal.ts';
+
+export function mainInputs(_context: zgal.Context): MainInputs {
+  return { limit: 10, report: (x) => console.log(x) };
 }
 }
 
@@ -2302,8 +2319,8 @@ beside them. Indirect dispatches and draws run on the web too (@secref["indirect
 models and meshes: the runtime loads glTF (@tt{.gltf}, @tt{.glb}) and OBJ files itself, as the
 C++ does, and a meshes input is an array of the runtime's @tt{Mesh}es, which @tt{createMesh} makes
 from vertices @tt{encodeVertices} lays out as the module's vertex format descriptions (a constant
-per vertex format) say. Programs whose own code gives the app inputs (externs,
-imports, parameters no option sets) don't run on the web yet. WebGPU's samplers have no border colour, and its buffers can't be
+per vertex format) say. What a program's own code gives the app goes through
+@tt{mainInputs} on the web too (@secref["main-inputs"]). WebGPU's samplers have no border colour, and its buffers can't be
 mapped while the GPU uses them, so samplers clamping to a border and cpu nodes reading or writing
 imported buffers can't be either. Compiling any of them for the web reports
 @secref["error-not-on-web"].

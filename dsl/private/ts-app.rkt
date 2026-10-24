@@ -13,7 +13,8 @@
          "ts-body.rkt"
          "ts-common.rkt")
 
-(provide emit-ts-app)
+(provide emit-ts-app
+         graph-input?)
 
 (define (lower-first s) (string-append (string-downcase (substring s 0 1)) (substring s 1)))
 

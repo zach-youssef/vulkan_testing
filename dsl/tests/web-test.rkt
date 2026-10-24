@@ -88,17 +88,3 @@
                     "the same #:color")
   (check-not-on-web (graph "(import-images given #:resting shader-read-only)" "(material m Layered (layers given) counts)")
                     "can't be imported"))
-
-(test-case "Apps and programs the web backend doesn't run yet"
-  (check-not-on-web
-   (string-append fill
-                  "(graph G
-                     (buffer values uint 1 #:frames shared)
-                     (material m Fill (values values) #:invocations (1))
-                     (dispatch d m))
-                   (app A
-                     (parameter level uint)
-                     (state (x uint 0))
-                     (run G))
-                   (main A)")
-   "level"))
