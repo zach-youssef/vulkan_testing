@@ -2,10 +2,17 @@
 
 ## Requirements
 
-The Vulkan SDK (path in the Makefile), `glslc`, GLFW and GLM for the wrapper; Racket 8 (`racket`
-and `raco`, with Scribble, as in the main distribution) for ZGAL; Node 24 (which runs TypeScript)
-and npm for ZGAL's web backend. Development happens on an Apple M4 with MoltenVK
+The Vulkan SDK, `glslc`, GLFW and GLM for the wrapper; Racket 8 (`racket` and `raco`, with
+Scribble, as in the main distribution) for ZGAL; Node 24 (which runs TypeScript) and npm for ZGAL's
+web backend. Development happens on an Apple M4 with MoltenVK
 ([wrapper.md](wrapper.md#the-development-device) has what that means for code).
+
+`zgal.mk` finds the Vulkan headers and loader in `$VULKAN_SDK` when it's set (the SDK's
+`setup-env.sh` sets it), else in the system's paths: on macOS `/usr/local` (where the SDK's
+installer puts them) and Homebrew's for GLFW and GLM; on Linux the default ones (e.g. Ubuntu's
+`libvulkan-dev`, `libglfw3-dev`, `libglm-dev`, plus `mesa-vulkan-drivers` for lavapipe). The
+compiler is clang, the one tested (`c++` on macOS, with libc++; `clang++` on Linux, with
+libstdc++), unless `CXX` is given (`make CXX=g++`).
 
 ## Make targets
 

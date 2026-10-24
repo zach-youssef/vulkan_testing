@@ -6,11 +6,28 @@
 #     $(eval $(call zgal-program,game/game.zgal,build/game,game,-lglfw))
 #     $(eval $(call zgal-web-program,game/game.zgal,build/web/game))
 #
-# The including Makefile defines CC, CFLAGS (a C++20 compiler's flags, with the Vulkan SDK's include
-# path), LDFLAGS and LDLIBS (with -lvulkan); ZGAL_CFLAGS adds the wrapper's include paths to the
-# rules' compilations. ZGAL_ROOT is the wrapper's directory, by default this file's.
+# The including Makefile defines CXX (a C++20 compiler), CFLAGS (its flags), LDFLAGS and LDLIBS
+# (with -lvulkan). ZGAL_CFLAGS adds the wrapper's include paths and the platform's (the Vulkan
+# headers, GLM, GLFW) to the rules' compilations, and ZGAL_LDFLAGS the platform's library paths to
+# their links; a Makefile can use both for its own targets too. ZGAL_ROOT is the wrapper's
+# directory, by default this file's.
 # ---------------------------------------------------------------------------
 ZGAL_ROOT ?= $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))
+
+# The platform. The Vulkan headers and loader are the SDK's when VULKAN_SDK is set (the SDK's
+# setup-env.sh sets it), else the system's. On macOS, the SDK's installer puts them in /usr/local
+# and Homebrew has GLFW and GLM; on Linux they're in the system's default paths (e.g. the
+# libvulkan-dev, libglfw3-dev and libglm-dev packages). Programs find a loader outside the default
+# paths (the SDK's, or /usr/local's on macOS) at run time through an rpath.
+ZGAL_OS := $(shell uname -s)
+# A comma, for flags inside $(if)
+ZGAL_COMMA := ,
+ZGAL_PLATFORM_CFLAGS = $(if $(VULKAN_SDK),-I$(VULKAN_SDK)/include)
+ZGAL_LDFLAGS = $(if $(VULKAN_SDK),-L$(VULKAN_SDK)/lib -Wl$(ZGAL_COMMA)-rpath$(ZGAL_COMMA)$(VULKAN_SDK)/lib)
+ifeq ($(ZGAL_OS),Darwin)
+ZGAL_PLATFORM_CFLAGS += -I/usr/local/include -I/opt/homebrew/include
+ZGAL_LDFLAGS += -L/usr/local/lib -L/opt/homebrew/lib -Wl,-rpath,/usr/local/lib
+endif
 
 RACKET = racket
 RACO = raco
@@ -22,7 +39,7 @@ ZGAL = $(RACKET) $(ZGAL_DSL_DIR)/zgal.rkt
 
 # The wrapper's headers and the libraries it compiles (stb, cgltf, tinyobjloader)
 ZGAL_CFLAGS = -I$(ZGAL_ROOT)/include -I$(ZGAL_ROOT)/third_party/stb -I$(ZGAL_ROOT)/third_party/cgltf \
-              -I$(ZGAL_ROOT)/third_party/tinyobjloader
+              -I$(ZGAL_ROOT)/third_party/tinyobjloader $(ZGAL_PLATFORM_CFLAGS)
 ZGAL_HEADERS = $(shell find $(ZGAL_ROOT)/include -name '*.h')
 # Shaders include the wrapper's GLSL (e.g. bindless.glsl)
 ZGAL_GLSL_INCLUDES = $(wildcard $(ZGAL_ROOT)/include/glsl/*.glsl)
@@ -63,16 +80,15 @@ define zgal-program
 $(call zgal-rule,$(1),$(2)/generated,$(2)/shaders)
 $(2)/$(notdir $(1)).main.o: $(2)/generated/$(notdir $(1)).stamp $$(ZGAL_HEADERS)
 	@mkdir -p $$(dir $$@)
-	$$(CC) -c -o $$@ $(2)/generated/$(notdir $(1)).main.cpp $$(CFLAGS) $$(ZGAL_CFLAGS) -I$(2)/generated
+	$$(CXX) -c -o $$@ $(2)/generated/$(notdir $(1)).main.cpp $$(CFLAGS) $$(ZGAL_CFLAGS) -I$(2)/generated
 $(if $(wildcard $(dir $(1))*.cpp),$(patsubst $(dir $(1))%.cpp,$(2)/%.o,$(wildcard $(dir $(1))*.cpp)): $(2)/%.o: $(dir $(1))%.cpp $(2)/generated/$(notdir $(1)).stamp $$(ZGAL_HEADERS)
 	@mkdir -p $$(dir $$@)
-	$$(CC) -c -o $$@ $$< $$(CFLAGS) $$(ZGAL_CFLAGS) -I$(2)/generated)
+	$$(CXX) -c -o $$@ $$< $$(CFLAGS) $$(ZGAL_CFLAGS) -I$(2)/generated)
 $(2)/assets/%: $(dir $(1))assets/%
 	@mkdir -p $$(dir $$@)
 	cp $$< $$@
 $(2)/$(3): $(2)/$(notdir $(1)).main.o $(patsubst $(dir $(1))%.cpp,$(2)/%.o,$(wildcard $(dir $(1))*.cpp)) | $(patsubst $(dir $(1))assets/%,$(2)/assets/%,$(shell find $(dir $(1))assets -type f 2>/dev/null))
-	$$(CC) $$(filter %.o,$$^) -o $$@ $$(LDFLAGS) $$(LDLIBS) $(4)
-	install_name_tool -add_rpath /usr/local/lib ./$$@
+	$$(CXX) $$(filter %.o,$$^) -o $$@ $$(LDFLAGS) $$(ZGAL_LDFLAGS) $$(LDLIBS) $(4)
 endef
 
 # The web backend's npm packages (TypeScript, and Dawn, WebGPU for Node), which building and running
