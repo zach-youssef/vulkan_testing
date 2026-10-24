@@ -39,4 +39,4 @@ if (fraction > maxFraction) {
   console.error(`image-diff: ${differing} of ${pixels} pixels (${(fraction * 100).toFixed(3)}%) differ by more than ${tolerance} (largest ${largest})`);
   process.exit(1);
 }
-console.log(`image-diff: ${args[1]} matches ${args[0]} (largest difference ${largest})`);
+console.log(`image-diff: ${args[1]} matches ${args[0]} (largest difference ${largest}, ${differing} of ${pixels} pixels beyond ${tolerance})`);

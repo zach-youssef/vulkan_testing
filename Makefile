@@ -81,8 +81,9 @@ $(IMAGE_FILTER_DIFF): $(IMAGE_FILTER_TEST_DIR)/image_diff.cpp
 
 # Every pass on the simple example's texture with validation on (any message fails the run), then
 # golden checks on a small input: without filters the output must match the input (colour spaces
-# round trip), and blur plus edges must match the approved output within a tolerance. To approve a
-# new output, run the blur and edges command below and copy its output over the approved image.
+# round trip), blur plus edges must match the approved output within a tolerance, and so must blur,
+# edges and threshold (but for the few pixels next to the threshold). To approve a new output, run
+# its command below and copy its output over the approved image.
 test-example-image_filter: $(IMAGE_FILTER_BIN) $(IMAGE_FILTER_DIFF)
 	@mkdir -p $(IMAGE_FILTER_TEST_OUT)
 	./$(IMAGE_FILTER_BIN) $(SIMPLE_DIR)/textures/texture.jpg $(IMAGE_FILTER_TEST_OUT)/all_passes.png \
@@ -92,6 +93,14 @@ test-example-image_filter: $(IMAGE_FILTER_BIN) $(IMAGE_FILTER_DIFF)
 	./$(IMAGE_FILTER_BIN) $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_TEST_OUT)/blur_edges.png \
 		--blur 2 --edges --validation
 	./$(IMAGE_FILTER_DIFF) $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(IMAGE_FILTER_TEST_OUT)/blur_edges.png 2
+	./$(IMAGE_FILTER_BIN) $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_TEST_OUT)/threshold.png \
+		--blur 2 --edges --threshold 0.15 --validation
+	./$(IMAGE_FILTER_DIFF) $(IMAGE_FILTER_TEST_DIR)/threshold.approved.png $(IMAGE_FILTER_TEST_OUT)/threshold.png 0 $(IMAGE_FILTER_THRESHOLD_FLIPS)
+
+# Pixels whose edge magnitude is next to the threshold can come out either side of it on different
+# devices: the fraction of the threshold test's pixels that may differ. About twice what lavapipe
+# flips (8 of 16384 pixels; none on the Mac, natively or on Dawn), so a real change still fails.
+IMAGE_FILTER_THRESHOLD_FLIPS = 0.001
 
 # For the web: build/web/image_filter (runs headless under Node)
 IMAGE_FILTER_WEB = $(OUT)/web/image_filter
@@ -269,9 +278,9 @@ MODEL_ASSETS = $(addprefix tests/gpu/assets/,halves.gltf broken.gltf quad.obj qu
 test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	rm -rf $(WEB_TEST_OUT)
 	@mkdir -p $(WEB_TEST_OUT)
-	for f in $(WEB_DIR)/tests/*.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) $$f || exit 1; done
+	for f in $(WEB_DIR)/tests/*.zgal $(IMAGE_FILTER_DIR)/image_filter.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) $$f || exit 1; done
 	cp -R $(WEB_DIR)/zgal $(WEB_DIR)/tests $(WEB_DIR)/tools $(WEB_DIR)/package.json $(WEB_DIR)/tsconfig.json $(WEB_TEST_OUT)/
-	cp $(MODEL_ASSETS) $(WEB_TEST_OUT)/tests/assets/
+	cp $(MODEL_ASSETS) $(IMAGE_FILTER_TEST_DIR)/input.png $(WEB_TEST_OUT)/tests/assets/
 	ln -s $(CURDIR)/$(WEB_DIR)/node_modules $(WEB_TEST_OUT)/node_modules
 	cd $(WEB_TEST_OUT) && $(NODE) node_modules/typescript/bin/tsc -p . && $(NODE) --test $(TEST_ARGS) 'tests/*.test.ts'
 	$(MAKE) web
@@ -287,6 +296,8 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png 1
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/blur_edges.png --blur 2 --edges
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(IMAGE_FILTER_WEB)/blur_edges.png 2
+	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/threshold.png --blur 2 --edges --threshold 0.15
+	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/threshold.approved.png $(IMAGE_FILTER_WEB)/threshold.png 0 $(IMAGE_FILTER_THRESHOLD_FLIPS)
 	$(MAKE) test-pages
 
 # The examples' pages, embedding programs (web/tests/mount.html), loading image files

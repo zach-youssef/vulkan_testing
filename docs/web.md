@@ -20,8 +20,9 @@ This page has what the reference doesn't: the runtime's conventions and how to t
 
 `make test-web` (`TEST_ARGS` go to `node --test`):
 
-1. compiles `web/tests/*.zgal` to TypeScript and WGSL in `build/web-tests`, beside a copy of the
-   runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node;
+1. compiles `web/tests/*.zgal` (and the image_filter example, which `image-filter.test.ts` runs
+   without the `texture-formats-tier2` feature) to TypeScript and WGSL in `build/web-tests`, beside
+   a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node;
 2. builds the particles, image_filter and scene examples for the web (`make web`, into
    `build/web/<name>`) and runs them under Node, comparing image_filter's outputs with
    `web/tools/image-diff.ts` (which compares PNGs as `image_diff.cpp` does), and runs
@@ -34,6 +35,11 @@ This page has what the reference doesn't: the runtime's conventions and how to t
    top), and has no WebGPU on Linux (CI skips it). A browser found nowhere is skipped (Chromium is
    Playwright's headless shell, Firefox the macOS application or `firefox` on `PATH`), but one
    `CHROMIUM` or `FIREFOX` names must exist.
+
+Not every device has WebGPU's optional features: Dawn on lavapipe and Chromium's SwiftShader lack
+`texture-formats-tier2`, so programs that should run everywhere (the examples) don't bind
+half-float storage images read-write. `Context.create`'s `withoutFeatures` lets a test check a
+program on a device without a feature its own adapter has.
 
 `web/tools/check-wgsl.ts` compiles WGSL with Dawn.
 
