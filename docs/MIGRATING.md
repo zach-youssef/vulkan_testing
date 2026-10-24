@@ -5,7 +5,7 @@ For agents porting a codebase (e.g. `~/code/ppu`) written against the wrapper as
 `VkDevice`/`VkPhysicalDevice`/`VkQueue`/`VkCommandPool` arguments and owned by `std::unique_ptr`,
 descriptor sets per material, and render graphs wired with explicit edges.
 
-Read the repository's `CLAUDE.md` for the new model, and `examples/simple/simple_example.cpp`, which
+Read [wrapper.md](wrapper.md) for the new model, and `examples/simple/simple_example.cpp`, which
 is the old example ported. Comparing `git show main:vulkan_test/main.cpp` with it is the fastest way
 to see a full migration.
 
