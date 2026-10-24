@@ -30,7 +30,8 @@ libstdc++), unless `CXX` is given (`make CXX=g++`).
   it), installing the web backend's npm packages (`web/`) first. `make docs` only builds the
   documentation: `build/docs/zgal.html`, and `build/docs/zgal.txt` to read in a terminal.
 - `make test-web` and `make test-pages`: the web backend's tests ([web.md](web.md#tests); `make
-  test` includes them). `make web` builds the web examples.
+  test` includes them), with pages in headless Chromium only unless `BROWSERS="chromium firefox"`
+  (Firefox opens windows). `make web` builds the web examples.
 - `make run-bench`: times ZGAL's library kernels (`tools/bench`; see "Profiling").
 - `zgal.mk`: the make rules building ZGAL programs (`zgal-rule`, `zgal-program`), which the Makefile
   and other projects' Makefiles include.

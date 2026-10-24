@@ -1,7 +1,7 @@
 // Runs a ZGAL page (FILE.zgal.html) in Firefox and checks it: prints the page's console and messages,
 // optionally presses keys, screenshots its canvas and compares it with an approved PNG. Exits with 0
-// when the page ran without errors (and matched), 1 when it failed, didn't match or timed out, 2 for a
-// bad command line, 3 when there's no Firefox.
+// when the page ran without errors (and matched), 1 when it failed, didn't match or timed out (or the
+// Firefox named doesn't exist), 2 for a bad command line, 3 when it found no Firefox.
 //
 //     node web/tools/firefox.ts [options] PAGE
 //
@@ -15,17 +15,18 @@
 //   --screenshot FILE   writes the canvas's pixels (at its own resolution, not the page's scale)
 //   --compare FILE      compares the canvas with an approved PNG of the same size
 //   --headless          runs without a window (Firefox has no WebGPU adapter headless, so pages fail)
-//   --firefox PATH      the Firefox binary (default $FIREFOX, else the macOS application's)
+//   --firefox PATH      the Firefox binary (default $FIREFOX, else the macOS application's, else
+//                       firefox on PATH, as on Linux)
 //
 // Firefox is driven with WebDriver BiDi in a fresh profile, deleted afterwards. chromium.ts checks
 // pages the same way in headless Chromium; pages.ts has what they share.
-import { existsSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { type Browser, JsonSocket, jsonExpression, runChecker, startBrowser } from './pages.ts';
+import { type Browser, JsonSocket, findBrowser, jsonExpression, runChecker, startBrowser } from './pages.ts';
 
 interface Options {
   headless: boolean;
-  firefox: string;
+  firefox?: string;
 }
 
 // A WebDriver BiDi command's result
@@ -38,17 +39,15 @@ async function send(bidi: JsonSocket, method: string, params: object): Promise<a
 await runChecker<Options>('firefox', {
   options: {
     headless: { type: 'boolean', default: false },
-    firefox: { type: 'string', default: process.env.FIREFOX ?? '/Applications/Firefox.app/Contents/MacOS/firefox' },
+    firefox: { type: 'string', default: process.env.FIREFOX },
   },
   usage: '[--headless] [--firefox PATH]',
   async launch(options, log): Promise<Browser> {
-    if (!existsSync(options.firefox)) {
-      console.error(`No Firefox at ${options.firefox}: set FIREFOX or --firefox`);
-      process.exit(3);
-    }
+    const binary = findBrowser('Firefox', options.firefox, ['/Applications/Firefox.app/Contents/MacOS/firefox', 'firefox'],
+      'install it, or set FIREFOX or --firefox');
     // Port 0: Firefox picks a free one and prints it. A fresh profile and instance, so a Firefox
     // already open isn't touched; the window is large enough to show a 256x240 canvas at 3x.
-    const firefox = await startBrowser('Firefox', options.firefox, (profile) => {
+    const firefox = await startBrowser('Firefox', binary, (profile) => {
       writeFileSync(join(profile, 'user.js'), [
         'user_pref("dom.webgpu.enabled", true);',
         'user_pref("browser.shell.checkDefaultBrowser", false);',

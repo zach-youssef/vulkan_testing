@@ -2285,11 +2285,13 @@ as native programs find theirs. The page's state is in its root element's @tt{da
 (in a window, for WebGPU), prints its console, presses keys and compares the canvas with an
 approved PNG, e.g. @tt{node web/tools/firefox.ts --serve build/web/smb3 --compare 120.png
 'smb3.zgal.html?frames=120'}. @tt{web/tools/chromium.ts} does the same in headless Chromium (by
-default Playwright's headless shell) on SwiftShader, its software adapter, needing no window or GPU,
-and @tt{make test-pages} checks the examples' pages and its test pages with both (skipping a
-browser that isn't installed). Headless Chromium shows WebGPU canvases
-of a SwiftShader device only when its compositor runs on SwiftShader too
-(@tt{--use-angle=swiftshader}), which the tool passes.
+default Playwright's headless shell) on SwiftShader, its software adapter, needing no window or GPU.
+@tt{make test-pages} checks the examples' pages and its test pages in each browser of
+@tt{BROWSERS}: by default only headless Chromium, as Firefox opens windows; @tt{make test-pages
+BROWSERS="chromium firefox"} adds it. A browser found nowhere is skipped, but one @tt{CHROMIUM} or
+@tt{FIREFOX} names must exist. Headless Chromium shows WebGPU canvases of a SwiftShader device only
+with all of @tt{--use-angle=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader}, on macOS
+and Linux alike, which the tool passes (see @tt{docs/web.md}).
 
 Other pages embed programs: the main of a program with a window exports @tt{mount(canvas, options)},
 which runs it in a canvas of the page (@tt{zgal.mountProgram}) and returns an object whose

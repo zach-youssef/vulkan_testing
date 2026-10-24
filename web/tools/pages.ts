@@ -4,13 +4,14 @@
 //
 // A page reports its state in <html data-zgal="running|stopped|failed"> (web/zgal/main-browser.ts).
 // Checkers exit with 0 when the page ran without errors (and matched), 1 when it failed, didn't match
-// or timed out, 2 for a bad command line.
+// or timed out (or the browser named doesn't exist), 2 for a bad command line, 3 when they found no
+// browser where they look by default (findBrowser).
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { extname, join, resolve, sep } from 'node:path';
+import { delimiter, extname, join, resolve, sep } from 'node:path';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { decodePng, encodePng } from '../zgal/png.ts';
 
@@ -209,6 +210,44 @@ export async function runChecker<O>(name: string, checker: Checker<O>): Promise<
 // The value of a script evaluated as JSON in the page (both drivers return strings as they are)
 export function jsonExpression(expression: string): string {
   return `(async () => JSON.stringify((await (${expression})) ?? null))()`;
+}
+
+// The program a path names, or a name on PATH names, if it exists
+function executable(program: string): string | null {
+  const runnable = (path: string) => {
+    try {
+      accessSync(path, constants.X_OK);
+      return statSync(path).isFile();
+    } catch {
+      return false;
+    }
+  };
+  if (program.includes(sep)) return runnable(program) ? program : null;
+  for (const directory of (process.env.PATH ?? '').split(delimiter)) {
+    if (directory && runnable(join(directory, program))) return join(directory, program);
+  }
+  return null;
+}
+
+// The browser's binary: the one named (by an option or an environment variable), exiting with 1 when
+// it doesn't exist, as whoever named it expects it to run; else the first of the defaults (paths, or
+// names on PATH) that exists, exiting with 3 (no browser, so the caller can skip it) when none does.
+// An empty name (e.g. CHROMIUM=) names nothing.
+export function findBrowser(name: string, named: string | undefined, defaults: string[], hint: string): string {
+  if (named !== undefined && named !== '') {
+    const found = executable(named);
+    if (!found) {
+      console.error(`No ${name} at ${named}`);
+      process.exit(1);
+    }
+    return found;
+  }
+  for (const candidate of defaults) {
+    const found = executable(candidate);
+    if (found) return found;
+  }
+  console.error(`No ${name}${defaults.length > 0 ? ` (looked for ${defaults.join(', ')})` : ''}: ${hint}`);
+  process.exit(3);
 }
 
 // Starts a browser in a fresh profile directory (deleted when it stops), waiting for its stderr to

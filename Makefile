@@ -291,8 +291,13 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 
 # The examples' pages, embedding programs (web/tests/mount.html), loading image files
 # (web/tests/image-file.html), the compute library (web/tests/kernels.html), indirect work
-# (web/tests/indirect.html) and models (web/tests/models.html), with web/tests' graphs built into graphs/, in headless Chromium on SwiftShader and in Firefox (in a window: it has
-# no WebGPU adapter headless), each skipped when it isn't installed (the tools exit with 3)
+# (web/tests/indirect.html) and models (web/tests/models.html), with web/tests' graphs built into
+# graphs/, in each of BROWSERS: by default only headless Chromium on SwiftShader. Firefox opens
+# windows (it has no WebGPU adapter headless, nor any on Linux), so it runs only when asked:
+# make test-pages BROWSERS="chromium firefox" (or test-web, or test), as the pre-push check of a
+# stack's top does. A browser found nowhere is skipped (the tools exit with 3); one named by CHROMIUM
+# or FIREFOX must exist.
+BROWSERS = chromium
 TEST_PAGES = $(OUT)/web/tests
 test-pages: web
 	rm -rf $(TEST_PAGES)
@@ -305,7 +310,7 @@ test-pages: web
 	echo '{"type": "module"}' > $(TEST_PAGES)/graphs/src/package.json
 	ln -sfn $(abspath $(WEB_DIR)/node_modules) $(TEST_PAGES)/graphs/src/node_modules
 	$(NODE) $(WEB_DIR)/node_modules/typescript/bin/tsc -p $(TEST_PAGES)/graphs/src --outDir $(TEST_PAGES)/graphs --rootDir $(TEST_PAGES)/graphs/src
-	for browser in chromium firefox; do \
+	for browser in $(BROWSERS); do \
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(PARTICLES_WEB) --keys ' 2' 'particles.zgal.html?frames=60'; \
 	  status=$$?; if [ $$status -eq 3 ]; then echo "test-pages: $$browser skipped (not installed)"; continue; fi; \
 	  [ $$status -eq 0 ] || exit $$status; \

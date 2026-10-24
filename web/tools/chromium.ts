@@ -1,7 +1,8 @@
 // Runs a ZGAL page (FILE.zgal.html) in headless Chromium and checks it, as firefox.ts does in Firefox:
 // prints the page's console and messages, optionally presses keys, screenshots its canvas and compares
 // it with an approved PNG. Exits with 0 when the page ran without errors (and matched), 1 when it
-// failed, didn't match or timed out, 2 for a bad command line, 3 when no Chromium was found.
+// failed, didn't match or timed out (or the Chromium named doesn't exist), 2 for a bad command line, 3
+// when no Chromium was found.
 //
 //     node web/tools/chromium.ts [options] PAGE
 //
@@ -10,15 +11,17 @@
 //   --chromium PATH     the Chromium binary (default $CHROMIUM, else the newest headless shell
 //                       Playwright installed: npx playwright install chromium-headless-shell)
 //
-// Pages run on SwiftShader, Chromium's software WebGPU adapter, by default, so they run without a GPU
-// or a window. Chromium's compositor runs on SwiftShader too (--use-angle=swiftshader), as it does
-// where the GPU is blocklisted: by default headless Chromium's can't show canvases of a SwiftShader
-// device (their textures are invalid). Chromium is driven with the DevTools protocol in a fresh
-// profile, deleted afterwards.
+// Pages run on SwiftShader, Chromium's software WebGPU adapter, by default, so they run without a
+// GPU or a window, the same on macOS and Linux. Showing a SwiftShader device's canvases takes all
+// of --use-angle=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader: without the Vulkan
+// ones, canvases fail ("A valid external Instance reference no longer exists"), and with Vulkan on
+// the system's driver (e.g. lavapipe) they stay blank. --hardware drops them, as
+// --use-angle=swiftshader would override --enable-gpu. Chromium is driven with the DevTools
+// protocol in a fresh profile, deleted afterwards.
 import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { type Browser, JsonSocket, jsonExpression, runChecker, startBrowser } from './pages.ts';
+import { type Browser, JsonSocket, findBrowser, jsonExpression, runChecker, startBrowser } from './pages.ts';
 
 interface Options {
   hardware: boolean;
@@ -71,12 +74,10 @@ await runChecker<Options>('chromium', {
   },
   usage: '[--hardware] [--chromium PATH]',
   async launch(options, log): Promise<Browser> {
-    const binary = options.chromium ?? playwrightShell();
-    if (!binary) {
-      console.error('No Chromium: set CHROMIUM or --chromium, or run npx playwright install chromium-headless-shell');
-      process.exit(3);
-    }
-    const graphics = options.hardware ? ['--enable-gpu'] : ['--use-angle=swiftshader'];
+    const shell = playwrightShell();
+    const binary = findBrowser('Chromium', options.chromium, shell ? [shell] : [],
+      'set CHROMIUM or --chromium, or run npx playwright install chromium-headless-shell');
+    const graphics = options.hardware ? ['--enable-gpu'] : ['--use-angle=swiftshader', '--enable-features=Vulkan', '--use-vulkan=swiftshader'];
     const chromium = await startBrowser('Chromium', binary, (profile) => ['--headless', '--remote-debugging-port=0',
       `--user-data-dir=${profile}`, '--no-first-run', '--enable-unsafe-webgpu', ...graphics, '--window-size=1024,900',
       'about:blank'], /DevTools listening on (ws:\/\/\S+)/);
