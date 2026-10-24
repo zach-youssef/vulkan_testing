@@ -54,12 +54,16 @@ runs:
         path: ~/vulkansdk.tar.xz
         key: vulkan-sdk-linux-${{ inputs.vulkan-sdk-version }}
 
+    # A slow download from LunarG once took 21 minutes, as curl had no timeout. An attempt at the
+    # ~300 MB tarball is abandoned below 1 MB/s for 30 s or after 5 minutes, and is retried, as are
+    # resets, partial transfers and 4xx (--retry-all-errors). No retry starts after 5 minutes, so the
+    # download gives up after about 10
     - name: Download the Vulkan SDK
       if: inputs.toolchain == 'native' && steps.sdk-cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         SDK_VERSION: ${{ inputs.vulkan-sdk-version }}
-      run: curl -sSfL --retry 3 -o ~/vulkansdk.tar.xz "https://sdk.lunarg.com/sdk/download/$SDK_VERSION/linux/vulkansdk-linux-x86_64-$SDK_VERSION.tar.xz"
+      run: curl -sSfL --retry 3 --retry-all-errors --retry-max-time 300 --connect-timeout 30 --speed-limit 1000000 --speed-time 30 --max-time 300 -o ~/vulkansdk.tar.xz "https://sdk.lunarg.com/sdk/download/$SDK_VERSION/linux/vulkansdk-linux-x86_64-$SDK_VERSION.tar.xz"
 
     # setup-env.sh leaves VK_LAYER_PATH empty, and exporting that empty value would hide the layers
     # VK_ADD_LAYER_PATH adds, so it isn't exported

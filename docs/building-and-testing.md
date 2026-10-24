@@ -91,6 +91,9 @@ Gotchas:
   web job runs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` first.
 - `cancelled()` and `failure()` work only in `if:`; in `env:` the workflow fails to parse. Use
   `job.status` there.
+- LunarG's SDK download can crawl (once for 21 minutes): setup-zgal abandons an attempt below
+  1 MB/s for 30 s or after 5 minutes and retries any failure, starting none after 5 minutes, so it
+  gives up after about 10.
 - Jobs that build no C++ use setup-zgal's `web` toolchain, which saves no ccache: saving it under
   the commit's key before the cpu job does would make the cpu job's save, with its new objects,
   fail.
