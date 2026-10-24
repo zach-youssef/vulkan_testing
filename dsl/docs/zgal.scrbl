@@ -115,8 +115,9 @@ are unique within a file.
 @subsection[#:tag "building"]{The Makefile}
 
 @tt{zgal.mk}, which the repository's Makefile includes, has the rules; other projects' Makefiles
-include it too (e.g. from the wrapper as a submodule), defining @tt{CC}, @tt{CFLAGS},
-@tt{LDFLAGS} and @tt{LDLIBS} first. Its @tt{zgal-rule} generates a @tt{.zgal} file's outputs into a directory, with a stamp
+include it too (e.g. from the wrapper as a submodule), defining @tt{CXX}, @tt{CFLAGS},
+@tt{LDFLAGS} and @tt{LDLIBS} first. It adds the platform's include and library paths (the Vulkan
+SDK's when @tt{VULKAN_SDK} is set) to its rules' compilations and links. Its @tt{zgal-rule} generates a @tt{.zgal} file's outputs into a directory, with a stamp
 file that depends on the @tt{.zgal} file, its shader bodies and the compiler, and compiles its
 shaders. @tt{zgal-program} builds a program (@secref["main"]) on it: the generated main, the
 program's own C++ (the @tt{.cpp} files beside the @tt{.zgal} file), its SPIR-V in @tt{shaders/}

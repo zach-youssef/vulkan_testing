@@ -1,20 +1,22 @@
-# Compiler
-CC = /usr/bin/g++
-CXX = $(CC)
+# Compiler: c++ unless CXX is given (make's own default, g++, isn't one we test with), e.g.
+# make CXX=clang++
+ifeq ($(origin CXX),default)
+CXX = c++
+endif
 
-# Include paths
-CFLAGS = -std=c++20 -Wc++11-extensions -Wc++14-extensions -I/usr/local/include -I/Users/zyoussef/VulkanSDK/1.4.321.0/macOS/include/
+CFLAGS = -std=c++20
 CXXFLAGS = $(CFLAGS)
 
-# Library paths
-LDFLAGS = -L/opt/homebrew/lib -L/usr/local/lib
+# Links add the platform's library paths (zgal.mk's ZGAL_LDFLAGS) to LDFLAGS
+LDFLAGS =
 
 LDLIBS = -lvulkan
 # Only the app layer (include/app) uses GLFW
 GLFW_LDLIBS = -lglfw
 
 OUT = build
-# The wrapper's include paths (zgal.mk's ZGAL_CFLAGS: include/ and the third-party libraries)
+# The wrapper's include paths (zgal.mk's ZGAL_CFLAGS: include/, the third-party libraries and the
+# platform's)
 CFLAGS += $(ZGAL_CFLAGS)
 
 HEADERS = $(ZGAL_HEADERS)
@@ -51,11 +53,10 @@ $(eval $(call zgal-rule,$(SIMPLE_DIR)/simple.zgal,$(SIMPLE_GEN),$(SIMPLE_OUT)/sh
 
 $(SIMPLE_OUT)/simple_example.o : $(SIMPLE_DIR)/simple_example.cpp $(SIMPLE_ZGAL_STAMP) $(HEADERS)
 	@mkdir -p $(dir $@)
-	$(CC) -c -o $@ $< $(SIMPLE_CFLAGS)
+	$(CXX) -c -o $@ $< $(SIMPLE_CFLAGS)
 
 $(SIMPLE_OUT)/simple_example: $(SIMPLE_OUT)/simple_example.o
-	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
-	install_name_tool -add_rpath /usr/local/lib ./$@
+	$(CXX) $^ -o $@ $(LDFLAGS) $(ZGAL_LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
 
 # ---------------------------------------------------------------------------
 # Example: image_filter
@@ -75,7 +76,7 @@ $(eval $(call zgal-program,$(IMAGE_FILTER_DIR)/image_filter.zgal,$(IMAGE_FILTER_
 
 $(IMAGE_FILTER_DIFF): $(IMAGE_FILTER_TEST_DIR)/image_diff.cpp
 	@mkdir -p $(dir $@)
-	$(CC) -o $@ $< $(CFLAGS)
+	$(CXX) -o $@ $< $(CFLAGS)
 
 # Every pass on the simple example's texture with validation on (any message fails the run), then
 # golden checks on a small input: without filters the output must match the input (colour spaces
@@ -187,17 +188,15 @@ $(TEST_SHADER_OUT)/%.spv : $(TEST_DIR)/gpu/shaders/% $(GLSL_INCLUDES)
 # Compiled from absolute paths so __FILE__ is absolute: ApprovalTests uses it to find approved images
 $(TEST_OUT)/%.o : $(TEST_DIR)/%.cpp $(TEST_HEADERS)
 	@mkdir -p $(dir $@)
-	$(CC) -c -o $@ $(abspath $<) $(TEST_CFLAGS)
+	$(CXX) -c -o $@ $(abspath $<) $(TEST_CFLAGS)
 
 # The CPU tests reflect on compiled test shaders
 $(TEST_OUT)/cpu_tests: $(CPU_TEST_OBJS) | $(GPU_TEST_SHADERS)
-	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS)
-	install_name_tool -add_rpath /usr/local/lib ./$@
+	$(CXX) $^ -o $@ $(LDFLAGS) $(ZGAL_LDFLAGS) $(LDLIBS)
 
 # The GPU tests cover VulkanApp, which uses GLFW (though only headless)
 $(TEST_OUT)/gpu_tests: $(GPU_TEST_OBJS) | $(GPU_TEST_SHADERS)
-	$(CC) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
-	install_name_tool -add_rpath /usr/local/lib ./$@
+	$(CXX) $^ -o $@ $(LDFLAGS) $(ZGAL_LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
 
 test-cpu: $(TEST_OUT)/cpu_tests
 	./$< $(TEST_ARGS)
