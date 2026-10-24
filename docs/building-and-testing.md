@@ -46,6 +46,14 @@ flight changed. Programs run with `--validation` likewise fail without either. T
 in `tests/gpu/shaders`; tests also use the examples' shaders, and `testShader(ctx, "name.comp")`
 loads them.
 
+Gotchas:
+
+- doctest's message macros (`*_MESSAGE`, `INFO`, `FAIL_CHECK`) apply the message with `*`, so `+`
+  in it doesn't compile, and they print a `const char*` operand (e.g. a `?:` of two literals) as
+  `1`: wrap C strings in `std::string`, or build the string first and pass that.
+- `VK_LOADER_LAYERS_DISABLE='*validation*'` makes the loader hide the validation layer from the
+  application, to check that a run lacking it fails.
+
 ## CI
 
 GitHub Actions (`.github/workflows/ci.yml`) checks every pushed commit, not only the tip: the
