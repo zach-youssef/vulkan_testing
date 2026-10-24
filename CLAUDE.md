@@ -6,7 +6,7 @@ graphs and apps to it and to WebGPU (`dsl/`, with its web runtime in `web/`), ex
 
 Read the docs for the area you touch:
 
-- [docs/building-and-testing.md](docs/building-and-testing.md): before building, testing, verifying a stack or profiling.
+- [docs/building-and-testing.md](docs/building-and-testing.md): before building, testing, changing CI, verifying a stack or profiling.
 - [docs/wrapper.md](docs/wrapper.md): before writing an application with the wrapper or changing `include/`.
 - [docs/zgal.md](docs/zgal.md): before writing ZGAL or changing its compiler (`dsl/`); it points to the reference.
 - [docs/web.md](docs/web.md): before changing the web backend (`web/`) or testing pages in browsers.

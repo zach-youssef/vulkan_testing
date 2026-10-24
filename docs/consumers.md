@@ -12,6 +12,10 @@ To try PPU against wrapper changes that aren't pushed yet, point its build at th
 `make -C ~/code/ppu ZGAL_ROOT=<this checkout>` (or `make -C ~/code/ppu web ZGAL_ROOT=...`). Bump
 PPU's submodule only after the wrapper change is pushed.
 
+Its CI can reuse this repository's actions from the submodule:
+`./external/vulkan_test/.github/actions/setup-zgal` (with `npm-lockfile:
+external/vulkan_test/web/package-lock.json`) and `./external/vulkan_test/.github/actions/commits`.
+
 ## personal-site (`~/code/personal-site`)
 
 The site serves `/projects/vkPPU` and `/projects/zgal` (programs built for the web) and ZGAL's

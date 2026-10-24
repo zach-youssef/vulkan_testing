@@ -1,0 +1,78 @@
+# Builds each commit (the examples and both test programs) and runs the tests that need no Vulkan
+# device of their own: the CPU tests, and ZGAL's compiler tests with its docs (goldens, glslc, C++
+# compile checks, WGSL checked by Dawn on lavapipe). Each commit's job posts a "cpu" commit status
+# on it.
+name: cpu
+on:
+  workflow_call:
+    inputs:
+      commits:
+        description: A JSON array of the commit SHAs to check.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cpu:
+    name: cpu ${{ matrix.sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      statuses: write
+    strategy:
+      fail-fast: false
+      matrix:
+        sha: ${{ fromJSON(inputs.commits) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      STATUS_URL: repos/${{ github.repository }}/statuses/${{ matrix.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Mark the commit's check pending
+        run: gh api "$STATUS_URL" -f state=pending -f context=cpu -f target_url="$RUN_URL" -f description="Building and testing" > /dev/null
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.sha }}
+
+      # The actions come from the pushed workflow's commit, not the checked-out one, so every commit
+      # is checked with the same setup
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .ci
+          sparse-checkout: .github
+
+      - uses: ./.ci/.github/actions/setup-zgal
+
+      - name: Build
+        run: make -j"$(nproc)" examples build/tests/cpu_tests build/tests/gpu_tests
+
+      - name: CPU tests
+        run: make test-cpu
+
+      - name: ZGAL tests and docs
+        run: make test-dsl
+
+      - name: ccache statistics
+        if: always()
+        run: ccache -s
+
+      - name: Post the commit's status
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          case "$JOB_STATUS" in
+            success) state=success description="Built and tested" ;;
+            failure) state=failure description="Failed" ;;
+            *) state=error description="Cancelled or timed out" ;;
+          esac
+          gh api "$STATUS_URL" -f state=$state -f context=cpu -f target_url="$RUN_URL" -f description="$description" > /dev/null

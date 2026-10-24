@@ -43,11 +43,35 @@ errors, leaks managed resources or `PerFrame` collections, or leaves the number 
 flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the examples' shaders, and
 `testShader(ctx, "name.comp")` loads them.
 
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) checks every pushed commit, not only the tip: the
+commits a working branch has beyond `main`, or those a push to `main` brings (at most the newest
+20). Each one is built on Ubuntu 24.04 with clang++ and lavapipe (`make examples` and both test
+programs), then runs `make test-cpu` and `make test-dsl`, and gets a `cpu` commit status. The
+toolchain (apt packages, the LunarG SDK, ccache, Racket, Node) comes from
+`.github/actions/setup-zgal`.
+
+The GPU tests, example smoke tests and web tests don't run in CI yet: run them locally, one GPU run
+at a time on a machine.
+
+Gotchas:
+
+- make predefines `CXX` (as `g++`), so `CXX ?= ...` never applies: the Makefile checks
+  `$(origin CXX)` (`default`, or `undefined` under `make -R`) instead.
+- ZGAL's toolchain tests run `ZGAL_CXX` as a single program, so CI puts ccache first on `PATH` as a
+  `clang++` symlink rather than setting `CXX="ccache clang++"`.
+- Each commit's job takes its actions from the pushed tip's `.github` (checked out into `.ci`), as
+  older commits have none or older ones.
+- make's `$(if)` splits its arguments on commas, so flags like `-Wl,-rpath,...` inside it use
+  zgal.mk's `$(ZGAL_COMMA)`.
+
 ## Verifying a stack
 
 `tools/verify_stack.sh <repo> <base> [head]` builds and tests every commit in a range (builds and
 CPU and ZGAL tests in parallel; GPU tests, example smoke tests and web tests one at a time). Check
-its exit codes, not filtered output.
+its exit codes, not filtered output. A branch CI has checked only needs the GPU, example and web
+tests locally.
 
 When folding fixes into earlier commits, note that `git commit --fixup=X` commits the whole index,
 including earlier `git rm`s: pass the paths, then check each rewritten commit's tree.
