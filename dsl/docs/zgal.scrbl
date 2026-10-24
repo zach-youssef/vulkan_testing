@@ -103,13 +103,14 @@ For @tt{name.zgal}, the compiler writes
        @tt{namespace name} (e.g. @tt{scene::SceneApp}), so files can declare the same names. The
        file's name must therefore be a valid name.}
  @item{@tt{name.zgal.main.cpp}, for a program (@secref["main"]): its @tt{main}.}
- @item{one complete shader per material shader, named like its body (e.g. @tt{tonemap.frag}), to
-       compile with glslc (@secref["glsl"]).}
+ @item{one complete shader per material shader, named after its material and stage (e.g.
+       @tt{Tonemap.frag}), or for a GLSL body like its file, to compile with glslc
+       (@secref["glsl"]).}
 ]
 Compiled for the web, it writes a WGSL module per material shader instead (@secref["web"]).
-Shader bodies are paths relative to the @tt{.zgal} file. The shader library finds compiled shaders
-by file name (@tt{tonemap.frag.spv}), so each body belongs to one material, and file names are
-unique within a file.
+GLSL bodies are paths relative to the @tt{.zgal} file. The shader library finds compiled shaders
+by file name (@tt{Tonemap.frag.spv}), so each GLSL body belongs to one material, and shader names
+are unique within a file.
 
 @subsection[#:tag "building"]{The Makefile}
 
