@@ -925,7 +925,10 @@ function is opaque to the compiler, and to backends other than GLSL.
 When every shader of a material is a ZGAL body, the compiler infers each binding's use: a storage
 image or buffer is read where the bodies read it (including through functions they pass it to)
 and written where they @racket[write!] or @racket[store!] it, giving its access (@tt{read},
-@tt{write} or @tt{read-write}); and a graphics material's binding is used by the stages naming it.
+@tt{write} or @tt{read-write}). Querying an image's size (@tt{image-size}) touches no texels,
+so an image a shader only sizes and stores to is written, not read and written (which WebGPU
+devices without @tt{texture-formats-tier2} can't bind for most formats), and one it only sizes is
+read. A graphics material's binding is used by the stages naming it.
 A declared access or @racket[#:stages] must say the same. A storage binding no shader uses has no
 access to infer, so it's an error unless declared. The accesses go into the generated C++ like
 declared ones, so the render graph synchronizes exactly what the shaders do.

@@ -138,6 +138,21 @@
   (check-regexp-match #rx"ivec2 t_[0-9]+ = clamp" shader)
   (check-equal? (binding-access (binding-named (material-named (program-of text) "C") "img")) 'read-write))
 
+;; WebGPU devices without texture-formats-tier2 can't bind most formats read-write, so a size query
+;; mustn't make a written image read-write
+(test-case "Querying an image's size doesn't read it"
+  (define text (string-append
+                "(define (inside [texel : ivec2] [image : image2D]) : bool (all (lessThan texel (image-size image))))\n"
+                "(compute-material C (workgroup 1) (bindings (target (storage-image)) (sized (storage-image)) (other (storage-image)))\n"
+                "  (compute (let* ([t (ivec2 globalInvocationId.xy)])\n"
+                "    (when (and (all (lessThan t (image-size target))) (inside t other))\n"
+                "      (store! target t (vec4 (float (.x (image-size sized))))) (store! other t (vec4 1.0))))))"))
+  (define material (material-named (program-of text) "C"))
+  (check-equal? (binding-access (binding-named material "target")) 'write)
+  (check-equal? (binding-access (binding-named material "other")) 'write)
+  ;; Only sized: bound read
+  (check-equal? (binding-access (binding-named material "sized")) 'read))
+
 (test-case "Materials' functions read their bindings and push constants, and are inlined"
   (define material
     (string-append

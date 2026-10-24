@@ -1071,7 +1071,9 @@
 ;; ---------------------------------------------------------------------------------------------
 ;; What bodies do with bindings
 
-;; The accesses of bindings in e: a hash from binding names to sets of 'read and 'write.
+;; The accesses of bindings in e: a hash from binding names to sets of 'read, 'write and 'size (only
+;; its size queried, which touches no texels: an image written and sized is written, not read-write,
+;; which WebGPU devices without texture-formats-tier2 can't bind for most formats).
 ;; summaries: for each function, the accesses of its opaque parameters (a list of sets, by position).
 (define (binding-accesses e summaries)
   (define accesses (make-hash))
@@ -1121,6 +1123,10 @@
          [name (note! name 'write) (walk-indices image)])
        (walk texel)
        (walk value)]
+      [(t-texture 'image-size (list image) _ _)
+       (match (opaque-root image)
+         [#f (walk image)]
+         [name (note! name 'size) (walk-indices image)])]
       [(t-user-call f args _ _)
        (for ([a (in-list args)] [summary (in-list (hash-ref summaries f))])
          (match (opaque-root a)
@@ -1131,7 +1137,8 @@
   (walk e)
   accesses)
 
-;; The accesses of a function's opaque parameters, by position (sets of 'read and 'write)
+;; The accesses of a function's opaque parameters, by position (sets of 'read, 'write and 'size, as
+;; binding-accesses has them)
 (define (parameter-accesses params body summaries)
   (define accesses (make-hash))
   (define (note! name access) (hash-update! accesses name (λ (s) (set-add s access)) (set)))
@@ -1139,6 +1146,7 @@
     (match e
       [(t-local name (opaque-t _) _) (note! name 'read)]
       [(t-store (t-local name _ _) texel value _) (note! name 'write) (walk texel) (walk value)]
+      [(t-texture 'image-size (list (t-local name (opaque-t _) _)) _ _) (note! name 'size)]
       [(t-user-call f args _ _)
        (for ([a (in-list args)] [summary (in-list (hash-ref summaries f))])
          (match a

@@ -589,6 +589,7 @@
         (cond [(set-empty? used) #f]
               [(and (set-member? used 'read) (set-member? used 'write)) 'read-write]
               [(set-member? used 'write) 'write]
+              ;; Read, or only sized
               [else 'read]))
       (define access
         (cond
