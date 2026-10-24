@@ -38,10 +38,13 @@ libstdc++), unless `CXX` is given (`make CXX=g++`).
 ## GPU tests
 
 GPU tests run headless on a shared `VulkanContext` with validation and synchronization validation
-enabled. The `GpuTest` fixture (`tests/gpu/VkTestContext.h`) fails a test that produces validation
+enabled, and fail when either is unavailable rather than run unchecked:
+`VK_TEST_DISABLE_VALIDATION=1` or `VK_TEST_DISABLE_SYNC_VALIDATION=1` runs them without (the only
+opt-outs). The `GpuTest` fixture (`tests/gpu/VkTestContext.h`) fails a test that produces validation
 errors, leaks managed resources or `PerFrame` collections, or leaves the number of frames in
-flight changed. Test shaders live in `tests/gpu/shaders`; tests also use the examples' shaders, and
-`testShader(ctx, "name.comp")` loads them.
+flight changed. Programs run with `--validation` likewise fail without either. Test shaders live
+in `tests/gpu/shaders`; tests also use the examples' shaders, and `testShader(ctx, "name.comp")`
+loads them.
 
 ## CI
 

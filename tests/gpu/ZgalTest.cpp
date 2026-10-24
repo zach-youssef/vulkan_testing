@@ -520,7 +520,8 @@ TEST_CASE("ZGAL structs' arrays copy in C++") {
 
 namespace {
 
-// A context with the device features ZGAL materials ask for, and validation, recording errors
+// A context with the device features ZGAL materials ask for, and validation (required, as GpuTest
+// does), recording errors
 struct FeatureContext {
     explicit FeatureContext(const DeviceFeatures& features) {
         VulkanContextConfig config;
@@ -535,6 +536,7 @@ struct FeatureContext {
             }
         };
         context = VulkanContext::create(std::move(config)).value();
+        requireValidation(*context, true);
     }
 
     std::mutex mutex;

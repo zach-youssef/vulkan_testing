@@ -6,6 +6,8 @@ TEST_CASE_FIXTURE(GpuTest, "GPU test context") {
 
     CHECK(ctx.device() != VK_NULL_HANDLE);
     CHECK(ctx.queue(QueueType::Graphics) != VK_NULL_HANDLE);
-    // Not a hard failure: validation layers may be unavailable on some machines
-    WARN_MESSAGE(ctx.validationEnabled(), "Validation layers unavailable; validation errors will not be caught");
+    // The fixture requires validation and synchronization validation unless the environment opts out
+    const ValidationOptOuts optOuts = ValidationOptOuts::fromEnvironment();
+    CHECK(ctx.validationEnabled() == !optOuts.validation);
+    CHECK(ctx.synchronizationValidationEnabled() == !(optOuts.validation || optOuts.synchronization));
 }

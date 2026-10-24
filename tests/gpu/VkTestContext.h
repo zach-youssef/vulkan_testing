@@ -13,12 +13,59 @@
 #include <vector>
 
 /*
+ The validation GPU tests may run without: VK_TEST_DISABLE_VALIDATION=1 runs them without
+ validation, VK_TEST_DISABLE_SYNC_VALIDATION=1 without synchronization validation only. Otherwise
+ a context lacking either fails the tests (requireValidation), rather than passing unchecked.
+ */
+struct ValidationOptOuts {
+    bool validation = false;
+    bool synchronization = false;
+
+    // From the variables' values (null when unset); only "1" opts out
+    static ValidationOptOuts parse(const char* disableValidation, const char* disableSyncValidation) {
+        const auto set = [](const char* value) { return value && strcmp(value, "1") == 0; };
+        return {set(disableValidation), set(disableSyncValidation)};
+    }
+
+    static ValidationOptOuts fromEnvironment() {
+        return parse(std::getenv("VK_TEST_DISABLE_VALIDATION"), std::getenv("VK_TEST_DISABLE_SYNC_VALIDATION"));
+    }
+};
+
+// What a context that has validation and synchronization validation as given lacks of what a test
+// asked for (synchronization validation too, with syncRequested), minus the opt-outs; empty if
+// nothing
+inline std::string missingValidation(bool validation, bool synchronizationValidation, bool syncRequested,
+                                     const ValidationOptOuts& optOuts) {
+    if (optOuts.validation) {
+        return {};
+    }
+    if (!validation) {
+        return "the validation layer (VK_LAYER_KHRONOS_validation) is unavailable";
+    }
+    if (syncRequested && !optOuts.synchronization && !synchronizationValidation) {
+        return "synchronization validation (VK_EXT_validation_features) is unavailable";
+    }
+    return {};
+}
+
+// Fails the test unless the context has the validation it asked for (or the environment opts out)
+inline void requireValidation(const VulkanContext& context, bool syncRequested) {
+    const std::string missing = missingValidation(context.validationEnabled(), context.synchronizationValidationEnabled(),
+                                                  syncRequested, ValidationOptOuts::fromEnvironment());
+    // Synchronization validation is only missing when validation is there
+    const std::string optOut = context.validationEnabled() ? "VK_TEST_DISABLE_SYNC_VALIDATION" : "VK_TEST_DISABLE_VALIDATION";
+    const std::string message = missing + "; set " + optOut + "=1 to run without it";
+    REQUIRE_MESSAGE(missing.empty(), message);
+}
+
+/*
  Headless VulkanContext shared by all GPU tests.
 
- The Khronos validation layer is enabled when available, with synchronization validation, and
- every validation error is recorded so that tests can fail on API misuse and synchronization
- hazards (see GpuTest below). Set VK_TEST_DISABLE_VALIDATION=1 to run without validation, or
- VK_TEST_DISABLE_SYNC_VALIDATION=1 to run without synchronization validation only.
+ The Khronos validation layer is enabled, with synchronization validation, unless
+ ValidationOptOuts says otherwise, and every validation error is recorded so that tests can fail
+ on API misuse and synchronization hazards (see GpuTest below), which also fails every test when
+ the context lacks either.
  */
 class VkTestContext {
 public:
@@ -52,17 +99,15 @@ private:
     }
 
     VkTestContext() {
-        const char* disableValidation = std::getenv("VK_TEST_DISABLE_VALIDATION");
-
+        const ValidationOptOuts optOuts = ValidationOptOuts::fromEnvironment();
         VulkanContextConfig config;
         config.applicationName = "vulkan_test GPU tests";
         config.assetSearchPaths = {TEST_ASSET_DIR};   // Models and images (tests/gpu/assets)
         // Indirect draws of several commands, whose firstInstance chooses a material (IndirectTest)
         config.features.core.features.multiDrawIndirect = VK_TRUE;
         config.features.core.features.drawIndirectFirstInstance = VK_TRUE;
-        const char* disableSyncValidation = std::getenv("VK_TEST_DISABLE_SYNC_VALIDATION");
-        config.enableValidation = !(disableValidation && strcmp(disableValidation, "1") == 0);
-        config.enableSynchronizationValidation = !(disableSyncValidation && strcmp(disableSyncValidation, "1") == 0);
+        config.enableValidation = !optOuts.validation;
+        config.enableSynchronizationValidation = !optOuts.synchronization;
         config.onValidationMessage = [this](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
             if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -80,7 +125,8 @@ private:
 };
 
 /*
- doctest fixture for GPU tests. Fails the test if it produced validation errors, left
+ doctest fixture for GPU tests. Fails the test if the context lacks validation or synchronization
+ validation (unless ValidationOptOuts says so), if it produced validation errors, left
  resources alive in the shared ResourceManager, left PerFrame collections alive or changed the
  number of frames in flight (tests that change it must restore it).
 
@@ -92,6 +138,7 @@ public:
     : resourcesBefore_(managedResources()),
     collectionsBefore_(context().frames().size()),
     framesInFlightBefore_(context().framesInFlight()) {
+        requireValidation(context(), true);
         // Errors raised outside of a test (e.g. creating the context) are reported here
         for (const auto& error : VkTestContext::get().takeValidationErrors()) {
             FAIL_CHECK("Vulkan validation error before this test: " << error);

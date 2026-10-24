@@ -4,6 +4,7 @@
 #include "descriptors/DescriptorHeap.h"
 #include "TestShaders.h"
 #include "common/ResultChecks.h"
+#include "VkTestContext.h"
 
 #include <doctest/doctest.h>
 
@@ -47,7 +48,8 @@ bool hasPattern(Image& image) {
     return true;
 }
 
-// A headless, validated VulkanApp that records validation errors
+// A headless VulkanApp with validation and synchronization validation (required unless
+// ValidationOptOuts says so) that records validation errors
 struct HeadlessApp {
     std::mutex mutex;
     std::vector<std::string> errors;
@@ -59,6 +61,7 @@ struct HeadlessApp {
         config.applicationName = "VulkanApp tests";
         config.window = std::nullopt;
         config.enableValidation = true;
+        config.enableSynchronizationValidation = true;
         config.logInstanceInfo = false;
         config.onValidationMessage = [this](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
             if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
@@ -67,6 +70,7 @@ struct HeadlessApp {
             }
         };
         app->init(config).value();
+        requireValidation(app->getContext(), true);
     }
 
     ~HeadlessApp() {
@@ -281,6 +285,7 @@ TEST_CASE("A windowed VulkanApp passes window input to its handlers") {
     config.applicationName = "VulkanApp tests";
     config.window = WindowConfig{"Input test", 64, 64, false};
     config.enableValidation = true;
+    config.enableSynchronizationValidation = true;
     config.logInstanceInfo = false;
     std::vector<std::string> errors;
     config.onValidationMessage = [&errors](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
@@ -295,6 +300,7 @@ TEST_CASE("A windowed VulkanApp passes window input to its handlers") {
             MESSAGE("Skipped: " << initialized.error());
             return;
         }
+        requireValidation(app.getContext(), true);
         GLFWwindow* window = app.window();
         REQUIRE(window != nullptr);
 
@@ -345,6 +351,7 @@ TEST_CASE("zgal::connect turns a window's input into an app's events, and pollEv
     config.applicationName = "VulkanApp tests";
     config.window = WindowConfig{"ZGAL input test", 64, 64, false};
     config.enableValidation = true;
+    config.enableSynchronizationValidation = true;
     config.logInstanceInfo = false;
     std::vector<std::string> errors;
     config.onValidationMessage = [&errors](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
@@ -358,6 +365,7 @@ TEST_CASE("zgal::connect turns a window's input into an app's events, and pollEv
             MESSAGE("Skipped: " << initialized.error());
             return;
         }
+        requireValidation(app.getContext(), true);
         GLFWwindow* window = app.window();
         RecordingApp recording;
         zgal::connect(app, recording);

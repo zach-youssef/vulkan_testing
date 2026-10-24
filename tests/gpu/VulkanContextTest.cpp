@@ -1,6 +1,7 @@
 #include "core/VulkanContext.h"
 #include "resources/Buffer.h"
 #include "common/ResultChecks.h"
+#include "VkTestContext.h"
 
 #include <doctest/doctest.h>
 
@@ -12,7 +13,9 @@ namespace {
 
 constexpr VkMemoryPropertyFlags kHostVisible = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-// A headless, validated context that records validation errors (which may arrive on any thread)
+// A headless, validated context that records validation errors (which may arrive on any thread).
+// Fails the test if it lacks validation, or synchronization validation with syncValidation,
+// unless ValidationOptOuts says so.
 struct ValidatedContext {
     std::mutex mutex;
     std::vector<std::string> errors;
@@ -30,6 +33,7 @@ struct ValidatedContext {
             }
         };
         context = VulkanContext::create(std::move(config)).value();
+        requireValidation(*context, syncValidation);
     }
 
     ~ValidatedContext() {
@@ -62,7 +66,6 @@ TEST_CASE("VulkanContext creates a headless device") {
     CHECK(ctx.physicalDevice() != VK_NULL_HANDLE);
     CHECK(ctx.device() != VK_NULL_HANDLE);
     CHECK_FALSE(ctx.hasSurface());
-    WARN_MESSAGE(ctx.validationEnabled(), "Validation layers unavailable; validation errors will not be caught");
     CHECK_FALSE(ctx.deviceName().empty());
     CHECK(ctx.resources().size() == 0);
 
@@ -267,6 +270,11 @@ TEST_CASE("The initial number of frames in flight is configurable") {
 }
 
 TEST_CASE("Synchronization validation reports hazards when enabled") {
+    const ValidationOptOuts optOuts = ValidationOptOuts::fromEnvironment();
+    if (optOuts.validation || optOuts.synchronization) {
+        MESSAGE("Synchronization validation disabled by the environment; skipping");
+        return;
+    }
     std::mutex mutex;
     std::vector<std::string> errors;
     VulkanContextConfig config;
@@ -281,10 +289,7 @@ TEST_CASE("Synchronization validation reports hazards when enabled") {
     {
         auto context = VulkanContext::create(std::move(config)).value();
         auto& ctx = *context;
-        if (!ctx.validationEnabled()) {
-            MESSAGE("Validation layer unavailable; skipping");
-            return;
-        }
+        requireValidation(ctx, true);
         auto buffer = Buffer<uint32_t>::create(ctx, 64, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT).value();
         // Two writes to the same buffer without a barrier between them: a write-after-write hazard
@@ -298,6 +303,55 @@ TEST_CASE("Synchronization validation reports hazards when enabled") {
         hazard |= error.find("WRITE_AFTER_WRITE hazard") != std::string::npos;
     }
     CHECK(hazard);
+}
+
+TEST_CASE("VulkanContext reports the validation its instance has") {
+    // Without validation there is no synchronization validation either, even when asked for
+    VulkanContextConfig without;
+    without.enableSynchronizationValidation = true;
+    auto unvalidated = VulkanContext::create(std::move(without)).value();
+    CHECK_FALSE(unvalidated->validationEnabled());
+    CHECK_FALSE(unvalidated->synchronizationValidationEnabled());
+
+    // Validation alone
+    ValidatedContext validated(false);
+    CHECK_FALSE(validated.context->synchronizationValidationEnabled());
+}
+
+TEST_CASE("GPU tests require validation unless the environment opts out") {
+    // Only "1" opts out
+    const ValidationOptOuts none = ValidationOptOuts::parse(nullptr, nullptr);
+    CHECK_FALSE(none.validation);
+    CHECK_FALSE(none.synchronization);
+    CHECK_FALSE(ValidationOptOuts::parse("0", "").validation);
+    CHECK_FALSE(ValidationOptOuts::parse("0", "").synchronization);
+    const ValidationOptOuts noValidation = ValidationOptOuts::parse("1", nullptr);
+    CHECK(noValidation.validation);
+    CHECK_FALSE(noValidation.synchronization);
+    const ValidationOptOuts noSync = ValidationOptOuts::parse(nullptr, "1");
+    CHECK_FALSE(noSync.validation);
+    CHECK(noSync.synchronization);
+
+    // Without opt-outs both are required (synchronization validation when asked for)
+    CHECK(missingValidation(true, true, true, none).empty());
+    CHECK(missingValidation(false, false, true, none).find("validation layer") != std::string::npos);
+    CHECK(missingValidation(true, false, true, none).find("synchronization validation") != std::string::npos);
+    CHECK(missingValidation(true, false, false, none).empty());
+
+    // Opting out of validation also opts out of synchronization validation, which needs it
+    CHECK(missingValidation(false, false, true, noValidation).empty());
+    // Opting out of synchronization validation still requires validation
+    CHECK(missingValidation(true, false, true, noSync).empty());
+    CHECK(missingValidation(false, false, true, noSync).find("validation layer") != std::string::npos);
+
+    // A context without validation, as VK_TEST_DISABLE_VALIDATION=1 creates it, passes only with that opt-out
+    VulkanContextConfig config;
+    config.enableValidation = false;
+    auto unvalidated = VulkanContext::create(std::move(config)).value();
+    CHECK(missingValidation(unvalidated->validationEnabled(), unvalidated->synchronizationValidationEnabled(), true,
+                            noValidation).empty());
+    CHECK_FALSE(missingValidation(unvalidated->validationEnabled(), unvalidated->synchronizationValidationEnabled(), true,
+                                  none).empty());
 }
 
 namespace {
