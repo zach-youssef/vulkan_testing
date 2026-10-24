@@ -1,0 +1,51 @@
+# Lists the commits a push brings, for checking each one: on the default branch the pushed range
+# (before..after), on another branch the commits it has beyond the default branch
+# (origin/<default>..after). Always lists at least the pushed commit, and at most the newest
+# `max`. Needs the history: check out with fetch-depth: 0.
+name: commits
+description: Outputs the JSON list of the commits a push brings, oldest first.
+inputs:
+  default-branch:
+    description: The repository's default branch.
+    default: ${{ github.event.repository.default_branch }}
+  before:
+    description: The branch's commit before the push (all zeros for a new branch).
+    default: ${{ github.event.before }}
+  after:
+    description: The pushed commit.
+    default: ${{ github.event.after || github.sha }}
+  max:
+    description: The most commits to list (the newest ones).
+    default: "20"
+outputs:
+  commits:
+    description: A JSON array of commit SHAs, oldest first.
+    value: ${{ steps.list.outputs.commits }}
+runs:
+  using: composite
+  steps:
+    - id: list
+      shell: bash
+      env:
+        DEFAULT: ${{ inputs.default-branch }}
+        BEFORE: ${{ inputs.before }}
+        AFTER: ${{ inputs.after }}
+        MAX: ${{ inputs.max }}
+        REF: ${{ github.ref }}
+      run: |
+        git fetch --no-tags --quiet origin "+refs/heads/$DEFAULT:refs/remotes/origin/$DEFAULT"
+        if [ "$REF" = "refs/heads/$DEFAULT" ]; then
+          # A force push can leave BEFORE unknown; then only the pushed commit is checked
+          if [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            base=
+          else
+            base=$BEFORE
+          fi
+        else
+          base=origin/$DEFAULT
+        fi
+        commits=$([ -n "$base" ] && git rev-list --reverse --max-count="$MAX" "$base..$AFTER" || true)
+        [ -n "$commits" ] || commits=$AFTER
+        json=$(printf '%s\n' $commits | jq -R . | jq -cs .)
+        echo "Commits to check: $json"
+        echo "commits=$json" >> "$GITHUB_OUTPUT"

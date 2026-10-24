@@ -1,0 +1,110 @@
+# Sets up an ubuntu-24.04 runner to build and test the wrapper and ZGAL (or a project using them,
+# such as ppu, with this repository as a submodule):
+#   - apt: lavapipe (Mesa's software Vulkan driver), GLFW, GLM, clang and ccache;
+#   - the LunarG Vulkan SDK (headers, loader, glslc, validation layers), its tarball cached by
+#     version, with VULKAN_SDK, PATH, LD_LIBRARY_PATH and VK_ADD_LAYER_PATH exported;
+#   - clang++ through ccache as CXX, with the ccache directory cached per branch (falling back to
+#     the default branch's) and keyed by the checked-out commit;
+#   - Racket (full distribution, with Scribble) for ZGAL's compiler and docs;
+#   - Node with npm's cache keyed by the web backend's lockfile.
+name: setup-zgal
+description: Installs the toolchain the wrapper, ZGAL and its web backend build and test with.
+inputs:
+  npm-lockfile:
+    description: The web backend's package-lock.json, relative to the workspace (e.g. external/vulkan_test/web/package-lock.json in a project with this repository as a submodule).
+    default: web/package-lock.json
+  vulkan-sdk-version:
+    description: The LunarG Vulkan SDK's version (the Mac's, so both validate with the same layers).
+    default: 1.4.321.0
+  racket-version:
+    description: Racket's version.
+    default: "8.18"
+  node-version:
+    description: Node's version.
+    default: "24"
+  default-branch:
+    description: The branch whose ccache a new branch starts from.
+    default: ${{ github.event.repository.default_branch }}
+runs:
+  using: composite
+  steps:
+    - name: Install lavapipe, GLFW, GLM, clang and ccache
+      shell: bash
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libglfw3-dev libglm-dev clang ccache
+
+    - name: Cache the Vulkan SDK
+      id: sdk-cache
+      uses: actions/cache@v6
+      with:
+        path: ~/vulkansdk.tar.xz
+        key: vulkan-sdk-linux-${{ inputs.vulkan-sdk-version }}
+
+    - name: Download the Vulkan SDK
+      if: steps.sdk-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        SDK_VERSION: ${{ inputs.vulkan-sdk-version }}
+      run: curl -sSfL --retry 3 -o ~/vulkansdk.tar.xz "https://sdk.lunarg.com/sdk/download/$SDK_VERSION/linux/vulkansdk-linux-x86_64-$SDK_VERSION.tar.xz"
+
+    # setup-env.sh leaves VK_LAYER_PATH empty, and exporting that empty value would hide the layers
+    # VK_ADD_LAYER_PATH adds, so it isn't exported
+    - name: Unpack the Vulkan SDK
+      shell: bash
+      env:
+        SDK_VERSION: ${{ inputs.vulkan-sdk-version }}
+      run: |
+        mkdir -p ~/vulkansdk
+        tar -xJf ~/vulkansdk.tar.xz -C ~/vulkansdk
+        source ~/vulkansdk/$SDK_VERSION/setup-env.sh
+        echo "VULKAN_SDK=$VULKAN_SDK" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+        echo "VK_ADD_LAYER_PATH=$VK_ADD_LAYER_PATH" >> "$GITHUB_ENV"
+        echo "$VULKAN_SDK/bin" >> "$GITHUB_PATH"
+
+    # ccache runs as clang++ (a symlink first on PATH), so CXX stays a single program, which ZGAL's
+    # toolchain tests run directly
+    - name: Use clang++ through ccache
+      id: ccache
+      shell: bash
+      run: |
+        mkdir -p ~/.ccache-bin
+        ln -sf "$(command -v ccache)" ~/.ccache-bin/clang++
+        echo "$HOME/.ccache-bin" >> "$GITHUB_PATH"
+        echo "CXX=clang++" >> "$GITHUB_ENV"
+        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+        echo "CCACHE_MAXSIZE=500M" >> "$GITHUB_ENV"
+        echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache ccache
+      uses: actions/cache@v6
+      with:
+        path: ~/.ccache
+        key: ccache-${{ github.ref_name }}-${{ steps.ccache.outputs.commit }}
+        restore-keys: |
+          ccache-${{ github.ref_name }}-
+          ccache-${{ inputs.default-branch }}-
+
+    - uses: Bogdanp/setup-racket@v1.15
+      with:
+        version: ${{ inputs.racket-version }}
+        distribution: full
+        variant: CS
+
+    - uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+        cache-dependency-path: ${{ inputs.npm-lockfile }}
+
+    - name: Show the toolchain
+      shell: bash
+      run: |
+        echo "VULKAN_SDK=$VULKAN_SDK"
+        clang++ --version | head -1
+        ccache --version | head -1
+        glslc --version | head -1
+        racket --version
+        node --version
+        ccache -z > /dev/null
