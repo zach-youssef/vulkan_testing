@@ -29,9 +29,10 @@ Its `./build-zgal [checkout]` builds from `external/zgal` by default; pass this 
 unpushed changes. That script relies on:
 
 - `make web docs`;
-- the layout of `build/web/particles/`: `particles.zgal.html`, its `*.js` files and the `zgal/`
-  runtime directory, which it copies;
-- `examples/particles/particles.zgal`, which the page shows beside the program;
+- the layout of `build/web/<name>/` for particles and scene: `<name>.zgal.html`, its `*.js` files,
+  the `zgal/` runtime directory, and `assets/` and `*.wasm` when present, which it copies;
+- `examples/particles/particles.zgal` and `examples/scene/scene.zgal`, which it copies for the page
+  to show beside each program;
 - the generated main's `--frames`, `--size` and `--capture` options, run under Node for the
   screenshot shown to browsers without WebGPU;
 - for programs without a window (e.g. `build/web/image_filter/`, which `build-zgal` can copy the
@@ -56,6 +57,7 @@ Its pages rely on:
   `.zgal-name`, `.zgal-captures` with `figure > img` and `a[download]`), and the page's
   `#zgal-headless`;
 - PPU's `tests/approved/<game>/60.png` screenshots;
+- the `examples/<name>/<name>.zgal` paths, which the page links on GitHub at the pinned sha;
 - the `/zgal/docs/` URL.
 
 When changing any of these, check `build-zgal` and the site's end-to-end tests:
