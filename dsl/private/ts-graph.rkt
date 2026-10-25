@@ -352,8 +352,6 @@
            (line! "    const target_~a: zgal.Target = ~a;" n (spec-text spec)))]
       [(g-material n m bindings push options invocations when l)
        (define (option k) (cond [(assq k options) => cdr] [else #f]))
-       ;; (cond, as this clause's `when` is the instance's condition)
-       (cond [(eq? (option 'cull) 'front-and-back) (web-error l "WebGPU can't cull both faces (material ~a)" n)])
        ;; Arrays of textures are texture arrays: a model's base colours, or image files' texels copied
        ;; into one when the graph is built
        (for ([pair (in-list bindings)] #:when (eq? (binding-kind (car pair)) 'array))

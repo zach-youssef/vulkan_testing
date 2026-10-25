@@ -56,14 +56,6 @@
                   "(graph G
                      (image picture rgba8 (fixed 4 4) #:frames shared)
                      (target t (color picture #:clear (0 0 0 1)))
-                     (material m Corner #:cull front-and-back)
-                     (draw d t m 3))")
-   "cull both faces")
-  (check-not-on-web
-   (string-append corner
-                  "(graph G
-                     (image picture rgba8 (fixed 4 4) #:frames shared)
-                     (target t (color picture #:clear (0 0 0 1)))
                      (sampler border #:address clamp-to-border)
                      (material m Corner)
                      (draw d t m 3))")

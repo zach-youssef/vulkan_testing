@@ -129,7 +129,8 @@ export type Bound =
 
 export interface PipelineOptions {
   readonly topology?: GPUPrimitiveTopology;
-  readonly cull?: GPUCullMode;
+  // front-and-back culls every triangle, as Vulkan's VK_CULL_MODE_FRONT_AND_BACK
+  readonly cull?: GPUCullMode | 'front-and-back';
   readonly frontFace?: GPUFrontFace;
   readonly blend?: 'opaque' | 'alpha' | 'premultiplied-alpha' | 'additive';
   readonly depthTest?: boolean;
@@ -223,6 +224,15 @@ export class MaterialInstance {
       const storage = storageFormats(desc, formats);
       const o = this.options;
       const blend = blendState(o.blend ?? 'opaque');
+      // WebGPU can't cull both faces: its triangles are kept, and a fragment stage discarding
+      // every fragment and writing no colour stands in for the material's, so the vertex stage
+      // runs as in Vulkan but nothing is drawn. Culling applies to triangles only (not to lines
+      // or points), as in Vulkan.
+      const topology = o.topology ?? 'triangle-list';
+      const culledAll = o.cull === 'front-and-back' && topology.startsWith('triangle');
+      // The material's own fragment module is made even when unused, so its WGSL errors still
+      // show up, as they do on native
+      const fragmentModule = device.createShaderModule({ label: `${desc.name}.frag`, code: desc.fragment(storage) });
       p = device.createRenderPipeline({
         label: desc.name,
         layout: this.layout(formats).pipeline,
@@ -233,14 +243,16 @@ export class MaterialInstance {
             ? [{ arrayStride: desc.vertexInput.stride, attributes: desc.vertexInput.attributes.map((a) => ({ shaderLocation: a.location, offset: a.offset, format: a.format })) }]
             : [],
         },
-        fragment: {
-          module: device.createShaderModule({ label: `${desc.name}.frag`, code: desc.fragment(storage) }),
-          entryPoint: 'main',
-          targets: colorFormats.map((format) => (blend ? { format, blend } : { format })),
-        },
+        fragment: culledAll
+          ? { module: discarding(device), entryPoint: 'main', targets: colorFormats.map((format) => ({ format, writeMask: 0 })) }
+          : {
+            module: fragmentModule,
+            entryPoint: 'main',
+            targets: colorFormats.map((format) => (blend ? { format, blend } : { format })),
+          },
         // Shaders flip y (ZGAL's clip space is Vulkan's), keeping triangles where they are on the
         // screen, which both APIs judge their winding by
-        primitive: { topology: o.topology ?? 'triangle-list', cullMode: o.cull ?? 'none', frontFace: o.frontFace ?? 'ccw' },
+        primitive: { topology, cullMode: o.cull === 'front-and-back' ? 'none' : (o.cull ?? 'none'), frontFace: o.frontFace ?? 'ccw' },
         depthStencil: depthFormat
           ? {
             format: depthFormat,
@@ -339,6 +351,18 @@ export class MaterialBinder {
   destroy(): void {
     this.pushBuffer?.destroy();
   }
+}
+
+// The fragment stage of materials culling both faces (one module per device): it discards every
+// fragment, writing nothing
+const discardingModules = new WeakMap<GPUDevice, GPUShaderModule>();
+function discarding(device: GPUDevice): GPUShaderModule {
+  let module = discardingModules.get(device);
+  if (!module) {
+    module = device.createShaderModule({ label: 'culling both faces', code: '@fragment fn main() { discard; }' });
+    discardingModules.set(device, module);
+  }
+  return module;
 }
 
 function blendState(mode: NonNullable<PipelineOptions['blend']>): GPUBlendState | null {

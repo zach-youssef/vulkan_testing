@@ -2131,6 +2131,10 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        Vulkan does, but with another sampler.}
  @item{A storage image's texel format is part of its WGSL type: modules are written with
        @tt{rgba8unorm}.}
+ @item{WebGPU's vertex shaders can't write: buffers and storage images a vertex shader uses must be
+       read-only there, so a vertex shader that writes one (@racket[write!], @racket[store!] or an
+       atomic) compiles but fails with a WebGPU validation error when the graph creates the
+       material's bind group layout.}
  @item{Names WGSL reserves (e.g. @tt{target}, @tt{type}) are spelled with a @tt{zgal_} prefix.}
  @item{An array of textures is a @tt{texture_2d_array}, a layer per element, so its elements are
        only used in texture operations (@racket[sample], @racket[sample-lod], @racket[fetch] and
@@ -2229,6 +2233,11 @@ The runtime follows the C++ graph's behaviour where WebGPU allows, with these di
  @item{Clip space is Vulkan's (y down) in shaders too: vertex shaders' positions have their y
        negated for WebGPU's, which keeps triangles, and so their winding, where they are on the
        screen.}
+ @item{WebGPU can't cull both faces, so a material with @tt{#:cull front-and-back} keeps its
+       triangles and draws them with a fragment stage that discards every fragment and writes no
+       colour in place of its own: its vertex shader runs, as Vulkan's does (though on the web it
+       can't write, see above), and nothing is drawn or written by its fragment shader. Lines
+       and points are drawn, as Vulkan culls only triangles.}
 ]
 
 Functions, constants and apps' bodies compute what the C++ does: JavaScript's numbers are doubles,

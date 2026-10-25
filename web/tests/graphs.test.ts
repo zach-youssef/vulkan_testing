@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
-import { Shapes, Winding, type Mixed } from '../web.zgal.ts';
+import { Culling, Shapes, Winding, type Mixed } from '../web.zgal.ts';
 
 let context: zgal.Context;
 let graph: zgal.RenderGraph;
@@ -118,6 +118,23 @@ test('clip space and winding are Vulkan\'s: y down, front faces counter-clockwis
   assert.equal(counter[63], false);
   assert.equal(counter[7 * 8], false, 'the bottom left corner');
   winding.destroy();
+});
+
+test('culling both faces draws no triangles (nor runs their fragments), but still draws points', async () => {
+  const culling = new zgal.RenderGraph(context);
+  const ids = await Culling.build(context, culling, {});
+  await culling.execute();
+  const lit = (pixels: Uint8Array) => Array.from({ length: 64 }, (_, p) => pixels[p * 4] > 0);
+  // The clear colour survives, and no fragment marked the buffer
+  const culled = await ids.readCulledPixels(culling);
+  for (let p = 0; p < 64; p++) assert.deepEqual([...culled.subarray(p * 4, p * 4 + 4)], [0, 0, 255, 255], `pixel ${p}`);
+  assert.deepEqual(await ids.readCulledMarksContents(culling), [0]);
+  // As points, the triangles' corners are drawn: pixels (1, 1), (6, 1), (1, 6) and (6, 6)
+  const corners = [1 * 8 + 1, 1 * 8 + 6, 6 * 8 + 1, 6 * 8 + 6];
+  assert.deepEqual(lit(await ids.readDottedPixels(culling)), Array.from({ length: 64 }, (_, p) => corners.includes(p)));
+  assert.deepEqual(await ids.readDottedMarksContents(culling), [1]);
+  await culling.finish();
+  culling.destroy();
 });
 
 test('uniforms hold their per-frame value', async () => {

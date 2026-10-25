@@ -224,6 +224,41 @@
   (readback readClockwise clockwise)
   (readback readCounter counterClockwise))
 
+;; Culling both faces: two triangles, one of each winding, between pixel centres 1 and 6 of an 8 by
+;; 8 image (as points, their corners). Each fragment marks a buffer.
+(graphics-material Covering
+  (bindings (marks (buffer-array uint)))
+  (outputs (color vec4))
+  (vertex
+   (let* ([k (remainder vertexIndex 3)]
+          [turned (if (< vertexIndex 3) k (if (= k 0) 0 (- 3 k)))]
+          [corner (if (= turned 0)
+                      (vec2 -0.625 -0.625)
+                      (if (= turned 1) (vec2 0.625 -0.625) (vec2 -0.625 0.625)))])
+     (results #:position (vec4 (if (< vertexIndex 3) corner (- corner)) 0.5 1.0))))
+  (fragment
+   (begin (write! (at marks 0) 1)
+          (vec4 1.0 1.0 1.0 1.0))))
+
+(graph Culling
+  (image culled rgba8 (fixed 8 8) #:frames shared)
+  (image dotted rgba8 (fixed 8 8) #:frames shared)
+  (buffer culledMarks uint 1 #:frames shared)
+  (buffer dottedMarks uint 1 #:frames shared)
+  (clear clearCulledMarks culledMarks #:value 0)
+  (clear clearDottedMarks dottedMarks #:value 0)
+  (target culledTarget (color culled #:clear (0 0 1 1)))
+  (target dottedTarget (color dotted #:clear (0 0 1 1)))
+  (material cullingBoth Covering (marks culledMarks) #:cull front-and-back)
+  ;; Culling applies to triangles only, as in Vulkan
+  (material dotting Covering (marks dottedMarks) #:cull front-and-back #:topology point-list)
+  (draw drawCulled culledTarget cullingBoth 6)
+  (draw drawDotted dottedTarget dotting 6)
+  (readback readCulled culled)
+  (readback readDotted dotted)
+  (readback readCulledMarks culledMarks)
+  (readback readDottedMarks dottedMarks))
+
 ;; Adds a push constant to a buffer's elements: one per invocation, as many as the dispatch's
 (compute-material Bump
   (workgroup 1)
