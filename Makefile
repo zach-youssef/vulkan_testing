@@ -102,7 +102,7 @@ test-example-image_filter: $(IMAGE_FILTER_BIN) $(IMAGE_FILTER_DIFF)
 # flips (8 of 16384 pixels; none on the Mac, natively or on Dawn), so a real change still fails.
 IMAGE_FILTER_THRESHOLD_FLIPS = 0.001
 
-# For the web: build/web/image_filter (runs headless under Node)
+# For the web: build/web/image_filter (runs headless under Node, or in its page)
 IMAGE_FILTER_WEB = $(OUT)/web/image_filter
 $(eval $(call zgal-web-program,$(IMAGE_FILTER_DIR)/image_filter.zgal,$(IMAGE_FILTER_WEB)))
 
@@ -300,10 +300,11 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/threshold.approved.png $(IMAGE_FILTER_WEB)/threshold.png 0 $(IMAGE_FILTER_THRESHOLD_FLIPS)
 	$(MAKE) test-pages
 
-# The examples' pages, embedding programs (web/tests/mount.html), loading image files
+# The examples' pages (image_filter's, without a window, run from its query string, its capture
+# compared with the approved one), embedding programs (web/tests/mount.html), loading image files
 # (web/tests/image-file.html), the compute library (web/tests/kernels.html), indirect work
-# (web/tests/indirect.html) and models (web/tests/models.html), with web/tests' graphs built into
-# graphs/, in each of BROWSERS: by default only headless Chromium on SwiftShader. Firefox opens
+# (web/tests/indirect.html), models (web/tests/models.html) and programs without a window
+# (web/tests/headless.html), with web/tests' graphs built into graphs/, in each of BROWSERS: by default only headless Chromium on SwiftShader. Firefox opens
 # windows (it has no WebGPU adapter headless, nor any on Linux), so it runs only when asked:
 # make test-pages BROWSERS="chromium firefox" (or test-web, or test), as the pre-push check of a
 # stack's top does. A browser found nowhere is skipped (the tools exit with 3); one named by CHROMIUM
@@ -315,6 +316,7 @@ test-pages: web
 	@mkdir -p $(TEST_PAGES)/assets
 	cp $(WEB_DIR)/tests/*.html $(TEST_PAGES)/
 	cp $(WEB_DIR)/tests/assets/texels.png $(SIMPLE_DIR)/textures/texture.jpg $(MODEL_ASSETS) $(TEST_PAGES)/assets/
+	cp $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/assets/
 	for f in $(WEB_DIR)/tests/*.zgal; do $(ZGAL) --web-out $(TEST_PAGES)/graphs/src $$f || exit 1; done
 	cp -R $(WEB_DIR)/zgal $(TEST_PAGES)/graphs/src/zgal
 	cp $(WEB_DIR)/program.tsconfig.json $(TEST_PAGES)/graphs/src/tsconfig.json
@@ -326,7 +328,10 @@ test-pages: web
 	  status=$$?; if [ $$status -eq 3 ]; then echo "test-pages: $$browser skipped (not installed)"; continue; fi; \
 	  [ $$status -eq 0 ] || exit $$status; \
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(SCENE_WEB) 'scene.zgal.html?frames=60' || exit 1; \
-	  for page in mount image-file kernels indirect models; do \
+	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/blur_edges-$$browser.png \
+	    'image_filter/image_filter.zgal.html?arg=/tests/assets/input.png&arg=out.png&blur=2&edges' || exit 1; \
+	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/blur_edges-$$browser.png 2 || exit 1; \
+	  for page in mount image-file kernels indirect models headless; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \
 	done

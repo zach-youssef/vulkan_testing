@@ -47,6 +47,14 @@ export interface ProgramOption<I> {
   name: string; // e.g. --blur, or <image> for a positional
   metavar: string;
   help: string;
+  // What its text is (null for a flag): a number, or a path (a file the program reads, or with
+  // output, where the capture goes)
+  value: 'int' | 'uint' | 'float' | 'path' | null;
+  // Its default, as written in the program, and its range: for forms (mountHeadless)
+  default: string | null;
+  range: readonly [number, number] | null;
+  // Whether it names where the program's capture goes (capture #:to), rather than a file it reads
+  output: boolean;
   set: Setter<I>;
 }
 
@@ -98,10 +106,15 @@ export function requireNode(id: NodeId | undefined, graph: string, node: string)
   return id;
 }
 
+// Where a program runs: headless under Node or in a page (runHeadless), or in a page's canvas
+// (mountProgram)
+export type Where = 'node' | 'browser' | 'canvas';
+
 // The command line's built-in choices, or (for a bad command line, or --help) the exit status and
-// what to print. Under Node the program never has a window; in a page it always has.
+// what to print. Headless (under Node, or runHeadless in a page) the program never has a window; in
+// a canvas it always has.
 export function parseCommandLine<A extends RunnableApp, I>(program: Program<A, I>, args: string[], inputs: I,
-  where: 'node' | 'page'): Launch | { status: number; text: string } {
+  where: Where): Launch | { status: number; text: string } {
   const launch = new Launch();
   launch.window = program.window !== null;
   if (program.window) launch.size = [program.window.width, program.window.height];
@@ -155,7 +168,7 @@ export function parseCommandLine<A extends RunnableApp, I>(program: Program<A, I
     }
   }
   if (positional < positionals.length) return fail(`expected ${positionals[positional].metavar}`);
-  if (program.captureTo && where === 'node') launch.capture = program.captureTo(inputs);
+  if (program.captureTo && where !== 'canvas') launch.capture = program.captureTo(inputs);
   // Capturing several frames runs as many frames as the last one needs
   if (launch.captureFrames.length > 0) {
     const last = launch.captureFrames[launch.captureFrames.length - 1];
@@ -163,13 +176,15 @@ export function parseCommandLine<A extends RunnableApp, I>(program: Program<A, I
     if (launch.frames === null) launch.frames = last;
     else if (launch.frames < last) return fail(`--capture-frames needs ${last} frames, but --frames is ${launch.frames}`);
   }
-  if (where === 'page') {
+  if (where === 'canvas') {
     // A page draws into its canvas, for --frames N frames or until it closes
-    if (!program.window) return fail('runs headless only: run it under Node');
-    if (launch.capture !== null) return fail('--capture runs headless: run it under Node');
+    if (!program.window) return fail('runs headless only: run it under Node or in its page (runHeadless)');
+    if (launch.capture !== null) return fail('--capture runs headless: run it under Node or with runHeadless');
     launch.window = true;
   } else {
-    if (program.window && launch.frames === null) return fail('runs headless under Node: give --frames N (or open its page)');
+    if (program.window && launch.frames === null) {
+      return fail(where === 'node' ? 'runs headless under Node: give --frames N (or open its page)' : 'runs headless here: give --frames N');
+    }
     launch.window = false;
     launch.frames ??= 1;
   }
@@ -200,13 +215,42 @@ export function usage<A extends RunnableApp, I>(program: Program<A, I>): string 
 }
 
 // The most recent frame's copy of a capture's readback, as RGBA8 pixels
-export async function capturePixels(graph: RenderGraph, node: NodeId): Promise<{ pixels: Uint8Array; size: [number, number] }> {
+export async function capturePixels(graph: RenderGraph, node: NodeId): Promise<CapturePixels> {
   const readback = graph.node<ReadbackNode>(node);
   if (readback.source.format !== 'rgba8unorm' && readback.source.format !== 'rgba8unorm-srgb') {
     throw new Error('captures are of RGBA8 images (rgba8 or rgba8-srgb)');
   }
   const pixels = await readback.pixels();
   return { pixels, size: readback.size() };
+}
+
+// A capture's pixels: RGBA8, rows top to bottom
+export interface CapturePixels {
+  pixels: Uint8Array;
+  size: [number, number];
+}
+
+// Runs a headless program's frames (launch.frames, or until the app quits or stopped() holds),
+// then waits for its graphs, giving each capture to save as it's read: frame is the frame number
+// (from 1) of a --capture-frames capture, or null for the last frame's capture
+export async function runHeadlessFrames<A extends RunnableApp, I>(program: Program<A, I>, app: A, launch: Launch,
+  graphs: readonly RenderGraph[], save: (capture: CapturePixels, frame: number | null) => Promise<void>,
+  stopped: () => boolean = () => false): Promise<void> {
+  const captured = async (): Promise<CapturePixels> => {
+    if (!program.capture) throw new Error('the program captures nothing');
+    const { graph, node } = program.capture(app);
+    return capturePixels(graph, node);
+  };
+  const frames = launch.frames ?? 1;
+  for (let frame = 0; frame < frames && !app.quitRequested() && !stopped(); frame++) {
+    app.beginFrame();
+    const size = app.takeResize();
+    if (size) app.setSurfaceExtent(size);
+    await app.renderGraph().execute();
+    if (launch.captureFrames.includes(frame + 1)) await save(await captured(), frame + 1);
+  }
+  for (const graph of graphs) await graph.finish();
+  if (launch.capture !== null && launch.captureFrames.length === 0 && !stopped()) await save(await captured(), null);
 }
 
 // Runs a program where it is: under Node with its command line, or in a page with its query

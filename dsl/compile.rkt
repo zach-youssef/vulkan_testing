@@ -65,10 +65,8 @@
          (let ([m (program-main prog)])
            (cond
              [(not m) '()]
-             [else (cons (output (join web-dir (ts-main-file-name source)) (emit-ts-main prog m))
-                         (if (main-decl-window m)
-                             (list (output (join web-dir (ts-page-file-name source)) (emit-ts-page prog m)))
-                             '()))]))
+             [else (list (output (join web-dir (ts-main-file-name source)) (emit-ts-main prog m))
+                         (output (join web-dir (ts-page-file-name source)) (emit-ts-page prog m)))]))
          (for*/list ([m (in-list (program-materials prog))]
                      [s (in-list (material-shaders m))])
            (output (join web-dir (wgsl-shader-file-name s)) (emit-wgsl prog m s))))

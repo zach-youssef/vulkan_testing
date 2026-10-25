@@ -1,0 +1,230 @@
+<!doctype html>
+<!-- Running a program without a window in a page (zgal.runHeadless and zgal.mountHeadless, through
+     image_filter's generated main): its capture of examples/image_filter/tests/input.png with
+     --blur 2 --edges matches blur_edges.approved.png (to 2 per channel, as under Node), whether the
+     file is given as a Blob or a URL; the PNG Blob holds the capture's pixels; --help stops, a
+     missing argument fails, stop() stops a run without capturing; the form (mount) runs the same
+     command line from its inputs, showing the same capture as an image to download; submitting it
+     again during a run stops that run first (submitting twice runs only the last, and the stopped
+     run's states don't follow the next run's), and its stop() stops a run, ending at 'stopped' (as does a mount given
+     args, which runs at once). Every run's device is destroyed, and no two are alive at once. Checked by
+     make test-pages (web/tools/chromium.ts and firefox.ts); the page's state is in <html data-zgal>.
+     Served from build/web/tests, beside image_filter/ and assets/ (input.png and the approved
+     image). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL headless test</title>
+</head>
+<body>
+<div id="form"></div>
+<pre id="zgal-message"></pre>
+<script type="module">
+import * as image_filter from '../image_filter/image_filter.zgal.main.js';
+import { readPng, pngPixels } from '../image_filter/zgal/png-pixels.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+const check = (ok, text) => { if (!ok) throw new Error(text); };
+
+const bytes = async (blob) => new Uint8Array(await blob.arrayBuffer());
+async function decode(file) {
+  const png = readPng(file);
+  const stream = new Blob([png.compressed]).stream().pipeThrough(new DecompressionStream('deflate'));
+  return pngPixels(png, new Uint8Array(await new Response(stream).arrayBuffer()));
+}
+async function fetched(path) {
+  const response = await fetch(new URL(path, import.meta.url));
+  if (!response.ok) throw new Error(`${path}: ${response.status} ${response.statusText}`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+// The channels of two images differing by more than tolerance
+function differing(a, b, tolerance) {
+  let count = 0;
+  for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > tolerance) count++;
+  return count;
+}
+
+// Every device the runs create: destroyed once destroy() is called, lost with its reason. A device
+// created while another is alive is an overlap.
+const devices = [];
+let overlaps = 0;
+const requestDevice = GPUAdapter.prototype.requestDevice;
+GPUAdapter.prototype.requestDevice = async function (...args) {
+  const device = await requestDevice.apply(this, args);
+  if (devices.some((d) => !d.destroyed)) overlaps++;
+  const entry = { device, destroyed: false, lost: device.lost.then((info) => info.reason) };
+  devices.push(entry);
+  return device;
+};
+const destroy = GPUDevice.prototype.destroy;
+GPUDevice.prototype.destroy = function () {
+  const entry = devices.find((d) => d.device === this);
+  if (entry) entry.destroyed = true;
+  return destroy.call(this);
+};
+// Checks that every device so far was destroyed (and lost because of it), and none overlapped
+async function checkDevices(when) {
+  const timeout = new Promise((done) => setTimeout(() => done('not lost'), 5000));
+  const reasons = await Promise.all(devices.map((d) => Promise.race([d.lost, timeout])));
+  const kept = reasons.filter((r) => r !== 'destroyed');
+  check(kept.length === 0, `${when}: ${kept.length} of ${devices.length} devices weren't destroyed (${kept.join(' ')})`);
+  check(overlaps === 0, `${when}: ${overlaps} devices were created while another was alive`);
+}
+// Waits until done() (at most 30 s)
+async function waitUntil(done, what) {
+  const deadline = Date.now() + 30000;
+  while (!done() && Date.now() < deadline) await new Promise((next) => setTimeout(next, 50));
+  check(done(), `timed out waiting until ${what}`);
+}
+
+// Runs image_filter headless to its end, with its captures and messages
+async function run(args, files) {
+  const captures = [];
+  const messages = [];
+  const states = [];
+  const program = image_filter.runHeadless({
+    args,
+    files,
+    onCapture: (capture) => captures.push(capture),
+    onState: (state) => states.push(state),
+    onMessage: (text) => messages.push(text),
+  });
+  const state = await program.done;
+  return { state, states, captures, messages: messages.join('\n') };
+}
+
+try {
+  const input = await fetched('assets/input.png');
+  const approved = await decode(await fetched('assets/blur_edges.approved.png'));
+  const args = ['input.png', 'out.png', '--blur', '2', '--edges'];
+
+  // Given as a Blob
+  const blob = await run(args, { 'input.png': new Blob([input], { type: 'image/png' }) });
+  check(blob.state === 'stopped', `a run ended ${blob.state}:\n${blob.messages}`);
+  check(blob.states.join() === 'running,stopped', `a run's states were ${blob.states.join(' ')}`);
+  check(blob.captures.length === 1, `a run made ${blob.captures.length} captures`);
+  const capture = blob.captures[0];
+  check(capture.path === 'out.png' && capture.frame === null, `the capture is ${capture.path} (frame ${capture.frame})`);
+  check(capture.size.join('x') === `${approved.width}x${approved.height}`, `the capture is ${capture.size.join('x')}, not ${approved.width}x${approved.height}`);
+  const off = differing(capture.rgba, approved.rgba, 2);
+  check(off === 0, `${off} channels differ from blur_edges.approved.png by more than 2`);
+  check(capture.png.type === 'image/png', `the capture's PNG is ${capture.png.type}`);
+  const png = await bytes(capture.png);
+  const decoded = await decode(png);
+  check(decoded.width === capture.size[0] && differing(decoded.rgba, capture.rgba, 0) === 0, 'the PNG doesn\'t hold the capture\'s pixels');
+
+  // Given as a URL (relative to the page)
+  const url = await run(args, { 'input.png': 'assets/input.png' });
+  check(url.state === 'stopped' && url.captures.length === 1, `a run from a URL ended ${url.state}:\n${url.messages}`);
+  check(differing(url.captures[0].rgba, capture.rgba, 0) === 0, 'a URL\'s capture differs from a Blob\'s');
+
+  // Its usage, and a bad command line
+  const help = await run(['--help'], {});
+  check(help.state === 'stopped' && /--blur/.test(help.messages) && help.captures.length === 0, `--help ended ${help.state}:\n${help.messages}`);
+  const missing = await run(['input.png'], {});
+  check(missing.state === 'failed' && missing.messages !== '', `a missing argument ended ${missing.state}`);
+  const unread = await run(['missing.png', 'out.png'], {});
+  check(unread.state === 'failed' && /missing\.png/.test(unread.messages), `a missing file ended ${unread.state}:\n${unread.messages}`);
+
+  // Stopped while it runs
+  let running;
+  const isRunning = new Promise((done) => { running = done; });
+  const stopped = [];
+  const long = image_filter.runHeadless({
+    args: [...args, '--frames', '100000'],
+    files: { 'input.png': new Blob([input]) },
+    onCapture: (c) => stopped.push(c),
+    onState: (state) => { if (state === 'running') running(); },
+    onMessage: log,
+  });
+  await Promise.race([isRunning, long.done]);
+  await long.stop();
+  check(await long.done === 'stopped' && stopped.length === 0, `a stopped run ended ${await long.done} with ${stopped.length} captures`);
+  await checkDevices('after runHeadless');
+
+  // The form
+  const container = document.getElementById('form');
+  // Each run's start (run) and states
+  const states = [];
+  const mounted = image_filter.mount(container, {
+    onRun: () => states.push('run'),
+    onState: (state) => states.push(state),
+    onMessage: log,
+  });
+  const form = container.querySelector('form.zgal-headless');
+  check(form !== null, 'mount added no form');
+  const named = (name) => [...form.querySelectorAll('label.zgal-field')].find((l) => l.querySelector('.zgal-name').textContent === name);
+  const file = named('<picture>').querySelector('input[type=file]');
+  const transfer = new DataTransfer();
+  transfer.items.add(new File([input], 'input.png', { type: 'image/png' }));
+  file.files = transfer.files;
+  check(named('<destination>') === undefined, 'the form asks where the capture goes');
+  named('--edges').querySelector('input[type=checkbox]').checked = true;
+  const blur = named('--blur').querySelector('input[type=number]');
+  blur.value = '2';
+  blur.dispatchEvent(new Event('input'));
+  check(named('--blur').querySelector('input[type=checkbox]').checked, 'changing --blur didn\'t check it');
+  form.requestSubmit();
+  await waitUntil(() => states.includes('stopped') || states.includes('failed'), 'the form\'s run ended');
+  check(states.join() === 'run,running,stopped', `the form's run went ${states.join(' ')}`);
+  const link = container.querySelector('.zgal-captures figure a[download]');
+  check(link !== null && link.download === 'image_filter.png', `the form's capture is ${link?.download}`);
+  check(container.querySelector('.zgal-captures figure img').src === link.href, 'the image isn\'t the download');
+  const shown = await bytes(await (await fetch(link.href)).blob());
+  check(shown.length === png.length && differing(shown, png, 0) === 0, 'the form\'s capture differs from runHeadless\'s');
+
+  // Submitted during a run, then again at once: the run is stopped, and only the last submit runs
+  const frames = named('--frames').querySelector('input[type=number]');
+  const figures = container.querySelector('.zgal-captures');
+  states.length = 0;
+  frames.value = '100000';
+  form.requestSubmit();
+  await waitUntil(() => states.includes('running') || states.includes('failed'), 'a long run started');
+  check(figures.childElementCount === 0, 'running again left the last run\'s capture');
+  frames.value = '1';
+  form.requestSubmit();
+  form.requestSubmit();
+  await waitUntil(() => states.filter((s) => s === 'run').length === 2 && /(stopped|failed)$/.test(states.join()), 'the rerun ended');
+  check(states.join() === 'run,running,run,running,stopped', `submitting twice during a run went ${states.join(' ')}`);
+  check(figures.childElementCount === 1, `the rerun shows ${figures.childElementCount} captures`);
+  await checkDevices('after rerunning the form');
+
+  // Stopped during a run: nothing more is shown, and its device is destroyed
+  states.length = 0;
+  frames.value = '100000';
+  form.requestSubmit();
+  await waitUntil(() => states.includes('running') || states.includes('failed'), 'a run to stop started');
+  await mounted.stop();
+  check(container.childElementCount === 0, 'stop() left the form');
+  check(states.join() === 'run,running,stopped', `the stopped form's run went ${states.join(' ')}`);
+  await new Promise((next) => setTimeout(next, 200));
+  check(figures.childElementCount === 0 && states.length === 3, 'a stopped form\'s run went on');
+  await checkDevices('after stopping the form');
+
+  // Given args, it runs them at once (paths fetched from image_filter's assets/, a URL from the root
+  // from there)
+  const started = [];
+  const command = ['/tests/assets/input.png', 'out.png', '--blur', '2', '--edges', '--frames', '100000'];
+  const given = image_filter.mount(container, {
+    args: command,
+    onRun: (a) => started.push(a.join(' ')),
+    onState: (state) => started.push(state),
+    onMessage: log,
+  });
+  await waitUntil(() => started.includes('running') || started.includes('failed'), 'a mount given args started');
+  check(started.join() === `${command.join(' ')},running`, `a mount given args went ${started.join(' ')}`);
+  await given.stop();
+  check(started.join() === `${command.join(' ')},running,stopped`, `a stopped mount given args went ${started.join(' ')}`);
+  check(container.childElementCount === 0, 'stop() left the form given args');
+  await checkDevices('after stopping a mount given args');
+
+  log('ran image_filter headless as expected');
+  document.documentElement.dataset.zgal = 'stopped';
+} catch (error) {
+  log(error instanceof Error ? error.message : String(error));
+  document.documentElement.dataset.zgal = 'failed';
+}
+</script>
+</body>
+</html>

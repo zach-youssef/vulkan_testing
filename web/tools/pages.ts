@@ -42,6 +42,7 @@ const common = {
   keys: { type: 'string', default: '' },
   screenshot: { type: 'string' },
   compare: { type: 'string' },
+  'save-capture': { type: 'string' },
   help: { type: 'boolean', default: false },
 } as const;
 
@@ -93,7 +94,7 @@ function unscale(shot: { width: number; height: number; rgba: Uint8Array }, widt
 // page in the checker's browser and exits
 export async function runChecker<O>(name: string, checker: Checker<O>): Promise<never> {
   const usage = `usage: node web/tools/${name}.ts [--serve DIR] [--wait MS | --timeout MS] [--keys KEYS]
-       [--screenshot FILE] [--compare FILE] ${checker.usage} PAGE`;
+       [--screenshot FILE] [--compare FILE] [--save-capture FILE] ${checker.usage} PAGE`;
   let parsed;
   try {
     parsed = parseArgs({ allowPositionals: true, options: { ...common, ...checker.options } });
@@ -170,6 +171,23 @@ export async function runChecker<O>(name: string, checker: Checker<O>): Promise<
     if (reached === 'failed') fail('the page failed');
     else if (reached === '' || (wait === undefined && reached === 'running')) {
       fail(`the page ${reached === '' ? 'didn\'t start' : 'didn\'t stop'} in ${timeout} ms`);
+    }
+
+    // The first capture a headless program's page shows (its download link's file, zgal.mountHeadless)
+    if (!failed && options['save-capture']) {
+      const base64 = (await page.evaluate(`(async () => {
+        const link = document.querySelector('.zgal-captures a[download]');
+        if (!link) return null;
+        const bytes = new Uint8Array(await (await fetch(link.href)).arrayBuffer());
+        let text = '';
+        for (const byte of bytes) text += String.fromCharCode(byte);
+        return btoa(text);
+      })()`)) as string | null;
+      if (base64 === null) fail('the page shows no capture');
+      else {
+        writeFileSync(options['save-capture'], Buffer.from(base64, 'base64'));
+        console.log(`wrote ${options['save-capture']}`);
+      }
     }
 
     if (!failed && (options.screenshot || options.compare)) {

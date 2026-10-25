@@ -6,7 +6,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RenderGraph } from './graph.ts';
-import { Launch, capturePixels, parseCommandLine, type Program, type RunnableApp } from './main.ts';
+import { Launch, parseCommandLine, runHeadlessFrames, type CapturePixels, type Program, type RunnableApp } from './main.ts';
 import { createNodeContext } from './node.ts';
 import { encodePng } from './png.ts';
 
@@ -29,21 +29,11 @@ export async function runNode<A extends RunnableApp, I>(program: Program<A, I>, 
       graphs.push(graph);
       return graph;
     });
-    const frames = launch.frames ?? 1;
-    for (let frame = 0; frame < frames && !app.quitRequested(); frame++) {
-      app.beginFrame();
-      const size = app.takeResize();
-      if (size) app.setSurfaceExtent(size);
-      await app.renderGraph().execute();
-      if (launch.captureFrames.includes(frame + 1)) {
-        await writeCapture(program, app, join(launch.capture!, `${frame + 1}.png`));
-      }
-    }
-    for (const graph of graphs) await graph.finish();
-    if (launch.capture !== null && launch.captureFrames.length === 0) {
-      await writeCapture(program, app, launch.capture);
-      if (program.captureOption) console.log(`Wrote ${launch.capture}`);
-    }
+    await runHeadlessFrames(program, app, launch, graphs, async (capture, frame) => {
+      const path = frame === null ? launch.capture! : join(launch.capture!, `${frame}.png`);
+      await writeCapture(capture, path);
+      if (frame === null && program.captureOption) console.log(`Wrote ${path}`);
+    });
   } catch (error) {
     process.stderr.write(`${program.name}: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
@@ -60,10 +50,7 @@ export async function runNode<A extends RunnableApp, I>(program: Program<A, I>, 
   context.destroy();
 }
 
-async function writeCapture<A extends RunnableApp, I>(program: Program<A, I>, app: A, path: string): Promise<void> {
-  if (!program.capture) throw new Error('the program captures nothing');
-  const { graph, node } = program.capture(app);
-  const { pixels, size } = await capturePixels(graph, node);
+async function writeCapture({ pixels, size }: CapturePixels, path: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, encodePng(size[0], size[1], pixels));
 }

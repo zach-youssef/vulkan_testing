@@ -153,8 +153,8 @@ racket dsl/zgal.rkt --check FILE.zgal
        depend on the @tt{.zgal} file and its shader bodies, with an empty rule per body (like
        @tt{gcc -MP}), so deleting a body doesn't break the build.}
  @item{@tt{@literal{--web-out} DIR} writes the TypeScript module (@secref["web"]) to
-       @tt{DIR/FILE.zgal.ts} (for a program its main, @tt{DIR/FILE.zgal.main.ts}, and with a
-       window its page, @tt{DIR/FILE.zgal.html}) and each shader's WGSL module to
+       @tt{DIR/FILE.zgal.ts} (for a program its main, @tt{DIR/FILE.zgal.main.ts}, and its page,
+       @tt{DIR/FILE.zgal.html}) and each shader's WGSL module to
        @tt{DIR/<shader name>.wgsl} (the
        TypeScript holds them too; they're written for tools and reading), and removes other WGSL
        modules there. Given alone, it doesn't generate the C++ and GLSL.}
@@ -2281,7 +2281,8 @@ floats as C++'s streams do.
 A program's main runs headless under Node, @tt{node FILE.zgal.main.ts --frames N}, with the native
 program's options (@secref["main"]) and its own, writing captures (@tt{--capture},
 @tt{--capture-frames}) to PNG files and exiting with 1 for errors or WebGPU's validation errors. A
-program with a window also runs in its page, @tt{FILE.zgal.html}, which loads the main built to
+program without a window runs headless in its page too (see below). A program with a window runs in
+its page, @tt{FILE.zgal.html}, which loads the main built to
 JavaScript (@tt{zgal-web-program}, @secref["building"]): the app draws into the page's canvas
 each animation frame, at the window's size scaled to fit the page, with the canvas's keyboard,
 mouse and wheel events, and options from the query string (@tt{?frames=60&level=3}, @tt{arg=...}
@@ -2324,6 +2325,57 @@ await particles.stop();
 Its own page calls the main's @tt{run()}, which mounts the program in the page's canvas, and Node
 runs the main when it is the program run (not imported). @tt{make test-pages} checks mounting with
 @tt{web/tests/mount.html}.
+
+Every program's main also exports @tt{runHeadless(options)} (@tt{zgal.runHeadless}), which runs it
+headless in a page as Node would, with its own WebGPU device: its frames (@tt{--frames}, by default
+1 for a program without a window; a program with a window needs it), its captures given to a
+callback rather than written. The options are @tt{args} (required: its command line, as under
+Node), @tt{files} (the files it reads, by the paths @tt{args} gives them: a @tt{Blob}, e.g. a file
+input's @tt{File}, or a URL relative to the page; other paths are fetched from @tt{assets/}),
+@tt{onCapture} (called with each capture: its @tt{path}, the file Node would write, @tt{frame}
+(@tt{--capture-frames}' frame, or null), @tt{size}, @tt{rgba} pixels and @tt{png}, a PNG
+@tt{Blob}), @tt{onState} and @tt{onMessage}, as @tt{mount}'s. It returns an object whose @tt{done}
+promise gives the state it ended in (@tt{stopped}, or @tt{failed} for a bad command line, an
+error or WebGPU's validation errors) and whose @tt{stop()} stops it, resolving once its device is
+destroyed. Runs are independent, each creating a device, so a page running again on input (e.g. a
+slider) should @tt{await} the previous run's @tt{stop()} before starting the next, and start only the latest of several quick inputs, e.g.
+
+@verbatim{
+import { runHeadless } from './image_filter/image_filter.zgal.main.js';
+let run = null, latest = 0;
+async function filter(file, blur) {
+  const mine = ++latest;
+  await run?.stop();
+  if (mine !== latest) return;
+  run = runHeadless({
+    args: [file.name, 'out.png', '--blur', String(blur)],
+    files: { [file.name]: file },
+    onCapture: (capture) => {
+      if (mine !== latest) return;
+      URL.revokeObjectURL(image.src);
+      image.src = URL.createObjectURL(capture.png);
+    },
+  });
+}
+}
+
+The main of a program without a window exports @tt{mount(container, options)} instead of the
+canvas's (@tt{zgal.mountHeadless}): it adds a form to the element, with an input per positional
+argument, option and flag (a file input for each path the program reads; the path its capture
+goes to, @tt{capture #:to}, is named by the page), the number of frames and a Run button, then the
+last run's captures, each an image and a link downloading it. The options are @tt{args} (a command
+line to run at once), @tt{onRun} (called with each run's command line), @tt{onState} and
+@tt{onMessage}. Running again stops the run before (only the last of several quick runs starts, and
+a stopped run's states and captures don't follow the next run's @tt{onRun}, and its messages go to
+@tt{console.debug}); @tt{stop()} stops the run, reporting its last messages and @tt{stopped}, and removes
+the form. Its markup has classes for a page's
+styles (@tt{form.zgal-headless}, @tt{label.zgal-field}, @tt{.zgal-captures}), and the program's
+@tt{program.options} describe its options (@tt{kind}, @tt{name}, @tt{metavar}, @tt{help}, @tt{value},
+@tt{default}, @tt{range}, and @tt{output} for where the capture goes) for a page building its own
+controls. The program's page shows the form, running the query string's command line at once when
+it gives one (@tt{?arg=photo.jpg&arg=out.png&blur=2}, paths fetched relative to @tt{assets/}), with
+the run's state in @tt{data-zgal}. @tt{make test-pages} runs image_filter's page and checks
+@tt{web/tests/headless.html}; the checkers' @tt{--save-capture FILE} saves the page's capture.
 
 Read-write storage images other than @tt{r32float}, @tt{r32uint} and @tt{r32sint} need WebGPU's
 @tt{texture-formats-tier2} feature, which the runtime requests when the adapter has it; without it,
@@ -2439,7 +2491,7 @@ under Node; next is what graphs on the web can't use yet.
   (list @tt{include/zgal/Main.h} "what the generated mains use: the command line, validation, captures, running headless")
   (list @tt{include/zgal/Window.h} "running an app in a VulkanApp's window, and windowed programs")
   (list @tt{dsl/docs/} "this document, and the helpers compiling its examples")
-  (list @tt{web/zgal/} "what the generated TypeScript uses at runtime: Context, RenderGraph, nodes, materials, types' layouts, apps' events and clocks, C++'s arithmetic (math.ts) and built-in functions (glsl.ts), mains (main.ts, main-node.ts, main-browser.ts); node.ts and png.ts for Node")
+  (list @tt{web/zgal/} "what the generated TypeScript uses at runtime: Context, RenderGraph, nodes, materials, types' layouts, apps' events and clocks, C++'s arithmetic (math.ts) and built-in functions (glsl.ts), mains (main.ts, main-node.ts, main-browser.ts), PNGs (png-pixels.ts, png-write.ts); node.ts and png.ts for Node")
   (list @tt{web/} "the web backend's packages (npm: TypeScript, and Dawn, WebGPU for Node), tools (tools/check-wgsl.ts compiles WGSL with Dawn; tools/firefox.ts and tools/chromium.ts check a page in Firefox or headless Chromium) and tests")
   (list @tt{dsl/tests/} "the compiler's tests (make test-dsl)"))]
 

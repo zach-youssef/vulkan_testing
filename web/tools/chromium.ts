@@ -1,12 +1,13 @@
 // Runs a ZGAL page (FILE.zgal.html) in headless Chromium and checks it, as firefox.ts does in Firefox:
 // prints the page's console and messages, optionally presses keys, screenshots its canvas and compares
-// it with an approved PNG. Exits with 0 when the page ran without errors (and matched), 1 when it
-// failed, didn't match or timed out (or the Chromium named doesn't exist), 2 for a bad command line, 3
-// when no Chromium was found.
+// it with an approved PNG (or saves a headless program's capture). Exits with 0 when the page ran
+// without errors (and matched), 1 when it failed, didn't match or timed out (or the Chromium named
+// doesn't exist), 2 for a bad command line, 3 when no Chromium was found.
 //
 //     node web/tools/chromium.ts [options] PAGE
 //
-//   PAGE, --serve, --wait, --timeout, --keys, --screenshot, --compare: as firefox.ts's
+//   PAGE, --serve, --wait, --timeout, --keys, --screenshot, --compare, --save-capture: as
+//                       firefox.ts's
 //   --hardware          uses the machine's GPU rather than SwiftShader
 //   --chromium PATH     the Chromium binary (default $CHROMIUM, else the newest headless shell
 //                       Playwright installed: npx playwright install chromium-headless-shell)

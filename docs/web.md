@@ -12,7 +12,14 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   whatever it's asked, so pixels can't come from it.
 - `main-browser.ts`: `mountProgram` embeds a program in a page, and `runPage`, which a program's
   generated page calls, wraps it. A page's state is in `<html data-zgal="running|stopped|failed">`
-  and errors appear in `#zgal-message` ([consumers.md](consumers.md) depends on both).
+  and errors appear in `#zgal-message` ([consumers.md](consumers.md) depends on both). For
+  programs without a window, `runHeadless` runs one as under Node, giving its captures to a
+  callback (each run has its own device), and `mountHeadless` builds a form for it from the
+  program's option metadata (`ProgramOption`'s `value`, `default`, `range` and `output`, which
+  `ts-main.rkt` emits). `main.ts`'s `runHeadlessFrames` is the frame loop both share with
+  `main-node.ts`, and `parseCommandLine`'s `where` (`node`, `browser` or `canvas`) is what differs.
+- `png-write.ts` writes PNGs in any environment (`encodePngStream`, with `CompressionStream`);
+  `png.ts` (Node only) uses zlib.
 - The web keeps Vulkan's clip space (the WGSL negates y), so web pixel expectations match native
   ones.
 
@@ -27,9 +34,13 @@ This page has what the reference doesn't: the runtime's conventions and how to t
    `build/web/<name>`) and runs them under Node, comparing image_filter's outputs with
    `web/tools/image-diff.ts` (which compares PNGs as `image_diff.cpp` does), and runs
    `tests/main/painter.zgal` as `make test-main` runs it natively (its TypeScript giving its
-   `MainInputs`);
-3. runs `make test-pages`: the particles and scene pages, `web/tests/mount.html` (mounts two
-   programs and stops one), `web/tests/image-file.html` and the kernels, indirect and models pages,
+   `MainInputs`) (`headless.test.ts` needs no GPU: the PNG encoders and `parseCommandLine`'s
+   `where`);
+3. runs `make test-pages`: the particles and scene pages, image_filter's page (run from its query
+   string, its capture saved with the checkers' `--save-capture` and compared with
+   `blur_edges.approved.png`), `web/tests/mount.html` (mounts two programs and stops one),
+   `web/tests/image-file.html`, the kernels, indirect and models pages, and
+   `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main),
    in each browser of `BROWSERS`: by default only headless Chromium. Firefox opens windows, so it
    runs only when asked, `make test-web BROWSERS="chromium firefox"` (as before pushing a stack's
    top), and has no WebGPU on Linux (CI skips it). A browser found nowhere is skipped (Chromium is

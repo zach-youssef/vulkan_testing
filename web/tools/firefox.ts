@@ -1,7 +1,8 @@
 // Runs a ZGAL page (FILE.zgal.html) in Firefox and checks it: prints the page's console and messages,
-// optionally presses keys, screenshots its canvas and compares it with an approved PNG. Exits with 0
-// when the page ran without errors (and matched), 1 when it failed, didn't match or timed out (or the
-// Firefox named doesn't exist), 2 for a bad command line, 3 when it found no Firefox.
+// optionally presses keys, screenshots its canvas and compares it with an approved PNG, or saves a
+// headless program's capture. Exits with 0 when the page ran without errors (and matched), 1 when it
+// failed, didn't match or timed out (or the Firefox named doesn't exist), 2 for a bad command line, 3
+// when it found no Firefox.
 //
 //     node web/tools/firefox.ts [options] PAGE
 //
@@ -14,6 +15,7 @@
 //   --keys KEYS         presses each character of KEYS once the page runs (e.g. '3' or 'ab')
 //   --screenshot FILE   writes the canvas's pixels (at its own resolution, not the page's scale)
 //   --compare FILE      compares the canvas with an approved PNG of the same size
+//   --save-capture FILE writes the first capture a headless program's page shows (its download)
 //   --headless          runs without a window (Firefox has no WebGPU adapter headless, so pages fail)
 //   --firefox PATH      the Firefox binary (default $FIREFOX, else the macOS application's, else
 //                       firefox on PATH, as on Linux)
