@@ -15,7 +15,7 @@
  enables too.
 
  Vulkan 1.3 is the minimum version. Beyond it, the wrapper relies on (DeviceFeatures::required()):
-    - samplerAnisotropy: samplers are always created with anisotropic filtering
+    - samplerAnisotropy: linear samplers (linear filter and mipmap mode) filter anisotropically
     - timelineSemaphore: per-queue timelines synchronize submissions and frames
     - synchronization2: barriers and submissions use the synchronization2 structures
     - dynamicRendering: render targets are begun with vkCmdBeginRendering, without render passes

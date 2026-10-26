@@ -1169,7 +1169,8 @@ surface-relative ones, when the surface resizes).
        @tt{mirrored-repeat}, @tt{clamp-to-edge}, @tt{clamp-to-border}), @tt{#:border}
        (@tt{transparent-black}, @tt{opaque-black}, @tt{opaque-white}), @tt{#:compare} (a
        comparison, e.g. @tt{less-or-equal}, for shadow maps), @tt{#:anisotropy} (@tt{#t} or
-       @tt{#f}) and @tt{#:max-lod}. The defaults are @tt{SamplerDesc}'s.}
+       @tt{#f}; only linear samplers with linear mipmaps filter anisotropically) and
+       @tt{#:max-lod}. The defaults are @tt{SamplerDesc}'s.}
  @item{@racket[uniform]: a mapped buffer per frame in flight, holding a value of its type that the
        per-frame input computes once a frame, before the first material using it records, however
        many use it. To spare memory traffic, a frame's buffer is only written when the value differs

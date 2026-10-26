@@ -226,9 +226,18 @@ struct SamplerDesc {
     // Depth comparison (e.g. VK_COMPARE_OP_LESS_OR_EQUAL for shadow maps, sampled with
     // sampler2DShadow): sampling returns the fraction of texels passing instead of their values
     std::optional<VkCompareOp> compareOp;
-    // The device's maximum anisotropy, or none
+    // The device's maximum anisotropy, or none. Anisotropic filtering refines linear filtering, so
+    // only samplers filtering linearly between texels and mip levels use it: with any nearest
+    // filter it's ignored (Vulkan leaves anisotropic filtering implementation-defined, and some
+    // implementations, e.g. llvmpipe, then blend texels a nearest sampler would pick). WebGPU
+    // allows it only for such samplers too.
     bool anisotropy = true;
     float maxLod = 0.0f;
+
+    // Whether samplers made from this filter anisotropically
+    bool anisotropic() const {
+        return anisotropy && filter == VK_FILTER_LINEAR && mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    }
 };
 
 VULKAN_DEVICE_CLASS(VulkanSampler, VkSampler, VkSamplerCreateInfo, vkCreateSampler, vkDestroySampler)
@@ -249,7 +258,7 @@ public:
         samplerInfo.addressModeV = desc.addressMode;
         samplerInfo.addressModeW = desc.addressMode;
         samplerInfo.borderColor = desc.borderColor;
-        if (desc.anisotropy) {
+        if (desc.anisotropic()) {
             VkPhysicalDeviceProperties properties{};
             vkGetPhysicalDeviceProperties(physicalDevice, &properties);
             samplerInfo.anisotropyEnable = VK_TRUE;

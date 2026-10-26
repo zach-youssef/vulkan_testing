@@ -256,7 +256,8 @@ int main() { return exitStatus(runApp()); }            // prints the error
   `Image::createStorage` makes storage images, and fails (`ErrorCode::Unsupported`) for formats the
   device can't store to (e.g. any sRGB format). `Image::supportsUsage` checks a format first.
 - Samplers: `VulkanSampler::create(ctx, SamplerDesc{...})` (filter, address mode, a
-  `compareOp` for shadow maps, anisotropy); `createWithAddressMode` is shorthand.
+  `compareOp` for shadow maps, anisotropy, which only samplers filtering linearly between texels and
+  mip levels use); `createWithAddressMode` is shorthand.
 - Meshes: `Mesh::create(ctx, vertices, indices[, instanceIndex])` (16- or 32-bit indices) holds the
   buffers; `create<MeshRenderable>(mesh, material)` draws one with a material, so passes can share
   geometry. Vertex shaders read the mesh's instance index as `gl_InstanceIndex`.
