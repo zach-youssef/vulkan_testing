@@ -110,14 +110,6 @@ private:
     ScreenshotTolerance tolerance_;
 };
 
-// Directory names must be stable and filesystem friendly, e.g. "Apple M4" -> "Apple_M4"
-std::string sanitizeForPath(const std::string& name) {
-    std::string result;
-    for (char c : name) {
-        result += std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '.' ? c : '_';
-    }
-    return result;
-}
 
 FLIP::image<FLIP::color3> toLinearFlipImage(const std::vector<uint8_t>& rgba, uint32_t width, uint32_t height) {
     std::vector<float> rgb(static_cast<size_t>(width) * height * 3);
@@ -134,6 +126,24 @@ FLIP::image<FLIP::color3> toLinearFlipImage(const std::vector<uint8_t>& rgba, ui
 }
 
 } // namespace
+
+std::string screenshotDirectoryName(const std::string& deviceName) {
+    // An LLVM suffix names the software rasterizer's build, e.g. lavapipe's
+    // "llvmpipe (LLVM 20.1.2, 256 bits)", so drop it. Other suffixes stay: Mesa's hardware drivers
+    // name the chip there, e.g. "AMD Radeon Graphics (RADV REMBRANDT)"
+    std::string name = deviceName;
+    if (const auto open = name.rfind(" (LLVM "); open != std::string::npos && name.back() == ')') {
+        name.erase(open);
+    }
+    while (!name.empty() && name.back() == ' ') {
+        name.pop_back();
+    }
+    // Filesystem friendly, e.g. "Apple M4" -> "Apple_M4"
+    for (char& c : name) {
+        c = std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '.' ? c : '_';
+    }
+    return name;
+}
 
 FlipResult compareWithFlip(const std::vector<uint8_t>& referenceRgba,
                            const std::vector<uint8_t>& testRgba,
@@ -196,7 +206,7 @@ void verifyScreenshot(const std::vector<uint8_t>& rgbaPixels,
         ApprovalTests::FileApprover::registerComparatorForExtension(".png", comparator);
     comparator->setTolerance(tolerance);
 
-    const std::string subdirectoryName = "approved/" + sanitizeForPath(VkTestContext::get().vulkan().deviceName());
+    const std::string subdirectoryName = "approved/" + screenshotDirectoryName(VkTestContext::get().vulkan().deviceName());
     // ApprovalTests only creates a single missing directory level (with 0733 permissions), so
     // create the per-device directory ourselves. Screenshot tests live alongside this file.
     std::filesystem::create_directories(std::filesystem::path(__FILE__).parent_path() / subdirectoryName);

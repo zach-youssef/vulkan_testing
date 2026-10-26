@@ -169,6 +169,17 @@ TEST_CASE_FIXTURE(GpuTest, "Frames added at runtime render the same as existing 
     CHECK(readback.pixels().value() == expected);
 }
 
+TEST_CASE("Screenshots are approved per device, whatever its driver's build") {
+    CHECK(screenshotDirectoryName("Apple M4") == "Apple_M4");
+    CHECK(screenshotDirectoryName("llvmpipe (LLVM 20.1.2, 256 bits)") == "llvmpipe");
+    CHECK(screenshotDirectoryName("NVIDIA GeForce RTX 4090") == "NVIDIA_GeForce_RTX_4090");
+    // Only an LLVM suffix: parentheses inside the name, and suffixes naming the chip, stay
+    CHECK(screenshotDirectoryName("AMD Radeon (TM) Graphics") == "AMD_Radeon__TM__Graphics");
+    CHECK(screenshotDirectoryName("AMD Radeon Graphics (RADV REMBRANDT)") ==
+          "AMD_Radeon_Graphics__RADV_REMBRANDT_");
+    CHECK(screenshotDirectoryName("Intel(R) Graphics (ADL GT2)") == "Intel_R__Graphics__ADL_GT2_");
+}
+
 TEST_CASE("compareWithFlip passes identical images and flags visibly different ones") {
     constexpr uint32_t size = 32;
     std::vector<uint8_t> gradient(size * size * 4);
