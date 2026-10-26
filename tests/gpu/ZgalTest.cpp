@@ -1137,7 +1137,7 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL's compute library scans and reduces, counted by
         std::inclusive_scan(values.begin(), values.end(), sums.begin());
         CHECK(library.readSumsContents(graph).value() == sums);
         CHECK(library.readInPlaceContents(graph).value() == sums);
-        // Exclusive, over the first gpuCount elements (the rest are left as they were: zero)
+        // Exclusive, over the first gpuCount elements (the rest are left as they were: cleared to zero)
         std::vector<uint32_t> before(size, 0);
         std::exclusive_scan(values.begin(), values.begin() + gpuCount, before.begin(), 0u);
         CHECK(library.readBeforeContents(graph).value() == before);

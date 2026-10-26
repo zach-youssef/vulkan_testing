@@ -55,6 +55,8 @@ Gotchas:
   `1`: wrap C strings in `std::string`, or build the string first and pass that.
 - `VK_LOADER_LAYERS_DISABLE='*validation*'` makes the loader hide the validation layer from the
   application, to check that a run lacking it fails.
+- ZGAL graph buffers start with undefined contents: MoltenVK's happen to be zero, lavapipe's
+  aren't. A test graph must `clear` what it reads before anything writes it.
 
 ## CI
 
