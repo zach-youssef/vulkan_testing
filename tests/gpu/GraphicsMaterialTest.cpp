@@ -5,6 +5,10 @@
 #include "graph/nodes/RenderablesNode.h"
 #include "materials/GraphicsMaterial.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+
 namespace {
 
 // Draws fullscreen.vert's triangle (no vertex input) in a pushed colour
@@ -56,6 +60,15 @@ std::vector<uint8_t> draw(VulkanContext& ctx, GraphicsPipelineOptions options, s
     return std::vector<uint8_t>(pixels.begin(), pixels.begin() + 4);
 }
 
+// Whether each channel is its exact value (times 255) rounded either way: blending's rounding is
+// the implementation's, e.g. lavapipe's 76 for MoltenVK's 77 from 0.3 * 255 = 76.5. Exact channels
+// must match exactly
+bool rounds(const std::vector<uint8_t>& actual, const std::array<float, 4>& exact) {
+    return actual.size() == exact.size()
+           && std::equal(actual.begin(), actual.end(), exact.begin(),
+                         [](uint8_t a, float e) { return std::abs(float(a) - e) <= 0.5f + 1e-3f; });
+}
+
 } // namespace
 
 TEST_CASE_FIXTURE(GpuTest, "Graphics materials can draw without vertex input and blend as configured") {
@@ -72,10 +85,14 @@ TEST_CASE_FIXTURE(GpuTest, "Graphics materials can draw without vertex input and
     CHECK(draw(ctx, options, grey, {color, color}) == std::vector<uint8_t>{255, 153, 51, 255});
     // 0.4 * 0.5 + 0.2 * 0.5 = 0.3; alpha 0.5 + 1 * 0.5 = 1
     options.blend = {BlendMode::Alpha};
-    CHECK(draw(ctx, options, grey, {color}) == std::vector<uint8_t>{77, 51, 26, 255});
-    // 0.4 + 0.2 * 0.5 = 0.5
+    const auto alpha = draw(ctx, options, grey, {color});
+    CAPTURE(alpha);
+    CHECK(rounds(alpha, {76.5f, 51.0f, 25.5f, 255.0f}));
+    // 0.4 + 0.2 * 0.5 = 0.5, 0.2 + 0.2 * 0.5 = 0.3, 0 + 0.2 * 0.5 = 0.1
     options.blend = {BlendMode::PremultipliedAlpha};
-    CHECK(draw(ctx, options, grey, {color}) == std::vector<uint8_t>{128, 77, 26, 255});
+    const auto premultiplied = draw(ctx, options, grey, {color});
+    CAPTURE(premultiplied);
+    CHECK(rounds(premultiplied, {127.5f, 76.5f, 25.5f, 255.0f}));
 }
 
 TEST_CASE_FIXTURE(GpuTest, "Graphics materials cull the faces their options say") {
