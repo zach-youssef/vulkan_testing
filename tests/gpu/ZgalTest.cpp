@@ -13,7 +13,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <mutex>
 #include <numeric>
 
 // The generated code is in the namespace of its file, interfaces.zgal
@@ -521,7 +520,7 @@ TEST_CASE("ZGAL structs' arrays copy in C++") {
 namespace {
 
 // A context with the device features ZGAL materials ask for, and validation (required, as GpuTest
-// does), recording errors
+// does), failing on any validation message once it's destroyed
 struct FeatureContext {
     explicit FeatureContext(const DeviceFeatures& features) {
         VulkanContextConfig config;
@@ -529,18 +528,19 @@ struct FeatureContext {
         config.enableValidation = true;
         config.enableSynchronizationValidation = true;
         config.features = features;
-        config.onValidationMessage = [this](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
-            if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-                std::lock_guard<std::mutex> lock(mutex);
-                errors.emplace_back(message);
-            }
-        };
+        config.onValidationMessage = messages.handler();
         context = VulkanContext::create(std::move(config)).value();
         requireValidation(*context, true);
     }
 
-    std::mutex mutex;
-    std::vector<std::string> errors;
+    ~FeatureContext() {
+        context.reset(); // Destruction may report messages too, e.g. leaked objects
+        for (const auto& message : messages.take()) {
+            FAIL_CHECK("Vulkan validation " << message);
+        }
+    }
+
+    ValidationMessages messages;
     std::unique_ptr<VulkanContext> context;
 };
 
@@ -650,15 +650,6 @@ TEST_CASE("ZGAL's 8- and 16-bit integers, shared memory, imported buffers, copie
         CHECK(packed[i].level == uint16_t(elements[i].level + 1));
         CHECK(packed[i].wide == elements[i].wide);
         CHECK(packed[i].many == elements[i].many);
-    }
-
-    staging.reset();
-    results.reset();
-    repacked.reset();
-    std::lock_guard<std::mutex> lock(feature.mutex);
-    CHECK(feature.errors.empty());
-    for (const auto& error : feature.errors) {
-        MESSAGE(error);
     }
 }
 
@@ -915,17 +906,6 @@ TEST_CASE("ZGAL's atomics, while loops, subgroup operations, strided ranges and 
         CHECK(taken[i] == collatzSteps(samples[i]));
         // Every invocation is below the count, so every subgroup is full
         CHECK(sums[i] == subgroupSize);
-    }
-
-    sampleBuffer.reset();
-    counts.reset();
-    steps.reset();
-    subgroupSums.reset();
-    total.reset();
-    std::lock_guard<std::mutex> lock(feature.mutex);
-    CHECK(feature.errors.empty());
-    for (const auto& error : feature.errors) {
-        MESSAGE(error);
     }
 }
 

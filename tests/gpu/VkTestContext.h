@@ -8,6 +8,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -60,11 +61,55 @@ inline void requireValidation(const VulkanContext& context, bool syncRequested) 
 }
 
 /*
+ Records every message a context's debug messenger delivers, from any thread: warnings as well as
+ errors (VulkanContext asks for no info or verbose ones), as any validation message is a bug. Each is
+ labelled with its severity, e.g. "warning: <message>".
+
+     ValidationMessages messages;
+     config.onValidationMessage = messages.handler();
+     ...
+     for (const auto& message : messages.take()) FAIL_CHECK("Vulkan validation " << message);
+ */
+class ValidationMessages {
+public:
+    // The callback for VulkanContextConfig::onValidationMessage; it refers to this object
+    std::function<void(VkDebugUtilsMessageSeverityFlagBitsEXT, const char*)> handler() {
+        return [this](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
+            record(severity, message);
+        };
+    }
+
+    void record(VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
+        std::string labelled = describe(severity, message);
+        std::lock_guard<std::mutex> lock(mutex_);
+        messages_.push_back(std::move(labelled));
+    }
+
+    // Returns and clears the messages recorded so far
+    std::vector<std::string> take() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return std::exchange(messages_, {});
+    }
+
+    static std::string describe(VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
+        const char* label = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT     ? "error"
+                            : severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ? "warning"
+                            : severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT    ? "info"
+                                                                                         : "verbose";
+        return std::string(label) + ": " + message;
+    }
+
+private:
+    std::mutex mutex_;
+    std::vector<std::string> messages_;
+};
+
+/*
  Headless VulkanContext shared by all GPU tests.
 
  The Khronos validation layer is enabled, with synchronization validation, unless
- ValidationOptOuts says otherwise, and every validation error is recorded so that tests can fail
- on API misuse and synchronization hazards (see GpuTest below), which also fails every test when
+ ValidationOptOuts says otherwise, and every validation message (warnings too) is recorded so that
+ tests can fail on API misuse and synchronization hazards (see GpuTest below), which also fails every test when
  the context lacks either.
  */
 class VkTestContext {
@@ -85,10 +130,9 @@ public:
 
     VulkanContext& vulkan() { return *context_; }
 
-    // Returns and clears the validation errors recorded so far
-    std::vector<std::string> takeValidationErrors() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return std::exchange(validationErrors_, {});
+    // Returns and clears the validation messages recorded so far
+    std::vector<std::string> takeValidationMessages() {
+        return validationMessages_.take();
     }
 
 
@@ -108,25 +152,19 @@ private:
         config.features.core.features.drawIndirectFirstInstance = VK_TRUE;
         config.enableValidation = !optOuts.validation;
         config.enableSynchronizationValidation = !optOuts.synchronization;
-        config.onValidationMessage = [this](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
-            if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                validationErrors_.emplace_back(message);
-            }
-        };
+        config.onValidationMessage = validationMessages_.handler();
 
         context_ = VulkanContext::create(std::move(config)).value();
     }
 
-    std::mutex mutex_;
-    std::vector<std::string> validationErrors_;
+    ValidationMessages validationMessages_;
 
     std::unique_ptr<VulkanContext> context_;
 };
 
 /*
  doctest fixture for GPU tests. Fails the test if the context lacks validation or synchronization
- validation (unless ValidationOptOuts says so), if it produced validation errors, left
+ validation (unless ValidationOptOuts says so), if it produced validation messages, left
  resources alive in the shared ResourceManager, left PerFrame collections alive or changed the
  number of frames in flight (tests that change it must restore it).
 
@@ -139,16 +177,16 @@ public:
     collectionsBefore_(context().frames().size()),
     framesInFlightBefore_(context().framesInFlight()) {
         requireValidation(context(), true);
-        // Errors raised outside of a test (e.g. creating the context) are reported here
-        for (const auto& error : VkTestContext::get().takeValidationErrors()) {
-            FAIL_CHECK("Vulkan validation error before this test: " << error);
+        // Messages raised outside of a test (e.g. creating the context) are reported here
+        for (const auto& message : VkTestContext::get().takeValidationMessages()) {
+            FAIL_CHECK("Vulkan validation " << message << " (before this test)");
         }
     }
 
     ~GpuTest() {
         context().waitIdleAll();
-        for (const auto& error : VkTestContext::get().takeValidationErrors()) {
-            FAIL_CHECK("Vulkan validation error: " << error);
+        for (const auto& message : VkTestContext::get().takeValidationMessages()) {
+            FAIL_CHECK("Vulkan validation " << message);
         }
         const size_t resourcesAfter = managedResources();
         if (resourcesAfter != resourcesBefore_) {

@@ -13,12 +13,11 @@ namespace {
 
 constexpr VkMemoryPropertyFlags kHostVisible = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-// A headless, validated context that records validation errors (which may arrive on any thread).
+// A headless, validated context that records validation messages (which may arrive on any thread).
 // Fails the test if it lacks validation, or synchronization validation with syncValidation,
 // unless ValidationOptOuts says so.
 struct ValidatedContext {
-    std::mutex mutex;
-    std::vector<std::string> errors;
+    ValidationMessages messages;
     std::unique_ptr<VulkanContext> context;
 
     ValidatedContext(bool syncValidation = true) {
@@ -26,20 +25,15 @@ struct ValidatedContext {
         config.applicationName = "VulkanContext tests";
         config.enableValidation = true;
         config.enableSynchronizationValidation = syncValidation;
-        config.onValidationMessage = [this](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
-            if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-                std::lock_guard<std::mutex> lock(mutex);
-                errors.emplace_back(message);
-            }
-        };
+        config.onValidationMessage = messages.handler();
         context = VulkanContext::create(std::move(config)).value();
         requireValidation(*context, syncValidation);
     }
 
     ~ValidatedContext() {
-        context.reset(); // Destruction may report errors too
-        for (const auto& error : errors) {
-            FAIL_CHECK("Vulkan validation error: " << error);
+        context.reset(); // Destruction may report messages too
+        for (const auto& message : messages.take()) {
+            FAIL_CHECK("Vulkan validation " << message);
         }
     }
 };
@@ -57,6 +51,15 @@ uint32_t readFirst(Buffer<uint32_t>& buffer) {
 }
 
 } // namespace
+
+TEST_CASE("ValidationMessages records warnings as well as errors, labelled") {
+    ValidationMessages messages;
+    auto handler = messages.handler();
+    handler(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT, "a warning");
+    handler(VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT, "an error");
+    CHECK(messages.take() == std::vector<std::string>{"warning: a warning", "error: an error"});
+    CHECK(messages.take().empty());
+}
 
 TEST_CASE("VulkanContext creates a headless device") {
     ValidatedContext validated;
@@ -275,17 +278,11 @@ TEST_CASE("Synchronization validation reports hazards when enabled") {
         MESSAGE("Synchronization validation disabled by the environment; skipping");
         return;
     }
-    std::mutex mutex;
-    std::vector<std::string> errors;
+    ValidationMessages messages;
     VulkanContextConfig config;
     config.enableValidation = true;
     config.enableSynchronizationValidation = true;
-    config.onValidationMessage = [&](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
-        if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-            std::lock_guard<std::mutex> lock(mutex);
-            errors.emplace_back(message);
-        }
-    };
+    config.onValidationMessage = messages.handler();
     {
         auto context = VulkanContext::create(std::move(config)).value();
         auto& ctx = *context;
@@ -299,8 +296,8 @@ TEST_CASE("Synchronization validation reports hazards when enabled") {
         }).value();
     }
     bool hazard = false;
-    for (const auto& error : errors) {
-        hazard |= error.find("WRITE_AFTER_WRITE hazard") != std::string::npos;
+    for (const auto& message : messages.take()) {
+        hazard |= message.rfind("error: ", 0) == 0 && message.find("WRITE_AFTER_WRITE hazard") != std::string::npos;
     }
     CHECK(hazard);
 }

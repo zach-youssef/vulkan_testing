@@ -8,7 +8,6 @@
 
 #include <doctest/doctest.h>
 
-#include <mutex>
 
 namespace {
 
@@ -49,10 +48,9 @@ bool hasPattern(Image& image) {
 }
 
 // A headless VulkanApp with validation and synchronization validation (required unless
-// ValidationOptOuts says so) that records validation errors
+// ValidationOptOuts says so) that records validation messages
 struct HeadlessApp {
-    std::mutex mutex;
-    std::vector<std::string> errors;
+    ValidationMessages messages;
     std::unique_ptr<VulkanApp> app = std::make_unique<VulkanApp>();
 
     explicit HeadlessApp(DeviceFeatures features = {}) {
@@ -63,20 +61,15 @@ struct HeadlessApp {
         config.enableValidation = true;
         config.enableSynchronizationValidation = true;
         config.logInstanceInfo = false;
-        config.onValidationMessage = [this](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
-            if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-                std::lock_guard<std::mutex> lock(mutex);
-                errors.emplace_back(message);
-            }
-        };
+        config.onValidationMessage = messages.handler();
         app->init(config).value();
         requireValidation(app->getContext(), true);
     }
 
     ~HeadlessApp() {
-        app.reset(); // Destruction may report errors too
-        for (const auto& error : errors) {
-            FAIL_CHECK("Vulkan validation error: " << error);
+        app.reset(); // Destruction may report messages too
+        for (const auto& message : messages.take()) {
+            FAIL_CHECK("Vulkan validation " << message);
         }
     }
 };
@@ -287,12 +280,8 @@ TEST_CASE("A windowed VulkanApp passes window input to its handlers") {
     config.enableValidation = true;
     config.enableSynchronizationValidation = true;
     config.logInstanceInfo = false;
-    std::vector<std::string> errors;
-    config.onValidationMessage = [&errors](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
-        if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-            errors.emplace_back(message);
-        }
-    };
+    ValidationMessages messages;
+    config.onValidationMessage = messages.handler();
     {
         VulkanApp app;
         if (auto initialized = app.init(config); !initialized) {
@@ -331,8 +320,8 @@ TEST_CASE("A windowed VulkanApp passes window input to its handlers") {
         CHECK(events == std::vector<std::string>{"key " + std::to_string(GLFW_KEY_SPACE) + " " + std::to_string(GLFW_PRESS),
                                                  "scroll -2"});
     }
-    for (const auto& error : errors) {
-        FAIL_CHECK("Vulkan validation error: " << error);
+    for (const auto& message : messages.take()) {
+        FAIL_CHECK("Vulkan validation " << message);
     }
 }
 
@@ -353,12 +342,8 @@ TEST_CASE("zgal::connect turns a window's input into an app's events, and pollEv
     config.enableValidation = true;
     config.enableSynchronizationValidation = true;
     config.logInstanceInfo = false;
-    std::vector<std::string> errors;
-    config.onValidationMessage = [&errors](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* message) {
-        if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-            errors.emplace_back(message);
-        }
-    };
+    ValidationMessages messages;
+    config.onValidationMessage = messages.handler();
     {
         VulkanApp app;
         if (auto initialized = app.init(config); !initialized) {
@@ -398,8 +383,8 @@ TEST_CASE("zgal::connect turns a window's input into an app's events, and pollEv
         glfwSetWindowShouldClose(window, GLFW_TRUE);
         CHECK_FALSE(app.pollEvents());
     }
-    for (const auto& error : errors) {
-        FAIL_CHECK("Vulkan validation error: " << error);
+    for (const auto& message : messages.take()) {
+        FAIL_CHECK("Vulkan validation " << message);
     }
 }
 
