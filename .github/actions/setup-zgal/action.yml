@@ -6,7 +6,7 @@
 #   - native: the LunarG Vulkan SDK (headers, loader, glslc, validation layers), its tarball cached by
 #     version, with VULKAN_SDK, PATH, LD_LIBRARY_PATH and VK_ADD_LAYER_PATH exported;
 #   - native: clang++ through ccache as CXX, with the ccache directory cached per branch (falling back to
-#     the default branch's) and keyed by the checked-out commit;
+#     the default branch's) and keyed by the checked-out commit (only restored with save-ccache: false);
 #   - Racket (full distribution, with Scribble) for ZGAL's compiler and docs;
 #   - Node with npm's cache keyed by the web backend's lockfile.
 name: setup-zgal
@@ -27,6 +27,9 @@ inputs:
   node-version:
     description: Node's version.
     default: "24"
+  save-ccache:
+    description: "native: \"false\" only restores the ccache, for a job building what another job of the run saves under the same key (whichever saves second fails to, losing its objects)."
+    default: "true"
   default-branch:
     description: The branch whose ccache a new branch starts from.
     default: ${{ github.event.repository.default_branch }}
@@ -102,8 +105,18 @@ runs:
         echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
     - name: Cache ccache
-      if: inputs.toolchain == 'native'
+      if: inputs.toolchain == 'native' && inputs.save-ccache != 'false'
       uses: actions/cache@v6
+      with:
+        path: ~/.ccache
+        key: ccache-${{ steps.ccache.outputs.branch }}-${{ steps.ccache.outputs.commit }}
+        restore-keys: |
+          ccache-${{ steps.ccache.outputs.branch }}-
+          ccache-${{ steps.ccache.outputs.default }}-
+
+    - name: Restore ccache
+      if: inputs.toolchain == 'native' && inputs.save-ccache == 'false'
+      uses: actions/cache/restore@v6
       with:
         path: ~/.ccache
         key: ccache-${{ steps.ccache.outputs.branch }}-${{ steps.ccache.outputs.commit }}

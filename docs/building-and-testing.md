@@ -68,12 +68,21 @@ runs `make test-web BROWSERS=chromium` (`.github/workflows/web.yml`): Dawn under
 and the pages in Playwright's Chromium headless shell on SwiftShader (`CHROMIUM` names it, so a
 missing one fails), and gets a `web` status. Firefox is skipped there, as it has no WebGPU on
 Linux; commits from before `web.yml` existed get no `web` check (the commits job leaves them out).
-The toolchain (apt packages, the LunarG SDK, ccache, Racket, Node) comes from
-`.github/actions/setup-zgal`, whose `toolchain` input is `native` or `web` (no SDK, clang or
-ccache).
+Each one also runs `make test-gpu` and `make test-examples` on lavapipe
+(`.github/workflows/gpu.yml`), with validation and synchronization validation required, and gets
+a `gpu` status (commits from before `gpu.yml` existed get none). The toolchain (apt packages, the
+LunarG SDK, ccache, Racket, Node) comes from `.github/actions/setup-zgal`, whose `toolchain` input
+is `native` or `web` (no SDK, clang or ccache).
 
-The GPU tests and example smoke tests don't run in CI yet, nor the web pages in Firefox: run them
-locally, one GPU run at a time on a machine.
+lavapipe has one queue in one family, so CI never runs the multi-queue paths (async compute,
+cross-queue ownership and timeline waits; their tests skip), nor the windowed tests (no display),
+nor the web pages in Firefox: run `make test-gpu test-examples` locally on the Mac too, one GPU run
+at a time on a machine.
+
+lavapipe's screenshots are approved in `tests/gpu/approved/llvmpipe/` (its device name without the
+LLVM build). A failed gpu job uploads its received screenshots, FLIP error maps, the examples'
+captures and the logs as the artifact `gpu-<sha>`: `gh run download <run id> -n gpu-<sha>`, look at
+each received image, and only then copy it over its `.approved.png`.
 
 Gotchas:
 
@@ -99,7 +108,11 @@ Gotchas:
   gives up after about 10.
 - Jobs that build no C++ use setup-zgal's `web` toolchain, which saves no ccache: saving it under
   the commit's key before the cpu job does would make the cpu job's save, with its new objects,
-  fail.
+  fail. The gpu job builds C++ alongside the cpu job, so it only restores the ccache
+  (`save-ccache: false`).
+- GitHub scopes caches per branch: a branch restores only its own caches or the default branch's,
+  and what it saves never reaches the default branch, so a working branch's jobs can't poison
+  `main`'s caches (no further hardening needed).
 - make's `$(if)` splits its arguments on commas, so flags like `-Wl,-rpath,...` inside it use
   zgal.mk's `$(ZGAL_COMMA)`.
 

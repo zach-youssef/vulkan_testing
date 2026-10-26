@@ -1,0 +1,97 @@
+# Runs the GPU tests and the examples' smoke tests on each commit (make test-gpu test-examples) on
+# lavapipe, with validation and synchronization validation required: any validation message, or a
+# missing layer, fails them. lavapipe has one queue, so the multi-queue paths only run on the Mac.
+# Screenshots are compared with tests/gpu/approved/llvmpipe/; on a failure, the received
+# screenshots, their FLIP error maps, the smoke tests' captures and the logs are uploaded. Its
+# token can't post statuses: ci.yml posts each commit's "gpu" status from its job's conclusion,
+# found by the job's name, and passes only the commits that have this workflow.
+name: gpu
+on:
+  workflow_call:
+    inputs:
+      commits:
+        description: A JSON array of the commit SHAs to check.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gpu:
+    name: gpu ${{ matrix.sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        sha: ${{ fromJSON(inputs.commits) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+
+      # The actions come from the pushed workflow's commit, not the checked-out one, so every commit
+      # is checked with the same setup
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .ci
+          sparse-checkout: .github
+          persist-credentials: false
+
+      # The cpu job builds the same objects at the same time and saves the commit's ccache
+      - uses: ./.ci/.github/actions/setup-zgal
+        with:
+          toolchain: native
+          save-ccache: "false"
+
+      - name: Show the Vulkan device
+        run: vulkaninfo --summary
+
+      # Everything the tests run, so the test steps compile nothing (serially, or as a smoke test
+      # failure)
+      - name: Build
+        id: build
+        run: |
+          make -j"$(nproc)" build/tests/gpu_tests examples build/tests/main/painter \
+            build/tools/bench/bench build/examples/image_filter/tests/image_diff
+
+      # Step timeouts fail a hung test's step (well within the job's), so the upload still runs:
+      # it doesn't when the job's timeout cancels it
+      - name: GPU tests
+        timeout-minutes: 10
+        run: |
+          mkdir -p build/logs
+          make test-gpu 2>&1 | tee build/logs/test-gpu.log
+
+      # Also after the GPU tests fail
+      - name: Examples' smoke tests
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          mkdir -p build/logs
+          make -k test-examples 2>&1 | tee build/logs/test-examples.log
+
+      - name: Upload screenshots and logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gpu-${{ matrix.sha }}
+          if-no-files-found: ignore
+          path: |
+            tests/gpu/approved/**/*.received.png
+            tests/gpu/approved/**/*.flip.png
+            build/examples/*/smoke.png
+            build/examples/image_filter/tests/*.png
+            build/tests/main/*.png
+            build/logs
+
+      - name: ccache statistics
+        if: always()
+        run: ccache -s

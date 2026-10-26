@@ -2,7 +2,7 @@
 # posting a commit status per check on each commit.
 #
 # Only the jobs that run no code from the repository's commits, npm or third-party actions can post
-# statuses: the cpu and web jobs build and test with a read-only token, while the pending job marks
+# statuses: the cpu, web and gpu jobs build and test with a read-only token, while the pending job marks
 # the commits' checks pending first and the statuses job posts the outcome of each commit's job
 # afterwards, from this run's jobs. Neither checks anything out.
 name: ci
@@ -29,7 +29,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       commits: ${{ steps.commits.outputs.commits }}
-      web: ${{ steps.web.outputs.commits }}
+      web: ${{ steps.checks.outputs.web }}
+      gpu: ${{ steps.checks.outputs.gpu }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -37,25 +38,28 @@ jobs:
           persist-credentials: false
       - id: commits
         uses: ./.github/actions/commits
-      # Commits from before web.yml existed can't pass it, so they get no web check
-      - id: web
+      # Commits from before web.yml or gpu.yml existed can't pass it, so they get no web or gpu check
+      - id: checks
         env:
           COMMITS: ${{ steps.commits.outputs.commits }}
         run: |
-          json=$(jq -r '.[]' <<< "$COMMITS" | while read -r sha; do
-            if git cat-file -e "$sha:.github/workflows/web.yml" 2>/dev/null; then
-              echo "$sha"
-            else
-              echo "$sha" >> "$RUNNER_TEMP/older"
+          for check in web gpu; do
+            rm -f "$RUNNER_TEMP/older"
+            json=$(jq -r '.[]' <<< "$COMMITS" | while read -r sha; do
+              if git cat-file -e "$sha:.github/workflows/$check.yml" 2>/dev/null; then
+                echo "$sha"
+              else
+                echo "$sha" >> "$RUNNER_TEMP/older"
+              fi
+            done | jq -R . | jq -cs .)
+            if [ -e "$RUNNER_TEMP/older" ]; then
+              while read -r sha; do
+                echo "::notice::$(git rev-parse --short "$sha") predates the $check check (no .github/workflows/$check.yml): not checked, no $check status"
+              done < "$RUNNER_TEMP/older"
             fi
-          done | jq -R . | jq -cs .)
-          if [ -e "$RUNNER_TEMP/older" ]; then
-            while read -r sha; do
-              echo "::notice::$(git rev-parse --short "$sha") predates the web check (no .github/workflows/web.yml): not checked, no web status"
-            done < "$RUNNER_TEMP/older"
-          fi
-          echo "Commits to check on the web: $json"
-          echo "commits=$json" >> "$GITHUB_OUTPUT"
+            echo "Commits to check ($check): $json"
+            echo "$check=$json" >> "$GITHUB_OUTPUT"
+          done
 
   pending:
     needs: commits
@@ -67,6 +71,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       CPU: ${{ needs.commits.outputs.commits }}
       WEB: ${{ needs.commits.outputs.web }}
+      GPU: ${{ needs.commits.outputs.gpu }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       # Each call is tried three times, and a failure doesn't stop the other commits' statuses
@@ -81,6 +86,7 @@ jobs:
           }
           for sha in $(jq -r '.[]' <<< "$CPU"); do post "$sha" cpu "Building and testing"; done
           for sha in $(jq -r '.[]' <<< "$WEB"); do post "$sha" web "Testing the web backend"; done
+          for sha in $(jq -r '.[]' <<< "$GPU"); do post "$sha" gpu "Testing on lavapipe"; done
           exit "$failed"
 
   cpu:
@@ -96,12 +102,19 @@ jobs:
     with:
       commits: ${{ needs.commits.outputs.web }}
 
-  # Posts each commit's cpu and web statuses from the conclusion of its job ("<context> <sha>") in
+  gpu:
+    needs: commits
+    if: needs.commits.outputs.gpu != '[]'
+    uses: ./.github/workflows/gpu.yml
+    with:
+      commits: ${{ needs.commits.outputs.gpu }}
+
+  # Posts each commit's cpu, web and gpu statuses from the conclusion of its job ("<context> <sha>") in
   # this run: success and failure as they are, anything else (cancelled, timed out, skipped, never
   # run, or unreadable) as an error, so no commit stays pending. Each call is tried three times, and
   # a failure doesn't stop the other commits' statuses.
   statuses:
-    needs: [commits, pending, cpu, web]
+    needs: [commits, pending, cpu, web, gpu]
     if: always() && needs.commits.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -112,6 +125,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       CPU: ${{ needs.commits.outputs.commits }}
       WEB: ${{ needs.commits.outputs.web }}
+      GPU: ${{ needs.commits.outputs.gpu }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Post the commits' statuses
@@ -146,4 +160,5 @@ jobs:
           }
           for sha in $(jq -r '.[]' <<< "$CPU"); do post "$sha" cpu "Built and tested"; done
           for sha in $(jq -r '.[]' <<< "$WEB"); do post "$sha" web "Tested the web backend (Chromium; Firefox skipped)"; done
+          for sha in $(jq -r '.[]' <<< "$GPU"); do post "$sha" gpu "Tested on lavapipe (one queue)"; done
           exit "$failed"
