@@ -17,7 +17,10 @@
 
  takeFinished<T>() doesn't wait: it returns the newest copy that has finished since the last one it
  returned, if any, for code polling between frames (e.g. an app reacting to results as they arrive
- while frames keep going).
+ while frames keep going). Older finished copies are skipped. A finished copy isn't lost when its
+ frame slot is reused before it's taken (FinishedCopies keeps it aside), so however fast frames go,
+ while the node runs every frame, polling before a frame returns a copy at most frames in flight + 1
+ frames older than it, unless the last copy returned is at least that new.
  */
 class BufferReadbackNode : public TransferNode {
 public:
@@ -33,9 +36,11 @@ public:
     Result<void> prepareFrame(FrameContext& context) override {
         const VkDeviceSize size = graph_->bufferSize(buffer_, context.frameIndex);
         auto& copy = copies_[context.frameIndex];
+        // The slot's previous use has finished (the slot was waited for): its copy, if untaken, is
+        // kept aside, and copy becomes storage to reuse
+        finished_.reuse(copies_, context.frameIndex);
         copy.size = size;
         if (size != 0 && (!copy.buffer || copy.buffer->getSize() != size)) {
-            // The frame slot's previous copy has finished (the slot was waited for)
             TRY_ASSIGN(copy.buffer, Buffer<uint8_t>::create(context.context, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
         }
@@ -44,8 +49,6 @@ public:
 
     void record(RecordContext& context) override {
         auto& copy = copies_[context.frameIndex];
-        lastFrame_ = context.frameIndex;
-        // This frame slot's previous copy is overwritten
         finished_.recorded(context.frameIndex);
         if (copy.size == 0) {
             return;
@@ -55,7 +58,8 @@ public:
     }
 
     // The buffer's bytes copied by the most recent frame. Waits for the graph's submitted work.
-    // Calling it before the node has run is a contract violation.
+    // Calling it before the node has run, or after set-frames-in-flight removed the frame slot of
+    // the latest copy, is a contract violation.
     Result<std::vector<uint8_t>> bytes() {
         return contents<uint8_t>();
     }
@@ -63,22 +67,23 @@ public:
     // The buffer's elements of type T copied by the most recent frame (as many as fit)
     template<typename T>
     Result<std::vector<T>> contents() {
-        if (!lastFrame_) {
-            contractViolation("BufferReadbackNode hasn't run yet");
+        Copy* latest = finished_.latest(copies_);
+        if (!latest) {
+            contractViolation("BufferReadbackNode hasn't run, or its latest copy's frame slot was removed");
         }
         TRY(graph_->waitIdle());
-        return read<T>(copies_[*lastFrame_]);
+        return read<T>(*latest);
     }
 
     // The newest copy that has finished and that this hasn't returned, without waiting; empty if
     // none has. Call it between frames.
     template<typename T>
     Result<std::optional<std::vector<T>>> takeFinished() {
-        const std::optional<uint32_t> newest = finished_.takeNewest(graph_->context(), copies_.size());
+        Copy* newest = finished_.takeNewest(copies_, graph_->context());
         if (!newest) {
             return std::optional<std::vector<T>>();
         }
-        TRY_ASSIGN(auto elements, read<T>(copies_[*newest]));
+        TRY_ASSIGN(auto elements, read<T>(*newest));
         return std::optional<std::vector<T>>(std::move(elements));
     }
 
@@ -104,6 +109,5 @@ private:
     BufferId buffer_;
     RenderGraph* graph_ = nullptr;
     PerFrame<Copy> copies_;
-    FinishedCopies finished_;
-    std::optional<uint32_t> lastFrame_;
+    FinishedCopies<Copy> finished_;
 };

@@ -221,7 +221,9 @@ int main() { return exitStatus(runApp()); }            // prints the error
   are cached per set of enabled nodes. CPU nodes replace per-frame callbacks. `enableWith(follower,
   leader)` makes a node that only prepares another's input follow its enabled state.
 - `BufferReadbackNode::contents<T>()` waits for the latest copy; `takeFinished<T>()` returns the newest
-  finished copy without waiting, for polling between frames.
+  finished copy without waiting, for polling between frames (`ReadbackNode` likewise). A finished
+  copy whose frame slot is reused before it's taken is kept aside until it is (`FinishedCopies`),
+  so polling before each frame never starves, however far the GPU lags.
 - Profiling: `graph.setTimingEnabled(true)` writes timestamps around every GPU node, and
   `graph.timings()` returns the last timed frame's per-node GPU milliseconds (waiting for it).
   Timestamps serialize work around timed nodes on their queue, so compare timings with each other;

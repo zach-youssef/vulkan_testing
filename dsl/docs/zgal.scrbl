@@ -1677,6 +1677,10 @@ Events:
   (list @tt{(scrolled offset)} @elem{the offset, a @tt{vec2} in scroll steps, y up} "the user scrolls")
   (list @tt{(frame dt)} @elem{the time since the last frame, a @tt{float} in seconds} "each frame, before drawing")
   (list @tt{(read readback elements)} @elem{the elements a buffer readback copied, or the texels an image readback copied, @racket[(data T)]} "a readback's copy has finished (polled before each frame, without waiting)"))]
+A read event handles the newest copy that finished since the last one handled, skipping older ones.
+No finished copy is lost unless a newer one is handled (except one whose frame slot
+@racket[set-frames-in-flight!] removes), however fast frames go: while a readback runs every frame, the copy handled before a
+frame (or the last one handled) is at most frames in flight + 1 frames older than it.
 A readback in a loop is one per iteration: its read event binds which one copied with @tt{#:index i}
 (a @tt{uint}, the readback's index in @tt{nodes.name}), and handles each one's copies. An image
 readback's texels are one per pixel, row by row, each holding the pixel's bits: a @tt{uint} for
