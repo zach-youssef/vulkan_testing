@@ -49,11 +49,23 @@ jobs:
       - name: Build
         run: make -j"$(nproc)" examples build/tests/cpu_tests build/tests/gpu_tests
 
+      # Step timeouts, under the job's, so a hang still uploads the logs
       - name: CPU tests
+        timeout-minutes: 5
         run: make test-cpu
 
       - name: ZGAL tests and docs
+        timeout-minutes: 10
         run: make test-dsl
+
+      # The tests print summaries; their full output is in build/logs
+      - name: Upload the test logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cpu-${{ matrix.sha }}
+          if-no-files-found: ignore
+          path: build/logs
 
       - name: ccache statistics
         if: always()

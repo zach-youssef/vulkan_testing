@@ -70,7 +70,18 @@ jobs:
           fi
           echo "CHROMIUM=${shells[0]}" >> "$GITHUB_ENV"
 
+      # A step timeout, under the job's, so a hang still uploads the logs
       - name: Web tests (Firefox skipped, no WebGPU on Linux)
+        timeout-minutes: 12
         run: |
           echo "::notice::Firefox skipped: it has no WebGPU on Linux"
           make test-web BROWSERS=chromium
+
+      # The tests print summaries; their full output is in build/logs
+      - name: Upload the test logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-${{ matrix.sha }}
+          if-no-files-found: ignore
+          path: build/logs

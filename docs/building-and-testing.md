@@ -96,7 +96,8 @@ at a time on a machine.
 lavapipe's screenshots are approved in `tests/gpu/approved/llvmpipe/` (its device name without the
 LLVM build). A failed gpu job uploads its received screenshots, FLIP error maps, the examples'
 captures and the logs as the artifact `gpu-<sha>`: `gh run download <run id> -n gpu-<sha>`, look at
-each received image, and only then copy it over its `.approved.png`.
+each received image, and only then copy it over its `.approved.png`. Failed cpu and web jobs upload
+their test logs (`build/logs`) as `cpu-<sha>` and `web-<sha>`.
 
 Gotchas:
 
