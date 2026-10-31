@@ -134,8 +134,12 @@ Gotchas:
 ## Verifying a stack
 
 `tools/verify_stack.sh <repo> <base> [head]` builds and tests every commit in a range (builds and
-CPU and ZGAL tests in parallel; GPU tests, example smoke tests and web tests one at a time). Check
-its exit codes, not filtered output. A branch CI has checked only needs the GPU, example and web
+CPU and ZGAL tests in parallel; GPU tests, example smoke tests and web tests one at a time),
+printing each commit's build and test summaries as the test targets do (older commits too, with
+its own `run-test.sh`) and keeping the logs in the temporary directory it names:
+`<dir>/<commit>/logs/<name>.log`, and for the make targets of commits with these summaries, their
+full output in `<dir>/<commit>/build/logs/<target>.log`. Check its exit codes, not filtered
+output. A branch CI has checked only needs the GPU, example and web
 tests locally.
 
 When folding fixes into earlier commits, note that `git commit --fixup=X` commits the whole index,

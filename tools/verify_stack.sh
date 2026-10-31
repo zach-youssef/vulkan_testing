@@ -3,28 +3,38 @@
 #   tools/verify_stack.sh <repo> <base> [head]
 # e.g. tools/verify_stack.sh . main HEAD
 #
-# Prints one line per commit with the CPU and GPU test exit codes and summaries (and those of the
-# ZGAL tests, example smoke tests and web tests where a commit has them); the per-commit
-# build and test logs are kept in the temporary directory printed at the end. Exits 1 if any commit
-# fails to build or fails a test.
+# Prints each commit, then the summary of its build and of each of its tests (tools/run-test.sh's:
+# "PASS test-cpu (99 cases)", or FAIL with the failing cases and the log's last lines): the CPU and
+# GPU tests, and the ZGAL tests, example smoke tests and web tests where a commit has them. The
+# logs are kept in the temporary directory printed at the end: <dir>/<commit>/logs/<name>.log, and
+# for the make targets of commits whose Makefile has run-test.sh wrappers, their full output in
+# <dir>/<commit>/build/logs/<target>.log (the step log then holds only the targets' summaries).
+# Exits 1 if any commit fails to build or fails a test.
 # Each commit is exported to its own directory. All builds and CPU test runs happen in
 # parallel; GPU tests run one commit at a time (they share the device) on a separate worker,
-# starting as soon as each commit's build has finished.
+# starting as soon as each commit's build has finished. This script's run-test.sh runs them all,
+# so older commits, which have none, get the same summaries.
 set -u
 repo=$1; base=$2; head=${3:-HEAD}
+run_test=${0:A:h}/run-test.sh
 out=$(mktemp -d -t verify_stack)
 mkdir -p $out
 commits=($(git -C $repo rev-list --reverse $base..$head))
 
+# run <commit dir> <name> <command...>: its summary in <name>.summary, its status in <name>.exit
+run() {
+    local d=$1 name=$2; shift 2
+    (cd $d && $run_test $name $d/logs/$name.log -- "$@" > $d/$name.summary); echo $? > $d/$name.exit
+}
+
 build_and_cpu_test() {
     local c=$1 d=$out/$1
     mkdir -p $d && git -C $repo archive $c | tar -x -C $d
-    if (cd $d && make >build.log 2>&1 && make build/tests/cpu_tests build/tests/gpu_tests >>build.log 2>&1); then
-        (cd $d && ./build/tests/cpu_tests >cpu.log 2>&1); echo $? > $d/cpu.exit
+    run $d build sh -c 'make && make build/tests/cpu_tests build/tests/gpu_tests'
+    if [[ $(cat $d/build.exit) == 0 ]]; then
+        run $d test-cpu ./build/tests/cpu_tests
         # ZGAL's compiler tests and documentation; commits before ZGAL have none
-        if grep -q '^test-dsl:' $d/Makefile; then
-            (cd $d && make test-dsl >dsl.log 2>&1); echo $? > $d/dsl.exit
-        fi
+        if grep -q '^test-dsl:' $d/Makefile; then run $d test-dsl make test-dsl; fi
         echo ok > $d/build.status
     else
         echo failed > $d/build.status
@@ -36,15 +46,11 @@ gpu_worker() {
         local d=$out/$c
         while [[ ! -f $d/build.status ]]; do sleep 1; done
         if [[ $(cat $d/build.status) == ok ]]; then
-            (cd $d && ./build/tests/gpu_tests >gpu.log 2>&1); echo $? > $d/gpu.exit
+            run $d test-gpu ./build/tests/gpu_tests
             # The examples' smoke tests use the GPU too; commits before they existed have none
-            if grep -q '^test-examples:' $d/Makefile; then
-                (cd $d && make test-examples >examples.log 2>&1); echo $? > $d/examples.exit
-            fi
+            if grep -q '^test-examples:' $d/Makefile; then run $d test-examples make test-examples; fi
             # The web runtime's tests run on the GPU through Dawn
-            if grep -q '^test-web:' $d/Makefile; then
-                (cd $d && make test-web >web.log 2>&1); echo $? > $d/web.exit
-            fi
+            if grep -q '^test-web:' $d/Makefile; then run $d test-web make test-web; fi
         fi
     done
 }
@@ -54,19 +60,14 @@ gpu_worker &
 wait
 
 failed=0
-summary() { grep -h 'test cases' $1 2>/dev/null | sed 's/.*test cases: *//; s/ | 0 skipped//'; }
 for c in $commits; do
     d=$out/$c
-    line=$(git -C $repo log --oneline -1 $c | cut -c1-64)
-    if [[ $(cat $d/build.status) != ok ]]; then echo "$line: BUILD FAILED ($d/build.log)"; failed=1; continue; fi
-    for f in $d/*.exit; do [[ $(cat $f) == 0 ]] || failed=1; done
-    examples=""
-    if [[ -f $d/examples.exit ]]; then examples=", examples exit $(cat $d/examples.exit)"; fi
-    dsl=""
-    if [[ -f $d/dsl.exit ]]; then dsl=", zgal exit $(cat $d/dsl.exit)"; fi
-    web=""
-    if [[ -f $d/web.exit ]]; then web=", web exit $(cat $d/web.exit)"; fi
-    echo "$line: cpu exit $(cat $d/cpu.exit) [$(summary $d/cpu.log)], gpu exit $(cat $d/gpu.exit) [$(summary $d/gpu.log)]$dsl$examples$web"
+    git -C $repo log --oneline -1 $c | cut -c1-80
+    for name in build test-cpu test-dsl test-gpu test-examples test-web; do
+        [[ -f $d/$name.exit ]] || continue
+        [[ $(cat $d/$name.exit) == 0 ]] || failed=1
+        sed 's/^/  /' $d/$name.summary
+    done
 done
 echo "Logs: $out"
 exit $failed
