@@ -1187,9 +1187,9 @@ surface-relative ones, when the surface resizes).
        the materials binding it follow; frames still in flight finish with the previous one. So an
        app's state can size a buffer, e.g. a particle system growing as particles are added. A
        count of 0 is a buffer holding nothing. Give the count to the shaders too (a push
-       constant), and dispatch as many invocations. Its contents start undefined (some drivers
-       give zeros, lavapipe doesn't): @racket[clear] what a node reads before anything writes it,
-       e.g. a scan's elements past its count.}
+       constant), and dispatch as many invocations. It starts zeroed on every backend, and so
+       does each recreated buffer, e.g. a scan's elements past its count read as 0 until something
+       writes them.}
  @item{@racket[upload]: a device-local buffer holding a data input's elements, created and
        uploaded when the graph is built. Of a per-frame data input, a buffer per frame in flight,
        sized to the elements each frame (recreated when the count changes, like a @racket[buffer]

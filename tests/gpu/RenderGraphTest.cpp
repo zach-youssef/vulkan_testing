@@ -7,6 +7,7 @@
 #include "descriptors/DescriptorHeap.h"
 
 #include <cmath>
+#include <cstring>
 #include <set>
 
 namespace {
@@ -440,6 +441,163 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph recreates buffers sized each frame when 
     graph.execute().value();
     CHECK(contents() == std::vector<uint32_t>(3, 7));
     // Replaced buffers are destroyed once the frames using them finish
+    ctx.waitIdleAll();
+    ctx.collectRetired();
+}
+
+namespace {
+// Fills buffers of size bytes with a pattern and frees them, so that a buffer allocated next whose
+// memory isn't zeroed likely shows it (lavapipe reuses freed host memory)
+void leaveGarbage(VulkanContext& ctx, VkDeviceSize size, VkMemoryPropertyFlags memory) {
+    std::vector<std::unique_ptr<Buffer<uint8_t>>> scratch;
+    for (int i = 0; i < 8; ++i) {
+        scratch.push_back(Buffer<uint8_t>::createScoped(ctx, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, memory).value());
+        if (memory & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+            scratch.back()->mapAndExecute(0, VK_WHOLE_SIZE, [size](void* data) { std::memset(data, 0xA5, size); }).value();
+        } else {
+            ctx.submitImmediate([buffer = scratch.back()->getBuffer()](VkCommandBuffer commandBuffer) {
+                vkCmdFillBuffer(commandBuffer, buffer, 0, VK_WHOLE_SIZE, 0xA5A5A5A5u);
+            }).value();
+        }
+    }
+}
+} // namespace
+
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph's buffers start zeroed, when created and when recreated") {
+    auto& ctx = context();
+    const uint32_t originalFrames = ctx.framesInFlight();
+    {
+        RenderGraph graph(ctx);
+        uint32_t count = 256;
+        auto size = [&count](const FrameContext&) { return VkDeviceSize(count) * sizeof(uint32_t); };
+        leaveGarbage(ctx, count * sizeof(uint32_t), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        const BufferId shared = graph.createBuffer("shared", FrameMode::Shared, size);
+        const BufferId perFrame = graph.createBuffer("perFrame", FrameMode::PerFrame, size);
+        // Read before anything writes them; a fill (of 7s) enabled later shows the reads see writes
+        const NodeId readShared = graph.add<BufferReadbackNode>("readShared", shared);
+        const NodeId readPerFrame = graph.add<BufferReadbackNode>("readPerFrame", perFrame);
+        const NodeId fill = graph.addTransfer("fill", [&](NodeBuilder& builder) {
+            builder.write(shared, Access::TransferDst);
+            builder.write(perFrame, Access::TransferDst);
+        }, [&](RecordContext& record) {
+            for (BufferId buffer : {shared, perFrame}) {
+                vkCmdFillBuffer(record.commandBuffer, record.graph.buffer(buffer, record.frameIndex), 0, VK_WHOLE_SIZE, 7);
+            }
+        });
+        graph.setEnabled(fill, false);
+        auto check = [&](uint32_t value) {
+            const std::vector<uint32_t> expected(count, value);
+            CHECK(graph.nodeAs<BufferReadbackNode>(readShared).contents<uint32_t>().value() == expected);
+            CHECK(graph.nodeAs<BufferReadbackNode>(readPerFrame).contents<uint32_t>().value() == expected);
+        };
+
+        // Created: every frame slot's copy is zero when first read
+        for (uint32_t frame = 0; frame < originalFrames; ++frame) {
+            CAPTURE(frame);
+            graph.execute().value();
+            check(0);
+        }
+
+        // Written: every copy holds 7s
+        graph.setEnabled(fill, true);
+        for (uint32_t frame = 0; frame < originalFrames; ++frame) {
+            graph.execute().value();
+        }
+        graph.setEnabled(fill, false);
+        for (uint32_t frame = 0; frame < originalFrames; ++frame) {
+            graph.execute().value();
+            check(7);
+        }
+
+        // Recreated (resized): zero again, nothing of the old contents or of freed memory
+        count = 384;
+        graph.waitIdle().value();
+        ctx.collectRetired();
+        leaveGarbage(ctx, count * sizeof(uint32_t), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        for (uint32_t frame = 0; frame < originalFrames; ++frame) {
+            CAPTURE(frame);
+            graph.execute().value();
+            check(0);
+        }
+
+        // A frame slot added later gets a zeroed copy too, while the others keep what was written
+        graph.setEnabled(fill, true);
+        for (uint32_t frame = 0; frame < originalFrames; ++frame) {
+            graph.execute().value();
+        }
+        graph.setEnabled(fill, false);
+        graph.waitIdle().value();
+        leaveGarbage(ctx, count * sizeof(uint32_t), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        ctx.setFramesInFlight(originalFrames + 1);
+        for (uint32_t frame = 0; frame <= originalFrames; ++frame) {
+            const uint32_t slot = ctx.currentFrame();
+            CAPTURE(slot);
+            graph.execute().value();
+            CHECK(graph.nodeAs<BufferReadbackNode>(readShared).contents<uint32_t>().value() == std::vector<uint32_t>(count, 7));
+            CHECK(graph.nodeAs<BufferReadbackNode>(readPerFrame).contents<uint32_t>().value()
+                  == std::vector<uint32_t>(count, slot < originalFrames ? 7 : 0));
+        }
+        graph.waitIdle().value();
+        ctx.setFramesInFlight(originalFrames);
+
+        // Host-visible buffers are zeroed when created, before any frame
+        const VkMemoryPropertyFlags hostMemory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        leaveGarbage(ctx, 1024, hostMemory);
+        const BufferId host = graph.createBuffer("host", FrameMode::Shared, 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMemory);
+        graph.compile().value();
+        std::vector<uint8_t> hostBytes(1024, 1);
+        graph.createdBuffer(host, ctx.currentFrame())->mapAndExecute(0, VK_WHOLE_SIZE, [&](void* data) {
+            std::memcpy(hostBytes.data(), data, hostBytes.size());
+        }).value();
+        CHECK(hostBytes == std::vector<uint8_t>(1024, 0));
+        graph.execute().value();
+        graph.waitIdle().value();
+    }
+    ctx.waitIdleAll();
+    ctx.collectRetired();
+}
+
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph zeroes buffers before uses in later submissions, and keeps what code writes first") {
+    auto& ctx = context();
+    {
+        leaveGarbage(ctx, 8, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        RenderGraph graph(ctx);
+        const BufferId other = graph.createBuffer("other", FrameMode::Shared, 16);
+        // Not whole words: every byte is zeroed all the same
+        const BufferId late = graph.createBuffer("late", FrameMode::Shared, 6);
+        const BufferId uploaded = graph.createBuffer("uploaded", FrameMode::Shared, 16 * sizeof(uint32_t),
+                                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        // The frame's first submission (which zeroes the buffers), then a CPU node, then the reads in
+        // a later submission (on another queue, if the device has one)
+        const NodeId first = graph.addTransfer("first", [&](NodeBuilder& builder) { builder.write(other, Access::TransferDst); },
+                                               [&](RecordContext& record) {
+                                                   vkCmdFillBuffer(record.commandBuffer, record.graph.buffer(other, record.frameIndex),
+                                                                   0, VK_WHOLE_SIZE, 3);
+                                               });
+        const NodeId between = graph.addCpu("between", nullptr, [](FrameContext&) {});
+        const NodeId readLate = graph.add<BufferReadbackNode>("readLate", late);
+        const NodeId readUploaded = graph.add<BufferReadbackNode>("readUploaded", uploaded);
+        graph.addDependency(first, between);
+        graph.addDependency(between, readLate);
+        graph.addDependency(between, readUploaded);
+        graph.compile().value();
+        CAPTURE(graph.queueOf(first).value());
+        CAPTURE(graph.queueOf(readLate).value());
+
+        // Code writing a graph buffer before the first frame keeps what it wrote
+        auto handle = graph.createdBuffer(uploaded, ctx.currentFrame());
+        ctx.submitImmediate([buffer = handle->getBuffer()](VkCommandBuffer commandBuffer) {
+            vkCmdFillBuffer(commandBuffer, buffer, 0, VK_WHOLE_SIZE, 9);
+        }).value();
+
+        for (int frame = 0; frame < 2; ++frame) {
+            CAPTURE(frame);
+            graph.execute().value();
+            CHECK(graph.nodeAs<BufferReadbackNode>(readLate).bytes().value() == std::vector<uint8_t>(6, 0));
+            CHECK(graph.nodeAs<BufferReadbackNode>(readUploaded).contents<uint32_t>().value() == std::vector<uint32_t>(16, 9));
+        }
+        graph.waitIdle().value();
+    }
     ctx.waitIdleAll();
     ctx.collectRetired();
 }

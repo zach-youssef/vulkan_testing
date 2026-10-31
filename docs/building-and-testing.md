@@ -55,8 +55,10 @@ Gotchas:
   `1`: wrap C strings in `std::string`, or build the string first and pass that.
 - `VK_LOADER_LAYERS_DISABLE='*validation*'` makes the loader hide the validation layer from the
   application, to check that a run lacking it fails.
-- ZGAL graph buffers start with undefined contents: MoltenVK's happen to be zero, lavapipe's
-  aren't. A test graph must `clear` what it reads before anything writes it.
+- Graph buffers start zeroed on every backend (WebGPU guarantees it; the Vulkan graph fills them
+  when it creates or recreates them), so a test reading elements nothing writes expects zeros
+  without a `clear`. Device memory outside the graph (e.g. `Buffer::create`) still starts
+  undefined: MoltenVK's happens to be zero, lavapipe's doesn't.
 - Several `vkCmdFillBuffer`s on one buffer inside one graph node trip synchronization validation
   (write-after-write): fill it once, or split the fills across nodes.
 

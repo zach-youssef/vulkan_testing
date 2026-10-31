@@ -18,6 +18,7 @@
 #include "targets/Swapchain.h"
 
 #include <any>
+#include <cstring>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -298,7 +299,10 @@ public: // Resources
         return addImage(std::move(record));
     }
 
-    // A buffer owned by the graph, device local unless memory says otherwise
+    // A buffer owned by the graph, device local unless memory says otherwise. It starts zeroed:
+    // the first submission of the next frame in each frame slot fills that slot's copy, once (and
+    // each recreated buffer's), unless createdBuffer() zeroed it earlier; host-visible memory is
+    // zeroed when the buffer is created.
     BufferId createBuffer(std::string name, FrameMode mode, VkDeviceSize size, VkBufferUsageFlags extraUsage = 0,
                           VkMemoryPropertyFlags memory = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
         BufferRecord record;
@@ -355,16 +359,16 @@ public: // Resources
         contractViolation("The surface image is only available while recording");
     }
 
-    // A graph-created buffer used in a frame (exists once the graph has compiled)
+    // A graph-created buffer used in a frame (exists once the graph has compiled). Asked for
+    // outside execute() (by code that may write it itself, e.g. an upload before the first
+    // frame), a copy still to be zeroed is zeroed first, waiting for the fill, so the graph's own
+    // fill never overwrites what the caller writes.
     Handle<Buffer<uint8_t>> createdBuffer(BufferId id, uint32_t frameIndex) {
-        auto& record = bufferRecord(id);
-        if (record.kind != BufferKind::Created) {
-            contractViolation("Buffer '" + record.name + "' was imported");
+        auto buffer = existingBuffer(id, frameIndex);
+        if (!executing_) {
+            zeroNow(id, frameIndex, buffer->getBuffer());
         }
-        if (record.perFrame ? !record.perFrameBuffers : !record.shared) {
-            contractViolation("Buffer '" + record.name + "' is created when the graph compiles");
-        }
-        return record.perFrame ? (*record.perFrameBuffers)[frameIndex] : record.shared;
+        return buffer;
     }
 
     VkBuffer buffer(BufferId id, uint32_t frameIndex) {
@@ -516,6 +520,11 @@ public: // Compiling and running
     // records and submits GPU nodes in order (updating materials before the first submission using
     // them), presents, and advances the context's frame.
     Result<FrameResult> execute() {
+        executing_ = true;
+        struct Executing {
+            bool& flag;
+            ~Executing() { flag = false; }
+        } executing{executing_};
         TRY(context_->beginFrame());
         const uint32_t frame = context_->currentFrame();
         FrameResult result;
@@ -873,13 +882,26 @@ private:
     BufferId addBuffer(BufferRecord record) {
         buffers_.push_back(std::make_unique<BufferRecord>(std::move(record)));
         auto* added = buffers_.back().get();
+        // A frame slot added later (more frames in flight) gets a new copy, zeroed like the others
+        const ResourceSyncState initial = initialBufferState(*added);
         if (added->perFrame) {
-            added->frameStates = std::make_unique<PerFrame<ResourceSyncState>>(*context_, [](uint32_t) {
-                return ResourceSyncState::forBuffer();
+            added->frameStates = std::make_unique<PerFrame<ResourceSyncState>>(*context_, [this, initial](uint32_t) {
+                fillsPending_ = fillsPending_ || initial.zeroFill;
+                return initial;
             });
+        } else {
+            added->sharedState = initial;
         }
         structureChanged();
         return {static_cast<uint32_t>(buffers_.size() - 1)};
+    }
+
+    // Graph-created buffers start zeroed, as on WebGPU: device-local ones are filled on the GPU
+    // (zeroFill), host-visible ones on the CPU when created (createGraphBuffer)
+    static ResourceSyncState initialBufferState(const BufferRecord& record) {
+        auto state = ResourceSyncState::forBuffer();
+        state.zeroFill = record.kind == BufferKind::Created && !(record.memory & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        return state;
     }
 
     static ResourceSyncState initialImageState(const ImageRecord& record) {
@@ -1099,10 +1121,10 @@ private:
             retireBuffer(record);
             record.usage = usage;
             record.realizedSize = record.size;
-            // Vulkan has no empty buffers: one holding nothing has room for a word it never uses
-            auto create = [this, size = std::max<VkDeviceSize>(record.size, 4), usage, memory = record.memory, name = record.name]() {
-                return Buffer<uint8_t>::create(*context_, size, usage, memory)
-                    .withContext("creating graph buffer '" + name + "'");
+            // Vulkan has no empty buffers: one holding nothing has room for a word it never uses.
+            // Whole words, so the fill (which writes words) zeroes every byte.
+            auto create = [this, size = std::max<VkDeviceSize>((record.size + 3) / 4 * 4, 4), usage, memory = record.memory, name = record.name]() {
+                return createGraphBuffer(size, usage, memory).withContext("creating graph buffer '" + name + "'");
             };
             if (record.perFrame) {
                 TRY_ASSIGN(auto buffers, PerFrame<Handle<Buffer<uint8_t>>>::create(*context_, [create](uint32_t) {
@@ -1110,17 +1132,75 @@ private:
                 }));
                 record.perFrameBuffers = std::make_unique<PerFrame<Handle<Buffer<uint8_t>>>>(std::move(buffers));
                 for (auto& state : *record.frameStates) {
-                    state = ResourceSyncState::forBuffer();
+                    state = initialBufferState(record);
                 }
             } else {
                 TRY_ASSIGN(record.shared, create());
-                record.sharedState = ResourceSyncState::forBuffer();
+                record.sharedState = initialBufferState(record);
             }
+            fillsPending_ = fillsPending_ || initialBufferState(record).zeroFill;
         }
         // Only now, so a failure above is retried
         structureDirty_ = false;
         realizedSurfaceExtent_ = surfaceExtent_;
         return {};
+    }
+
+    Handle<Buffer<uint8_t>> existingBuffer(BufferId id, uint32_t frameIndex) {
+        auto& record = bufferRecord(id);
+        if (record.kind != BufferKind::Created) {
+            contractViolation("Buffer '" + record.name + "' was imported");
+        }
+        if (record.perFrame ? !record.perFrameBuffers : !record.shared) {
+            contractViolation("Buffer '" + record.name + "' is created when the graph compiles");
+        }
+        return record.perFrame ? (*record.perFrameBuffers)[frameIndex] : record.shared;
+    }
+
+    // Zeroes a copy still to be zeroed now, outside a frame: one immediate submission, only for a
+    // buffer handed out before its first frame. The copy hasn't been used, so nothing else is
+    // accessing it; its next use synchronizes conservatively with whatever the caller does. If
+    // the submission fails, the error isn't reported and the frame's fill still zeroes the copy,
+    // so an upload the caller made after it may be overwritten.
+    void zeroNow(BufferId id, uint32_t frameIndex, VkBuffer buffer) {
+        ResourceSyncState& state = bufferState(id.index, frameIndex);
+        if (!state.zeroFill) {
+            return;
+        }
+        auto filled = context_->submitImmediate([buffer](VkCommandBuffer commandBuffer) {
+            vkCmdFillBuffer(commandBuffer, buffer, 0, VK_WHOLE_SIZE, 0);
+        });
+        if (filled) {
+            state.zeroFill = false;
+            state.unknown = true;
+        }
+    }
+
+    // A zeroed graph buffer. Host-visible memory is zeroed now, through a mapping; device-local
+    // memory by the first submission of the next frame using it (zeroFill), so it needs to be a
+    // transfer destination.
+    Result<Handle<Buffer<uint8_t>>> createGraphBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
+                                                      VkMemoryPropertyFlags memory) {
+        const bool hostVisible = memory & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+        TRY_ASSIGN(auto buffer, Buffer<uint8_t>::create(*context_, size, hostVisible ? usage : usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                        memory));
+        if (hostVisible) {
+            // Non-coherent memory is flushed while still mapped
+            VkResult flushed = VK_SUCCESS;
+            TRY(buffer->mapAndExecute(0, VK_WHOLE_SIZE, [&](void* data) {
+                std::memset(data, 0, size);
+                if (!(memory & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                    VkMappedMemoryRange range{};
+                    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+                    range.memory = buffer->getMemory();
+                    range.offset = 0;
+                    range.size = VK_WHOLE_SIZE;
+                    flushed = vkFlushMappedMemoryRanges(context_->device(), 1, &range);
+                }
+            }));
+            VK_TRY(flushed, "Failed to flush a graph buffer's memory");
+        }
+        return buffer;
     }
 
     // Destroys a created image once the work that may use it has finished
@@ -1286,7 +1366,7 @@ private:
                 auto& record = *buffers_[entries.index];
                 const VkBuffer current = buffer({entries.index}, frame);
                 if (!entry || entry->buffer() != current) {
-                    entry = record.kind == BufferKind::Created ? heap.storageBuffer(createdBuffer({entries.index}, frame))
+                    entry = record.kind == BufferKind::Created ? heap.storageBuffer(existingBuffer({entries.index}, frame))
                                                                : record.makeEntry(frame, heap);
                 }
             }
@@ -1530,6 +1610,35 @@ private:
             vkCmdPipelineBarrier2(commandBuffer, &dependency);
         };
 
+        // New graph-created buffers of this frame slot start zeroed: the frame's first submission
+        // fills them, once, and their first uses wait for the fill like for any other write
+        Barriers fillBarriers;
+        std::vector<VkBuffer> fills;
+        if (fillsPending_) {
+            fillsPending_ = false;
+            for (uint32_t index = 0; index < buffers_.size(); ++index) {
+                const auto& record = *buffers_[index];
+                if (record.kind != BufferKind::Created || !(record.perFrame ? record.perFrameBuffers != nullptr : static_cast<bool>(record.shared))) {
+                    continue;   // Not created until something uses it
+                }
+                if (bufferState(index, frame).zeroFill) {
+                    bufferState(index, frame).zeroFill = false;
+                    applyBufferUse(index, SyncUse::of(Access::TransferDst, 0, queue), fillBarriers);
+                    fills.push_back(existingBuffer({index}, frame)->getBuffer());
+                }
+                // Other frame slots' copies are filled in their frames
+                if (record.frameStates) {
+                    for (const auto& state : *record.frameStates) {
+                        fillsPending_ = fillsPending_ || state.zeroFill;
+                    }
+                }
+            }
+        }
+        recordBarriers(fillBarriers);
+        for (VkBuffer fill : fills) {
+            vkCmdFillBuffer(commandBuffer, fill, 0, VK_WHOLE_SIZE, 0);
+        }
+
         for (uint32_t node : submission.nodes) {
             auto& record = nodes_[node];
             Barriers barriers;
@@ -1749,6 +1858,11 @@ private:
     PerFrame<FrameSlot> slots_;
 
     bool timing_ = false;
+    // Inside execute(): buffers handed out are recorded into the frame, after its zero fills
+    bool executing_ = false;
+    // Some buffer copy may still be waiting for its zero fill (ResourceSyncState::zeroFill), so
+    // submissions look for them; false in steady state
+    bool fillsPending_ = false;
     std::optional<uint32_t> lastTimedSlot_;   // The frame slot of the last frame timed
 };
 

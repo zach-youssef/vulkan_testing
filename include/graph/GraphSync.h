@@ -103,6 +103,9 @@ struct ResourceSyncState {
     // The next use must wait on a semaphore at its own stages (e.g. the acquired swapchain image),
     // so its barrier's source must include those stages
     bool externalSemaphore = false;
+    // A graph-created buffer whose contents are still to be zeroed (the graph fills it once, in
+    // the first submission of the next frame using its frame slot)
+    bool zeroFill = false;
 
     static ResourceSyncState forImage(VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED) {
         ResourceSyncState state;

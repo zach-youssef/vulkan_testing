@@ -189,8 +189,17 @@ int main() { return exitStatus(runApp()); }            // prints the error
   `createBuffer(...)` create graph-owned resources. The frame mode is required, and usage is derived
   from the declared uses. A buffer's size can be a function of the frame (`createBuffer(name, mode,
   [](const FrameContext&) { return bytes; })`), computed at the start of every frame: when it
-  changes the graph recreates the buffer, discarding its contents, and its entries follow. `graph.sampledEntry(id)`, `storageEntry(id)` and `storageBufferEntry(id)`
-  give materials entries for graph resources that follow recreation (and give them the usage).
+  changes the graph recreates the buffer, discarding its contents, and its entries follow. Created
+  buffers start zeroed, like WebGPU's: the first submission of the next frame in each frame slot
+  fills a new device-local copy once (no extra submission or wait), and host-visible ones are
+  zeroed when created. A copy that code outside the graph gets (`createdBuffer`, `buffer`) before
+  its first frame, e.g. to upload into it, is zeroed then instead, waiting, so the upload stays.
+  A failed immediate fill isn't reported, and the frame's fill still zeroes that copy, so an upload
+  made after it may be overwritten. Nodes write graph buffers through their declared uses: a CPU
+  node's own `submitImmediate` writes before the frame's first GPU submission are overwritten by
+  the fill.
+  `graph.sampledEntry(id)`, `storageEntry(id)` and `storageBufferEntry(id)` give materials entries
+  for graph resources that follow recreation (and give them the usage).
 - **Nodes** declare what they use. `RenderablesNode`, `DispatchNode` and `ReadbackNode` cover common
   cases. GPU-driven work reads commands shaders wrote: `DispatchNode(material, BufferOffset{buffer,
   offset})` dispatches indirectly, and `IndirectDrawNode` draws `VkDraw(Indexed)IndirectCommand`s
