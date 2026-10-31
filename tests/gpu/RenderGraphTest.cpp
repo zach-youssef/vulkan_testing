@@ -702,6 +702,90 @@ TEST_CASE_FIXTURE(GpuTest, "Image readbacks give finished copies without waiting
     CHECK_THROWS_AS(node.takeFinished<uint8_t>(), ContractViolation);
 }
 
+namespace {
+
+// Runs frames as fast as the CPU can, after heavy GPU work so the GPU lags behind, polling a
+// readback (take(): the frame number its newest finished copy holds, if any) before each frame
+// numbered k from 0, as apps do. Each copy is checked to be newer than the last, and to be at most
+// frames in flight + 1 frames old, i.e. no copy is dropped while waiting for its slot.
+template<typename Take>
+void checkFastLoopDelivery(RenderGraph& graph, uint32_t& frameValue, Take take) {
+    // Work slower than recording a frame: filling a large buffer
+    BufferId heavy = graph.createBuffer("heavy", FrameMode::Shared, 128u << 20);
+    graph.addTransfer("heavy", [heavy](NodeBuilder& builder) { builder.write(heavy, Access::TransferDst); },
+                      [heavy](RecordContext& record) {
+                          vkCmdFillBuffer(record.commandBuffer, record.graph.buffer(heavy, record.frameIndex), 0, VK_WHOLE_SIZE, 1);
+                      });
+    const int frames = static_cast<int>(graph.context().framesInFlight());
+    std::optional<int> newest;
+    int delivered = 0;
+    for (int k = 0; k < 60; ++k) {
+        CAPTURE(k);
+        if (const std::optional<int> copy = take()) {
+            if (newest) {
+                CHECK(*copy > *newest);
+            }
+            newest = copy;
+            ++delivered;
+        }
+        // Frame k - 1 - frames finished when frame k - 1 waited for its slot
+        if (k > frames) {
+            REQUIRE(newest);
+            CHECK(*newest >= k - 1 - frames);
+        }
+        frameValue = static_cast<uint32_t>(k);
+        graph.execute().value();
+    }
+    MESSAGE("polls that delivered a copy: " << delivered << " of 60");
+    graph.waitIdle().value();
+}
+
+} // namespace
+
+TEST_CASE_FIXTURE(GpuTest, "Buffer readbacks deliver a copy whose frame slot is reused before it's polled") {
+    RenderGraph graph(context());
+    BufferId buffer = graph.createBuffer("values", FrameMode::Shared, 2 * sizeof(uint32_t));
+    uint32_t value = 0;
+    graph.addTransfer("fill", [buffer](NodeBuilder& builder) { builder.write(buffer, Access::TransferDst); },
+                      [buffer, &value](RecordContext& record) {
+                          vkCmdFillBuffer(record.commandBuffer, record.graph.buffer(buffer, record.frameIndex), 0, VK_WHOLE_SIZE, value);
+                      });
+    auto& node = graph.nodeAs<BufferReadbackNode>(graph.add<BufferReadbackNode>("readback", buffer));
+    checkFastLoopDelivery(graph, value, [&node]() -> std::optional<int> {
+        auto copy = node.takeFinished<uint32_t>().value();
+        if (!copy) {
+            return std::nullopt;
+        }
+        REQUIRE(copy->size() == 2);
+        CHECK((*copy)[0] == (*copy)[1]);
+        return static_cast<int>((*copy)[0]);
+    });
+}
+
+TEST_CASE_FIXTURE(GpuTest, "Image readbacks deliver a copy whose frame slot is reused before it's polled") {
+    RenderGraph graph(context());
+    ImageId image = graph.createImage("picture", FrameMode::Shared, VK_FORMAT_R32_UINT, FixedExtent{{2, 1}});
+    uint32_t value = 0;
+    graph.addTransfer("clear", [image](NodeBuilder& builder) { builder.write(image, Access::TransferDst); },
+                      [image, &value](RecordContext& record) {
+                          VkClearColorValue color{};
+                          color.uint32[0] = value;
+                          VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                          vkCmdClearColorImage(record.commandBuffer, record.graph.image(image, record.frameIndex)->getImage(),
+                                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
+                      });
+    auto& node = graph.nodeAs<ReadbackNode>(graph.add<ReadbackNode>("readback", image));
+    checkFastLoopDelivery(graph, value, [&node]() -> std::optional<int> {
+        auto copy = node.takeFinished<uint32_t>().value();
+        if (!copy) {
+            return std::nullopt;
+        }
+        REQUIRE(copy->texels.size() == 2);
+        CHECK(copy->texels[0] == copy->texels[1]);
+        return static_cast<int>(copy->texels[0]);
+    });
+}
+
 TEST_CASE_FIXTURE(GpuTest, "Materials update after the CPU nodes ordered before their nodes") {
     auto& ctx = context();
     RenderGraph graph(ctx);

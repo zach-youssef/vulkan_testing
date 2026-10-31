@@ -57,6 +57,8 @@ Gotchas:
   application, to check that a run lacking it fails.
 - ZGAL graph buffers start with undefined contents: MoltenVK's happen to be zero, lavapipe's
   aren't. A test graph must `clear` what it reads before anything writes it.
+- Several `vkCmdFillBuffer`s on one buffer inside one graph node trip synchronization validation
+  (write-after-write): fill it once, or split the fills across nodes.
 
 ## CI
 
