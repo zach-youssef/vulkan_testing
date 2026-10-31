@@ -548,9 +548,6 @@
   (buffer floatResults float 2 #:frames shared)
   (buffer counts uint 2 #:frames shared)
   (clear setCount counts #:value gpuCount)
-  ;; Buffers start with undefined contents (lavapipe's aren't zero): the exclusive scan leaves the
-  ;; elements past its count as they were
-  (clear zeroBefore before)
   (inclusive-scan sum valuesBuffer sums #:op add #:count (count values))
   (exclusive-scan exclusive valuesBuffer before #:op add #:count (at counts 1))
   (copy toInPlace valuesBuffer inPlace)
@@ -817,8 +814,7 @@
   (target canvas (color picture #:load load))
   (material banding Band)
   (draw background canvas banding 3 #:push ((row 0) (rows 4) (shade (vec4 0.0 0.0 0.0 1.0))))
-  ;; The spans write two of the sums: the others stay zero (buffers start with undefined contents)
-  (clear zeroSums sums)
+  ;; The spans write two of the sums: the others stay zero (buffers start zeroed)
   (for ([s spans])
     (reduce total numberBuffer (at sums s.value) #:op add #:count s.amount)
     (sort order keys #:count s.amount))
