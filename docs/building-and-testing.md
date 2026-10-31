@@ -21,6 +21,15 @@ libstdc++), unless `CXX` is given (`make CXX=g++`).
 - `make shaders`: rebuilds the examples' SPIR-V (running examples reload it).
 - `make test-cpu`, `make test-gpu`, `make test`: build and run the tests (doctest). Forward
   arguments with `TEST_ARGS`, e.g. `make test-gpu TEST_ARGS='-tc="RenderGraph*"'`.
+- Test targets print one line each, `PASS test-gpu (212 cases)` or `FAIL test-gpu (212 cases,
+  exit 1)` with the failing cases' names and the log's last 30 lines (`TEST_TAIL=n` for more), and
+  write their whole output to `build/logs/<target>.log`. `TEST_VERBOSE=1` shows the output as it
+  runs too. `tools/run-test.sh <name> <log> -- <command>` does it, keeping the command's exit
+  status; it counts doctest's, `raco test`'s and `node --test`'s (spec reporter) cases, and those of
+  nested runs: targets running others (`test-examples` its smoke tests, `test-web` `test-pages`)
+  have those targets' lines in their logs, and list their failing cases as `<target>: <case>`. Lines
+  starting `note: ` (a skipped browser) show under the summary. Under `make -n` the targets only
+  print their commands.
 - `make test-examples`: runs every example headless with validation and synchronization
   validation; any message fails it. `make test-example-<name>` runs one.
 - `make approve-screenshots`: accepts the screenshots of the last failed GPU run
@@ -31,7 +40,8 @@ libstdc++), unless `CXX` is given (`make CXX=g++`).
   documentation: `build/docs/zgal.html`, and `build/docs/zgal.txt` to read in a terminal.
 - `make test-web` and `make test-pages`: the web backend's tests ([web.md](web.md#tests); `make
   test` includes them), with pages in headless Chromium only unless `BROWSERS="chromium firefox"`
-  (Firefox opens windows). `make web` builds the web examples.
+  (Firefox opens windows). A browser that isn't installed is skipped with a note under the
+  summary, or fails the run when `BROWSERS` names it. `make web` builds the web examples.
 - `make run-bench`: times ZGAL's library kernels (`tools/bench`; see "Profiling").
 - `zgal.mk`: the make rules building ZGAL programs (`zgal-rule`, `zgal-program`), which the Makefile
   and other projects' Makefiles include.

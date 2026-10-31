@@ -44,8 +44,9 @@ This page has what the reference doesn't: the runtime's conventions and how to t
    in each browser of `BROWSERS`: by default only headless Chromium. Firefox opens windows, so it
    runs only when asked, `make test-web BROWSERS="chromium firefox"` (as before pushing a stack's
    top), and has no WebGPU on Linux (CI skips it). A browser found nowhere is skipped (Chromium is
-   Playwright's headless shell, Firefox the macOS application or `firefox` on `PATH`), but one
-   `CHROMIUM` or `FIREFOX` names must exist.
+   Playwright's headless shell, Firefox the macOS application or `firefox` on `PATH`), with a
+   `note:` under the summary, unless `make` was given `BROWSERS`: then it fails, as it does when the
+   browser `CHROMIUM` or `FIREFOX` names is missing.
 
 Not every device has WebGPU's optional features: Dawn on lavapipe and Chromium's SwiftShader lack
 `texture-formats-tier2`, so programs that should run everywhere (the examples) don't bind

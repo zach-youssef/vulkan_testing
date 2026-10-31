@@ -85,6 +85,9 @@ $(IMAGE_FILTER_DIFF): $(IMAGE_FILTER_TEST_DIR)/image_diff.cpp
 # edges and threshold (but for the few pixels next to the threshold). To approve a new output, run
 # its command below and copy its output over the approved image.
 test-example-image_filter: $(IMAGE_FILTER_BIN) $(IMAGE_FILTER_DIFF)
+	$(RUN_TEST) $(MAKE) --no-print-directory test-example-image_filter-steps
+
+test-example-image_filter-steps:
 	@mkdir -p $(IMAGE_FILTER_TEST_OUT)
 	./$(IMAGE_FILTER_BIN) $(SIMPLE_DIR)/textures/texture.jpg $(IMAGE_FILTER_TEST_OUT)/all_passes.png \
 		--blur 2 --edges --threshold 0.15 --validation
@@ -119,7 +122,7 @@ PARTICLES_ZGAL_STAMP = $(PARTICLES_OUT)/generated/particles.zgal.stamp
 $(eval $(call zgal-program,$(PARTICLES_DIR)/particles.zgal,$(PARTICLES_OUT),particles,$(GLFW_LDLIBS)))
 
 test-example-particles: $(PARTICLES_OUT)/particles
-	./$< --frames 120 --size 1024x768 --capture $(PARTICLES_OUT)/smoke.png --validation
+	$(RUN_TEST) ./$< --frames 120 --size 1024x768 --capture $(PARTICLES_OUT)/smoke.png --validation
 
 # For the web: build/web/particles (serve it and open particles.zgal.html, or run it under Node)
 PARTICLES_WEB = $(OUT)/web/particles
@@ -140,14 +143,17 @@ $(eval $(call zgal-program,$(SCENE_DIR)/scene.zgal,$(SCENE_OUT),scene_example,$(
 # Renders frames headless, as the app scripts them (shadows off for a quarter, resized halfway), and
 # captures the last one
 test-example-scene: $(SCENE_OUT)/scene_example
-	./$< --frames 60 --size 640x360 --capture $(SCENE_OUT)/smoke.png --validation
+	$(RUN_TEST) ./$< --frames 60 --size 640x360 --capture $(SCENE_OUT)/smoke.png --validation
 
 # For the web: build/web/scene (serve it and open scene.zgal.html, or run it under Node)
 SCENE_WEB = $(OUT)/web/scene
 $(eval $(call zgal-web-program,$(SCENE_DIR)/scene.zgal,$(SCENE_WEB)))
 
-# All the examples' smoke tests
-test-examples: test-example-image_filter test-example-particles test-example-scene test-main test-bench
+# All the examples' smoke tests, each with its own log and summary (test-examples.log has theirs)
+EXAMPLE_TESTS = test-example-image_filter test-example-particles test-example-scene test-main \
+	test-bench
+test-examples:
+	$(RUN_TEST) $(MAKE) --no-print-directory $(EXAMPLE_TESTS)
 
 examples: $(SIMPLE_OUT)/simple_example $(IMAGE_FILTER_BIN) $(PARTICLES_OUT)/particles $(SCENE_OUT)/scene_example
 
@@ -163,7 +169,15 @@ shaders: $(SIMPLE_ZGAL_STAMP) $(IMAGE_FILTER_ZGAL_STAMP) $(PARTICLES_ZGAL_STAMP)
 #   make test-examples - every example's smoke test (headless, with validation)
 #   make approve-screenshots - accept the screenshots from the last failed GPU test run
 # Arguments can be forwarded to doctest, e.g. make test-cpu TEST_ARGS='-tc="Handle*"'
+#
+# Each test target writes its output to build/logs/<target>.log and prints one summary line
+# (tools/run-test.sh): PASS with the number of cases, or FAIL with the failing cases and the log's
+# last lines. TEST_VERBOSE=1 shows the output as it runs too. A target with several commands runs
+# them in a sub-make's <target>-steps target, so they all go into its log.
 # ---------------------------------------------------------------------------
+LOG_DIR = $(OUT)/logs
+RUN_TEST = @tools/run-test.sh $@ $(LOG_DIR)/$@.log --
+
 TEST_DIR = tests
 TEST_OUT = $(OUT)/tests
 TEST_SHADER_OUT = $(TEST_OUT)/shaders
@@ -209,10 +223,10 @@ $(TEST_OUT)/gpu_tests: $(GPU_TEST_OBJS) | $(GPU_TEST_SHADERS)
 	$(CXX) $^ -o $@ $(LDFLAGS) $(ZGAL_LDFLAGS) $(LDLIBS) $(GLFW_LDLIBS)
 
 test-cpu: $(TEST_OUT)/cpu_tests
-	./$< $(TEST_ARGS)
+	$(RUN_TEST) ./$< $(TEST_ARGS)
 
 test-gpu: $(TEST_OUT)/gpu_tests
-	./$< $(TEST_ARGS)
+	$(RUN_TEST) ./$< $(TEST_ARGS)
 
 # A program with a generated main and C++ inputs (tests/main): its command line, exit statuses,
 # hook and capture, with validation. Part of the examples' smoke tests, as it's a program.
@@ -228,6 +242,9 @@ MAIN_TEST_WEB = $(OUT)/web/main
 $(eval $(call zgal-web-program,$(TEST_DIR)/main/painter.zgal,$(MAIN_TEST_WEB)))
 
 test-main: $(MAIN_TEST_BIN) $(IMAGE_FILTER_DIFF)
+	$(RUN_TEST) $(MAKE) --no-print-directory test-main-steps
+
+test-main-steps:
 	./$(MAIN_TEST_BIN) --help > /dev/null
 	./$(MAIN_TEST_BIN) > /dev/null 2>&1; test $$? -eq 2
 	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/out.png --level 2 > /dev/null 2>&1; test $$? -eq 2
@@ -252,6 +269,9 @@ run-bench: $(BENCH_BIN)
 	./$(BENCH_BIN) --frames 60 --timings $(BENCH_ARGS)
 
 test-bench: $(BENCH_BIN)
+	$(RUN_TEST) $(MAKE) --no-print-directory test-bench-steps
+
+test-bench-steps:
 	./$(BENCH_BIN) --count 100000 --draws 64 --frames 3 --timings --validation | grep -q "^sortCounted "
 
 # The ZGAL compiler's tests, and its documentation, whose examples are compiled as it's built.
@@ -266,8 +286,11 @@ ZGAL_TEST_ENV = ZGAL_GLSLC='glslc' ZGAL_GLSLC_FLAGS='$(GLSLC_FLAGS:-I%=-I$(CURDI
 WEB_DIR = web
 WEB_PACKAGES = $(ZGAL_WEB_PACKAGES)
 
-test-dsl: $(ZGAL_COMPILED) $(WEB_PACKAGES) docs
-	$(ZGAL_TEST_ENV) $(RACO) test $(DSL_DIR)/tests
+test-dsl: $(ZGAL_COMPILED) $(WEB_PACKAGES)
+	$(RUN_TEST) $(MAKE) --no-print-directory test-dsl-steps
+
+test-dsl-steps: docs
+	$(ZGAL_TEST_ENV) $(RACO) test -q $(DSL_DIR)/tests
 
 # The web runtime's tests: web/tests/*.zgal compiled to TypeScript and WGSL beside a copy of the
 # runtime (as an application would have it), type checked, then run on Dawn
@@ -276,13 +299,16 @@ WEB_TEST_OUT = $(OUT)/web-tests
 MODEL_ASSETS = $(addprefix tests/gpu/assets/,halves.gltf broken.gltf quad.obj quad.mtl quadrants.png)
 
 test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
+	$(RUN_TEST) $(MAKE) --no-print-directory test-web-steps
+
+test-web-steps:
 	rm -rf $(WEB_TEST_OUT)
 	@mkdir -p $(WEB_TEST_OUT)
 	for f in $(WEB_DIR)/tests/*.zgal $(IMAGE_FILTER_DIR)/image_filter.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) $$f || exit 1; done
 	cp -R $(WEB_DIR)/zgal $(WEB_DIR)/tests $(WEB_DIR)/tools $(WEB_DIR)/package.json $(WEB_DIR)/tsconfig.json $(WEB_TEST_OUT)/
 	cp $(MODEL_ASSETS) $(IMAGE_FILTER_TEST_DIR)/input.png $(WEB_TEST_OUT)/tests/assets/
 	ln -s $(CURDIR)/$(WEB_DIR)/node_modules $(WEB_TEST_OUT)/node_modules
-	cd $(WEB_TEST_OUT) && $(NODE) node_modules/typescript/bin/tsc -p . && $(NODE) --test $(TEST_ARGS) 'tests/*.test.ts'
+	cd $(WEB_TEST_OUT) && $(NODE) node_modules/typescript/bin/tsc -p . && $(NODE) --test --test-reporter=spec $(TEST_ARGS) 'tests/*.test.ts'
 	$(MAKE) web
 	$(NODE) $(PARTICLES_WEB)/particles.zgal.main.js --frames 120 --size 1024x768 --capture $(PARTICLES_WEB)/smoke.png
 	$(NODE) $(SCENE_WEB)/scene.zgal.main.js --frames 60 --size 640x360 --capture $(SCENE_WEB)/smoke.png
@@ -307,11 +333,16 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 # (web/tests/headless.html), with web/tests' graphs built into graphs/, in each of BROWSERS: by default only headless Chromium on SwiftShader. Firefox opens
 # windows (it has no WebGPU adapter headless, nor any on Linux), so it runs only when asked:
 # make test-pages BROWSERS="chromium firefox" (or test-web, or test), as the pre-push check of a
-# stack's top does. A browser found nowhere is skipped (the tools exit with 3); one named by CHROMIUM
-# or FIREFOX must exist.
+# stack's top does. A browser found nowhere is skipped (the tools exit with 3) with a note in the
+# summary, unless BROWSERS was given on the command line (or with make -e): then it fails. One named
+# by CHROMIUM or FIREFOX must exist.
 BROWSERS = chromium
+BROWSERS_REQUIRED = $(if $(filter command line environment override,$(origin BROWSERS)),1)
 TEST_PAGES = $(OUT)/web/tests
 test-pages: web
+	$(RUN_TEST) $(MAKE) --no-print-directory test-pages-steps
+
+test-pages-steps:
 	rm -rf $(TEST_PAGES)
 	@mkdir -p $(TEST_PAGES)/assets
 	cp $(WEB_DIR)/tests/*.html $(TEST_PAGES)/
@@ -325,7 +356,12 @@ test-pages: web
 	$(NODE) $(WEB_DIR)/node_modules/typescript/bin/tsc -p $(TEST_PAGES)/graphs/src --outDir $(TEST_PAGES)/graphs --rootDir $(TEST_PAGES)/graphs/src
 	for browser in $(BROWSERS); do \
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(PARTICLES_WEB) --keys ' 2' 'particles.zgal.html?frames=60'; \
-	  status=$$?; if [ $$status -eq 3 ]; then echo "test-pages: $$browser skipped (not installed)"; continue; fi; \
+	  status=$$?; \
+	  if [ $$status -eq 3 ] && [ -n "$(BROWSERS_REQUIRED)" ]; then \
+	    echo "test-pages: $$browser not installed, but BROWSERS asks for it"; exit 1; \
+	  elif [ $$status -eq 3 ]; then \
+	    echo "note: test-pages: $$browser skipped (not installed)"; continue; \
+	  fi; \
 	  [ $$status -eq 0 ] || exit $$status; \
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(SCENE_WEB) 'scene.zgal.html?frames=60' || exit 1; \
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/blur_edges-$$browser.png \
@@ -357,6 +393,8 @@ approve-screenshots:
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
 .PHONY: clean examples shaders test test-cpu test-gpu test-dsl test-web test-pages web docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main bench run-bench test-bench
+.PHONY: test-example-image_filter-steps test-main-steps test-bench-steps test-dsl-steps \
+	test-web-steps test-pages-steps
 
 
 clean:
