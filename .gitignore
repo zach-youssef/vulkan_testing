@@ -6,3 +6,5 @@ tests/**/*.flip.png
 compiled/
 # The web runtime's npm packages (npm ci in web/)
 web/node_modules/
+# Downloaded toolchains (wasi-sdk, by web/decode/decode.mk)
+.cache/

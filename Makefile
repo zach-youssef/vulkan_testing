@@ -35,6 +35,10 @@ ZGAL_ROOT = .
 include zgal.mk
 DSL_DIR = $(ZGAL_DSL_DIR)
 
+# The web runtime's image decoder, stb_image built to WebAssembly (build/web-decode/stb_image.wasm),
+# and the wasi-sdk that builds it
+include web/decode/decode.mk
+
 # ---------------------------------------------------------------------------
 # Examples
 #   make            - build the simple example into build/examples/simple

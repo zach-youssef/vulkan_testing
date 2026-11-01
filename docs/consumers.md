@@ -15,7 +15,9 @@ PPU's submodule only after the wrapper change is pushed.
 Its CI can reuse this repository's actions from the submodule:
 `./external/vulkan_test/.github/actions/setup-zgal` (with `toolchain: native`, or `web` for jobs
 that build no C++, and `npm-lockfile: external/vulkan_test/web/package-lock.json`) and
-`./external/vulkan_test/.github/actions/commits`. `toolchain` is required, but GitHub doesn't
+`./external/vulkan_test/.github/actions/commits`. The `web` toolchain also installs wasi-sdk
+(exporting `WASI_SDK_PATH`) and clang, which the web runtime's image decoder builds and tests with.
+`toolchain` is required, but GitHub doesn't
 enforce that for composite actions: a job that omits it fails in setup-zgal's first step.
 
 ## personal-site (`~/code/personal-site`)

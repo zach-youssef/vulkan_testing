@@ -4,7 +4,9 @@
 
 The Vulkan SDK, `glslc`, GLFW and GLM for the wrapper; Racket 8 (`racket` and `raco`, with
 Scribble, as in the main distribution) for ZGAL; Node 24 (which runs TypeScript) and npm for ZGAL's
-web backend. Development happens on an Apple M4 with MoltenVK
+web backend, plus `curl` and `tar`, with which the build downloads the pinned
+[wasi-sdk](https://github.com/WebAssembly/wasi-sdk) the first time it builds the web runtime's image
+decoder (see below). Development happens on an Apple M4 with MoltenVK
 ([wrapper.md](wrapper.md#the-development-device) has what that means for code).
 
 `zgal.mk` finds the Vulkan headers and loader in `$VULKAN_SDK` when it's set (the SDK's
@@ -13,6 +15,14 @@ installer puts them) and Homebrew's for GLFW and GLM; on Linux the default ones 
 `libvulkan-dev`, `libglfw3-dev`, `libglm-dev`, plus `mesa-vulkan-drivers` for lavapipe). The
 compiler is clang, the one tested (`c++` on macOS, with libc++; `clang++` on Linux, with
 libstdc++), unless `CXX` is given (`make CXX=g++`).
+
+The web runtime's image decoder is stb_image built to WebAssembly (`web/decode`), which needs a
+clang with a wasm32 target and `wasm-ld` (Apple's clang has none). The build uses wasi-sdk, whose
+version and tarballs' SHA-256 are pinned in `.github/actions/setup-zgal/wasi-sdk.sh` (setup-zgal
+installs the same in CI). `WASI_SDK_PATH` names an installed one; without it,
+`web/decode/decode.mk` downloads and checks the pinned release into `.cache/wasi-sdk-<version>`
+(git-ignored, about 600 MB unpacked, kept by `make clean`; each worktree has its own, so point
+`WASI_SDK_PATH` at one to share it). Nothing is installed system-wide.
 
 ## Make targets
 
@@ -42,6 +52,8 @@ libstdc++), unless `CXX` is given (`make CXX=g++`).
   test` includes them), with pages in headless Chromium only unless `BROWSERS="chromium firefox"`
   (Firefox opens windows). A browser that isn't installed is skipped with a note under the
   summary, or fails the run when `BROWSERS` names it. `make web` builds the web examples.
+- `make build/web-decode/stb_image.wasm`: builds the web runtime's image decoder; `make wasi-sdk`
+  only installs its compiler.
 - `make test-tools`: tests the pre-push hook and the GPU lock (`tests/tools/hook-test.sh`, no GPU
   needed; `make test` includes it).
 - `make run-bench`: times ZGAL's library kernels (`tools/bench`; see "Profiling").
@@ -88,7 +100,8 @@ Each one also runs `make test-gpu` and `make test-examples` on lavapipe
 (`.github/workflows/gpu.yml`), with validation and synchronization validation required, and gets
 a `gpu` status (commits from before `gpu.yml` existed get none). The toolchain (apt packages, the
 LunarG SDK, ccache, Racket, Node) comes from `.github/actions/setup-zgal`, whose `toolchain` input
-is `native` or `web` (no SDK, clang or ccache).
+is `native` or `web` (no SDK or ccache, but wasi-sdk, as `WASI_SDK_PATH`, for the image decoder,
+and clang for its native test helper).
 
 lavapipe has one queue in one family, so CI never runs the multi-queue paths (async compute,
 cross-queue ownership and timeline waits; their tests skip), nor the windowed tests (no display),

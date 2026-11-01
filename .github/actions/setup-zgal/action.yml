@@ -1,8 +1,11 @@
 # Sets up an ubuntu-24.04 runner to build and test the wrapper and ZGAL (or a project using them,
 # such as ppu, with this repository as a submodule). The native toolchain has all of the below; the
-# web one only what ZGAL's compiler and its web backend need (lavapipe, which Dawn runs on, Racket
-# and Node), so a job that builds no C++ neither downloads the SDK nor saves a ccache:
-#   - apt: lavapipe (Mesa's software Vulkan driver), and for native, GLFW, GLM, clang and ccache;
+# web one only what ZGAL's compiler and its web backend need (lavapipe, which Dawn runs on, clang for
+# the image decoder's native test helper, wasi-sdk, Racket and Node), so a job that builds no
+# wrapper C++ neither downloads the SDK nor saves a ccache:
+#   - apt: lavapipe (Mesa's software Vulkan driver) and clang, and for native, GLFW, GLM and ccache;
+#   - web: wasi-sdk (clang for wasm32, which builds the web runtime's image decoder, web/decode), the
+#     release wasi-sdk.sh pins, with WASI_SDK_PATH exported;
 #   - native: the LunarG Vulkan SDK (headers, loader, glslc, validation layers), its tarball cached by
 #     version, with VULKAN_SDK, PATH, LD_LIBRARY_PATH and VK_ADD_LAYER_PATH exported;
 #   - native: clang++ through ccache as CXX, with the ccache directory cached per branch (falling back to
@@ -13,7 +16,7 @@ name: setup-zgal
 description: Installs the toolchain the wrapper, ZGAL and its web backend build and test with.
 inputs:
   toolchain:
-    description: "native (the C++ toolchain, the SDK and ccache too) or web (lavapipe, Racket and Node only)."
+    description: "native (the C++ toolchain, the SDK and ccache too) or web (lavapipe, clang, wasi-sdk, Racket and Node only)."
     required: true
   npm-lockfile:
     description: The web backend's package-lock.json, relative to the workspace (e.g. external/vulkan_test/web/package-lock.json in a project with this repository as a submodule).
@@ -36,18 +39,18 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install lavapipe, and for native, GLFW, GLM, clang and ccache
+    - name: Install lavapipe and clang, and for native, GLFW, GLM and ccache
       shell: bash
       env:
         TOOLCHAIN: ${{ inputs.toolchain }}
       run: |
         case "$TOOLCHAIN" in
-          native) native="libglfw3-dev libglm-dev clang ccache" ;;
+          native) native="libglfw3-dev libglm-dev ccache" ;;
           web) native= ;;
           *) echo "::error::setup-zgal: toolchain is native or web, not '$TOOLCHAIN'"; exit 1 ;;
         esac
         sudo apt-get update -q
-        sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libvulkan1 $native
+        sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libvulkan1 clang $native
 
     - name: Cache the Vulkan SDK
       if: inputs.toolchain == 'native'
@@ -124,6 +127,14 @@ runs:
           ccache-${{ steps.ccache.outputs.branch }}-
           ccache-${{ steps.ccache.outputs.default }}-
 
+    # GitHub's releases download quickly, so the tarball isn't cached
+    - name: Install wasi-sdk
+      if: inputs.toolchain == 'web'
+      shell: bash
+      run: |
+        sh "$GITHUB_ACTION_PATH/wasi-sdk.sh" install "$HOME/wasi-sdk"
+        echo "WASI_SDK_PATH=$HOME/wasi-sdk" >> "$GITHUB_ENV"
+
     - uses: Bogdanp/setup-racket@2466913449df77df2bad149d1f2fc4e1ea4795dd # v1.15
       with:
         version: ${{ inputs.racket-version }}
@@ -143,10 +154,13 @@ runs:
       run: |
         if [ "$TOOLCHAIN" = native ]; then
           echo "VULKAN_SDK=$VULKAN_SDK"
-          clang++ --version | head -1
           ccache --version | head -1
           glslc --version | head -1
           ccache -z > /dev/null
+        fi
+        clang++ --version | head -1
+        if [ "$TOOLCHAIN" = web ]; then
+          "$WASI_SDK_PATH/bin/clang" --version | head -1
         fi
         racket --version
         node --version
