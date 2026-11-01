@@ -886,3 +886,36 @@
   (material scaling ScaleWith sources scaled #:push ((factor 3) (total 4)) #:invocations (4))
   (dispatch run scaling)
   (readback readScaled scaled))
+
+;; Functions taking storage images are inlined (MoltenVK can't pass them), their image, texture and
+;; sampler arguments substituted (GLSL has no locals of them); one passes them on to another
+(define (stampSampled [image : image2D] [at : ivec2] [source : texture2D] [s : sampler]) : void
+  (store! image at (sample-lod source s (vec2 0.5) 0.0)))
+
+(define (stampRow [image : image2D] [row : int] [shade : float] [source : texture2D] [s : sampler]) : void
+  (store! image (ivec2 0 row) (vec4 shade))
+  (stampSampled image (ivec2 1 row) source s))
+
+(compute-material StampRows
+  (workgroup 1)
+  (bindings (first (storage-image write)) (second (storage-image write)) (source texture) (sourceSampler sampler))
+  (compute
+   (stampRow first 0 0.2 source sourceSampler)
+   (stampRow first 1 0.4 source sourceSampler)
+   (stampRow second 0 0.6 source sourceSampler)
+   (stampRow second 1 1.0 source sourceSampler)))
+
+(graph StampGraph
+  (image firstStamps rgba8 (fixed 2 2) #:frames shared)
+  (image secondStamps rgba8 (fixed 2 2) #:frames shared)
+  ;; A texel of 0.8 (204) in every channel
+  (image stampSource rgba8 (fixed 1 1) #:frames shared)
+  (buffer stampTexel uint 1 #:frames shared)
+  (clear fillStampTexel stampTexel #:value #xCCCCCCCC)
+  (copy toStampSource stampTexel stampSource)
+  (sampler stampSampler #:filter nearest #:address clamp-to-edge)
+  (material stamping StampRows (first firstStamps) (second secondStamps) (source stampSource) (sourceSampler stampSampler)
+            #:invocations (1))
+  (dispatch stamp stamping)
+  (readback readFirst firstStamps)
+  (readback readSecond secondStamps))

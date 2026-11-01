@@ -868,7 +868,8 @@ the GPU's precision, and integer arithmetic exactly.
 
 Metal (through MoltenVK) can't pass storage images to functions, nor can WGSL in Firefox (whose
 naga refuses storage texture parameters), so a function with an @tt{image2D} parameter is inlined
-where it's called, its locals renamed so they can't clash with the caller's.
+where it's called, its locals renamed so they can't clash with the caller's. Its image, texture and
+sampler arguments take their parameters' places, as GLSL and WGSL have no locals of them.
 
 @subsubsection[#:tag "material-functions"]{Materials' functions}
 
@@ -2550,7 +2551,8 @@ This document is part of the language: change it in the same commit as the compi
  @item{@tt{tests/gpu/ZgalTest.cpp}: generated materials and graphs on the device: the C++ structs
        and push constants have the layout the shaders write and read (8- and 16-bit integers
        included), a function computes the same on the CPU (as C++) as on the GPU, a reduction
-       through shared memory, imported buffers, copies, cpu and extern nodes in a graph, and an
+       through shared memory, imported buffers, copies, cpu and extern nodes in a graph, inlined
+       functions storing into the images (with the textures and samplers) they're given, and an
        app's state, events, extern functions and graph inputs, and uploads, clears, copies into
        images and buffer readbacks. @tt{tests/gpu/VulkanAppTest.cpp} checks
        @tt{zgal::connect} turns window input into events.}

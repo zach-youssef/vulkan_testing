@@ -981,9 +981,11 @@
   (or (material-function-decl? f)
       (ormap (λ (p) (equal? (cdr p) (opaque-t 'image2D))) (function-decl-params f))))
 
-;; f's body in place of a call with typed args: image arguments are substituted for their
-;; parameters, other arguments bound to fresh locals, and the body's locals respelled in the
-;; caller so they can't clash with its own
+;; f's body in place of a call with typed args: image, texture and sampler arguments (bindings or
+;; their elements, which GLSL and WGSL locals can't hold) are substituted for their parameters (an
+;; element's index first bound to a fresh local unless it's a literal or local, so it is evaluated
+;; once, in order), other arguments bound to fresh locals, and the body's locals respelled in the caller so they
+;; can't clash with its own
 (define (inline-call f args ctx where)
   (for ([u (in-list (function-decl-uses f))]) (set-add! (context-uses ctx) u))
   (define mapping (make-hash))
@@ -992,7 +994,20 @@
               ([p (in-list (function-decl-params f))] [a (in-list args)])
       (match-define (cons name type) p)
       (cond
-        [(equal? type (opaque-t 'image2D)) (hash-set! mapping name a) bindings]
+        [(opaque-t? type)
+         (match a
+           [(or (t-global _ _ _ _ _) (t-local _ _ _)
+                (t-index (t-global _ _ _ _ _) (or (t-lit _ _ _) (t-local _ _ _)) _ _))
+            (hash-set! mapping name a)
+            bindings]
+           ;; Substituting a computed index would evaluate it at every use of the parameter, or never
+           [(t-index (and base (t-global _ _ _ _ _)) index t l)
+            (define fresh (spell! ctx "index"))
+            (hash-set! mapping name (t-index base (t-local fresh (texpr-type index) where) t l))
+            (cons (list (list fresh) (list (texpr-type index)) index) bindings)]
+           [_ (zgal-error 'type-mismatch where
+                          "an inlined function's ~a argument must be a binding or an element of one, not a computed value"
+                          (type-name type))])]
         [else
          (define fresh (spell! ctx (base-spelling name)))
          (hash-set! mapping name (t-local fresh type where))

@@ -138,6 +138,39 @@
   (check-regexp-match #rx"ivec2 t_[0-9]+ = clamp" shader)
   (check-equal? (binding-access (binding-named (material-named (program-of text) "C") "img")) 'read-write))
 
+(test-case "Inlined functions' texture and sampler arguments are substituted: GLSL has no locals of them"
+  (define shader
+    (generated (string-append
+                "(define (copy [image : image2D] [source : texture2D] [s : sampler]) : void\n"
+                "  (store! image (ivec2 0 0) (sample-lod source s (vec2 0.5) 0.0)))\n"
+                "(compute-material C (workgroup 1) (bindings (img (storage-image write)) (tex texture) (smp sampler))\n"
+                "  (compute (copy img tex smp)))")
+               "C.comp"))
+  (check-false (regexp-match? #rx"(texture2D|sampler) [a-zA-Z_0-9]+ =" shader) "no locals of them")
+  (check-true (string-contains? shader "imageStore(img(), ivec2(0, 0), textureLod(sampler2D(tex(), smp()), ")))
+
+(test-case "An inlined function's element-of-a-texture-array argument has its index evaluated once, in order"
+  (define shader
+    (generated (string-append
+                "(define (f [x : uint] [i : image2D] [t : texture2D] [s : sampler] [y : uint]) : void\n"
+                "  (store! i (ivec2 (int x) (int y)) (+ (sample-lod t s (vec2 0.5) 0.0) (sample-lod t s (vec2 0.1) 0.0))))\n"
+                "(compute-material C (workgroup 1)\n"
+                "  (bindings (img (storage-image write)) (layers (array texture)) (smp sampler) (counts (buffer-array uint)))\n"
+                "  (compute (f (atomic-add! (at counts 0) (uint 1)) img (at layers (atomic-add! (at counts 1) (uint 1))) smp\n"
+                "              (atomic-add! (at counts 0) (uint 2)))))")
+               "C.comp"))
+  (check-equal? (length (regexp-match* #rx"atomicAdd\\(counts\\(\\)\\[1\\]" shader)) 1 shader)
+  (check-regexp-match #rx"atomicAdd\\(counts\\(\\)\\[0\\].*atomicAdd\\(counts\\(\\)\\[1\\].*atomicAdd\\(counts\\(\\)\\[0\\]" (regexp-replace* "\n" shader " ")))
+
+(test-case "An inlined function's texture argument that isn't a binding or an element of one is rejected"
+  (check-zgal-error (string-append
+                     "(define (f [i : image2D] [t : texture2D] [s : sampler]) : void\n"
+                     "  (store! i (ivec2 0 0) (sample-lod t s (vec2 0.5) 0.0)))\n"
+                     "(compute-material C (workgroup 1)\n"
+                     "  (bindings (img (storage-image write)) (a texture) (b texture) (smp sampler) (flag (buffer uint)))\n"
+                     "  (compute (f img (if (= flag 0) a b) smp)))")
+                    'type-mismatch "must be a binding or an element of one"))
+
 ;; WebGPU devices without texture-formats-tier2 can't bind most formats read-write, so a size query
 ;; mustn't make a written image read-write
 (test-case "Querying an image's size doesn't read it"

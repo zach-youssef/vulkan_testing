@@ -1375,3 +1375,28 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL's node loops add a node per element or step, wi
     }
     ctx.waitIdleAll();
 }
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL functions store into the storage images they're given, with textures and samplers") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    const StampGraph stamps = StampGraph::build(ctx, graph, StampGraph::Inputs{}).value();
+    graph.execute().value();
+    // Each row: its shade, then the source's texel (204) the nested call sampled; all channels alike
+    auto shades = [](const std::vector<uint8_t>& pixels) {
+        std::vector<uint8_t> red;
+        for (size_t p = 0; p < 4; ++p) {
+            for (size_t c = 1; c < 4; ++c) {
+                CHECK(pixels[p * 4 + c] == pixels[p * 4]);
+            }
+            red.push_back(pixels[p * 4]);
+        }
+        return red;
+    };
+    const auto first = stamps.readFirstPixels(graph).value();
+    const auto second = stamps.readSecondPixels(graph).value();
+    REQUIRE(first.size() == 16);
+    REQUIRE(second.size() == 16);
+    CHECK(shades(first) == std::vector<uint8_t>{51, 204, 102, 204});
+    CHECK(shades(second) == std::vector<uint8_t>{153, 204, 255, 204});
+    ctx.waitIdleAll();
+}

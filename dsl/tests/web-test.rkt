@@ -110,3 +110,33 @@
     (check-false (regexp-match? #rx"[(,] *[a-zA-Z_0-9]+: texture_storage" wgsl))
     (check-equal? (length (regexp-match* #rx"textureStore\\(first, " wgsl)) 1)
     (check-equal? (length (regexp-match* #rx"textureStore\\(second, " wgsl)) 3)))
+
+(test-case "Inlined functions' texture and sampler arguments are substituted too: WGSL has no locals of them"
+  (define wgsl
+    (web-shader
+     "(define (copy [image : image2D] [source : texture2D] [s : sampler]) : void
+        (store! image (ivec2 0 0) (sample-lod source s (vec2 0.5) 0.0)))
+      (compute-material Copy
+        (workgroup 1)
+        (bindings (img (storage-image write)) (tex texture) (smp sampler))
+        (compute (copy img tex smp)))"
+     "Copy.comp.wgsl"))
+  (with-check-info (['wgsl wgsl])
+    (check-false (regexp-match? #rx"\n +var [a-zA-Z_0-9]+: (texture|sampler)" wgsl) "no locals of them")
+    (check-true (string-contains? wgsl "textureStore(img, vec2i(0i, 0i), textureSampleLevel(tex, smp, "))))
+
+(test-case "An inlined function's texture array element argument has its index evaluated once, in order, on the web"
+  (define wgsl
+    (web-shader
+     "(define (f [x : uint] [i : image2D] [t : texture2D] [s : sampler] [y : uint]) : void
+        (store! i (ivec2 (int x) (int y)) (+ (sample-lod t s (vec2 0.5) 0.0) (sample-lod t s (vec2 0.1) 0.0))))
+      (compute-material C
+        (workgroup 1)
+        (bindings (img (storage-image write)) (layers (array texture)) (smp sampler) (counts (buffer-array uint)))
+        (compute (f (atomic-add! (at counts 0) (uint 1)) img (at layers (atomic-add! (at counts 1) (uint 1))) smp
+                    (atomic-add! (at counts 0) (uint 2)))))"
+     "C.comp.wgsl"))
+  (with-check-info (['wgsl wgsl])
+    (check-equal? (length (regexp-match* #rx"atomicAdd\\(&counts\\[\\(4u\\)" wgsl)) 1)
+    (check-regexp-match #rx"atomicAdd\\(&counts\\[\\(0u\\).*atomicAdd\\(&counts\\[\\(4u\\).*atomicAdd\\(&counts\\[\\(0u\\)"
+                        (regexp-replace* "\n" wgsl " "))))
