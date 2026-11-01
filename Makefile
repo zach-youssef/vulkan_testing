@@ -329,8 +329,9 @@ test-web-steps:
 # The examples' pages (image_filter's, without a window, run from its query string, its capture
 # compared with the approved one), embedding programs (web/tests/mount.html), loading image files
 # (web/tests/image-file.html), the compute library (web/tests/kernels.html), indirect work
-# (web/tests/indirect.html), models (web/tests/models.html) and programs without a window
-# (web/tests/headless.html), with web/tests' graphs built into graphs/, in each of BROWSERS: by default only headless Chromium on SwiftShader. Firefox opens
+# (web/tests/indirect.html), models (web/tests/models.html), programs without a window
+# (web/tests/headless.html) and functions storing into images they're given (web/tests/stamps.html),
+# with web/tests' graphs built into graphs/, in each of BROWSERS: by default only headless Chromium on SwiftShader. Firefox opens
 # windows (it has no WebGPU adapter headless, nor any on Linux), so it runs only when asked:
 # make test-pages BROWSERS="chromium firefox" (or test-web, or test), as the pre-push check of a
 # stack's top does. A browser found nowhere is skipped (the tools exit with 3) with a note in the
@@ -367,7 +368,7 @@ test-pages-steps:
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/blur_edges-$$browser.png \
 	    'image_filter/image_filter.zgal.html?arg=/tests/assets/input.png&arg=out.png&blur=2&edges' || exit 1; \
 	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/blur_edges-$$browser.png 2 || exit 1; \
-	  for page in mount image-file kernels indirect models headless; do \
+	  for page in mount image-file kernels indirect models headless stamps; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \
 	done

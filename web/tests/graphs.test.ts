@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
-import { Culling, Shapes, Winding, type Mixed } from '../web.zgal.ts';
+import { Culling, Shapes, Stamps, Winding, type Mixed } from '../web.zgal.ts';
 
 let context: zgal.Context;
 let graph: zgal.RenderGraph;
@@ -135,6 +135,19 @@ test('culling both faces draws no triangles (nor runs their fragments), but stil
   assert.deepEqual(await ids.readDottedMarksContents(culling), [1]);
   await culling.finish();
   culling.destroy();
+});
+
+test('functions store into the storage images they are given, passed on with textures and samplers or not (inlined)', async () => {
+  const stamps = new zgal.RenderGraph(context);
+  const ids = await Stamps.build(context, stamps, {});
+  await stamps.execute();
+  // 2 by 2 images, untouched texels zero; a texel's channels all hold its shade (as in stamps.html)
+  const texels = (pixels: Uint8Array) => Array.from({ length: 4 }, (_, p) => [...pixels.subarray(p * 4, p * 4 + 4)]);
+  const grey = (v: number) => [v, v, v, v];
+  assert.deepEqual(texels(await ids.readFirstPixels(stamps)), [grey(51), grey(0), grey(0), grey(0)]);
+  assert.deepEqual(texels(await ids.readSecondPixels(stamps)), [grey(153), grey(0), grey(102), grey(204)]);
+  await stamps.finish();
+  stamps.destroy();
 });
 
 test('uniforms hold their per-frame value', async () => {

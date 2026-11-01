@@ -40,7 +40,8 @@ This page has what the reference doesn't: the runtime's conventions and how to t
    string, its capture saved with the checkers' `--save-capture` and compared with
    `blur_edges.approved.png`), `web/tests/mount.html` (mounts two programs and stops one),
    `web/tests/image-file.html`, the kernels, indirect and models pages, and
-   `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main),
+   `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main) and
+   `web/tests/stamps.html` (functions storing into the storage images they're given),
    in each browser of `BROWSERS`: by default only headless Chromium. Firefox opens windows, so it
    runs only when asked, `make test-web BROWSERS="chromium firefox"` (as before pushing a stack's
    top), and has no WebGPU on Linux (CI skips it). A browser found nowhere is skipped (Chromium is
@@ -66,6 +67,10 @@ browser where they look by default.
 
 - **Firefox** needs a window: headless, it has no WebGPU adapter. Its startup can flake while the
   user's own Firefox is launching; rerun before investigating.
+- **Firefox** compiles WGSL with naga, not Tint, which differs from Dawn and Chromium both ways: it
+  refuses storage textures as function parameters (why ZGAL inlines functions taking `image2D`s),
+  but has no uniformity analysis and lets depth textures use filtering samplers. Passing in Firefox
+  doesn't prove a page portable.
 - **Chromium** runs headless on SwiftShader, the same on macOS and Linux. Canvases of a SwiftShader
   device need all of `--use-angle=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader`:
   without the Vulkan ones they fail ("A valid external Instance reference no longer exists"), and

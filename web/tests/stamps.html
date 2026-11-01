@@ -1,0 +1,51 @@
+<!doctype html>
+<!-- Functions storing into storage images they're given, in a browser: web/tests/web.zgal's Stamps
+     graph gives what web/tests/graphs.test.ts checks under Node. Firefox's naga refuses storage
+     textures as WGSL function parameters, so this checks the inlined functions run there too.
+     Checked by make test-pages (web/tools/chromium.ts and firefox.ts); the page's state is in
+     <html data-zgal>. Served from build/web/tests, with web/tests' graphs built into graphs/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL stamps test</title>
+</head>
+<body>
+<pre id="zgal-message"></pre>
+<script type="module">
+import * as zgal from './graphs/zgal/index.js';
+import { Stamps } from './graphs/web.zgal.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+const check = (got, expected, what) => {
+  if ([...got].join() !== expected.join()) throw new Error(`${what}: got ${[...got].join(' ')}, expected ${expected.join(' ')}`);
+};
+// 2 by 2 images, untouched texels zero; a texel's channels all hold its shade (as in graphs.test.ts)
+const shades = (pixels) => Array.from({ length: 4 }, (_, p) => pixels[p * 4]);
+
+let context;
+try {
+  context = await zgal.Context.create();
+  const graph = new zgal.RenderGraph(context);
+  const ids = await Stamps.build(context, graph, {});
+  await graph.execute();
+  const first = await ids.readFirstPixels(graph);
+  const second = await ids.readSecondPixels(graph);
+  check(shades(first), [51, 0, 0, 0], 'the first image');
+  check(shades(second), [153, 0, 102, 204], 'the second image');
+  check(second.subarray(12, 16), [204, 204, 204, 204], 'the texel the nested calls sampled and stored');
+  await graph.finish();
+  graph.destroy();
+  await context.device.queue.onSubmittedWorkDone();
+  if (context.errors.length > 0) throw new Error(`WebGPU errors:\n${context.errors.join('\n')}`);
+  log('functions stored into the images they were given');
+  document.documentElement.dataset.zgal = 'stopped';
+} catch (error) {
+  log(error instanceof Error ? error.message : String(error));
+  document.documentElement.dataset.zgal = 'failed';
+} finally {
+  context?.destroy();
+}
+</script>
+</body>
+</html>

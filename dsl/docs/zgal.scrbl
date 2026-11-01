@@ -2542,7 +2542,8 @@ This document is part of the language: change it in the same commit as the compi
  @item{@tt{web/tests}: @tt{web.zgal} and @tt{apps.zgal} compiled to TypeScript and WGSL and run on Dawn under Node
        (@tt{make test-web}, which type checks it first): the generated WGSL computes what the GLSL
        would (layouts of small integers, shared memory, emulated atomics and subgroup scans,
-       expressions WGSL spells differently, draws with depth tests), and generated graphs run as
+       expressions WGSL spells differently, draws with depth tests, functions storing into the
+       images they're given), and generated graphs run as
        the C++ ones do (loops, conditions, enables and once nodes, per-frame inputs, uploads,
        copies, buffer files, cpu and extern nodes), functions compute what the GPU and C++ do,
        and apps handle events, effects, read events, externs and phases as C++ apps do, without

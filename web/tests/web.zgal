@@ -259,6 +259,43 @@
   (readback readCulledMarks culledMarks)
   (readback readDottedMarks dottedMarks))
 
+;; Functions storing into storage images they're given, called with two bindings, one passing its
+;; image (and a texture and sampler) on: Firefox's naga refuses storage textures as WGSL parameters,
+;; so they're inlined, their image, texture and sampler arguments substituted
+(define (stamp [image : image2D] [at : ivec2] [shade : float]) : void
+  (store! image at (vec4 shade)))
+
+(define (stampSampled [image : image2D] [at : ivec2] [source : texture2D] [s : sampler]) : void
+  (stamp image at (.x (sample-lod source s (vec2 0.5) 0.0))))
+
+(define (stampPair [image : image2D] [at : ivec2] [source : texture2D] [s : sampler]) : void
+  (stamp image at 0.4)
+  (stampSampled image (+ at (ivec2 1 0)) source s))
+
+(compute-material Stamp
+  (workgroup 1)
+  (bindings (first (storage-image write)) (second (storage-image write)) (source texture) (sourceSampler sampler))
+  (compute
+   (stamp first (ivec2 0 0) 0.2)
+   (stamp second (ivec2 0 0) 0.6)
+   (stampPair second (ivec2 0 1) source sourceSampler)))
+
+;; Checked by graphs.test.ts (on Dawn) and stamps.html (in browsers): keep their texels in step
+(graph Stamps
+  (image firstStamps rgba8 (fixed 2 2) #:frames shared)
+  (image secondStamps rgba8 (fixed 2 2) #:frames shared)
+  ;; A texel of 0.8 (204) in every channel, sampled into secondStamps' last texel
+  (image stampSource rgba8 (fixed 1 1) #:frames shared)
+  (buffer stampTexel uint 1 #:frames shared)
+  (clear fillStampTexel stampTexel #:value #xCCCCCCCC)
+  (copy toStampSource stampTexel stampSource)
+  (sampler stampSampler #:filter nearest #:address clamp-to-edge)
+  (material stamping Stamp (first firstStamps) (second secondStamps) (source stampSource) (sourceSampler stampSampler)
+            #:invocations (1))
+  (dispatch stamp stamping)
+  (readback readFirst firstStamps)
+  (readback readSecond secondStamps))
+
 ;; Adds a push constant to a buffer's elements: one per invocation, as many as the dispatch's
 (compute-material Bump
   (workgroup 1)
