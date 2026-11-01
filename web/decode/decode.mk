@@ -42,3 +42,15 @@ wasi-sdk: $(ZGAL_WASI_CLANG)
 
 .PHONY: wasi-sdk
 
+# The decoder's test (web/decode/tests/decode.test.ts, under Node, no GPU): it decodes the
+# repository's images, and files it makes or damages, to the same bytes or failures as stb_dump, a
+# native helper calling stbi_load as include/resources/Image.h does
+ZGAL_DECODE_NATIVE = $(ZGAL_DECODE_OUT)/stb_dump
+ZGAL_DECODE_IMAGES = $(ZGAL_ROOT)/examples/simple/textures/texture.jpg \
+	$(ZGAL_ROOT)/examples/image_filter/tests/input.png \
+	$(wildcard $(ZGAL_ROOT)/web/tests/assets/*.png) $(wildcard $(ZGAL_ROOT)/tests/gpu/assets/*.png)
+
+$(ZGAL_DECODE_NATIVE): $(ZGAL_DECODE_DIR)/tests/stb_dump.cpp \
+		$(ZGAL_ROOT)/third_party/stb/stb_image.h
+	@mkdir -p $(dir $@)
+	$(CXX) -std=c++20 -I$(ZGAL_ROOT)/third_party/stb -o $@ $<

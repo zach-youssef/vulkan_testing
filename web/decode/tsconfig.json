@@ -1,0 +1,5 @@
+{
+  "//": "Type checks the decoder's test and what it imports (make test-decode)",
+  "extends": "../tsconfig.json",
+  "include": ["tests/*.ts", "../zgal/image-decode.ts"]
+}

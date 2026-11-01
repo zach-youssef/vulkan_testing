@@ -16,13 +16,14 @@ installer puts them) and Homebrew's for GLFW and GLM; on Linux the default ones 
 compiler is clang, the one tested (`c++` on macOS, with libc++; `clang++` on Linux, with
 libstdc++), unless `CXX` is given (`make CXX=g++`).
 
-The web runtime's image decoder is stb_image built to WebAssembly (`web/decode`), which needs a
-clang with a wasm32 target and `wasm-ld` (Apple's clang has none). The build uses wasi-sdk, whose
-version and tarballs' SHA-256 are pinned in `.github/actions/setup-zgal/wasi-sdk.sh` (setup-zgal
-installs the same in CI). `WASI_SDK_PATH` names an installed one; without it,
-`web/decode/decode.mk` downloads and checks the pinned release into `.cache/wasi-sdk-<version>`
-(git-ignored, about 600 MB unpacked, kept by `make clean`; each worktree has its own, so point
-`WASI_SDK_PATH` at one to share it). Nothing is installed system-wide.
+The web runtime's image decoder is stb_image built to WebAssembly
+([web.md](web.md#the-image-decoder)), which needs a clang with a wasm32 target and `wasm-ld`
+(Apple's clang has none). The build uses wasi-sdk, whose version and tarballs' SHA-256 are pinned
+in `.github/actions/setup-zgal/wasi-sdk.sh` (setup-zgal installs the same in CI). `WASI_SDK_PATH`
+names an installed one; without it, `web/decode/decode.mk` downloads and checks the pinned release
+into `.cache/wasi-sdk-<version>` (git-ignored, about 600 MB unpacked, kept by `make clean`; each
+worktree has its own, so point `WASI_SDK_PATH` at one to share it). Nothing is installed
+system-wide.
 
 ## Make targets
 
@@ -52,8 +53,10 @@ installs the same in CI). `WASI_SDK_PATH` names an installed one; without it,
   test` includes them), with pages in headless Chromium only unless `BROWSERS="chromium firefox"`
   (Firefox opens windows). A browser that isn't installed is skipped with a note under the
   summary, or fails the run when `BROWSERS` names it. `make web` builds the web examples.
-- `make build/web-decode/stb_image.wasm`: builds the web runtime's image decoder; `make wasi-sdk`
-  only installs its compiler.
+- `make test-decode`: checks the web runtime's image decoder under Node against native stb_image
+  (no GPU; [web.md](web.md#the-image-decoder)); `make test-web` runs it first. `make
+  build/web-decode/stb_image.wasm` builds the decoder, and `make wasi-sdk` only installs its
+  compiler.
 - `make test-tools`: tests the pre-push hook and the GPU lock (`tests/tools/hook-test.sh`, no GPU
   needed; `make test` includes it).
 - `make run-bench`: times ZGAL's library kernels (`tools/bench`; see "Profiling").

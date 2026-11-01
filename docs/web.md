@@ -23,9 +23,32 @@ This page has what the reference doesn't: the runtime's conventions and how to t
 - The web keeps Vulkan's clip space (the WGSL negates y), so web pixel expectations match native
   ones.
 
+## The image decoder
+
+`image-decode.ts`'s `ImageDecoder` decodes image files with stb_image built to WebAssembly, so the
+web gets exactly the RGBA8 bytes native `stbi_load(..., 4)` gives (PNG, JPEG, BMP, TGA, GIF, PSD, PIC
+and PNM; HDR files fail, where native converts them). Image loading doesn't use it yet.
+
+- `web/decode/stb_image_wasm.c` builds the vendored `third_party/stb/stb_image.h` freestanding: no
+  libc, a bump allocator reset after each decode, and the few functions stb_image calls, so the
+  module (`build/web-decode/stb_image.wasm`, about 90 KB, built by `web/decode/decode.mk` and never
+  committed) imports nothing. `STBI_NO_HDR` and `STBI_NO_LINEAR` leave out what needs libm, whose
+  rounding needn't match native's.
+- `ImageDecoder.load(url)` reads a `file:` URL under Node and fetches others; `ImageDecoder.create`
+  takes the module's bytes or the compiled module. `decode(bytes)` throws stb_image's failure
+  reason.
+- Its compiler is wasi-sdk's clang, pinned and downloaded as
+  [building-and-testing.md](building-and-testing.md#requirements) says.
+- `make test-decode` (Node, no GPU) decodes the repository's PNGs and JPEG, BMP and TGA files it
+  makes, and damaged files, with the wasm and with `web/decode/tests/stb_dump.cpp` (native
+  `stbi_load`), and requires the same bytes or the same failure. CI's runner is x86-64, so the
+  native helper takes stb_image's SSE2 JPEG path, which CI checks too.
+
 ## Tests
 
-`make test-web` (`TEST_ARGS` go to `node --test`):
+`make test-web` (`TEST_ARGS` go to each `node --test` run, test-decode's included, so a name pattern
+selects from all of them) runs `make test-decode` ([the image decoder](#the-image-decoder)) first,
+then:
 
 1. compiles `web/tests/*.zgal` (and the image_filter example, which `image-filter.test.ts` runs
    without the `texture-formats-tier2` feature) to TypeScript and WGSL in `build/web-tests`, beside

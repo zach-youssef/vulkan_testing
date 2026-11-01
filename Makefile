@@ -306,6 +306,7 @@ test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-web-steps
 
 test-web-steps:
+	$(MAKE) test-decode
 	rm -rf $(WEB_TEST_OUT)
 	@mkdir -p $(WEB_TEST_OUT)
 	for f in $(WEB_DIR)/tests/*.zgal $(IMAGE_FILTER_DIR)/image_filter.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) $$f || exit 1; done
@@ -329,6 +330,17 @@ test-web-steps:
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/threshold.png --blur 2 --edges --threshold 0.15
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/threshold.approved.png $(IMAGE_FILTER_WEB)/threshold.png 0 $(IMAGE_FILTER_THRESHOLD_FLIPS)
 	$(MAKE) test-pages
+
+# The web runtime's image decoder (web/decode/decode.mk), checked under Node against native
+# stb_image (no GPU). make test-web runs it first.
+test-decode: $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE) $(WEB_PACKAGES)
+	$(RUN_TEST) $(MAKE) --no-print-directory test-decode-steps
+
+test-decode-steps:
+	$(NODE) $(WEB_DIR)/node_modules/typescript/bin/tsc -p $(WEB_DIR)/decode
+	ZGAL_DECODE_WASM=$(ZGAL_DECODE_WASM) ZGAL_DECODE_NATIVE=$(ZGAL_DECODE_NATIVE) \
+	ZGAL_DECODE_IMAGES='$(ZGAL_DECODE_IMAGES)' \
+	$(NODE) --test --test-reporter=spec $(TEST_ARGS) $(WEB_DIR)/decode/tests/decode.test.ts
 
 # The examples' pages (image_filter's, without a window, run from its query string, its capture
 # compared with the approved one), embedding programs (web/tests/mount.html), loading image files
@@ -401,9 +413,9 @@ approve-screenshots:
 	done
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
-.PHONY: clean examples shaders test test-cpu test-gpu test-dsl test-web test-tools test-pages web docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main bench run-bench test-bench
+.PHONY: clean examples shaders test test-cpu test-gpu test-dsl test-web test-decode test-tools test-pages web docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main bench run-bench test-bench
 .PHONY: test-example-image_filter-steps test-main-steps test-bench-steps test-dsl-steps \
-	test-web-steps test-pages-steps
+	test-web-steps test-decode-steps test-pages-steps
 
 
 clean:
