@@ -45,7 +45,8 @@ system-wide.
   validation; any message fails it. `make test-example-<name>` runs one.
 - `make approve-screenshots`: accepts the screenshots of the last failed GPU run
   (`tests/gpu/approved/<device>/`). Never approve a changed screenshot without understanding why
-  it changed.
+  it changed. CI's lavapipe ones are approved by hand
+  ([Approving lavapipe's screenshots](#approving-lavapipes-screenshots)).
 - `make test-dsl`: builds ZGAL's documentation and runs its compiler's tests (`make test` includes
   it), installing the web backend's npm packages (`web/`) first. `make docs` only builds the
   documentation: `build/docs/zgal.html`, and `build/docs/zgal.txt` to read in a terminal.
@@ -91,33 +92,65 @@ Gotchas:
 
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`) checks every pushed commit, not only the tip: the
-commits a working branch has beyond `main`, or those a push to `main` brings (at most the newest
-20). Each one is built on Ubuntu 24.04 with clang++ and lavapipe (`make examples` and both test
-programs), then runs `make test-cpu`, `make test-dsl` and `make test-tools`, and gets a `cpu` commit status. Each one also
-runs `make test-web BROWSERS=chromium` (`.github/workflows/web.yml`): Dawn under Node on lavapipe,
-and the pages in Playwright's Chromium headless shell on SwiftShader (`CHROMIUM` names it, so a
-missing one fails), and gets a `web` status. Firefox is skipped there, as it has no WebGPU on
-Linux; commits from before `web.yml` existed get no `web` check (the commits job leaves them out).
-Each one also runs `make test-gpu` and `make test-examples` on lavapipe
-(`.github/workflows/gpu.yml`), with validation and synchronization validation required, and gets
-a `gpu` status (commits from before `gpu.yml` existed get none). The toolchain (apt packages, the
-LunarG SDK, ccache, Racket, Node) comes from `.github/actions/setup-zgal`, whose `toolchain` input
-is `native` or `web` (no SDK or ccache, but wasi-sdk, as `WASI_SDK_PATH`, for the image decoder,
-and clang for its native test helper).
+GitHub Actions tests every pushed commit on Linux with lavapipe (Mesa's CPU Vulkan driver), and
+the [pre-push hook](#pre-push-hook) tests each pushed tip on the Mac's GPU (MoltenVK), covering
+what lavapipe can't. [ci.yml](../.github/workflows/ci.yml) runs on every push to a branch and checks
+each commit, not only the tip: the commits a working branch has beyond `main`, or those a push to
+`main` brings (at most the newest 20). Each CI check posts a commit status of its name on each
+commit; the hook blocks the push instead:
 
-lavapipe has one queue in one family, so CI never runs the multi-queue paths (async compute,
-cross-queue ownership and timeline waits; their tests skip), nor the windowed tests (no display),
-nor the web pages in Firefox: the [pre-push hook](#pre-push-hook) runs those on the Mac for each
-pushed tip.
+| Check | Where | Runs | Device |
+|---|---|---|---|
+| `cpu` | [cpu.yml](../.github/workflows/cpu.yml) | builds the examples and both test programs; `make test-cpu`, `make test-dsl`, `make test-tools` | no Vulkan tests; Dawn on lavapipe checks ZGAL's WGSL |
+| `web` | [web.yml](../.github/workflows/web.yml) | `make test-web BROWSERS=chromium` | Dawn under Node on lavapipe; Chromium's headless shell on SwiftShader |
+| `gpu` | [gpu.yml](../.github/workflows/gpu.yml) | `make test-gpu`, `make -k test-examples` | lavapipe, validation and synchronization validation required |
+| pre-push hook | [tools/git-hooks/pre-push](../tools/git-hooks/pre-push), on the Mac | builds, then `make -k test-gpu test-examples test-web BROWSERS="chromium firefox"` | MoltenVK; Dawn on Metal; Chromium and Firefox |
 
-lavapipe's screenshots are approved in `tests/gpu/approved/llvmpipe/` (its device name without the
-LLVM build). A failed gpu job uploads its received screenshots, FLIP error maps, the examples'
-captures and the logs as the artifact `gpu-<sha>`: `gh run download <run id> -n gpu-<sha>`, look at
-each received image, and only then copy it over its `.approved.png`. Failed cpu and web jobs upload
-their test logs (`build/logs`) as `cpu-<sha>` and `web-<sha>`.
+The CI jobs run on Ubuntu 24.04 with clang++. In web.yml, `CHROMIUM` names the headless shell, so
+a missing one fails the pages rather than skipping them; Firefox is skipped, as it has no WebGPU on
+Linux. Commits from before web.yml or gpu.yml existed get no `web` or `gpu` check (the commits job
+leaves them out). The toolchain (apt packages, the LunarG SDK, ccache, Racket, Node) comes from
+`.github/actions/setup-zgal`, whose `toolchain` input is `native` or `web` (no SDK or ccache, but
+wasi-sdk, as `WASI_SDK_PATH`, for the image decoder, and clang for its native test helper).
 
-Gotchas:
+lavapipe exposes one queue family with one queue, so CI never runs the multi-queue paths: async
+compute, cross-queue ownership transfers and timeline waits between queues (their tests skip, and
+the render graph runs everything on the one queue, having no others to spread work over). Nor
+does it run the windowed tests (no display) or the web pages in Firefox. The pre-push hook runs
+all of those on the Mac for each pushed tip, so a branch is only fully tested once it has been
+pushed from there.
+
+### Logs
+
+The test targets print one summary line each (see [Make targets](#make-targets)), so a CI step's
+log shows only the summaries and the failing cases' last lines. The full output is in
+`build/logs/<target>.log`: a failed job uploads it in its artifact, `cpu-<sha>`, `web-<sha>` or
+`gpu-<sha>` (with the commit's full SHA), which `gh run download <run id> -n <artifact>` fetches
+(`gh run list --branch <branch>` lists the run IDs; a commit status links to its job). The `cpu`
+and `web` artifacts hold only the logs, at their root; the `gpu` one keeps them in `build/logs/`. The
+pre-push hook keeps its logs in its worktree's `build/logs`
+([Pre-push hook](#pre-push-hook)).
+
+### Approving lavapipe's screenshots
+
+Screenshots are approved per device, in `tests/gpu/approved/<device>/`: `Apple_M4` for the Mac,
+and `llvmpipe` for lavapipe (its device name without the LLVM build, so an LLVM update doesn't
+move it). A new or changed screenshot test therefore needs an image approved for each, and only
+the Mac's comes from a local run (`make test-gpu`, then `make approve-screenshots`). For lavapipe's:
+
+1. Push; the `gpu` job fails and uploads the artifact `gpu-<sha>`, holding the received
+   screenshots and their FLIP error maps under their repository paths
+   (`tests/gpu/approved/llvmpipe/<TestFile>.<TestName>.received.png` and `.flip.png`), the examples' captures and
+   the logs.
+2. Download it outside the worktree: `gh run download <run id> -n gpu-<sha> -D <dir>`.
+3. Look at each received image (and its error map, if the test had an approved one), and
+   understand why it differs, as with any screenshot.
+4. Copy each `<name>.received.png` to `tests/gpu/approved/llvmpipe/<name>.approved.png` in your
+   worktree, renaming it (a new test has no approved file yet, so this creates it), and commit it.
+   Don't download into the worktree root to use `make approve-screenshots`: it would also
+   approve any received images of the Mac's left in the worktree, so copy them by hand.
+
+### Gotchas
 
 - make predefines `CXX` (as `g++`), so `CXX ?= ...` never applies: the Makefile checks
   `$(origin CXX)` (`default`, or `undefined` under `make -R`) instead.
@@ -127,7 +160,7 @@ Gotchas:
   older commits have none or older ones.
 - Only jobs that run no code from the commits, npm or third-party actions hold a token that can post
   statuses, as a job's steps share one user and file system (a build could plant a `gh` that a
-  later step runs with the token). The cpu and web jobs get `contents: read`; ci.yml's `pending`
+  later step runs with the token). The cpu, web and gpu jobs get `contents: read`; ci.yml's `pending`
   job marks their checks pending and its `statuses` job, needing them all, posts each commit's
   status from its job's conclusion in the run's jobs API, matched by the name `<context> <sha>`
   (anything but success or failure is an error, so none stays pending). Those two check nothing
