@@ -381,7 +381,11 @@ docs: $(ZGAL_COMPILED)
 	$(RACO) scribble --html --dest $(DOCS_OUT) $(DSL_DIR)/docs/zgal.scrbl
 	$(RACO) scribble --text --dest $(DOCS_OUT) $(DSL_DIR)/docs/zgal.scrbl
 
-test: test-cpu test-gpu test-dsl test-web
+# The pre-push hook's and the GPU lock's tests (tests/tools; no GPU needed)
+test-tools:
+	$(RUN_TEST) tests/tools/hook-test.sh
+
+test: test-cpu test-gpu test-dsl test-web test-tools
 
 SCREENSHOT_DIR = $(TEST_DIR)/gpu/approved
 
@@ -392,7 +396,7 @@ approve-screenshots:
 	done
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
-.PHONY: clean examples shaders test test-cpu test-gpu test-dsl test-web test-pages web docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main bench run-bench test-bench
+.PHONY: clean examples shaders test test-cpu test-gpu test-dsl test-web test-tools test-pages web docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main bench run-bench test-bench
 .PHONY: test-example-image_filter-steps test-main-steps test-bench-steps test-dsl-steps \
 	test-web-steps test-pages-steps
 

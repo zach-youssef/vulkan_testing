@@ -42,6 +42,8 @@ libstdc++), unless `CXX` is given (`make CXX=g++`).
   test` includes them), with pages in headless Chromium only unless `BROWSERS="chromium firefox"`
   (Firefox opens windows). A browser that isn't installed is skipped with a note under the
   summary, or fails the run when `BROWSERS` names it. `make web` builds the web examples.
+- `make test-tools`: tests the pre-push hook and the GPU lock (`tests/tools/hook-test.sh`, no GPU
+  needed; `make test` includes it).
 - `make run-bench`: times ZGAL's library kernels (`tools/bench`; see "Profiling").
 - `zgal.mk`: the make rules building ZGAL programs (`zgal-rule`, `zgal-program`), which the Makefile
   and other projects' Makefiles include.
@@ -77,7 +79,7 @@ Gotchas:
 GitHub Actions (`.github/workflows/ci.yml`) checks every pushed commit, not only the tip: the
 commits a working branch has beyond `main`, or those a push to `main` brings (at most the newest
 20). Each one is built on Ubuntu 24.04 with clang++ and lavapipe (`make examples` and both test
-programs), then runs `make test-cpu` and `make test-dsl`, and gets a `cpu` commit status. Each one also
+programs), then runs `make test-cpu`, `make test-dsl` and `make test-tools`, and gets a `cpu` commit status. Each one also
 runs `make test-web BROWSERS=chromium` (`.github/workflows/web.yml`): Dawn under Node on lavapipe,
 and the pages in Playwright's Chromium headless shell on SwiftShader (`CHROMIUM` names it, so a
 missing one fails), and gets a `web` status. Firefox is skipped there, as it has no WebGPU on
@@ -90,8 +92,8 @@ is `native` or `web` (no SDK, clang or ccache).
 
 lavapipe has one queue in one family, so CI never runs the multi-queue paths (async compute,
 cross-queue ownership and timeline waits; their tests skip), nor the windowed tests (no display),
-nor the web pages in Firefox: run `make test-gpu test-examples` locally on the Mac too, one GPU run
-at a time on a machine.
+nor the web pages in Firefox: the [pre-push hook](#pre-push-hook) runs those on the Mac for each
+pushed tip.
 
 lavapipe's screenshots are approved in `tests/gpu/approved/llvmpipe/` (its device name without the
 LLVM build). A failed gpu job uploads its received screenshots, FLIP error maps, the examples'
@@ -131,6 +133,34 @@ Gotchas:
 - make's `$(if)` splits its arguments on commas, so flags like `-Wl,-rpath,...` inside it use
   zgal.mk's `$(ZGAL_COMMA)`.
 
+## Pre-push hook
+
+`tools/git-hooks/pre-push` tests each pushed ref's commit on the machine's GPU (MoltenVK on the
+Mac), covering what lavapipe can't. Install it once per checkout, for all its worktrees:
+
+    git config core.hooksPath tools/git-hooks
+
+It builds the pushed commit (`make -j build/tests/gpu_tests examples web`, summarized as `build`),
+then runs `make -k test-gpu test-examples test-web BROWSERS="chromium firefox"` (Firefox opens
+windows), printing only the summaries; any failure blocks the push. `git push --no-verify` skips
+it. It skips with a notice a push that only deletes refs, commits the remote already has (under its
+remote-tracking refs or the refs the push updates, e.g. a new branch at `main`), and a machine
+without `vulkaninfo` or whose `vulkaninfo --summary` lists no non-CPU device.
+
+It tests the pushed commit, not the pushing worktree's files: `tools/test-commit.sh` checks it out,
+detached, into the checkout's own worktree `<git common dir>/zgal-pre-push` (`.git/zgal-pre-push`;
+listed by `git worktree list`), kept between pushes so builds are incremental, and made again
+when it can't be checked out (e.g. after the checkout moved). Its `build/logs`
+hold the full output, and a failed screenshot test's received images stay in its
+`tests/gpu/approved/<device>/`: look at them there and approve them in your own worktree.
+
+It holds the machine-wide GPU lock while it builds and tests: `tools/gpu-lock.sh <command>` runs a
+command holding an flock on `/tmp/zgal-gpu.lock` (released when its holder exits, however), and
+waits, naming the holder, while another run has it. So pushes from several worktrees or checkouts
+take turns; other GPU runs (`make test-gpu`, `verify_stack.sh`) don't take it. It isn't
+re-entrant (a run taking it inside the hook's would wait for itself), so making them take it needs
+a marker the outer run exports.
+
 ## Verifying a stack
 
 `tools/verify_stack.sh <repo> <base> [head]` builds and tests every commit in a range (builds and
@@ -140,7 +170,7 @@ its own `run-test.sh`) and keeping the logs in the temporary directory it names:
 `<dir>/<commit>/logs/<name>.log`, and for the make targets of commits with these summaries, their
 full output in `<dir>/<commit>/build/logs/<target>.log`. Check its exit codes, not filtered
 output. A branch CI has checked only needs the GPU, example and web
-tests locally.
+tests locally, which the [pre-push hook](#pre-push-hook) runs on its tip.
 
 When folding fixes into earlier commits, note that `git commit --fixup=X` commits the whole index,
 including earlier `git rm`s: pass the paths, then check each rewritten commit's tree.

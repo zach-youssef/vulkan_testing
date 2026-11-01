@@ -1,0 +1,78 @@
+#!/bin/bash
+# Pre-push hook: tests each pushed commit on this machine's GPU (MoltenVK on the Mac), covering
+# what CI's lavapipe can't: the multi-queue paths, Dawn on Metal and Firefox's pages. Install it
+# once per checkout (it then applies to all its worktrees):
+#   git config core.hooksPath tools/git-hooks
+# Bypass it with git push --no-verify. What it runs, where, and when it skips: the "Pre-push hook"
+# section of docs/building-and-testing.md. tools/test-commit.sh tests each commit, holding the GPU
+# lock (tools/gpu-lock.sh).
+set -u
+remote=$1
+
+# git's stdin lines: <local ref> <local sha> <remote ref> <remote sha>; a deletion's local sha is
+# all zeros, as is the remote sha of a ref the remote lacks. A tag is tested as the commit it
+# names; one naming no commit has nothing to test.
+commits="" known=""
+while read -r local_ref local_sha _ remote_sha; do
+    # The remote's commits we have, which need no testing
+    case $remote_sha in
+    *[!0]*) git cat-file -e "$remote_sha^{commit}" 2>/dev/null && known="$known $remote_sha" ;;
+    esac
+    case $local_sha in *[!0]*) ;; *) continue ;; esac
+    commit=$(git rev-parse -q --verify "$local_sha^{commit}") || {
+        echo "pre-push: $local_ref names no commit; nothing to test for it" >&2
+        continue
+    }
+    case " $commits " in *" $commit "*) ;; *) commits="$commits $commit" ;; esac
+done
+if [ -z "$commits" ]; then
+    echo "pre-push: no commits to test (the push only deletes refs)" >&2
+    exit 0
+fi
+
+# Skip commits the remote already has (under its remote-tracking refs or a ref this push updates),
+# e.g. a new branch at main, or old tags
+untested=""
+for commit in $commits; do
+    # A rev-list error is no proof the remote has the commit: test it
+    # shellcheck disable=SC2086 # $known is a list of shas
+    out=$(git rev-list -n 1 "$commit" --not --remotes="$remote" $known) || {
+        untested="$untested $commit"
+        continue
+    }
+    if [ -z "$out" ]; then
+        echo "pre-push: $(git log --format='%h' -1 "$commit") is already on $remote; not testing it" >&2
+    else
+        untested="$untested $commit"
+    fi
+done
+[ -n "$untested" ] || exit 0
+
+# The first Vulkan device that isn't a CPU (lavapipe, SwiftShader): its name
+if ! command -v vulkaninfo > /dev/null; then
+    echo "pre-push: vulkaninfo not found (is the Vulkan SDK on PATH?); skipping the GPU tests" >&2
+    exit 0
+fi
+device=$(vulkaninfo --summary 2>/dev/null | awk '
+    /deviceType *=/ { type = $NF }
+    /deviceName *=/ && type != "" && type !~ /CPU/ { sub(/.*deviceName *= */, ""); print; exit }
+')
+if [ -z "$device" ]; then
+    echo "pre-push: no GPU Vulkan device found (vulkaninfo --summary); skipping the GPU tests" >&2
+    exit 0
+fi
+
+tools=$(cd "$(dirname "$0")/.." && pwd)
+common=$(cd "$(git rev-parse --git-common-dir)" && pwd) || exit 1
+# Git commands in the pre-push worktree must not use the pushing worktree's
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX
+failed=0
+for commit in $untested; do
+    "$tools/gpu-lock.sh" "$tools/test-commit.sh" "$common" "$commit" "$device" < /dev/null
+    case $? in
+    0) ;;
+    1) failed=1; echo "pre-push: tests failed; push with --no-verify to skip them" >&2 ;;
+    *) failed=1; echo "pre-push: couldn't run the tests (see above)" >&2 ;;
+    esac
+done
+exit $failed

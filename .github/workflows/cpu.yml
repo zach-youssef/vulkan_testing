@@ -58,6 +58,10 @@ jobs:
         timeout-minutes: 10
         run: make test-dsl
 
+      - name: Pre-push hook and GPU lock tests
+        timeout-minutes: 5
+        run: make test-tools
+
       # The tests print summaries; their full output is in build/logs
       - name: Upload the test logs
         if: failure()
