@@ -204,6 +204,10 @@ tests locally, which the [pre-push hook](#pre-push-hook) runs on its tip.
 When folding fixes into earlier commits, note that `git commit --fixup=X` commits the whole index,
 including earlier `git rm`s: pass the paths, then check each rewritten commit's tree.
 
+When checking a commit by hand in a temporary copy (a detached worktree), never symlink
+`web/node_modules` into it: `make test-web` runs `npm ci`, which empties the symlink's target and
+so the original checkout's packages. Run `npm ci` in the copy instead.
+
 ## Verifying ports
 
 Verify a port or refactor that shouldn't change output by pixel identity against captures taken
