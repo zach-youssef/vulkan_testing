@@ -122,6 +122,8 @@ test('per-frame inputs: push constants, buffer sizes and data follow them', asyn
   assert.deepEqual(await result.readSizedContents(graph), [9, 9, 9, 9, 9]);
   assert.deepEqual((await result.readCopiedContents(graph)).slice(8, 10), [8, 9]);
   assert.equal(ticks(), 2);
+  // No node gathers, so the frame is one submission
+  assert.equal(graph.submissionCount(), 1);
   assert.deepEqual(externArguments, [7]);
   // The extern node's bump of element 12, after readSums but before readLast
   assert.equal((await result.readSumsContents(graph))[12], 2);

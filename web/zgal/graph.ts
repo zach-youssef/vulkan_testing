@@ -1,6 +1,7 @@
 // A render graph for WebGPU: resources, and nodes recorded in order into one command encoder a
-// frame. WebGPU synchronizes on its own, so nodes run in the order they were added (which is
-// program order, as in the Vulkan RenderGraph) without declaring uses for barriers.
+// frame (more where a node gathers what the GPU wrote: see execute). WebGPU synchronizes on its
+// own, so nodes run in the order they were added (which is program order, as in the Vulkan
+// RenderGraph) without declaring uses for barriers.
 
 import type { Context } from './context.ts';
 import {
@@ -84,11 +85,16 @@ export interface Target {
   readonly depth: DepthAttachment | null;
 }
 
-// A node: work recorded each frame it's enabled. prepare runs first, for every node, before any is
-// recorded (writes to buffers the queue makes before the frame's commands); submitted runs after the
-// frame is submitted.
+// A node: work recorded each frame it's enabled. prepare runs first, for every node of its part of
+// the frame, before any of them is recorded (writes to buffers the queue makes before those nodes'
+// commands); submitted runs after the commands recorded are submitted. A node whose prepare needs
+// the GPU's work before it has gather, which records copies of what it
+// reads at the end of the frame so far: the graph then submits that and awaits gathered before
+// preparing it and the nodes after it.
 export interface Node {
   readonly name: string;
+  gather?(encoder: GPUCommandEncoder): void;
+  gathered?(): Promise<void>;
   prepare?(frame: FrameInfo): void;
   record(encoder: GPUCommandEncoder, frame: FrameInfo): void;
   submitted?(frame: FrameInfo): void;
@@ -411,6 +417,11 @@ export class RenderGraph {
   private views = new Map<GraphImage, { generation: number; '2d'?: GPUTextureView; '2d-array'?: GPUTextureView }>();
   private inFlight: Promise<undefined>[] = [];
   private owned: { destroy(): void }[] = [];
+  private inFrame = false;
+  private executing = false;
+  // The gathering node after which the surface can't be drawn this frame (see attachmentView)
+  private surfaceExpiredBy: string | null = null;
+  private lastSubmissions = 0;
 
   readonly context: Context;
 
@@ -585,7 +596,15 @@ export class RenderGraph {
 
   attachmentView(image: GraphImage | 'surface'): GPUTextureView {
     if (image === 'surface') {
-      if (!this.surfaceView) throw new Error('the surface is drawn outside a frame');
+      if (!this.inFrame || !this.surface) throw new Error('the surface is drawn outside a frame');
+      if (this.surfaceExpiredBy !== null) {
+        throw new Error(`the surface is drawn both before and after node '${this.surfaceExpiredBy}', which gathers what the GPU wrote: ` +
+          'the frame waits for the GPU there, and the page shows the surface while it waits');
+      }
+      if (!this.surfaceView) {
+        this.surfaceTexture = this.surface.canvas.getCurrentTexture();
+        this.surfaceView = this.surfaceTexture.createView({ format: this.surfaceFormat! });
+      }
       return this.surfaceView;
     }
     return this.viewOf(image);
@@ -623,36 +642,93 @@ export class RenderGraph {
   }
 
   // Records and submits a frame: every enabled node in order. Waits only when the context's frames
-  // in flight already are.
+  // in flight already are, and where a node gathers what the GPU wrote: there the frame so far is
+  // submitted, as native submits at its cpu steps, and the nodes after it are recorded once the
+  // copies it gathered are mapped. The surface is acquired when first drawn (or at the end of the
+  // frame), so it can be drawn after such a wait. Await each frame before the next: overlapping
+  // calls are an error. A frame failing after it submitted something still counts (its number is
+  // used, and its submitted once nodes are done), so executing again starts the next frame rather
+  // than repeating that work.
   async execute(): Promise<void> {
-    while (this.inFlight.length >= this.context.framesInFlight) await this.inFlight.shift();
-    if (this.surface) {
-      this.surfaceTexture = this.surface.canvas.getCurrentTexture();
-      this.surfaceView = this.surfaceTexture.createView({ format: this.surfaceFormat! });
+    if (this.executing) throw new Error('execute() was called before the previous frame finished: await each frame');
+    this.executing = true;
+    try {
+      await this.executeFrame();
+    } finally {
+      this.executing = false;
     }
+  }
+
+  private async executeFrame(): Promise<void> {
+    while (this.inFlight.length >= this.context.framesInFlight) await this.inFlight.shift();
     const frame = this.frameInfo();
     for (const image of this.images) this.ensureImage(image, frame);
     for (const b of this.buffers) this.ensureBuffer(b, frame);
     const active = this.nodes.filter((r) => r.enabled);
-    for (const r of active) r.node.prepare?.(frame);
-    const encoder = this.context.device.createCommandEncoder({ label: `frame ${frame.frameNumber}` });
-    for (const r of active) {
-      encoder.pushDebugGroup(r.node.name);
-      r.node.record(encoder, frame);
-      encoder.popDebugGroup();
-    }
-    this.context.device.queue.submit([encoder.finish()]);
-    for (const r of active) r.node.submitted?.(frame);
-    // Nodes that ran once are done
-    for (const r of active) {
-      if (r.once) {
-        r.once = false;
-        r.enabled = false;
+    const device = this.context.device;
+    this.inFrame = true;
+    this.surfaceExpiredBy = null;
+    let submissions = 0;
+    let encoder = device.createCommandEncoder({ label: `frame ${frame.frameNumber}` });
+    let recorded: NodeRecord[] = [];
+    const submitted: NodeRecord[] = [];
+    const submit = () => {
+      device.queue.submit([encoder.finish()]);
+      for (const r of recorded) r.node.submitted?.(frame);
+      submitted.push(...recorded);
+      recorded = [];
+      submissions++;
+    };
+    try {
+      for (let start = 0; start < active.length;) {
+        // A part: up to the next node gathering
+        let end = start + 1;
+        while (end < active.length && !active[end].node.gather) end++;
+        const part = active.slice(start, end);
+        const first = part[0].node;
+        if (first.gather) {
+          first.gather(encoder);
+          submit();
+          if (this.surfaceView) {
+            this.surfaceExpiredBy = first.name;
+            this.surfaceView = null;
+          }
+          await first.gathered!();
+          encoder = device.createCommandEncoder({ label: `frame ${frame.frameNumber} after ${first.name}` });
+        }
+        for (const r of part) r.node.prepare?.(frame);
+        for (const r of part) {
+          encoder.pushDebugGroup(r.node.name);
+          r.node.record(encoder, frame);
+          encoder.popDebugGroup();
+        }
+        recorded.push(...part);
+        start = end;
+      }
+      // The surface is shown each frame, drawn or not
+      if (this.surface && !this.surfaceView && this.surfaceExpiredBy === null) this.attachmentView('surface');
+      submit();
+    } finally {
+      this.inFrame = false;
+      this.surfaceView = null;
+      this.lastSubmissions = submissions;
+      if (submissions > 0) {
+        // Nodes that ran once are done
+        for (const r of submitted) {
+          if (r.once) {
+            r.once = false;
+            r.enabled = false;
+          }
+        }
+        this.inFlight.push(device.queue.onSubmittedWorkDone());
+        this.frameNumber++;
       }
     }
-    this.inFlight.push(this.context.device.queue.onSubmittedWorkDone());
-    this.surfaceView = null;
-    this.frameNumber++;
+  }
+
+  // How many submissions the last frame made: one, and one more per node gathering
+  submissionCount(): number {
+    return this.lastSubmissions;
   }
 
   // Waits for the frames submitted so far
@@ -1308,7 +1384,7 @@ export class DataUploadNode<T> implements Node {
   record(): void { }
 }
 
-// Work on the CPU, run in order with the GPU's (between frames: before the frame's commands)
+// Work on the CPU, run in order with the GPU's (with the nodes' prepares, before their commands)
 export class CpuNode implements Node {
   readonly name: string;
   readonly run: (frame: FrameInfo) => void;
