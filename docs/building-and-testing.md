@@ -132,6 +132,19 @@ Gotchas:
   `main`'s caches (no further hardening needed).
 - make's `$(if)` splits its arguments on commas, so flags like `-Wl,-rpath,...` inside it use
   zgal.mk's `$(ZGAL_COMMA)`.
+- A sub-make gets make's jobserver (so `-j` reaches it, and `make -n` still runs it) only when its
+  recipe line contains `$(MAKE)` itself (as `$(RUN_TEST) $(MAKE) ...` does), not a variable whose
+  value runs make.
+- macOS's make 3.81 compares mtimes to the second: editing a file, building and reverting it within
+  one second leaves a stale object. Touch the file or wait a second.
+- `MAKEFLAGS` differs by level under make 3.81: the top-level make's recipes see the single-letter
+  options as the first word without a dash (`nk`), but a sub-make's see them after the long ones,
+  each with a dash (` --no-print-directory -n`). A script detecting `make -n` must handle both.
+  (`run-test.sh` checks only the first word, so a run-test target inside a sub-make, such as
+  `test-pages` under `make -n test-web`, isn't detected as a dry run.)
+- doctest's `--minimal` prints no summary when every test passes, so the test targets run without
+  it to count cases. A case's `MESSAGE` or `WARN` output prints a `TEST CASE:` block too, so only
+  a block with `: ERROR:` (or `: FATAL ERROR:`) is a failure.
 
 ## Pre-push hook
 
