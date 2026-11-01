@@ -137,17 +137,25 @@
        (when (eq? (cond [(assq 'address o) => cdr] [else #f]) 'clamp-to-border)
          (web-error l "WebGPU's samplers have no border colour, so sampler ~a can't clamp to one" n))]
       [_ (void)]))
-  (for ([n (in-list nodes)])
-    (define l (g-node-loc n))
-    (match (g-node-kind n)
-      ['cpu (unless (and (null? (g-node-reads n)) (null? (g-node-writes n)))
-              (web-error l "cpu node ~a maps buffers, which WebGPU's buffers can't be while the GPU uses them" (g-node-name n)))]
-      [_ (void)]))
 
   (define parameters (of-type g-parameter?))
   (define inputs (of-type g-input?))
   (define images (of-type g-image?))
   (define buffers (of-type g-buffer?))
+
+  ;; A cpu input's function: given the frame, and, where nodes running it read or write imported
+  ;; buffers, those buffers' bytes by name (those some of its nodes don't use are optional)
+  (define (cpu-input-type input)
+    (define uses
+      (for/list ([n (in-list nodes)] #:when (and (eq? (g-node-kind n) 'cpu) (equal? (g-node-subject n) input)))
+        (remove-duplicates (append (g-node-reads n) (g-node-writes n)))))
+    (define names (remove-duplicates (append* uses)))
+    (if (null? names)
+        "(frame: zgal.FrameInfo) => void"
+        (format "(frame: zgal.FrameInfo, buffers: ~a) => void"
+                (ts-object (for/list ([b (in-list names)])
+                             (format "~a~a: ArrayBuffer" b (if (andmap (λ (u) (member b u)) uses) "" "?")))
+                           "; "))))
 
   (line! "")
   (line! "// graph ~a: build() adds its resources, materials and nodes to a RenderGraph" name)
@@ -161,7 +169,7 @@
                 ['per-frame (format "zgal.FrameSource<~a>" (ts-value-type t))]
                 ['data (format "readonly ~a[]" (ts-value-type t))]
                 ['per-frame-data (format "zgal.FrameSource<readonly ~a[]>" (ts-value-type t))]
-                ['cpu "(frame: zgal.FrameInfo) => void"]
+                ['cpu (cpu-input-type n)]
                 ['extern (format "(graph: zgal.RenderGraph, ids: ~a~a) => zgal.NodeId[]" name
                                  (string-append* (for/list ([a (in-list t)] [i (in-naturals)]) (format ", a~a: ~a" i (ts-value-type a)))))]
                 ['path "string"]
@@ -511,7 +519,13 @@
                  label (resource-ref (g-node-subject n)))]
         ['clear
          (format "new zgal.ClearNode(~a, graph, ~a, (frame) => ~a)" label (resource-ref (first (g-node-writes n))) (uint-expr (g-node-count n)))]
-        ['cpu (format "new zgal.CpuNode(~a, inputs.~a)" label (g-node-subject n))]
+        ['cpu
+         (define (buffer-list names)
+           (string-append "[" (string-join (map resource-ref names) ", ") "]"))
+         (if (and (null? (g-node-reads n)) (null? (g-node-writes n)))
+             (format "new zgal.CpuNode(~a, inputs.~a)" label (g-node-subject n))
+             (format "new zgal.CpuNode(~a, inputs.~a, graph, ~a, ~a)" label (g-node-subject n)
+                     (buffer-list (remove-duplicates (g-node-reads n))) (buffer-list (remove-duplicates (g-node-writes n)))))]
         ['copy
          #:when (image-kind? (first (g-node-writes n)))
          (define offset (cdr (g-node-offsets n)))

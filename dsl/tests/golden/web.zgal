@@ -150,6 +150,16 @@
   (dispatch tally tallying)
   (readback readCounts counts))
 
+;; cpu nodes on imported buffers: an input's function gets the buffers its nodes read or write,
+;; by name, those some of its nodes don't use optional
+(graph Staged
+  (input fill cpu)
+  (import-buffer staging uint)
+  (import-buffer results uint)
+  (cpu tick fill)
+  (cpu filling fill #:writes (staging))
+  (cpu checking fill #:reads (results) #:writes (staging staging)))
+
 (app Counter
   (parameter size uint)
   (state

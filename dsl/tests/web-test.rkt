@@ -17,12 +17,6 @@
       (check-equal? (exn:zgal-id e) 'not-on-web)
       (check-true (string-contains? (exn-message e) fragment) (exn-message e)))))
 
-(define fill
-  "(compute-material Fill
-     (workgroup 1)
-     (bindings (values (buffer-array uint)))
-     (compute (write! (at values 0) 1)))\n")
-
 (define corner
   "(graphics-material Corner
      (outputs (color vec4))
@@ -60,14 +54,7 @@
                      (sampler border #:address clamp-to-border)
                      (material m Corner)
                      (draw d t m 3))")
-   "border")
-  (check-not-on-web
-   (string-append fill
-                  "(graph G
-                     (input write cpu)
-                     (import-buffer staging uint)
-                     (cpu c write #:writes (staging)))")
-   "maps buffers"))
+   "border"))
 
 (test-case "Graphs binding arrays of textures to what isn't copied into a texture array"
   (define (graph . items)

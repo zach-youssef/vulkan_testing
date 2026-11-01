@@ -1,7 +1,7 @@
 // A render graph for WebGPU: resources, and nodes recorded in order into one command encoder a
-// frame (more where a node gathers what the GPU wrote: see execute). WebGPU synchronizes on its
-// own, so nodes run in the order they were added (which is program order, as in the Vulkan
-// RenderGraph) without declaring uses for barriers.
+// frame (more where a node gathers what the GPU wrote, as a cpu node reading buffers does: see
+// execute). WebGPU synchronizes on its own, so nodes run in the order they were added (which is
+// program order, as in the Vulkan RenderGraph) without declaring uses for barriers.
 
 import type { Context } from './context.ts';
 import {
@@ -88,7 +88,7 @@ export interface Target {
 // A node: work recorded each frame it's enabled. prepare runs first, for every node of its part of
 // the frame, before any of them is recorded (writes to buffers the queue makes before those nodes'
 // commands); submitted runs after the commands recorded are submitted. A node whose prepare needs
-// the GPU's work before it has gather, which records copies of what it
+// the GPU's work before it (a cpu node reading buffers) has gather, which records copies of what it
 // reads at the end of the frame so far: the graph then submits that and awaits gathered before
 // preparing it and the nodes after it.
 export interface Node {
@@ -598,7 +598,7 @@ export class RenderGraph {
     if (image === 'surface') {
       if (!this.inFrame || !this.surface) throw new Error('the surface is drawn outside a frame');
       if (this.surfaceExpiredBy !== null) {
-        throw new Error(`the surface is drawn both before and after node '${this.surfaceExpiredBy}', which gathers what the GPU wrote: ` +
+        throw new Error(`the surface is drawn both before and after node '${this.surfaceExpiredBy}', which gathers what the GPU wrote (a cpu node reading buffers): ` +
           'the frame waits for the GPU there, and the page shows the surface while it waits');
       }
       if (!this.surfaceView) {
@@ -1384,16 +1384,145 @@ export class DataUploadNode<T> implements Node {
   record(): void { }
 }
 
-// Work on the CPU, run in order with the GPU's (with the nodes' prepares, before their commands)
-export class CpuNode implements Node {
+// Buffers the CPU writes, mapped: each is copied into the GPU's buffer, then mapped again and
+// reused once that's done (creating more while earlier frames' copies are pending)
+class WriteStaging {
+  private free: GPUBuffer[] = [];
+  private all = new Set<GPUBuffer>();
+  private readonly device: GPUDevice;
+  private readonly label: string;
+  constructor(device: GPUDevice, label: string) {
+    this.device = device;
+    this.label = label;
+  }
+  // A mapped buffer of size bytes (its contents what it last held)
+  take(size: number): GPUBuffer {
+    const i = this.free.findIndex((b) => b.size === size);
+    if (i >= 0) return this.free.splice(i, 1)[0];
+    const b = this.device.createBuffer({ label: this.label, size, usage: 0x2 | 0x4, mappedAtCreation: true }); // MAP_WRITE | COPY_SRC
+    this.all.add(b);
+    return b;
+  }
+  // Maps a buffer whose copy was submitted again, for a later take
+  remap(b: GPUBuffer): void {
+    b.mapAsync(2 /* GPUMapMode.WRITE */).then(() => this.free.push(b), () => this.all.delete(b));
+  }
+  // Destroys a buffer taken but not submitted (its frame failed)
+  discard(b: GPUBuffer): void {
+    this.all.delete(b);
+    b.destroy();
+  }
+  destroy(): void {
+    for (const b of this.all) b.destroy();
+    this.all.clear();
+    this.free = [];
+  }
+}
+
+// An imported buffer a cpu node copies from (COPY_SRC, 0x4) or into (COPY_DST, 0x8), checked: copies
+// need the usage and sizes that are multiples of 4 bytes
+function hostCopied(graph: RenderGraph, node: string, b: GraphBuffer, usage: 0x4 | 0x8): GPUBuffer {
+  const buffer = graph.bufferOf(b);
+  if ((buffer.usage & usage) === 0) {
+    throw new Error(`cpu node ${node}: buffer ${b.name} wasn't created with GPUBufferUsage.${usage === 0x4 ? 'COPY_SRC, so it can\'t be read' : 'COPY_DST, so it can\'t be written'}`);
+  }
+  if (buffer.size % 4 !== 0) throw new Error(`cpu node ${node}: buffer ${b.name}'s size, ${buffer.size} bytes, isn't a multiple of 4, so it can't be copied`);
+  return buffer;
+}
+
+// Work on the CPU, run in order with the GPU's (with the nodes' prepares, before their commands).
+// Its work gets the bytes of the imported buffers it reads and writes, by name, each an ArrayBuffer
+// valid only during the call. One it reads holds the buffer's contents as the GPU's work before the
+// node left them: the frame is split there (gather), as native splits submissions at cpu steps. One
+// it writes is the buffer's new contents, copied into the buffer at the node's place in the frame,
+// so the GPU's work before the node sees the buffer as it was: it starts zeroed, or holds the
+// contents if the node reads the buffer too (unlike native, which writes the buffer in place).
+// Buffers it reads need GPUBufferUsage.COPY_SRC, those it writes COPY_DST.
+export class CpuNode<Buffers extends Record<string, ArrayBuffer> = Record<string, ArrayBuffer>> implements Node {
+  private readonly reading = new Map<GraphBuffer, GPUBuffer>();
+  private readonly writing = new Map<GraphBuffer, GPUBuffer>();
+  private readonly readStaging: Staging | null;
+  private readonly writeStaging: WriteStaging | null;
   readonly name: string;
-  readonly run: (frame: FrameInfo) => void;
-  constructor(name: string, run: (frame: FrameInfo) => void) {
+  readonly run: (frame: FrameInfo, buffers: Buffers) => void;
+  readonly graph: RenderGraph | null;
+  readonly reads: readonly GraphBuffer[];
+  readonly writes: readonly GraphBuffer[];
+  readonly gather?: (encoder: GPUCommandEncoder) => void;
+  readonly gathered?: () => Promise<void>;
+  constructor(name: string, run: (frame: FrameInfo, buffers: Buffers) => void,
+              graph: RenderGraph | null = null, reads: readonly GraphBuffer[] = [], writes: readonly GraphBuffer[] = []) {
+    if ((reads.length > 0 || writes.length > 0) && !graph) throw new Error(`cpu node ${name}: reading or writing buffers needs the graph`);
     this.name = name;
     this.run = run;
+    this.graph = graph;
+    this.reads = [...new Set(reads)];
+    this.writes = [...new Set(writes)];
+    const device = graph?.context.device;
+    this.readStaging = device && reads.length > 0 ? new Staging(device, `${name} reads`) : null;
+    this.writeStaging = device && writes.length > 0 ? new WriteStaging(device, `${name} writes`) : null;
+    if (reads.length > 0) {
+      this.gather = (encoder) => {
+        this.dropUnfinished();
+        for (const b of this.reads) {
+          const buffer = hostCopied(this.graph!, this.name, b, 0x4);
+          const staging = this.readStaging!.take(buffer.size);
+          this.reading.set(b, staging);
+          encoder.copyBufferToBuffer(buffer, 0, staging, 0, buffer.size);
+        }
+      };
+      this.gathered = async () => {
+        await Promise.all([...this.reading.values()].map((s) => s.mapAsync(1 /* GPUMapMode.READ */)));
+      };
+    }
+  }
+  // Returns or destroys the staging buffers of a frame that failed before using them
+  private dropUnfinished(): void {
+    for (const staging of this.reading.values()) {
+      if (staging.mapState === 'mapped') staging.unmap();
+      if (staging.mapState === 'unmapped') this.readStaging!.give(staging);
+      else staging.destroy();
+    }
+    this.reading.clear();
+    for (const staging of this.writing.values()) this.writeStaging!.discard(staging);
+    this.writing.clear();
   }
   prepare(frame: FrameInfo): void {
-    this.run(frame);
+    if (!this.gather) this.dropUnfinished();
+    const buffers: Record<string, ArrayBuffer> = {};
+    try {
+      for (const [b, staging] of this.reading) buffers[b.name] = staging.getMappedRange();
+      for (const b of this.writes) {
+        const size = hostCopied(this.graph!, this.name, b, 0x8).size;
+        const staging = this.writeStaging!.take(size);
+        this.writing.set(b, staging);
+        const bytes = new Uint8Array(staging.getMappedRange());
+        if (buffers[b.name]) bytes.set(new Uint8Array(buffers[b.name]));
+        else bytes.fill(0);
+        buffers[b.name] = bytes.buffer;
+      }
+      this.run(frame, buffers as Buffers);
+    } finally {
+      for (const staging of this.reading.values()) {
+        staging.unmap();
+        this.readStaging!.give(staging);
+      }
+      this.reading.clear();
+    }
   }
-  record(): void { }
+  record(encoder: GPUCommandEncoder): void {
+    for (const [b, staging] of this.writing) {
+      staging.unmap();
+      encoder.copyBufferToBuffer(staging, 0, this.graph!.bufferOf(b), 0, staging.size);
+    }
+  }
+  submitted(): void {
+    for (const staging of this.writing.values()) this.writeStaging!.remap(staging);
+    this.writing.clear();
+  }
+  destroy(): void {
+    this.dropUnfinished();
+    this.readStaging?.destroy();
+    this.writeStaging?.destroy();
+  }
 }

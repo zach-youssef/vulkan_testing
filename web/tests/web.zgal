@@ -338,3 +338,31 @@
   (cpu ticking tick)
   (extern added more 7)
   (readback readLast sums))
+
+;; cpu nodes on imported buffers: the CPU's writes reach the GPU in graph order (a copy before the
+;; node gets the buffer as it was), and its reads see what the GPU wrote earlier in the frame
+(graph CpuBuffers
+  (input paint cpu)
+  (input inspect cpu)
+  (input after (per-frame uint))
+  (import-buffer staging uint)
+  (import-buffer results uint)
+  (import-buffer doubled uint)
+  (image picture rgba8 (fixed 2 2) #:frames shared)
+  (buffer before uint 4 #:frames shared)
+  (buffer sums uint 4 #:frames shared)
+  (copy keepBefore staging before)
+  (cpu painting paint #:writes (staging))
+  (copy toPicture staging picture)
+  (readback readBefore before)
+  (readback readPicture picture)
+  (material bump Bump (sums sums) #:push ((first 0) (amount 3)))
+  (clear zero sums)
+  (dispatch bumpAll bump #:invocations (4))
+  (copy toResults sums results)
+  (cpu inspecting inspect #:reads (results) #:writes (results doubled))
+  (copy fromDoubled doubled sums)
+  ;; Prepared after inspecting ran, so it adds what inspect set
+  (dispatch bumpAfter bump #:push ((amount after)) #:invocations (4))
+  (readback readSums sums)
+  (readback readResults results))

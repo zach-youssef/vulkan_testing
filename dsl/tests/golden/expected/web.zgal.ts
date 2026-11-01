@@ -612,6 +612,47 @@ export class Tallying {
   }
 }
 
+// graph Staged: build() adds its resources, materials and nodes to a RenderGraph
+export interface StagedInputs {
+  fill: (frame: zgal.FrameInfo, buffers: { staging?: ArrayBuffer; results?: ArrayBuffer }) => void;
+  staging: GPUBuffer;
+  results: GPUBuffer;
+}
+
+export class Staged {
+  images: {} = {} as Staged['images'];
+  buffers: { staging: zgal.GraphBuffer; results: zgal.GraphBuffer } = {} as Staged['buffers'];
+  nodes: { tick: zgal.NodeId; filling: zgal.NodeId; checking: zgal.NodeId } = {} as Staged['nodes'];
+
+  // Adds the graph's resources, materials and nodes to `graph`. Its materials and nodes keep
+  // the inputs' functions, so whatever those use must outlive the graph.
+  static async build(context: zgal.Context, graph: zgal.RenderGraph, inputs: StagedInputs): Promise<Staged> {
+    const result = new Staged();
+    const need = <T>(x: T | undefined, what: string): T => {
+      if (x === undefined) throw new Error(`Staged: ${what} isn't created (its #:when is false)`);
+      return x;
+    };
+    void need;
+    const buffer_staging = graph.importBuffer('staging', zgal.uint, inputs.staging);
+    result.buffers.staging = buffer_staging;
+    const buffer_results = graph.importBuffer('results', zgal.uint, inputs.results);
+    result.buffers.results = buffer_results;
+    {
+      const node = graph.add(new zgal.CpuNode('tick', inputs.fill));
+      result.nodes.tick = node;
+    }
+    {
+      const node = graph.add(new zgal.CpuNode('filling', inputs.fill, graph, [], [buffer_staging]));
+      result.nodes.filling = node;
+    }
+    {
+      const node = graph.add(new zgal.CpuNode('checking', inputs.fill, graph, [buffer_results], [buffer_staging]));
+      result.nodes.checking = node;
+    }
+    return result;
+  }
+}
+
 // app Counter: its state, the handlers computing the next one, and graph Tallying
 export interface CounterState {
   rounds: number;

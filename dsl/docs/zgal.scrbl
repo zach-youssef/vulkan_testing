@@ -2397,10 +2397,26 @@ models and meshes: the runtime loads glTF (@tt{.gltf}, @tt{.glb}) and OBJ files 
 C++ does, and a meshes input is an array of the runtime's @tt{Mesh}es, which @tt{createMesh} makes
 from vertices @tt{encodeVertices} lays out as the module's vertex format descriptions (a constant
 per vertex format) say. What a program's own code gives the app goes through
-@tt{mainInputs} on the web too (@secref["main-inputs"]). WebGPU's samplers have no border colour, and its buffers can't be
-mapped while the GPU uses them, so samplers clamping to a border and cpu nodes reading or writing
-imported buffers can't be either. Compiling any of them for the web reports
+@tt{mainInputs} on the web too (@secref["main-inputs"]). WebGPU's samplers have no border colour, so
+compiling a sampler clamping to one for the web reports
 @secref["error-not-on-web"].
+
+A @racket[cpu] node reading or writing imported buffers runs on the web too, though WebGPU's
+buffers can't be mapped while the GPU uses them: its cpu input is
+@tt{(frame: zgal.FrameInfo, buffers: { name: ArrayBuffer; ... }) => void}, given the bytes of each
+buffer in its @tt{#:reads} and @tt{#:writes} by name (a name optional where other nodes run the
+same input without that buffer), each valid only during the call. A buffer it reads holds what the
+GPU's work before the node left in it: the runtime submits the frame so far there, as native
+submits at cpu steps, copies the buffer into a staging buffer and waits for it, so each such node
+adds a submission and a wait to the frame. A buffer it only writes starts zeroed and replaces the
+buffer's whole contents (list it in @tt{#:reads} too to start from them), copied into it at the
+node's place in the frame, so the GPU's work before the node sees the buffer as it was. This
+differs from native, which maps the buffer and writes it in place, keeping the bytes the function
+leaves alone: a function writing only part of a buffer reads it too, to behave the same on both. The
+application creates the buffers with @tt{COPY_SRC} for reads and @tt{COPY_DST} for writes, with
+sizes that are multiples of 4 bytes. A
+windowed graph can't draw to the surface both before and after a node reading buffers, as the page
+shows the surface while the frame waits.
 
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "errors"]{Errors}
@@ -2545,7 +2561,8 @@ This document is part of the language: change it in the same commit as the compi
        expressions WGSL spells differently, draws with depth tests, functions storing into the
        images they're given), and generated graphs run as
        the C++ ones do (loops, conditions, enables and once nodes, per-frame inputs, uploads,
-       copies, buffer files, cpu and extern nodes), functions compute what the GPU and C++ do,
+       copies, buffer files, cpu nodes (also reading and writing imported buffers, in graph order)
+       and extern nodes), functions compute what the GPU and C++ do,
        and apps handle events, effects, read events, externs and phases as C++ apps do, without
        WebGPU errors. @tt{make test-web} then builds the particles example for the web and runs it
        under Node.}

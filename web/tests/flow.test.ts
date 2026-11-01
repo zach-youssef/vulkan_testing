@@ -1,5 +1,6 @@
 // How generated graphs run on the web: loops of nodes, conditions, enables, once nodes, buffers
-// sized each frame, copies, per-frame data uploads, buffer files, and cpu and extern nodes
+// sized each frame, copies, per-frame data uploads, buffer files, and cpu (also on imported
+// buffers) and extern nodes
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,7 @@ import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
-import { Flow, Bump } from '../web.zgal.ts';
+import { Flow, Bump, CpuBuffers } from '../web.zgal.ts';
 
 const assets = mkdtempSync(join(tmpdir(), 'zgal-web-'));
 let context: zgal.Context;
@@ -136,6 +137,58 @@ test('buffer files hold their files\' elements in order', async () => {
   await graph.execute();
   assert.deepEqual(await result.readSavedContents(graph), [1, 2, 3, 4]);
   graph.destroy();
+});
+
+test('cpu nodes write imported buffers in graph order, and read what the GPU wrote before them', async () => {
+  const graph = new zgal.RenderGraph(context);
+  const imported = (label: string) =>
+    context.device.createBuffer({ label, size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+  const staging = imported('staging');
+  const results = imported('results');
+  const doubled = imported('doubled');
+  const painted = (frame: number) => [0x04030201, 0x08070605, 0x0c0b0a09, 0x100f0e0d].map((v) => v + frame * 0x10101010);
+  const seen: number[][] = [];
+  let after = 0;
+  const result = await CpuBuffers.build(context, graph, {
+    staging,
+    results,
+    doubled,
+    after: () => after,
+    paint: (frame, buffers) => {
+      // Write-only: it starts zeroed
+      assert.deepEqual([...new Uint32Array(buffers.staging)], [0, 0, 0, 0]);
+      new Uint32Array(buffers.staging).set(painted(frame.frameNumber));
+    },
+    inspect: (_, buffers) => {
+      // results, read and written, holds the buffer's contents; doubled, only written, is zeroed
+      const read = new Uint32Array(buffers.results);
+      seen.push([...read]);
+      assert.deepEqual([...new Uint32Array(buffers.doubled)], [0, 0, 0, 0]);
+      new Uint32Array(buffers.doubled).set(read.map((v) => v * 2));
+      read.set(read.map((v) => v + 1));
+      after = 10 + seen.length;
+    },
+  });
+
+  await graph.execute();
+  // One split, at the node reading
+  assert.equal(graph.submissionCount(), 2);
+  // keepBefore copied staging before painting wrote it; toPicture after
+  assert.deepEqual(await result.readBeforeContents(graph), [0, 0, 0, 0]);
+  assert.deepEqual([...(await result.readPicturePixels(graph))], [...new Uint8Array(new Uint32Array(painted(0)).buffer)]);
+  // inspecting saw the dispatch's sums, and its doubles were copied back into them; bumpAfter,
+  // prepared after inspecting, added the amount it set
+  assert.deepEqual(seen, [[3, 3, 3, 3]]);
+  assert.deepEqual(await result.readSumsContents(graph), [17, 17, 17, 17]);
+  assert.deepEqual(await result.readResultsContents(graph), [4, 4, 4, 4]);
+
+  await graph.execute();
+  assert.deepEqual(await result.readBeforeContents(graph), painted(0));
+  assert.deepEqual([...(await result.readPicturePixels(graph))], [...new Uint8Array(new Uint32Array(painted(1)).buffer)]);
+  assert.deepEqual(seen, [[3, 3, 3, 3], [3, 3, 3, 3]]);
+  assert.deepEqual(await result.readSumsContents(graph), [18, 18, 18, 18]);
+  graph.destroy();
+  for (const b of [staging, results, doubled]) b.destroy();
 });
 
 test('WebGPU reports no validation errors', async () => {
