@@ -1,8 +1,9 @@
 #lang racket/base
 ;; What compiling for the web reports that Vulkan allows (not-on-web): what WebGPU can't do, and what
-;; the web backend doesn't do yet
+;; the web backend doesn't do yet; and how it compiles what some WebGPU implementations refuse
 
-(require racket/string
+(require racket/list
+         racket/string
          rackunit
          "../compile.rkt"
          "util.rkt")
@@ -80,3 +81,32 @@
                     "the same #:color")
   (check-not-on-web (graph "(import-images given #:resting shader-read-only)" "(material m Layered (layers given) counts)")
                     "can't be imported"))
+
+;; The WGSL compiling text for the web gives for shader `name` (e.g. "Stamp.comp.wgsl")
+(define (web-shader text name)
+  (define-values (_prog outputs)
+    (compile-zgal "test.zgal" #:text text #:read-body (λ (path) #f) #:native? #f #:web-dir "out/web"))
+  (output-text (findf (λ (o) (string-suffix? (output-path o) name)) outputs)))
+
+(test-case "Functions with storage image parameters are inlined: Firefox's naga refuses them as WGSL parameters"
+  (define wgsl
+    (web-shader
+     "(define (paint [image : image2D] [at : ivec2] [shade : float]) : void
+        (store! image at (vec4 shade)))
+      ;; Passes its image on
+      (define (paintPair [image : image2D] [at : ivec2]) : void
+        (paint image at 0.5)
+        (paint image (+ at (ivec2 1 0)) 1.0))
+      (compute-material Stamp
+        (workgroup 1)
+        (bindings (first (storage-image write)) (second (storage-image write)))
+        (compute
+          (paint first (ivec2 0 0) 0.25)
+          (paint second (ivec2 0 0) 0.75)
+          (paintPair second (ivec2 0 1))))"
+     "Stamp.comp.wgsl"))
+  (with-check-info (['wgsl wgsl])
+    (check-false (string-contains? wgsl "fn paint"))
+    (check-false (regexp-match? #rx"[(,] *[a-zA-Z_0-9]+: texture_storage" wgsl))
+    (check-equal? (length (regexp-match* #rx"textureStore\\(first, " wgsl)) 1)
+    (check-equal? (length (regexp-match* #rx"textureStore\\(second, " wgsl)) 3)))

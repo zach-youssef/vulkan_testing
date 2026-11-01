@@ -1088,13 +1088,16 @@
     (set! n (add1 n))
     (format "zgal~a~a" (string-titlecase base) n)))
 
-;; A function's parameter types: textures and samplers it compares depths with are depth ones
+;; A function's parameter types: textures and samplers it compares depths with are depth ones.
+;; Functions with image2D parameters never get here: the checker inlines them where they're called
+;; (body.rkt's inline-function?), which WGSL needs too, as Firefox's naga rejects storage textures
+;; as parameters
 (define (parameter-type st f name t)
   (define depth? (set-member? (depth-names (function-decl-body f) (state-functions st)) name))
   (match t
     [(opaque-t 'texture2D) (if depth? "texture_depth_2d" "texture_2d<f32>")]
     [(opaque-t 'sampler) (if depth? "sampler_comparison" "sampler")]
-    [(opaque-t k) (web-error (function-decl-loc f) "~a's parameter ~a is ~a, which WGSL functions can't take" (function-decl-name f) name k)]
+    [(opaque-t k) (error 'parameter-type "~a's parameter ~a is ~a, which should have been inlined" (function-decl-name f) name k)]
     [_ (wgsl-type t (function-decl-loc f))]))
 
 (define (emit-function st f)

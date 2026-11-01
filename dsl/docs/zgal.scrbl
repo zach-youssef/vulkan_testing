@@ -866,9 +866,9 @@ the generated header, so the CPU computes the same thing. The scene example's @t
 @tt{sunDirection} this way. C++ evaluates them with the CPU's floating point, so results agree to
 the GPU's precision, and integer arithmetic exactly.
 
-Metal (through MoltenVK) can't pass storage images to functions, so a function with an
-@tt{image2D} parameter is inlined where it's called, its locals renamed so they can't clash with
-the caller's.
+Metal (through MoltenVK) can't pass storage images to functions, nor can WGSL in Firefox (whose
+naga refuses storage texture parameters), so a function with an @tt{image2D} parameter is inlined
+where it's called, its locals renamed so they can't clash with the caller's.
 
 @subsubsection[#:tag "material-functions"]{Materials' functions}
 
@@ -2536,7 +2536,8 @@ This document is part of the language: change it in the same commit as the compi
        command line, the golden and examples' WGSL modules through Dawn, and the golden
        TypeScript through @tt{tsc} (@tt{web/}, whose packages @tt{make test-dsl} installs with
        @tt{npm ci}).}
- @item{@tt{dsl/tests/web-test.rkt}: what compiling for the web reports that Vulkan allows.}
+ @item{@tt{dsl/tests/web-test.rkt}: what compiling for the web reports that Vulkan allows, and
+       that functions with @tt{image2D} parameters reach WGSL inlined.}
  @item{@tt{web/tests}: @tt{web.zgal} and @tt{apps.zgal} compiled to TypeScript and WGSL and run on Dawn under Node
        (@tt{make test-web}, which type checks it first): the generated WGSL computes what the GLSL
        would (layouts of small integers, shared memory, emulated atomics and subgroup scans,
