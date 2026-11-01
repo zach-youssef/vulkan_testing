@@ -1,0 +1,54 @@
+<!doctype html>
+<!-- The image decoder (zgal/image-decode.ts, stb_image built to WebAssembly) in a browser: it's
+     fetched and decodes the test images to exactly the bytes native stb_image gives, which
+     make test-pages dumps beside them (assets/<image>.rgba, from web/decode/tests/stb_dump.cpp), as
+     make test-decode checks under Node. Needs no WebGPU. Checked by make test-pages
+     (web/tools/chromium.ts and firefox.ts); the page's state is in <html data-zgal>. Served from
+     build/web/tests, beside particles/ (whose runtime it uses) and assets/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL image decoder test</title>
+</head>
+<body>
+<pre id="zgal-message"></pre>
+<script type="module">
+import { ImageDecoder } from '../particles/zgal/image-decode.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+
+async function bytes(path) {
+  const response = await fetch(new URL(`assets/${path}`, import.meta.url));
+  if (!response.ok) throw new Error(`${path}: ${response.status} ${response.statusText}`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+try {
+  const decoder = await ImageDecoder.load(new URL('assets/stb_image.wasm', import.meta.url));
+  for (const image of ['texture.jpg', 'texels.png', 'input.png']) {
+    const got = decoder.decode(await bytes(image));
+    const dump = await bytes(`${image}.rgba`);
+    const header = new DataView(dump.buffer, 0, 8);
+    const size = [header.getUint32(0, true), header.getUint32(4, true)];
+    if (got.width !== size[0] || got.height !== size[1]) throw new Error(`${image} decoded at ${got.width}x${got.height}, natively ${size.join('x')}`);
+    const native = dump.subarray(8);
+    const at = got.rgba.findIndex((value, i) => value !== native[i]);
+    if (got.rgba.length !== native.length || at !== -1) throw new Error(`${image}'s pixels differ from native's (first at byte ${at})`);
+  }
+  let reason = '';
+  try {
+    decoder.decode(new Uint8Array(16));
+  } catch (error) {
+    reason = error.message;
+  }
+  if (reason !== 'can\'t decode the image: unknown image type') throw new Error(`a file that isn't an image gave "${reason}"`);
+  log('images decoded as natively');
+  document.documentElement.dataset.zgal = 'stopped';
+} catch (error) {
+  log(error instanceof Error ? error.message : String(error));
+  document.documentElement.dataset.zgal = 'failed';
+}
+</script>
+</body>
+</html>

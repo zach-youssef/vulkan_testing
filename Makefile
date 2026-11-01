@@ -346,9 +346,11 @@ test-decode-steps:
 # compared with the approved one), embedding programs (web/tests/mount.html), loading image files
 # (web/tests/image-file.html), the compute library (web/tests/kernels.html), indirect work
 # (web/tests/indirect.html), models (web/tests/models.html), programs without a window
-# (web/tests/headless.html) and functions storing into images they're given (web/tests/stamps.html),
-# with web/tests' graphs built into graphs/, in each of BROWSERS: by default only headless Chromium on SwiftShader. Firefox opens
-# windows (it has no WebGPU adapter headless, nor any on Linux), so it runs only when asked:
+# (web/tests/headless.html), functions storing into images they're given (web/tests/stamps.html)
+# and the image decoder (web/tests/image-decode.html, comparing with native decodes stb_dump saves
+# beside the images), with web/tests' graphs built into graphs/, in each of BROWSERS: by default
+# only headless Chromium on SwiftShader. Firefox opens windows (it has no WebGPU adapter headless,
+# nor any on Linux), so it runs only when asked:
 # make test-pages BROWSERS="chromium firefox" (or test-web, or test), as the pre-push check of a
 # stack's top does. A browser found nowhere is skipped (the tools exit with 3) with a note in the
 # summary, unless BROWSERS was given on the command line (or with make -e): then it fails. One named
@@ -356,7 +358,7 @@ test-decode-steps:
 BROWSERS = chromium
 BROWSERS_REQUIRED = $(if $(filter command line environment override,$(origin BROWSERS)),1)
 TEST_PAGES = $(OUT)/web/tests
-test-pages: web
+test-pages: web $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-pages-steps
 
 test-pages-steps:
@@ -365,6 +367,8 @@ test-pages-steps:
 	cp $(WEB_DIR)/tests/*.html $(TEST_PAGES)/
 	cp $(WEB_DIR)/tests/assets/texels.png $(SIMPLE_DIR)/textures/texture.jpg $(MODEL_ASSETS) $(TEST_PAGES)/assets/
 	cp $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/assets/
+	cp $(ZGAL_DECODE_WASM) $(TEST_PAGES)/assets/
+	for f in texels.png texture.jpg input.png; do $(ZGAL_DECODE_NATIVE) $(TEST_PAGES)/assets/$$f $(TEST_PAGES)/assets/$$f.rgba || exit 1; done
 	for f in $(WEB_DIR)/tests/*.zgal; do $(ZGAL) --web-out $(TEST_PAGES)/graphs/src $$f || exit 1; done
 	cp -R $(WEB_DIR)/zgal $(TEST_PAGES)/graphs/src/zgal
 	cp $(WEB_DIR)/program.tsconfig.json $(TEST_PAGES)/graphs/src/tsconfig.json
@@ -384,7 +388,7 @@ test-pages-steps:
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/blur_edges-$$browser.png \
 	    'image_filter/image_filter.zgal.html?arg=/tests/assets/input.png&arg=out.png&blur=2&edges' || exit 1; \
 	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/blur_edges-$$browser.png 2 || exit 1; \
-	  for page in mount image-file kernels indirect models headless stamps; do \
+	  for page in mount image-file image-decode kernels indirect models headless stamps; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \
 	done

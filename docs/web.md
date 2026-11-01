@@ -43,6 +43,8 @@ and PNM; HDR files fail, where native converts them). Image loading doesn't use 
   makes, and damaged files, with the wasm and with `web/decode/tests/stb_dump.cpp` (native
   `stbi_load`), and requires the same bytes or the same failure. CI's runner is x86-64, so the
   native helper takes stb_image's SSE2 JPEG path, which CI checks too.
+- `make test-pages` loads it in browsers: `web/tests/image-decode.html` fetches the wasm and checks
+  the JPEG and two PNGs against native decodes `stb_dump` saves beside them.
 
 ## Tests
 
@@ -62,9 +64,9 @@ then:
 3. runs `make test-pages`: the particles and scene pages, image_filter's page (run from its query
    string, its capture saved with the checkers' `--save-capture` and compared with
    `blur_edges.approved.png`), `web/tests/mount.html` (mounts two programs and stops one),
-   `web/tests/image-file.html`, the kernels, indirect and models pages, and
-   `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main) and
-   `web/tests/stamps.html` (functions storing into the storage images they're given),
+   `web/tests/image-file.html`, `web/tests/image-decode.html`, the kernels, indirect and models
+   pages, and `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main)
+   and `web/tests/stamps.html` (functions storing into the storage images they're given),
    in each browser of `BROWSERS`: by default only headless Chromium. Firefox opens windows, so it
    runs only when asked, `make test-web BROWSERS="chromium firefox"` (as before pushing a stack's
    top), and has no WebGPU on Linux (CI skips it). A browser found nowhere is skipped (Chromium is
