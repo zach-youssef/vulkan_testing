@@ -339,6 +339,14 @@
   (extern added more 7)
   (readback readLast sums))
 
+;; A buffer file read only when its condition holds, so its file may be missing otherwise, and a
+;; node using it under the same condition
+(graph OptionalSaved
+  (parameter withSaved bool)
+  (input savedPath path)
+  (buffer-file saved uint savedPath #:when withSaved)
+  (readback readSaved saved #:when withSaved))
+
 ;; cpu nodes on imported buffers: the CPU's writes reach the GPU in graph order (a copy before the
 ;; node gets the buffer as it was), and its reads see what the GPU wrote earlier in the frame
 (graph CpuBuffers

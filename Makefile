@@ -257,6 +257,9 @@ test-main-steps:
 	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/out.png --level 0.5 --side 6 --frames 3 --validation
 	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/main/painted.approved.png $(MAIN_TEST_OUT)/out.png 0
 	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/timed.png --frames 2 --timings --validation | grep -q "^painting "
+	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/out.png --marks-file $(MAIN_TEST_OUT)/missing.bin > /dev/null 2>&1; test $$? -eq 1
+	printf '\005\000\000\000\007\000\000\000' > $(MAIN_TEST_OUT)/marks.bin
+	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/marked.png --marks-file $(MAIN_TEST_OUT)/marks.bin --frames 10 --validation | grep -qx "marks 5 7"
 
 # The benchmark (tools/bench): ZGAL's library kernels and fallbacks at a size the command line gives.
 #   make bench                         - builds build/tools/bench/bench
@@ -323,6 +326,9 @@ test-web-steps:
 	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js $(TEST_DIR)/gpu/assets/missing.png $(MAIN_TEST_WEB)/out.png > /dev/null 2>&1; test $$? -eq 1
 	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_WEB)/out.png --level 0.5 --side 6 --frames 3 | grep -qx "level 0.25"
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/main/painted.approved.png $(MAIN_TEST_WEB)/out.png 0
+	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_WEB)/out.png --marks-file $(MAIN_TEST_WEB)/missing.bin > /dev/null 2>&1; test $$? -eq 1
+	printf '\005\000\000\000\007\000\000\000' > $(MAIN_TEST_WEB)/marks.bin
+	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_WEB)/marked.png --marks-file $(MAIN_TEST_WEB)/marks.bin --frames 10 | grep -qx "marks 5 7"
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png 1
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/blur_edges.png --blur 2 --edges

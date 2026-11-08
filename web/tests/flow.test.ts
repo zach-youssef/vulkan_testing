@@ -1,5 +1,5 @@
 // How generated graphs run on the web: loops of nodes, conditions, enables, once nodes, buffers
-// sized each frame, copies, per-frame data uploads, buffer files, and cpu (also on imported
+// sized each frame, copies, per-frame data uploads, buffer files (also conditional ones), and cpu (also on imported
 // buffers) and extern nodes
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
-import { Flow, Bump, CpuBuffers } from '../web.zgal.ts';
+import { Flow, Bump, CpuBuffers, OptionalSaved } from '../web.zgal.ts';
 
 const assets = mkdtempSync(join(tmpdir(), 'zgal-web-'));
 let context: zgal.Context;
@@ -137,6 +137,27 @@ test('buffer files hold their files\' elements in order', async () => {
   await graph.execute();
   assert.deepEqual(await result.readSavedContents(graph), [1, 2, 3, 4]);
   graph.destroy();
+});
+
+test('a buffer file with #:when is read only when its condition holds', async () => {
+  // Without, the file isn't read, so it may be missing, and neither the buffer nor its readback exists
+  const without = new zgal.RenderGraph(context);
+  const off = await OptionalSaved.build(context, without, { withSaved: false, savedPath: 'missing.bin' });
+  assert.equal(off.buffers.saved, undefined);
+  assert.equal(off.nodes.readSaved, undefined);
+  await without.execute();
+  without.destroy();
+
+  const withFile = new zgal.RenderGraph(context);
+  const on = await OptionalSaved.build(context, withFile, { withSaved: true, savedPath: 'saved.bin' });
+  assert.notEqual(on.buffers.saved, undefined);
+  await withFile.execute();
+  assert.deepEqual(await on.readSavedContents(withFile), [1, 2, 3]);
+  withFile.destroy();
+
+  const missing = new zgal.RenderGraph(context);
+  await assert.rejects(OptionalSaved.build(context, missing, { withSaved: true, savedPath: 'missing.bin' }), /missing\.bin/);
+  missing.destroy();
 });
 
 test('cpu nodes write imported buffers in graph order, and read what the GPU wrote before them', async () => {

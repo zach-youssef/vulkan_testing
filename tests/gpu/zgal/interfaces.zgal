@@ -500,6 +500,14 @@
   (dispatch doubleFirsts doubling)
   (readback pairsRead pairs))
 
+;; The pairs only when a parameter says: otherwise the file isn't read, so it may be missing, and
+;; what uses them has the same condition
+(graph OptionalBufferFile (parameter loaded bool) (input dump path)
+  (buffer-file pairs FilePair dump #:when loaded)
+  (material doubling DoubleFirsts pairs #:push ((count 2)) #:invocations (2) #:when loaded)
+  (dispatch doubleFirsts doubling #:when loaded)
+  (readback pairsRead pairs #:when loaded))
+
 ;; An app choosing ImageFiles' file from its parameter, as a generated main's option would
 (app PickFile
   (parameter picked path)

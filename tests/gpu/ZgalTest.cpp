@@ -223,6 +223,26 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL buffer files hold their files' elements in orde
     RenderGraph missing(ctx);
     CHECK_ERROR(BufferFiles::build(ctx, missing, BufferFiles::Inputs{.dump = two, .more = "missing.bin"}), ErrorCode::NotFound,
                 "Asset 'missing.bin' not found");
+
+    // With #:when, the file is read only when the condition holds: otherwise it may be missing, and
+    // neither the buffer nor what uses it is created
+    RenderGraph without(ctx);
+    auto withoutIds = OptionalBufferFile::build(ctx, without, OptionalBufferFile::Inputs{.loaded = false, .dump = "missing.bin"}).value();
+    CHECK_FALSE(withoutIds.buffers.pairs.has_value());
+    CHECK_FALSE(withoutIds.nodes.pairsRead.has_value());
+    without.execute().value();
+    RenderGraph with(ctx);
+    auto withIds = OptionalBufferFile::build(ctx, with, OptionalBufferFile::Inputs{.loaded = true, .dump = two}).value();
+    REQUIRE(withIds.buffers.pairs.has_value());
+    with.execute().value();
+    const auto loaded = withIds.pairsReadContents(with).value();
+    REQUIRE(loaded.size() == 2);
+    CHECK(loaded[0].first == 2);
+    CHECK(loaded[1].first == 6);
+    CHECK(loaded[1].second == 4);
+    RenderGraph absent(ctx);
+    CHECK_ERROR(OptionalBufferFile::build(ctx, absent, OptionalBufferFile::Inputs{.loaded = true, .dump = "missing.bin"}),
+                ErrorCode::NotFound, "Asset 'missing.bin' not found");
     ctx.waitIdleAll();
     std::filesystem::remove_all(directory);
 }

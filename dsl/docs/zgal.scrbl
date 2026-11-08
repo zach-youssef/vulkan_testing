@@ -2564,7 +2564,8 @@ This document is part of the language: change it in the same commit as the compi
        expressions WGSL spells differently, draws with depth tests, functions storing into the
        images they're given), and generated graphs run as
        the C++ ones do (loops, conditions, enables and once nodes, per-frame inputs, uploads,
-       copies, buffer files, cpu nodes (also reading and writing imported buffers, in graph order)
+       copies, buffer files (also conditional ones), cpu nodes (also reading and writing imported
+       buffers, in graph order)
        and extern nodes), functions compute what the GPU and C++ do,
        and apps handle events, effects, read events, externs and phases as C++ apps do, without
        WebGPU errors. @tt{make test-web} then builds the particles example for the web and runs it

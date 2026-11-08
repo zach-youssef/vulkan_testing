@@ -1,7 +1,8 @@
 ;; A program with a generated main (make test-main): options set the app's parameters, C++ gives the
 ;; rest (painter.cpp), and it writes its capture where the command line says. It paints a square the
 ;; size --side says, red as --level says (scaled by what C++ gives), with a band of the input image's
-;; first texel, after counting the data C++ gives.
+;; first texel, after counting the data C++ gives. With --marks-file it also reads that file of
+;; uints back (a buffer file read only when the option is given) and prints its first two.
 
 (compute-material Paint
   (workgroup 8 8)
@@ -23,12 +24,16 @@
   (parameter side uint)
   (input file path)
   (input marks (data uint))
+  (parameter withMarksFile bool)
+  (input marksFile path)
   (image-file picture file #:color linear)
+  (buffer-file savedMarks uint marksFile #:when withMarksFile)
   (sampler pick #:filter nearest)
   (image canvas rgba8 (fixed side side) #:frames shared)
   (material paint Paint picture pick canvas #:push ((level level) (side side)) #:invocations (side side))
   (dispatch painting paint)
-  (readback result canvas))
+  (readback result canvas)
+  (readback readSavedMarks savedMarks #:when withMarksFile))
 
 (app Painter
   (parameter level float)
@@ -36,13 +41,17 @@
   (parameter source path)
   (parameter destination path)
   (parameter scale float)
+  (parameter marksFile path)
+  (parameter hasMarksFile bool)
   (extern (note [level : float]) : float)
-  (run Painting (level (note (* level scale))) (side side) (file source)))
+  (on (read readSavedMarks marks) (print! "marks " (at marks 0) " " (at marks 1)))
+  (run Painting (level (note (* level scale))) (side side) (file source) (withMarksFile hasMarksFile) (marksFile marksFile)))
 
 (main Painter
   (about "Paints a square")
   (option level "--level" "how red" #:default 1.0 #:range (0.0 1.0))
   (option side "--side" "the square's side, in pixels" #:default 4 #:range (1 64))
+  (option marksFile "--marks-file" "a file of uints to read back" #:default "" #:given hasMarksFile)
   (positional source "an image, whose first texel is the top row")
   (positional destination "the PNG file to write")
   (capture result #:to destination))
