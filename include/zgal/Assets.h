@@ -4,6 +4,7 @@
 #include "core/VulkanContext.h"
 #include "graph/RenderGraph.h"
 #include "resources/Model.h"
+#include "zgal/Stream.h"
 
 #include <filesystem>
 #include <map>
@@ -20,6 +21,16 @@ Result<Model> loadModel(VulkanContext& context, const std::filesystem::path& pat
     TRY_ASSIGN(auto found, context.findAsset(path).withContext(loading));
     TRY_ASSIGN(auto data, ModelData::load(found).withContext(loading));
     return uploadModel<Vertex>(context, data, &Vertex::fromModel).withContext(loading + " ('" + found.string() + "')");
+}
+
+// The opener a program usually gives a stream input (a stream-buffer's): the file at path, found
+// with VulkanContext::findAsset as other assets are, and read with fileStream. A file that isn't
+// found fails with ErrorCode::NotFound. The opener uses context, which must outlive it.
+inline StreamOpener assetStream(const VulkanContext& context) {
+    return [&context](const std::filesystem::path& path) -> Result<Stream> {
+        TRY_ASSIGN(auto found, context.findAsset(path));
+        return fileStream(found);
+    };
 }
 
 // Imports images (e.g. a model's textures, which materials share) into a graph, each distinct image

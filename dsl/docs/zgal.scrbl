@@ -277,6 +277,35 @@ ZGAL
 ZGAL
    )
 
+@(define stream-buffer-source #<<ZGAL
+(struct SceneHeader (magic uint) (words uint) (count uint))
+
+(compute-material Shade
+  (workgroup 64)
+  (bindings (scene (buffer-array uint)) (colors (buffer-array uint)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (write! (at colors i) (at scene (+ 3 i)))))))
+
+(graph Scene
+  (input open (stream SceneHeader))           ; C++ gives zgal::assetStream(context), or its own
+  (input file path)
+  ;; The whole file, header included, 1 MiB a frame
+  (stream-buffer scene open file #:words (.words (stream-header scene)) #:per-frame 1048576)
+  (constant count (.count (stream-header scene)))
+  (buffer colors uint count #:frames shared)
+  (material shading Shade scene colors #:push ((count count)) #:invocations (count))
+  (dispatch shade shading))
+
+(app Viewer
+  (state (loaded float 0))
+  (on (streamed scene arrived total) (with state #:loaded (/ (float arrived) (float total))))
+  (run Scene))
+ZGAL
+   )
+
 @(define model-source #<<ZGAL
 (vertex-format Vertex
   (position vec3)
@@ -965,7 +994,7 @@ Its app (@secref["apps"]) computes the uniforms, shadows and exposure from its s
 and C++ supplies the meshes.
 
 @racketgrammar*[
- #:literals (graph parameter input per-frame data meshes cpu extern path import-image import-images image-file buffer-file model import-buffer upload
+ #:literals (graph parameter input per-frame data meshes cpu extern path stream import-image import-images image-file buffer-file stream-buffer model import-buffer upload
              constant sampler uniform image buffer target surface attachments if color depth material
              dispatch draw-meshes draw readback copy clear fixed extent-of reduce inclusive-scan
              exclusive-scan sort at add min max for range)
@@ -978,10 +1007,12 @@ and C++ supplies the meshes.
              (input name (data type))
              (input name (per-frame (data type)))
              (input name path)
+             (input name (stream header-type))
              (import-image name #:resting resting-state)
              (import-images name #:resting resting-state)
              (image-file name asset #:color color-space)
              (buffer-file name type asset ...+ maybe-when)
+             (stream-buffer name stream-input asset #:words expression #:per-frame expression)
              (model name asset Format model-option ...)
              (import-buffer name type)
              (upload name data-input)
@@ -1055,6 +1086,7 @@ C++ passes them to @tt{build()} in an @tt{Inputs} struct, by name:
   (list @tt{(input n (data T))} @tt{std::vector<T>} @elem{elements an @racket[upload] puts in a buffer when the graph is built, e.g. a model or a data structure the CPU computed})
   (list @tt{(input n (per-frame (data T)))} @tt{zgal::FrameSource<zgal::Data<T>>} @elem{elements each frame, e.g. an app's @racket[(data T)] state: an @racket[upload] of them is a buffer per frame in flight, sized to them and filled again when they change})
   (list @tt{(input n path)} @tt{std::filesystem::path} @elem{where an asset is, e.g. an @racket[image-file]'s (@secref["assets"])})
+  (list @tt{(input n (stream H))} @tt{zgal::StreamOpener} @elem{a function opening a @racket[stream-buffer]'s stream at its asset's path, whose header is an @tt{H} (@secref["assets"])})
   (list @tt{(import-image n #:resting s)} @tt{FrameBinding<Image>} "an image the application owns, returned to its resting state (shader-read-only, general or transfer-src) after each frame")
   (list @tt{(import-images n #:resting s)} @tt{std::vector<FrameBinding<Image>>} @elem{images the application owns, as many as it gives, imported one by one, for an @racket[array] binding (@secref["arrays"]): e.g. textures loaded from files})
   (list @tt{(import-buffer n T)} @tt{FrameBinding<Buffer<T>>} "a buffer the application owns (and fills, maps or reads), with the usage its uses need, one or one per frame"))]
@@ -1098,6 +1130,38 @@ be missing otherwise.
 
 @(zgal-example buffer-file-source)
 @(generated-file buffer-file-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto file_sprites" #:to #rx"result.buffers.sprites")
+
+@racket[(stream-buffer name stream-input asset #:words words #:per-frame bytes)] is a buffer a stream
+fills over frames, e.g. a large scene drawn while it loads, instead of a file read whole when the
+graph is built. Its stream input (C++'s @tt{zgal::StreamOpener}, @tt{include/zgal/Stream.h}) opens
+the stream at the asset's path, which it's given as is: @tt{zgal::assetStream(context)}
+(@tt{include/zgal/Assets.h}) finds files as other assets are, and a program's own opener can read
+anything (a socket, memory) or wrap one, e.g. to check the header. When the graph is built, it
+opens the stream and reads its header, a std430 @tt{H}, which @racket[(stream-header name)] gives
+(@secref["graph-expressions"]), e.g. to size the buffer. The buffer is @tt{words} 32-bit words,
+device-local, shared by every frame and never recreated, which shaders bind as a
+@racket[(buffer-array uint)] and decode themselves; it isn't zeroed, so they read only what has
+arrived. The stream gives the header's bytes again, then the rest: the buffer holds the whole
+stream, which must be exactly @tt{words} × 4 bytes.
+
+Before each frame's nodes, at most @tt{bytes} new bytes are copied in after those already there
+(the graph's first submission copies them, and its uses wait for it). Copies are whole words: 1-3
+trailing bytes wait for the rest of their word. Both options are required, since they're the
+trade-offs: @tt{#:words} is computed when the graph is built (it may use the header), and
+@tt{#:per-frame} is how much a frame reads (and stages, per frame in flight): a positive multiple
+of 4, checked when it's a literal and otherwise when the graph is built (a contract violation).
+Apps learn what has arrived with a @racket[streamed] event (@secref["apps"]).
+
+A stream input's opener failing fails @tt{build()}, adding which stream-buffer it was. A stream
+ending within its header, failing or throwing while it's read, giving more than the buffer holds,
+or ending before it's full (including within its last word) fails the next frame
+(@tt{RenderGraph::execute()}, or an app's @tt{beginFrame()} when the app has a streamed handler
+for that graph), and every one after, with
+@tt{ErrorCode::InvalidData}. Stream-buffers are native only, for now (@tt{not-on-web}), and take no
+@tt{#:when}.
+
+@(zgal-example stream-buffer-source)
+@(generated-file stream-buffer-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto stream_scene" #:to #rx"result.buffers.scene")
 
 @racket[(model name asset Format)] loads a glTF (@tt{.gltf}, @tt{.glb}) or OBJ (@tt{.obj}, with its
 @tt{.mtl}) file: its triangles, with its nodes' transforms baked in, as one mesh of @tt{Format}'s
@@ -1148,7 +1212,8 @@ with the wrapper's loaders (@tt{resources/Model.h}).
              (float a) (int a) (uint a)
              (vec2 a b) (ivec3 a b c) (code:line ...)
              name.field (.field expression)
-             (width image) (height image) (count data-input) (at data-input index)]]
+             (width image) (height image) (count data-input) (at data-input index)
+             (stream-header stream-buffer)]]
 
 Expressions are typed like GLSL: arithmetic operands share a type (scalars or vectors), and
 conditions are bools. Integer literals take the type their context needs, so @tt{(* 6 count)} is a
@@ -1156,6 +1221,9 @@ conditions are bools. Integer literals take the type their context needs, so @tt
 (@secref["loops"]). Fields of structs and swizzles of vectors (@tt{size.x}, @tt{size.xy}) follow names
 after dots, @tt{batch.first}, or are functions on other expressions, @racket[(.first (at batches 0))];
 @racket[(at input index)] is an element of a data input, checked to exist when it's computed.
+@racket[(stream-header name)] is the header a @racket[stream-buffer]'s stream began with, read when
+the graph is built (@secref["assets"]), so its fields are build-time values: @racket[(.words
+(stream-header scene))].
 
 Most expressions are computed once, when the graph is built: conditions, constants, extents and
 counts. They can use parameters, constants, imported images' sizes and the number of elements C++
@@ -1607,7 +1675,7 @@ The particles example's app:
 
 @racketgrammar*[
  #:literals (app parameter state on run key-pressed key-released mouse-pressed mouse-released
-             cursor-moved scrolled frame read left right middle data)
+             cursor-moved scrolled frame read streamed left right middle data)
  [app-form (app Name app-clause ...)]
  [app-clause (parameter name type)
              (parameter name path)
@@ -1622,7 +1690,8 @@ The particles example's app:
         (cursor-moved cursor)
         (scrolled offset)
         (frame dt)
-        (read readback elements maybe-index maybe-size)]
+        (read readback elements maybe-index maybe-size)
+        (streamed stream-buffer arrived total)]
  [maybe-index (code:line) (code:line #:index i)]
  [maybe-size (code:line) (code:line #:size size)]
  [button left right middle]
@@ -1680,7 +1749,8 @@ Events:
   (list @tt{(cursor-moved cursor)} @elem{the cursor, a @tt{vec2}} "the cursor moves")
   (list @tt{(scrolled offset)} @elem{the offset, a @tt{vec2} in scroll steps, y up} "the user scrolls")
   (list @tt{(frame dt)} @elem{the time since the last frame, a @tt{float} in seconds} "each frame, before drawing")
-  (list @tt{(read readback elements)} @elem{the elements a buffer readback copied, or the texels an image readback copied, @racket[(data T)]} "a readback's copy has finished (polled before each frame, without waiting)"))]
+  (list @tt{(read readback elements)} @elem{the elements a buffer readback copied, or the texels an image readback copied, @racket[(data T)]} "a readback's copy has finished (polled before each frame, without waiting)")
+  (list @tt{(streamed stream-buffer arrived total)} @elem{the bytes of a @racket[stream-buffer] the frame will hold, and the buffer's size in bytes, @tt{uint}s} "before a frame holding more of the stream than the last, after read events and before the frame event"))]
 A read event handles the newest copy that finished since the last one handled, skipping older ones.
 No finished copy is lost unless a newer one is handled (except one whose frame slot
 @racket[set-frames-in-flight!] removes), however fast frames go: while a readback runs every frame, the copy handled before a
@@ -1694,6 +1764,14 @@ the 8-bit RGBA and BGRA formats (the first channel in the low byte), @tt{float},
 @tt{r16f} a @tt{uint16}, @tt{rg16f} a @tt{uint}). @tt{#:size size} binds the image's size when it
 was copied (a @tt{uvec2}). Imported images' formats aren't known, so only graph images and image
 files (RGBA8) have read events.
+
+A streamed event is how an app shows progress, or draws only what has arrived (a count from
+@tt{arrived}, a @tt{uint} multiple of 4, as a per-frame input). Before each frame the app reads
+the coming frame's bytes of the stream (@tt{RenderGraph::readStreams()}, which may block while the
+stream does), so @tt{beginFrame()} fails, as the frame would, once the stream has. Sizes are
+@tt{uint}s, so a streamed buffer is under 4 GiB: the app's @tt{create()} fails with
+@tt{ErrorCode::InvalidData} otherwise (e.g. when a header's word count is corrupt).
+
 Cursor positions are in [-1, 1] across the window, y down, like Vulkan's clip space. Keys are
 @tt{a}-@tt{z}, @tt{0}-@tt{9}, @tt{space}, @tt{escape}, @tt{enter}, @tt{tab}, @tt{backspace},
 @tt{left}, @tt{right}, @tt{up}, @tt{down}, @tt{minus}, @tt{equal}, @tt{keypad-add},

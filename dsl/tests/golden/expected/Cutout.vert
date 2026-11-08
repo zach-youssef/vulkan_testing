@@ -34,6 +34,16 @@ struct Packed {
     uint wide;
 #line 130 "dsl/tests/golden/features.zgal"
 };
+#line 413 "dsl/tests/golden/features.zgal"
+struct SceneHeader {
+#line 413 "dsl/tests/golden/features.zgal"
+    uint magic;
+#line 413 "dsl/tests/golden/features.zgal"
+    uint words;
+#line 413 "dsl/tests/golden/features.zgal"
+    float scale;
+#line 413 "dsl/tests/golden/features.zgal"
+};
 #line 186 "dsl/tests/golden/features.zgal"
 layout(location = 0) out vec2 coverage;
 #line 188 "dsl/tests/golden/features.zgal"

@@ -204,7 +204,8 @@ int main() { return exitStatus(runApp()); }            // prints the error
   over frames (ZGAL's `stream-buffer`), e.g. a scene shown while it loads. `source` is a
   `StreamSource` (`Result<size_t>(std::span<std::byte>)`, 0 meaning ended), such as a
   `zgal::Stream` (`zgal/Stream.h`: `fileStream(path)`, and `openStream<H>(opener, path)`, which
-  reads a std430 header H first and replays it, so the buffer holds the whole stream). The
+  reads a std430 header H first and replays it, so the buffer holds the whole stream;
+  `zgal/Assets.h`'s `assetStream(context)` is an opener finding files as assets are). The
   buffer is device local, shared by every frame, never recreated (it gets every buffer usage)
   and not zeroed. Each frame calls the source once, before beginning the frame and on the
   thread calling `readStreams()` or `execute()`, for at most what fits in `bytesPerFrame`. The

@@ -133,6 +133,10 @@
   (for ([item (in-list items)])
     (match item
       [(g-import-images n _ l) (web-error l "WebGPU has no arrays of bindings, so ~a's images can't be imported for one" n)]
+      ;; Until the web backend streams (VZ2b). Every stream-buffer reads a stream input, so this
+      ;; refuses them too.
+      [(g-input n 'stream _ l)
+       (web-error l "the web backend doesn't stream buffers yet, so stream input ~a (and the stream-buffers it fills) has no web form" n)]
       [(g-sampler n o l)
        (when (eq? (cond [(assq 'address o) => cdr] [else #f]) 'clamp-to-border)
          (web-error l "WebGPU's samplers have no border colour, so sampler ~a can't clamp to one" n))]

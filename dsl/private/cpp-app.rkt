@@ -52,6 +52,7 @@
   (define single? (= (length runs) 1))
   (define frame-handler (for/first ([h (in-list (app-handlers a))] #:when (eq? (event-kind (handler-event h)) 'frame)) h))
   (define read-handlers (filter (λ (h) (eq? (event-kind (handler-event h)) 'read)) (app-handlers a)))
+  (define streamed-handlers (filter (λ (h) (eq? (event-kind (handler-event h)) 'streamed)) (app-handlers a)))
   ;; Per run: its graph, the members naming it, and what C++ passes through to it
   (define (run-graph r) (graph-run-graph r))
   (define (run-index r) (index-of runs r))
@@ -148,7 +149,19 @@
     (for ([member (in-list (sort members < #:key (λ (m) (index-of order (cadr (regexp-match #px"^\\.([A-Za-z0-9_]+)" m))))))])
       (emit! w (format "            ~a," member) #:at (graph-run-loc r)))
     (emit! w "        }));" #:at (graph-run-loc r))
-    (gen (format "        app->~a.emplace(std::move(ids~a));" (ids-member r) (run-index r))))
+    (gen (format "        app->~a.emplace(std::move(ids~a));" (ids-member r) (run-index r)))
+    ;; Streamed events give uint sizes, which a buffer of 4 GiB or more (e.g. from a corrupt
+    ;; header) would wrap
+    (for ([h (in-list streamed-handlers)]
+          #:when (eq? (run-of-graph (stream-event-graph (event-stream (handler-event h)))) r))
+      (define buffer (stream-event-buffer (event-stream (handler-event h))))
+      (emit! w (format "        if (const VkDeviceSize bytes = app->~a->bufferSize(app->~a->buffers.~a, 0); bytes > UINT32_MAX) {"
+                       (graph-member r) (ids-member r) buffer)
+             #:at (handler-loc h))
+      (gen (format "            return Error(ErrorCode::InvalidData, ~a + std::to_string(bytes) + ~a);"
+                   (cpp-string (format "~a's stream-buffer ~a holds " gname buffer))
+                   (cpp-string " bytes, but streamed events give its size as a uint, so it must be under 4 GiB")))
+      (gen "        }")))
   (gen "        return app;")
   (gen "    }")
   (gen "")
@@ -188,7 +201,7 @@
   (gen "    // Runs the handler for event, if the app has one")
   (gen "    void handle(const zgal::Event& event) {")
   (define by-kind (group-by (λ (h) (event-kind (handler-event h)))
-                            (filter (λ (h) (not (memq (event-kind (handler-event h)) '(frame read)))) (app-handlers a))))
+                            (filter (λ (h) (not (memq (event-kind (handler-event h)) '(frame read streamed)))) (app-handlers a))))
   (for ([group (in-list by-kind)])
     (define kind (event-kind (handler-event (first group))))
     (gen (format "        if (const auto* e = std::get_if<zgal::~a>(&event)) {" (event-struct kind)))
@@ -219,8 +232,9 @@
   (gen "")
 
   ;; beginFrame
-  (gen (format "    // Each frame, before drawing: ~athe frame handler, then which graph is drawn and which of its nodes are enabled"
-               (if (null? read-handlers) "" "the handlers of readbacks' finished copies, ")))
+  (gen (format "    // Each frame, before drawing: ~a~athe frame handler, then which graph is drawn and which of its nodes are enabled"
+               (if (null? read-handlers) "" "the handlers of readbacks' finished copies, ")
+               (if (null? streamed-handlers) "" "the handlers of streams' new bytes, ")))
   (gen "    Result<void> beginFrame() {")
   (gen "        frameNumber_ = framesBegun_++;")
   (for ([h (in-list read-handlers)])
@@ -251,6 +265,23 @@
                                         (if image? ", glm::uvec2(copied->extent.width, copied->extent.height)" ""))))
     (line indent "}")
     (line "        " "}"))
+  ;; Streams' bytes for the frame, read now (execute() doesn't read them again) so the handlers see
+  ;; what the frame's nodes will. A graph not drawn this frame keeps what it read for a later one.
+  (for ([h (in-list streamed-handlers)])
+    (match-define (stream-event g-name buffer _) (event-stream (handler-event h)))
+    (define r (run-of-graph g-name))
+    (define i (index-of-handler h))
+    (define id (format "~a->buffers.~a" (ids-member r) buffer))
+    (define (line text) (emit! w (string-append "        " text) #:at (handler-loc h)))
+    (line "{")
+    (line (format "    TRY(~a->readStreams());" (graph-member r)))
+    (line (format "    const VkDeviceSize arrived = ~a->streamArrived(~a);" (graph-member r) id))
+    (line (format "    if (arrived != arrived~a_) {" i))
+    (line (format "        arrived~a_ = arrived;" i))
+    (line (format "        state_ = ~a(state_, static_cast<uint32_t>(arrived), static_cast<uint32_t>(~a->bufferSize(~a, context_->currentFrame())));"
+                  (handler-name i) (graph-member r) id))
+    (line "    }")
+    (line "}"))
   (when frame-handler
     (emit! w (format "        state_ = ~a(state_, inputs_.timestep.next());" (handler-name (index-of-handler frame-handler)))
            #:at (handler-loc frame-handler)))
@@ -337,13 +368,16 @@
       (case (event-kind (handler-event h))
         [(frame) "float"]
         [(read) (format "const ~a&" (spell-type (data-t (read-event-element r)) 'cpp))]
+        [(streamed) "uint32_t"]
         [else "glm::vec2"]))
+    (define st (event-stream (handler-event h)))
     ;; A read event's index (looped readbacks) and size (images) follow its copy, bound or not
     (define (extra present? type name) (if present? (format ", [[maybe_unused]] ~a ~a" type (or name "")) ""))
-    (emit-body-function! w (format "State ~a([[maybe_unused]] const State& state~a~a~a)" (handler-name (index-of-handler h))
+    (emit-body-function! w (format "State ~a([[maybe_unused]] const State& state~a~a~a~a)" (handler-name (index-of-handler h))
                                    (if binding (format ", [[maybe_unused]] ~a ~a" binding-type binding) "")
                                    (extra (and r (read-event-looped? r)) "uint32_t" (and r (read-event-index r)))
-                                   (extra (and r (read-event-image? r)) "glm::uvec2" (and r (read-event-size r))))
+                                   (extra (and r (read-event-image? r)) "glm::uvec2" (and r (read-event-size r)))
+                                   (extra st "uint32_t" (and st (stream-event-total st))))
                          (handler-body h) (handler-loc h)))
   (for ([r (in-list runs)])
     (define g (run-graph r))
@@ -374,6 +408,10 @@
   (gen "    std::optional<VkExtent2D> resize_;")
   (for ([r (in-list runs)])
     (gen (format "    std::optional<~a> ~a;" (graph-name (run-graph r)) (ids-member r))))
+  (for ([h (in-list streamed-handlers)])
+    (emit! w (format "    VkDeviceSize arrived~a_ = 0;   // The bytes of ~a the last streamed event gave"
+                     (index-of-handler h) (stream-event-buffer (event-stream (handler-event h))))
+           #:at (handler-loc h)))
   (emit! w "};" #:at (app-loc a)))
 
 ;; The members of a graph's Inputs that a run of it doesn't compute: (cons item declaration)

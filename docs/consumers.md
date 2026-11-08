@@ -3,6 +3,11 @@
 Other repositories depend on the wrapper, ZGAL and their web output. Check them when changing what
 they rely on.
 
+Additions to the language are additive for them: e.g. a graph with a `stream-buffer` gains a
+`zgal::StreamOpener` member in its `Inputs` (and its app's), which only programs using one give.
+Such programs are native only until the web backend streams (`not-on-web`), so the site can't
+serve them yet.
+
 ## PPU (`~/code/ppu`)
 
 PPU uses the wrapper and ZGAL as a git submodule (`external/vulkan_test`) and builds with

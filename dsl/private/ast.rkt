@@ -130,14 +130,18 @@
 ;; condition holds (the last has none); empty for none.
 (struct app (name parameters externs state initial handlers runs run-mode? loc) #:transparent)
 ;; event: kind 'key-pressed 'key-released (keys: key name symbols), 'mouse-pressed 'mouse-released
-;; (button: 'left 'right 'middle), 'cursor-moved 'scrolled 'frame, or 'read: a readback's copy has
-;; finished (readback: a read-event). binding: the name the event's value is bound to (a cursor
-;; position, scroll offset, time step or the copied data), or #f.
-(struct event (kind keys button binding readback loc) #:transparent)
+;; (button: 'left 'right 'middle), 'cursor-moved 'scrolled 'frame, 'read: a readback's copy has
+;; finished (readback: a read-event), or 'streamed: more of a stream-buffer's bytes arrived (stream:
+;; a stream-event). binding: the name the event's value is bound to (a cursor position, scroll
+;; offset, time step, the copied data or the bytes arrived), or #f.
+(struct event (kind keys button binding readback stream loc) #:transparent)
 ;; A read event's readback: the graph and node names, the type of the copied elements (an image's:
 ;; a texel's), whether it's in a loop and of an image, and the names the iteration's index (for a
 ;; looped readback) and an image's size are bound to, or #f
 (struct read-event (graph node element looped? image? index size) #:transparent)
+;; A streamed event's buffer: the graph and stream-buffer names, and the name the buffer's total
+;; bytes are bound to
+(struct stream-event (graph buffer total) #:transparent)
 (struct handler (event body loc) #:transparent)
 ;; bindings: (cons graph-item-name expression) for the graph's parameters (computed once) and
 ;; per-frame inputs (each frame). enables: (cons node-name expression), computed each frame. when:
@@ -224,7 +228,8 @@
 ;; type: a scalar-t (bool, int, uint or float)
 (struct g-parameter (name type loc) #:transparent)
 ;; kind: 'per-frame or 'data (with a type: a value each frame, or elements C++ gives once),
-;; 'meshes, 'cpu, 'extern or 'path (an asset's path)
+;; 'stream (with its header's type: opens a stream at a path), 'meshes, 'cpu, 'extern or 'path (an
+;; asset's path)
 (struct g-input (name kind type loc) #:transparent)
 ;; resting: 'shader-read-only, 'general or 'transfer-src
 (struct g-import (name resting loc) #:transparent)
@@ -256,6 +261,11 @@
 ;; sources: asset-sources, in order. when: a build-time condition, or #f; when it's false the files
 ;; aren't read and the buffer isn't created.
 (struct g-buffer-file (name type sources when loc) #:transparent)
+;; A device-local buffer of words uints that a stream fills over frames, at most per-frame bytes a
+;; frame. opener: the stream input's name, header: its header's type (read when the graph is built,
+;; as (stream-header name)), source: an asset-source, the path the opener opens. words, per-frame:
+;; build-time uint expressions (words may use the header).
+(struct g-stream-buffer (name opener header source words per-frame loc) #:transparent)
 ;; Build-time values. type: the expression's type
 (struct g-constant (name expr type loc) #:transparent)
 ;; options: an association list of option symbols (e.g. 'filter) to values (symbols, booleans, numbers)
@@ -320,6 +330,6 @@
 ;; The declaration of a graph-level name
 (define (graph-item-name item)
   (match item
-    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-image-file n _ _ _) n] [(g-model n _ _ _) n] [(g-model-textures n _ _) n] [(g-model-factors n _ _) n] [(g-model-draws n _ _ _) n] [(g-model-bounds n _ _) n] [(g-import-images n _ _) n] [(g-import-buffer n _ _) n] [(g-upload n _ _ _) n] [(g-buffer-file n _ _ _ _) n] [(g-constant n _ _ _) n]
+    [(g-parameter n _ _) n] [(g-input n _ _ _) n] [(g-import n _ _) n] [(g-image-file n _ _ _) n] [(g-model n _ _ _) n] [(g-model-textures n _ _) n] [(g-model-factors n _ _) n] [(g-model-draws n _ _ _) n] [(g-model-bounds n _ _) n] [(g-import-images n _ _) n] [(g-import-buffer n _ _) n] [(g-upload n _ _ _) n] [(g-buffer-file n _ _ _ _) n] [(g-stream-buffer n _ _ _ _ _ _) n] [(g-constant n _ _ _) n]
     [(g-sampler n _ _) n] [(g-uniform n _ _ _) n] [(g-image n _ _ _ _ _) n] [(g-buffer n _ _ _ _ _) n]
     [(g-target n _ _ _) n] [(g-material n _ _ _ _ _ _ _) n]))

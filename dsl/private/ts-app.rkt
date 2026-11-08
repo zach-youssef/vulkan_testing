@@ -208,7 +208,7 @@
     ;; handle
     (line! "  // Runs the handler for event, if the app has one")
     (line! "  handle(event: zgal.Event): void {")
-    (define by-kind (group-by kind-of (filter (λ (h) (not (memq (kind-of h) '(frame read)))) handlers)))
+    (define by-kind (group-by kind-of (filter (λ (h) (not (memq (kind-of h) '(frame read streamed)))) handlers)))
     (if (null? by-kind)
         (line! "    void event;")
         (line! "    switch (event.kind) {"))

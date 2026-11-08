@@ -114,6 +114,8 @@
         (define input (e-ref-name (first args)))
         (format "zgal::elementOf(in->~a, ~a, ~a, ~a)" input (cpp-expr (second args) env #f)
                 (cpp-string (current-graph-name)) (cpp-string input))]
+       ;; Read when the graph was built
+       [(stream-header) (format "header_~a" (e-ref-name (first args)))]
        [(width height)
         (define image (e-ref-name (first args)))
         (match (hash-ref env image)
@@ -192,7 +194,8 @@
                        ['meshes "std::vector<Handle<Mesh>>"]
                        ['cpu "RenderGraph::RunFn"]
                        ['extern (format "zgal::ExternNodes<~a>" (string-join (cons name (map value-cpp-type t)) ", "))]
-                       ['path "std::filesystem::path"])
+                       ['path "std::filesystem::path"]
+                       ['stream "zgal::StreamOpener"])
                      n)]
             [(g-import n resting _) (format "FrameBinding<Image> ~a;   // Imported, resting ~a" n (symbol->string resting))]
             [(g-import-images n resting _) (format "std::vector<FrameBinding<Image>> ~a;   // Imported, resting ~a" n (symbol->string resting))]
@@ -248,6 +251,7 @@
   (define buffer-imports (of-type g-import-buffer?))
   (define uploads (of-type g-upload?))
   (define buffer-files (of-type g-buffer-file?))
+  (define stream-buffers (of-type g-stream-buffer?))
   (define images (of-type g-image?))
   (define buffers (of-type g-buffer?))
   (define materials (of-type g-material?))
@@ -282,6 +286,7 @@
              (append (for/list ([b (in-list buffer-imports)]) (list "BufferId" (g-import-buffer-name b) b))
                      (for/list ([b (in-list uploads)]) (list "BufferId" (g-upload-name b) b))
                      (for/list ([b (in-list buffer-files)]) (list (id-type "BufferId" (g-buffer-file-when b)) (g-buffer-file-name b) b))
+                     (for/list ([b (in-list stream-buffers)]) (list "BufferId" (g-stream-buffer-name b) b))
                      (for/list ([b (in-list model-factors)]) (list "BufferId" (g-model-factors-name b) b))
                      (for/list ([b (in-list model-draws)]) (list "BufferId" (g-model-draws-name b) b))
                      (for/list ([b (in-list model-bounds)]) (list "BufferId" (g-model-bounds-name b) b))
@@ -317,7 +322,7 @@
        (at n (format "    // The elements readback ~a~a copied in the most recent frame (waiting for it)" (g-node-name n) which))
        (at n (format "    Result<std::vector<~a>> ~aContents(~a) const { return graph.nodeAs<BufferReadbackNode>(~a).contents<~a>(); }"
                      t (g-node-name n) parameters id t))]))
-  (unless (and (null? buffer-imports) (null? uploads) (null? buffer-files) (null? model-factors) (null? model-draws) (null? model-bounds) (null? (filter (λ (b) (not (internal-name? (g-buffer-name b)))) buffers)))
+  (unless (and (null? buffer-imports) (null? uploads) (null? buffer-files) (null? stream-buffers) (null? model-factors) (null? model-draws) (null? model-bounds) (null? (filter (λ (b) (not (internal-name? (g-buffer-name b)))) buffers)))
     (gen "    Buffers buffers;"))
   (unless (null? nodes) (gen "    Nodes nodes;"))
   (gen "")
@@ -432,10 +437,21 @@
                   (cpp-string (format "~a's upload ~a" name n))))
     (at u (format "        const BufferId buffer_~a = graph.importBuffer<~a>(~a, upload_~a);" n (cpp-type (g-upload-type u)) (cpp-string n) n))
     (gen (format "        result.buffers.~a = buffer_~a;" n n)))
-  ;; Constants
-  (for ([c (in-list (of-type g-constant?))])
-    (at c (format "        const ~a constant_~a = ~a;" (value-cpp-type (g-constant-type c)) (g-constant-name c)
-                  (build-expr (g-constant-expr c) (g-constant-type c)))))
+  ;; Constants, and stream buffers (whose headers, read when they're created, constants may use),
+  ;; in order
+  (for ([item (in-list items)])
+    (match item
+      [(g-constant n e t _)
+       (at item (format "        const ~a constant_~a = ~a;" (value-cpp-type t) n (build-expr e t)))]
+      ;; Opened and its header read now; its bytes arrive over frames
+      [(g-stream-buffer n opener header source words per-frame _)
+       (at item (format "        TRY_ASSIGN(auto stream_~a, zgal::openStream<~a>(in->~a, ~a).withContext(~a));" n (cpp-type header) opener
+                        (asset-path source) (cpp-string (format "loading ~a's stream-buffer ~a" name n))))
+       (at item (format "        [[maybe_unused]] const ~a header_~a = stream_~a.header;" (cpp-type header) n n))
+       (at item (format "        const BufferId buffer_~a = graph.createStreamBuffer(~a, std::move(stream_~a.stream), VkDeviceSize(~a), VkDeviceSize(~a));"
+                        n (cpp-string n) n (build-expr words (scalar-t 'uint)) (build-expr per-frame (scalar-t 'uint))))
+       (gen (format "        result.buffers.~a = buffer_~a;" n n))]
+      [_ (void)]))
   ;; Buffer files: read, uploaded, then imported; conditional ones only when their condition (which
   ;; may use constants) holds
   (for ([f (in-list buffer-files)])
@@ -868,6 +884,6 @@
 
 (define (item-loc item)
   (match item
-    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-model-draws _ _ _ l) l] [(g-model-bounds _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-buffer-file _ _ _ _ l) l] [(g-constant _ _ _ l) l]
+    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-model-draws _ _ _ l) l] [(g-model-bounds _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-buffer-file _ _ _ _ l) l] [(g-stream-buffer _ _ _ _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
     [(g-target _ _ _ l) l] [(g-material _ _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ l) l]))

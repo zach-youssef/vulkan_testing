@@ -48,6 +48,8 @@
     [(g-upload _ _ t _) (entry 'upload t item)]
     ;; Like an upload, with its elements from files
     [(g-buffer-file _ t _ _ _) (entry 'upload t item)]
+    ;; Likewise, with its words from a stream over frames
+    [(g-stream-buffer _ _ _ _ _ _ _) (entry 'upload (scalar-t 'uint) item)]
     [(g-constant _ _ t _) (entry 'constant t item)]
     [(g-sampler _ _ _) (entry 'sampler #f item)]
     [(g-uniform _ t _ _) (entry 'uniform t item)]
@@ -67,7 +69,7 @@
 
 (define kind-names
   (hash 'parameter "a parameter" 'constant "a constant" 'per-frame "a per-frame input" 'meshes "a meshes input"
-        'cpu "a cpu input" 'extern "an extern input" 'path "a path input" 'model "a model" 'per-frame-data "a per-frame data input" 'import "an imported image" 'import-images "imported images" 'import-buffer "an imported buffer" 'data "a data input" 'upload "an uploaded buffer" 'sampler "a sampler" 'uniform "a uniform"
+        'cpu "a cpu input" 'extern "an extern input" 'path "a path input" 'stream "a stream input" 'model "a model" 'per-frame-data "a per-frame data input" 'import "an imported image" 'import-images "imported images" 'import-buffer "an imported buffer" 'data "a data input" 'upload "an uploaded buffer" 'sampler "a sampler" 'uniform "a uniform"
         'image "an image" 'buffer "a buffer" 'target "a target" 'material "a material" 'loop "a loop variable"))
 
 ;; ---------------------------------------------------------------------------------------------
@@ -190,6 +192,16 @@
               (scalar-t 'uint)]
              [_ (zgal-error 'type-mismatch ref-where "(count input) takes a data input, and ~a isn't one" name)])]
           [other (zgal-error 'malformed (e-loc other) "(count input) takes a data input's name")])]
+       ;; A stream-buffer's header, read when the graph is built
+       [(stream-header)
+        (arity! 1 1 args op where)
+        (match (first args)
+          [(e-ref name ref-where)
+           (match (hash-ref env name #f)
+             [(entry _ _ (g-stream-buffer _ _ h _ _ _ _)) h]
+             [#f (zgal-error 'unknown-name ref-where "~a isn't declared in this graph before here" name)]
+             [_ (zgal-error 'type-mismatch ref-where "(stream-header buffer) takes a stream-buffer, and ~a isn't one" name)])]
+          [other (zgal-error 'malformed (e-loc other) "(stream-header buffer) takes a stream-buffer's name")])]
        [(at)
         (arity! 2 2 args op where)
         (require-type (recur (second args)) (λ (t) (and (scalar-t? t) (memq (scalar-t-kind t) '(literal int uint)) #t))
@@ -385,6 +397,7 @@
     (match (entry-item (hash-ref env buffer))
       [(g-buffer _ _ c _ _ _) c]
       [(g-upload _ source _ _) (e-op 'count (list (e-ref source where)) where)]
+      [(g-stream-buffer _ _ _ _ words _ _) words]
       [item (unknown (if (g-buffer-file? item) "read from files" "an imported buffer"))]))
   (define (lookup stx kinds what)
     (define n (syntax-e stx))
@@ -453,7 +466,7 @@
          (zgal-error 'type-not-allowed (second args) "a parameter is a bool, int, uint or float, not ~a" (type-name t)))
        (declare! (g-parameter (item-name) t (stx->loc stx)) stx)]
       ['input
-       (args! 2 "(input name (per-frame type)), (input name (data type)), (input name (per-frame (data type))), (input name meshes), (input name cpu), (input name extern), (input name (extern argument-type ...)) or (input name path)")
+       (args! 2 "(input name (per-frame type)), (input name (data type)), (input name (per-frame (data type))), (input name meshes), (input name cpu), (input name extern), (input name (extern argument-type ...)), (input name path) or (input name (stream header-type))")
        (check-known-options options '() form)
        (define kind-stx (second args))
        (define item
@@ -477,6 +490,9 @@
                (g-input (item-name) 'per-frame t (stx->loc stx))]
               [(list k t-stx) #:when (eq? (syntax-e k) 'data)
                (g-input (item-name) 'data (buffer-element-type t-stx "a data input") (stx->loc stx))]
+              ;; Opens streams at paths, whose first bytes are a header-type
+              [(list k t-stx) #:when (eq? (syntax-e k) 'stream)
+               (g-input (item-name) 'stream (buffer-element-type t-stx "a stream's header") (stx->loc stx))]
               [(list* k type-stxs) #:when (eq? (syntax-e k) 'extern)
                (g-input (item-name) 'extern
                         (for/list ([t-stx (in-list type-stxs)])
@@ -485,7 +501,7 @@
                             (zgal-error 'type-not-allowed t-stx "an extern input's argument isn't an array; use a struct holding one"))
                           t)
                         (stx->loc stx))]
-              [_ (zgal-error 'malformed kind-stx "an input is (per-frame type), (data type), (per-frame (data type)), meshes, cpu, extern, (extern argument-type ...) or path, not ~a" (show kind-stx))])]))
+              [_ (zgal-error 'malformed kind-stx "an input is (per-frame type), (data type), (per-frame (data type)), meshes, cpu, extern, (extern argument-type ...), path or (stream header-type), not ~a" (show kind-stx))])]))
        (declare! item stx)]
       ['import-image
        (args! 1 "(import-image name #:resting state)")
@@ -547,6 +563,30 @@
        (declare! (g-buffer-file (item-name) (buffer-element-type (second args) form)
                                 (map parse-asset-source (cddr args)) (condition options '#:when) (stx->loc stx))
                  stx)]
+      ['stream-buffer
+       (args! 3 "(stream-buffer name stream-input asset #:words n #:per-frame bytes)")
+       (check-known-options options '(#:words #:per-frame) form)
+       (define n (item-name))
+       (define opener (lookup (second args) '(stream) "a stream input"))
+       (define header (entry-type (hash-ref env opener)))
+       (define source (parse-asset-source (third args)))
+       (define (required key what)
+         (or (hash-ref options key #f)
+             (zgal-error 'bad-option stx "stream-buffer needs ~a, ~a" key what)))
+       (define words-stx (required '#:words "the buffer's size in 32-bit words (e.g. from (stream-header name))"))
+       (define per-frame-stx (required '#:per-frame "the most bytes a frame appends (a multiple of 4)"))
+       ;; #:words may read the buffer's own header
+       (define words (parse-expression words-stx))
+       (define with-self (hash-copy env))
+       (hash-set! with-self n (item-entry (g-stream-buffer n opener header source #f #f (stx->loc stx))))
+       (check-expression words with-self (scalar-t 'uint) "#:words" #:per-frame-ok? #f)
+       (define per-frame (build-time per-frame-stx (scalar-t 'uint) "#:per-frame"))
+       ;; The runtime checks other expressions' values
+       (match per-frame
+         [(e-literal v _) #:when (not (and (exact-positive-integer? v) (zero? (remainder v 4))))
+          (zgal-error 'bad-option per-frame-stx "#:per-frame is a positive multiple of 4 bytes (frames append whole words), not ~a" v)]
+         [_ (void)])
+       (declare! (g-stream-buffer n opener header source words per-frame (stx->loc stx)) stx)]
       ['constant
        (args! 2 "(constant name expression)")
        (check-known-options options '() form)
@@ -613,7 +653,7 @@
        (unless (>= (length args) 2)
          (zgal-error 'malformed stx "expected (material name Material (binding resource) ... #:option value ...)"))
        (declare! (parse-material-instance stx args options) stx)]
-      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, image-file, model, import-buffer, upload, buffer-file, constant, sampler, uniform, image, buffer, target, material, nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern, reduce, inclusive-scan, exclusive-scan, sort) and loops of nodes (for)"
+      [_ (zgal-error 'unknown-form stx "graph ~a has no ~a item; graphs take parameter, input, import-image, import-images, image-file, model, import-buffer, upload, buffer-file, stream-buffer, constant, sampler, uniform, image, buffer, target, material, nodes (dispatch, draw-meshes, draw, readback, cpu, copy, clear, extern, reduce, inclusive-scan, exclusive-scan, sort) and loops of nodes (for)"
                      name head)]))
 
   ;; The type of a buffer's elements
@@ -1068,6 +1108,7 @@
             [(g-buffer _ _ _ frames _ _) (eq? frames 'shared)]
             [(g-upload _ _ _ _) #t]
             [(g-buffer-file _ _ _ _ _) #t]
+            [(g-stream-buffer _ _ _ _ _ _ _) #t]
             [_ #f]))
         'shared
         'per-frame))

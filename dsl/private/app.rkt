@@ -28,7 +28,7 @@
      (keypad-add . "KeypadAdd") (keypad-subtract . "KeypadSubtract"))
    (for/list ([n (in-range 1 13)]) (cons (string->symbol (format "f~a" n)) (format "F~a" n)))))
 
-(define event-kinds '(key-pressed key-released mouse-pressed mouse-released cursor-moved scrolled frame read))
+(define event-kinds '(key-pressed key-released mouse-pressed mouse-released cursor-moved scrolled frame read streamed))
 
 ;; The C++ app class's values bodies can read besides their parameters (see cpp-app.rkt)
 (define host-values
@@ -168,6 +168,25 @@
            [_ (zgal-error 'type-mismatch node-stx "readback ~a reads an imported image, whose format the graph doesn't know; read events give buffers' elements and graph images' texels" node-name)]))
        (list (graph-name g) node-name element (pair? (g-node-loops n)) (not (memq (entry-kind subject) '(buffer import-buffer upload))))]))
 
+  ;; A stream-buffer of a graph the app runs, for streamed events: the first graph's with one of
+  ;; that name
+  (define (find-stream buffer-stx)
+    (define buffer-name (format "~a" (syntax-e buffer-stx)))
+    (define found
+      (for*/list ([c (in-list (clauses-of 'run))]
+                  [g (in-value (let ([g-stx (and (pair? (cdr (syntax->list c))) (second (syntax->list c)))])
+                                 (and g-stx (symbol? (syntax-e g-stx)) (hash-ref graphs (symbol->string (syntax-e g-stx)) #f))))]
+                  #:when g
+                  [item (in-list (graph-items g))]
+                  #:when (equal? (graph-item-name item) buffer-name))
+        (cons g item)))
+    (match found
+      ['() (zgal-error 'unknown-name buffer-stx "no graph app ~a runs has a stream-buffer ~a" name buffer-name)]
+      [(list (cons g item) _ ...)
+       (unless (g-stream-buffer? item)
+         (zgal-error 'type-mismatch buffer-stx "~a in graph ~a isn't a stream-buffer, whose bytes arrive over frames" buffer-name (graph-name g)))
+       (graph-name g)]))
+
   ;; Checks the nodes run-once! effects in e name are #:once nodes of graphs the app runs
   (define (check-run-once e)
     (let walk ([e e])
@@ -198,18 +217,21 @@
     (for/list ([c (in-list (clauses-of 'on))])
       (match (syntax->list c)
         [(list* _ event-stx body-stxs) #:when (pair? body-stxs)
-         (define e (parse-event event-stx claim! (λ (node-stx) (find-readback node-stx))))
+         (define e (parse-event event-stx claim! find-readback find-stream))
          (define r (event-readback e))
-         ;; The event's value, and a read event's index and size
+         (define st (event-stream e))
+         ;; The event's value, a read event's index and size, and a streamed event's total
          (define bound
            (filter car
                    (list (cons (event-binding e)
                                (case (event-kind e)
                                  [(frame) (scalar-t 'float)]
                                  [(read) (data-t (read-event-element r))]
+                                 [(streamed) (scalar-t 'uint)]
                                  [else (vector-t 'float 2)]))
                          (cons (and r (read-event-index r)) (scalar-t 'uint))
-                         (cons (and r (read-event-size r)) (vector-t 'uint 2)))))
+                         (cons (and r (read-event-size r)) (vector-t 'uint 2))
+                         (cons (and st (stream-event-total st)) (scalar-t 'uint)))))
          (define locals
            (for/fold ([ls (state-locals c)]) ([b (in-list bound)])
              (hash-set ls (car b) (t-local (spell! ctx (car b)) (cdr b) (stx->loc event-stx)))))
@@ -223,7 +245,8 @@
          (define (spelled n) (and n (t-local-name (hash-ref locals n))))
          (handler (struct-copy event e
                                [binding (spelled (event-binding e))]
-                               [readback (and r (struct-copy read-event r [index (spelled (read-event-index r))] [size (spelled (read-event-size r))]))])
+                               [readback (and r (struct-copy read-event r [index (spelled (read-event-index r))] [size (spelled (read-event-size r))]))]
+                               [stream (and st (struct-copy stream-event st [total (spelled (stream-event-total st))]))])
                   (cpu-only next) (stx->loc c))]
         [_ (zgal-error 'malformed c "expected (on event body ...+)")])))
 
@@ -271,7 +294,7 @@
     [(rgba32f) (vector-t 'float 4)]
     [else #f]))
 
-(define (parse-event stx claim! find-readback)
+(define (parse-event stx claim! find-readback find-stream)
   (define parts (syntax->list stx))
   (define kind (head-symbol stx))
   (unless (memq kind event-kinds)
@@ -292,7 +315,7 @@
                                     ", ")))
          (claim! (list kind key) k)
          key))
-     (event kind keys #f #f #f (stx->loc stx))]
+     (event kind keys #f #f #f #f (stx->loc stx))]
     [(or 'mouse-pressed 'mouse-released)
      (match args
        [(list b n)
@@ -300,7 +323,7 @@
         (unless (memq button '(left right middle))
           (zgal-error 'malformed b "a mouse button is left, right or middle, not ~a" (show b)))
         (claim! (list kind button) stx)
-        (event kind '() button (binding-name n) #f (stx->loc stx))]
+        (event kind '() button (binding-name n) #f #f (stx->loc stx))]
        [_ (zgal-error 'malformed stx "expected (~a button cursor), binding the cursor's position" kind)])]
     ['read
      (match args
@@ -318,13 +341,25 @@
           [(and index (not looped?))
            (zgal-error 'bad-option (hash-ref options '#:index) "readback ~a isn't in a loop, so there's no #:index" node-name)])
         (claim! (list kind node-name) stx)
-        (event kind '() #f (binding-name n) (read-event g node-name element looped? image? index (option-name '#:size)) (stx->loc stx))]
+        (event kind '() #f (binding-name n) (read-event g node-name element looped? image? index (option-name '#:size)) #f (stx->loc stx))]
        [_ (zgal-error 'malformed stx "expected (read readback values [#:index i] [#:size s]), binding the elements the readback copied")])]
+    ['streamed
+     (match args
+       [(list buffer arrived total)
+        (define g (find-stream buffer))
+        (define buffer-name (format "~a" (syntax-e buffer)))
+        (define arrived-name (binding-name arrived))
+        (define total-name (binding-name total))
+        (when (equal? arrived-name total-name)
+          (zgal-error 'duplicate-name total "the event binds ~a twice" total-name))
+        (claim! (list kind buffer-name) stx)
+        (event kind '() #f arrived-name #f (stream-event g buffer-name total-name) (stx->loc stx))]
+       [_ (zgal-error 'malformed stx "expected (streamed buffer arrived total), binding the bytes that have arrived and the buffer's size in bytes")])]
     [_
      (match args
        [(list n)
         (claim! (list kind #f) stx)
-        (event kind '() #f (binding-name n) #f (stx->loc stx))]
+        (event kind '() #f (binding-name n) #f #f (stx->loc stx))]
        [_ (zgal-error 'malformed stx "expected (~a name), binding the event's value" kind)])]))
 
 (define (parse-run stx ctx state-locals graphs names cpu-only)
@@ -370,7 +405,7 @@
              [#f (zgal-error 'unknown-name n "graph ~a has no parameter or input ~a" (graph-name g) input)]
              [(entry kind _ _)
               (zgal-error 'type-mismatch n "~a is ~a, which C++ gives (through the app's inputs); apps compute parameters and per-frame inputs"
-                          input (case kind [(meshes) "a meshes input"] [(cpu) "a cpu input"] [(extern) "an extern input"]
+                          input (case kind [(meshes) "a meshes input"] [(cpu) "a cpu input"] [(extern) "an extern input"] [(stream) "a stream input"]
                                   [(import import-images import-buffer) "an imported resource"] [(data) "a data input"] [else "not an input"]))]))
          (cons input (cpu-only e))]
         [_ (zgal-error 'malformed b "expected (input expression)")])))

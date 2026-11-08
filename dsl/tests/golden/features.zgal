@@ -407,3 +407,29 @@
   (target shipTarget (color shipImage))
   (material paint ModelPaint (colors shipColors) (factors shipFactors) (s linearSampler))
   (draw-meshes drawShip shipTarget ship paint))
+
+;; Streams: a buffer a stream input fills over frames, sized by the header read when the graph is
+;; built, and an app told as its bytes arrive
+(struct SceneHeader (magic uint) (words uint) (scale float))
+
+(compute-material Sum
+  (workgroup 1)
+  (bindings (words (buffer-array uint)) (sums (buffer-array uint)))
+  (push (count uint) (scale float))
+  (compute
+    (write! (at sums 0) (uint (* (float (at words (- count 1))) scale)))))
+
+(graph Streaming
+  (input open (stream SceneHeader))
+  (input scenePath path)
+  (stream-buffer scene open scenePath #:words (.words (stream-header scene)) #:per-frame 4096)
+  (constant sceneWords (.words (stream-header scene)))
+  (buffer sums uint 1 #:frames shared)
+  (material sum Sum (words scene) sums
+    #:push ((count sceneWords) (scale (.scale (stream-header scene)))) #:invocations (1))
+  (dispatch sum sum))
+
+(app Loading
+  (state (arrived uint 0) (size uint 0))
+  (on (streamed scene arrived total) (with state #:arrived arrived #:size total))
+  (run Streaming))

@@ -33,6 +33,16 @@ struct Packed {
     uint wide;
 #line 130 "dsl/tests/golden/features.zgal"
 };
+#line 413 "dsl/tests/golden/features.zgal"
+struct SceneHeader {
+#line 413 "dsl/tests/golden/features.zgal"
+    uint magic;
+#line 413 "dsl/tests/golden/features.zgal"
+    uint words;
+#line 413 "dsl/tests/golden/features.zgal"
+    float scale;
+#line 413 "dsl/tests/golden/features.zgal"
+};
 #line 1 "dsl/tests/golden/shaders/plain.vert"
 void main() {
     gl_Position = vec4(0.0, 0.0, 0.0, 1.0);

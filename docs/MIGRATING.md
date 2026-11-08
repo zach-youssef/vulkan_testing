@@ -98,6 +98,7 @@ The old wrapper threw `std::runtime_error` (often through `VK_SUCCESS_OR_THROW`)
 | `image->readback(...)` returning pixels | `TRY_ASSIGN(auto pixels, image->readback(layout))` |
 | `Buffer<T>::create(out, n, usage, props, device, physicalDevice)` | `Buffer<T>::create(ctx, n, usage, props)`; `createScoped` for staging buffers |
 | `Buffer<T>::createAndInitialize(out, data, usage, device, physicalDevice, queue, pool)` | `Buffer<T>::createAndInitialize(ctx, data, usage)` |
+| A large file read whole into a buffer before the first frame | `graph.createStreamBuffer(name, source, words, bytesPerFrame)`, which a `zgal::Stream` (`zgal/Stream.h`: `fileStream`, `openStream<Header>`) fills a capped number of bytes a frame while the graph runs, or ZGAL's `stream-buffer` |
 | `buffer->mapAndExecute(...)`, `getPersistentMapping(...)` | Same, returning `Result`s (`Buffer<T>::Mapping` for persistent mappings) |
 | `VulkanSampler::createWithAddressMode(out, mode, device, physicalDevice)` (`unique_ptr`) | `VulkanSampler::createWithAddressMode(ctx, mode)` (`Result<Handle<VulkanSampler>>`) |
 | `std::array<VkImageView, MAX_FRAMES>` for per-frame images | `PerFrameHandles<Image>` collections (`PerFrameHandles<Image>::createManaged(ctx, factory)` for factories returning `Result`s, `ctx.resources().create<PerFrameHandles<T>>(ctx, factory)` for ones that can't fail), or graph images with `FrameMode::PerFrame` |
