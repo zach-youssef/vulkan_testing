@@ -1,0 +1,50 @@
+;; A program streaming a file into a stream-buffer (web/tests/stream-buffers.html): its header
+;; gives its size in words, and each frame sums the words that have arrived, printing each streamed
+;; event and, once the whole file is summed, the sum, then quits. Its opener (streamer.inputs.ts)
+;; streams the file the command line names through the context's assets: fetched beside the
+;; program, or a Blob the page gives.
+
+(struct SceneHeader
+  (magic uint)
+  (words uint))
+
+;; The sum of the first count words, and count
+(compute-material Total
+  (workgroup 1)
+  (bindings (words (buffer-array uint)) (sums (buffer-array uint)))
+  (push (count uint))
+  (compute
+   (write! (at sums 0) (sum ([i (range (uint 0) count)]) (at words i)))
+   (write! (at sums 1) count)))
+
+(graph Streaming
+  (parameter perFrame uint)
+  (input open (stream SceneHeader))
+  (input file path)
+  (input count (per-frame uint))
+  (stream-buffer scene open file #:words (.words (stream-header scene)) #:per-frame perFrame)
+  (buffer sums uint 2 #:frames shared)
+  (material summing Total (words scene) (sums sums) #:push ((count count)) #:invocations (1))
+  (dispatch sum summing)
+  (readback readSums sums))
+
+(app Streamer
+  (parameter source path)
+  (parameter perFrame uint)
+  (state
+   (arrived uint 0)
+   (total uint 0))
+  (on (streamed scene arrived total)
+    (print! "streamed " arrived " of " total)
+    (with state #:arrived arrived #:total total))
+  (on (read readSums sums)
+    (when (and (> state.total 0) (= (* (at sums 1) 4) state.total))
+      (print! "summed " (at sums 1) " words: " (at sums 0))
+      (quit!))
+    state)
+  (run Streaming (perFrame perFrame) (file source) (count (/ state.arrived 4))))
+
+(main Streamer
+  (about "Sums a streamed file's words")
+  (option perFrame "--per-frame" "the bytes a frame streams" #:default 4096 #:range (4 1048576))
+  (positional source "the file to stream: a SceneHeader, then the rest of its words"))

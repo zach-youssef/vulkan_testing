@@ -245,6 +245,12 @@ MAIN_TEST_WEB = $(OUT)/web/main
 
 $(eval $(call zgal-web-program,$(TEST_DIR)/main/painter.zgal,$(MAIN_TEST_WEB)))
 
+# A program streaming a file into a stream-buffer (its opener in streamer.inputs.ts), for the web
+# only: make test-web runs it under Node, and web/tests/stream-buffers.html in browsers
+STREAM_TEST_WEB = $(OUT)/web/streamer
+
+$(eval $(call zgal-web-program,$(TEST_DIR)/stream/streamer.zgal,$(STREAM_TEST_WEB)))
+
 test-main: $(MAIN_TEST_BIN) $(IMAGE_FILTER_DIFF)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-main-steps
 
@@ -326,6 +332,8 @@ test-web-steps:
 	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js $(TEST_DIR)/gpu/assets/missing.png $(MAIN_TEST_WEB)/out.png > /dev/null 2>&1; test $$? -eq 1
 	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_WEB)/out.png --level 0.5 --side 6 --frames 3 | grep -qx "level 0.25"
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/main/painted.approved.png $(MAIN_TEST_WEB)/out.png 0
+	$(MAKE) $(STREAM_TEST_WEB)
+	$(NODE) $(STREAM_TEST_WEB)/streamer.zgal.main.js $(TEST_DIR)/stream/assets/scene.bin --per-frame 1000 --frames 100 | grep -qx "summed 1024 words: 1569910"
 	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_WEB)/out.png --marks-file $(MAIN_TEST_WEB)/missing.bin > /dev/null 2>&1; test $$? -eq 1
 	printf '\005\000\000\000\007\000\000\000' > $(MAIN_TEST_WEB)/marks.bin
 	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_WEB)/marked.png --marks-file $(MAIN_TEST_WEB)/marks.bin --frames 10 | grep -qx "marks 5 7"
@@ -354,7 +362,8 @@ test-decode-steps:
 # (web/tests/image-file.html), the compute library (web/tests/kernels.html), indirect work
 # (web/tests/indirect.html), models (web/tests/models.html), programs without a window
 # (web/tests/headless.html), functions storing into images they're given (web/tests/stamps.html),
-# streamed assets (web/tests/streams.html)
+# streamed assets (web/tests/streams.html), stream-buffers (web/tests/stream-buffers.html, through
+# tests/stream/streamer.zgal's main)
 # and the image decoder (web/tests/image-decode.html, comparing with native decodes stb_dump saves
 # beside the images), with web/tests' graphs built into graphs/, in each of BROWSERS: by default
 # only headless Chromium on SwiftShader. Firefox opens windows (it has no WebGPU adapter headless,
@@ -366,7 +375,7 @@ test-decode-steps:
 BROWSERS = chromium
 BROWSERS_REQUIRED = $(if $(filter command line environment override,$(origin BROWSERS)),1)
 TEST_PAGES = $(OUT)/web/tests
-test-pages: web $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE)
+test-pages: web $(STREAM_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-pages-steps
 
 test-pages-steps:
@@ -396,7 +405,7 @@ test-pages-steps:
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/blur_edges-$$browser.png \
 	    'image_filter/image_filter.zgal.html?arg=/tests/assets/input.png&arg=out.png&blur=2&edges' || exit 1; \
 	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/blur_edges-$$browser.png 2 || exit 1; \
-	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps streams; do \
+	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps streams stream-buffers; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \
 	done

@@ -1,0 +1,131 @@
+<!doctype html>
+<!-- Stream-buffers in a browser, through tests/stream/streamer.zgal's runHeadless: its scene streamed
+     from the fetch of a served file (streamer/assets/scene.bin, relative to the program's assets)
+     and from a Blob the page gives, each summed whole once its streamed events say it has arrived; a
+     stream that can't be opened and a bad --per-frame fail the run; and stopping a run mid-stream
+     cancels the stream's source while it's still open, where a run reading the whole of its stream
+     cancels nothing (web/tests/streaming.test.ts checks the rest under Node). Checked by
+     make test-pages (web/tools/chromium.ts and firefox.ts); the page's state is in <html data-zgal>.
+     Served from build/web/tests, beside streamer/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL stream-buffer test</title>
+</head>
+<body>
+<pre id="zgal-message"></pre>
+<script type="module">
+import * as streamer from '../streamer/streamer.zgal.main.js';
+import { output } from '../streamer/zgal/index.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+const check = (ok, text) => { if (!ok) throw new Error(text); };
+
+// The streams' sources cancelled (a fetch body's, a Blob's): none by runs that read the whole stream
+let cancels = 0;
+const cancel = ReadableStreamDefaultReader.prototype.cancel;
+ReadableStreamDefaultReader.prototype.cancel = function (...args) {
+  cancels++;
+  return cancel.apply(this, args);
+};
+
+// The program's print! lines go to the run's messages too (runHeadless gives its own, e.g. failures,
+// to onMessage)
+let printed = null;
+output.line = (text) => {
+  console.log(text);
+  printed?.(text);
+};
+
+// Runs streamer headless to its end; stopWhen(messages) stops it early
+async function run(args, files, stopWhen = () => false) {
+  const messages = [];
+  let program;
+  let stopped = null;
+  const note = (text) => {
+    messages.push(text);
+    if (stopped === null && stopWhen(messages)) stopped = program.stop();
+  };
+  printed = note;
+  program = streamer.runHeadless({ args, files, onMessage: note });
+  const state = await program.done;
+  await stopped;
+  return { state, messages };
+}
+
+// Checks a whole scene's run: streamed events growing by whole words, at most perFrame bytes each
+// (fewer when fewer had arrived), to its size, then its words' sum
+function checkRun(what, result, size, perFrame, sum) {
+  const printed = result.messages.join('\n');
+  check(result.state === 'stopped', `${what}'s run ended ${result.state}:\n${printed}`);
+  const events = result.messages.slice(0, -1);
+  let last = 0;
+  for (const event of events) {
+    const match = /^streamed (\d+) of (\d+)$/.exec(event);
+    check(match !== null && Number(match[2]) === size, `${what}'s run printed:\n${printed}`);
+    const arrived = Number(match[1]);
+    check(arrived % 4 === 0 && arrived > last && arrived - last <= perFrame, `${what}'s events went from ${last} to ${arrived} bytes:\n${printed}`);
+    last = arrived;
+  }
+  check(last === size, `${what}'s events ended at ${last} of ${size} bytes:\n${printed}`);
+  check(result.messages.at(-1) === `summed ${size / 4} words: ${sum}`, `${what}'s run summed:\n${printed}`);
+}
+
+try {
+  // The served file: 1024 words, summing to 1569910 (tests/stream/assets/scene.bin)
+  const unchanged = cancels;
+  const served = await run(['scene.bin', '--per-frame', '1000', '--frames', '1000'], {});
+  checkRun('the served scene', served, 4096, 1000, 1569910);
+
+  // A Blob: a header and 301 more words
+  const words = new Uint32Array(303);
+  words[0] = 0x5a47;
+  words[1] = words.length;
+  let sum = words[0] + words[1];
+  for (let i = 2; i < words.length; i++) {
+    words[i] = (i * 2654435761) >>> 16;
+    sum = (sum + words[i]) >>> 0;
+  }
+  const blob = await run(['scene.bin', '--per-frame', '64', '--frames', '1000'], { 'scene.bin': new Blob([words]) });
+  checkRun('the Blob', blob, words.length * 4, 64, sum);
+  check(cancels === unchanged, `runs that read their whole streams cancelled ${cancels - unchanged} sources`);
+
+  // Failures
+  const missing = await run(['missing.bin'], {});
+  check(missing.state === 'failed' && /opening stream 'missing\.bin': .*404/.test(missing.messages.join('\n')), `a missing scene's run ended ${missing.state}:\n${missing.messages.join('\n')}`);
+  const odd = await run(['scene.bin', '--per-frame', '6'], {});
+  check(odd.state === 'failed' && /appends 6 bytes per frame, which isn't a positive multiple of 4/.test(odd.messages.join('\n')), `--per-frame 6 ended ${odd.state}:\n${odd.messages.join('\n')}`);
+
+  // Stopped mid-stream: a source a word every few milliseconds, of a scene of a million words that
+  // it never finishes, is cancelled by the time the stop is done, while it's still open
+  let open = true;
+  let cancelledOpen = false;
+  class Trickle extends Blob {
+    stream() {
+      let next = 0;
+      return new ReadableStream({
+        async pull(controller) {
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          controller.enqueue(new Uint8Array(new Uint32Array([next === 0 ? 0x5a47 : next === 1 ? 1000000 : next]).buffer));
+          next++;
+        },
+        cancel() { cancelledOpen = open; },
+      });
+    }
+  }
+  const stopped = await run(['scene.bin', '--per-frame', '4', '--frames', '100000'], { 'scene.bin': new Trickle([]) }, (m) => m.length === 3);
+  open = false;
+  check(stopped.state === 'stopped', `a run stopped mid-stream ended ${stopped.state}:\n${stopped.messages.join('\n')}`);
+  check(stopped.messages.length >= 3 && stopped.messages.every((m) => /^streamed \d+ of 4000000$/.test(m)), `a run stopped mid-stream printed:\n${stopped.messages.join('\n')}`);
+  check(cancelledOpen, 'stopping a run mid-stream didn\'t cancel its open stream');
+
+  log('streamed buffers as expected');
+  document.documentElement.dataset.zgal = 'stopped';
+} catch (error) {
+  log(error instanceof Error ? error.message : String(error));
+  document.documentElement.dataset.zgal = 'failed';
+}
+</script>
+</body>
+</html>

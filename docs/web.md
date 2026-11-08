@@ -99,8 +99,9 @@ then:
    `build/web/<name>`) and runs them under Node, comparing image_filter's outputs with
    `web/tools/image-diff.ts` (which compares PNGs as `image_diff.cpp` does), and runs
    `tests/main/painter.zgal` as `make test-main` runs it natively (its TypeScript giving its
-   `MainInputs`) (`headless.test.ts` needs no GPU: the PNG encoders and `parseCommandLine`'s
-   `where`);
+   `MainInputs`), and `tests/stream/streamer.zgal` streaming a file (its opener in
+   `streamer.inputs.ts`) (`headless.test.ts` needs no GPU: the PNG encoders and
+   `parseCommandLine`'s `where`);
 3. runs `make test-pages`: the particles and scene pages, image_filter's page (run from its query
    string, its capture saved with the checkers' `--save-capture` and compared with
    `blur_edges.approved.png`), `web/tests/mount.html` (mounts two programs and stops one),
@@ -110,6 +111,9 @@ then:
    pages, `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main),
    `web/tests/stamps.html` (functions storing into the storage images they're given) and
    `web/tests/streams.html` (assets streamed from fetch bodies, and Blobs' streams),
+   `web/tests/stream-buffers.html` (`tests/stream/streamer.zgal`'s stream-buffer filled from a
+   served file and from a `Blob` through `runHeadless`, its failures, and runs stopped mid-stream
+   cancelling their streams),
    in each browser of `BROWSERS`: by default only headless Chromium. Firefox opens windows, so it
    runs only when asked, `make test-web BROWSERS="chromium firefox"` (as before pushing a stack's
    top), and has no WebGPU on Linux (CI skips it). A browser found nowhere is skipped (Chromium is
