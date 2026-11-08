@@ -1,0 +1,42 @@
+;; Stream buffers on the web (streaming.test.ts): a buffer a stream fills over frames, sized by
+;; its header, and the streamed events an app gets before the frames whose bytes changed
+
+(struct SceneHeader
+  (magic uint)
+  (words uint))
+
+;; The sum of the first count words, and count
+(compute-material Total
+  (workgroup 1)
+  (bindings (words (buffer-array uint)) (sums (buffer-array uint)))
+  (push (count uint))
+  (compute
+   (write! (at sums 0) (sum ([i (range (uint 0) count)]) (at words i)))
+   (write! (at sums 1) count)))
+
+(graph Streaming
+  (input open (stream SceneHeader))
+  (input file path)
+  (input count (per-frame uint))
+  (stream-buffer scene open file #:words (.words (stream-header scene)) #:per-frame 64)
+  (buffer sums uint 2 #:frames shared)
+  (material summing Total (words scene) (sums sums) #:push ((count count)) #:invocations (1))
+  (dispatch sum summing)
+  (readback readSums sums)
+  (readback readScene scene))
+
+;; Sums the words that have arrived each frame: the streamed event comes first, so the frame handler
+;; and the frame's nodes see what it gave
+(app Streamer
+  (state
+   (arrived uint 0)
+   (total uint 0)
+   (events uint 0)
+   (summed uint 0)
+   (counted uint 0))
+  (on (streamed scene arrived total)
+    (print! "streamed " arrived " of " total)
+    (with state #:arrived arrived #:total total #:events (+ state.events 1)))
+  (on (frame dt) (print! "frame " state.arrived) state)
+  (on (read readSums sums) (with state #:summed (at sums 0) #:counted (at sums 1)))
+  (run Streaming (count (/ state.arrived 4))))

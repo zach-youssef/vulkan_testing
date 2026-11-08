@@ -181,3 +181,21 @@
   (on (frame dt) (when (> dt 1.0) (print! "slow frame: " dt)) state)
   (on (read readCounts copied) (with state #:counts copied))
   (run Tallying (size size) (rounds state.rounds) #:enabled ((tally (not state.paused)))))
+
+;; Stream buffers: opened, and their headers read, when the graph is built, then filled over frames;
+;; apps get a streamed event before each frame whose bytes changed. The header is any struct.
+
+(graph Streaming
+  (input open (stream Settings))
+  (input file path)
+  (stream-buffer scene open file #:words (.target (stream-header scene)) #:per-frame 4096)
+  ;; Its header is a build-time value
+  (constant halves (/ (.target (stream-header scene)) 2))
+  (buffer firstHalf uint halves #:frames shared)
+  (copy copyHalf scene firstHalf #:count halves)
+  (readback readScene scene))
+
+(app Streamer
+  (state (arrived uint 0))
+  (on (streamed scene arrived total) (print! arrived " of " total) (with state #:arrived arrived))
+  (run Streaming))

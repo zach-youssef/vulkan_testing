@@ -1,20 +1,24 @@
-// Stream buffers (RenderGraph.createStreamBuffer): frames write whole words of what has arrived, at
-// most bytesPerFrame each, from chunks of uneven lengths; a stream that fails, gives too much or ends
-// early fails the frame and every later one, as natively.
+// Stream buffers (RenderGraph.createStreamBuffer) and the streamed events of apps compiled from
+// streaming.zgal: frames write whole words of what has arrived, at most bytesPerFrame each, from
+// chunks of uneven lengths; a stream that fails, gives too much or ends early fails the frame and
+// every later one; and an app's streamed event comes before the frame handler, as natively.
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
+import { Streamer } from '../streaming.zgal.ts';
 
 let context: zgal.Context;
 let scratch: string;
+const printed: string[] = [];
 
 before(async () => {
   scratch = mkdtempSync(join(tmpdir(), 'zgal-streaming-'));
   context = await createNodeContext([scratch]);
+  zgal.output.line = (text) => printed.push(text);
 });
 
 after(() => {
@@ -263,4 +267,94 @@ test('destroying a graph cancels its streams', async () => {
   graph.destroy();
   assert.equal(cancelled(), true);
   assert.throws(() => stream.read(4), /scripted: cancelled/);
+});
+
+// A scene file: its header (magic, its size in words) and words counting up from 1000
+function scene(name: string, count: number): void {
+  const data = new Uint32Array(count);
+  data[0] = 0x5a47;
+  data[1] = count;
+  for (let i = 2; i < count; i++) data[i] = 1000 + i;
+  writeFileSync(join(scratch, name), new Uint8Array(data.buffer));
+}
+
+async function frame(app: Streamer): Promise<void> {
+  app.beginFrame();
+  await app.renderGraph().execute();
+}
+
+test('an app\'s streamed event comes before the frame handler, as the stream\'s bytes arrive', async () => {
+  // 50 words: 200 bytes, 64 a frame
+  scene('scene.bin', 50);
+  const opened: string[] = [];
+  const graph = new zgal.RenderGraph(context);
+  const app = await Streamer.create(context, graph, {
+    timestep: zgal.Timestep.fixed(0.25),
+    open: (path, c) => {
+      opened.push(path);
+      return c.loadAssetStream(path);
+    },
+    file: 'scene.bin',
+  });
+  // The opener gets the path as written; it resolves it
+  assert.deepEqual(opened, ['scene.bin']);
+  printed.length = 0;
+  for (let i = 0; i < 6; i++) await frame(app);
+  assert.deepEqual(printed, [
+    'streamed 64 of 200', 'frame 64',
+    'streamed 128 of 200', 'frame 128',
+    'streamed 192 of 200', 'frame 192',
+    'streamed 200 of 200', 'frame 200',
+    'frame 200',
+    'frame 200',
+  ]);
+  assert.equal(app.state.events, 4);
+  assert.equal(app.state.total, 200);
+  // The frames' nodes summed what the event gave (the readback's handler runs a frame later)
+  const expected = (count: number) => {
+    let sum = 0;
+    for (let i = 0; i < count; i++) sum += i === 0 ? 0x5a47 : i === 1 ? 50 : 1000 + i;
+    return sum;
+  };
+  // Copies finish when they finish: run until the last frame's is read, checking each one
+  for (let i = 0; app.state.counted < 50 && i < 100; i++) {
+    assert.equal(app.state.summed, expected(app.state.counted));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await frame(app);
+  }
+  assert.equal(app.state.counted, 50);
+  assert.equal(app.state.summed, expected(50));
+  const contents = await app.ids.readSceneContents(graph);
+  assert.equal(contents[1], 50);
+  assert.equal(contents[49], 1049);
+  await app.ids.readSumsContents(graph);
+  graph.destroy();
+});
+
+test('an app\'s stream that can\'t be opened fails its creation; one with a short header, its first frame', async () => {
+  const missing = new zgal.RenderGraph(context);
+  await assert.rejects(
+    Streamer.create(context, missing, { timestep: zgal.Timestep.fixed(0.25), open: (path, c) => c.loadAssetStream(path), file: 'missing.bin' }),
+    /^Error: loading Streaming's stream-buffer scene: opening stream 'missing\.bin': can't open asset stream missing\.bin: not found in /,
+  );
+  missing.destroy();
+
+  writeFileSync(join(scratch, 'short.bin'), bytes(0, 5));
+  const short = new zgal.RenderGraph(context);
+  const app = await Streamer.create(context, short, { timestep: zgal.Timestep.fixed(0.25), open: (path, c) => c.loadAssetStream(path), file: 'short.bin' });
+  // The header reads as zeros: an empty buffer
+  assert.equal(app.renderGraph().streamTotal(app.ids.buffers.scene), 0);
+  assert.throws(() => app.beginFrame(), /^Error: streaming buffer 'scene': the source failed: stream 'short\.bin' ended after 5 bytes of its 8-byte header$/);
+  short.destroy();
+});
+
+test('an app refuses a stream of 4 GiB or more when it\'s created, as its events give sizes as uints', async () => {
+  const header = new Uint32Array([0x5a47, 0x40000000]);
+  writeFileSync(join(scratch, 'huge.bin'), new Uint8Array(header.buffer));
+  const graph = new zgal.RenderGraph(context);
+  await assert.rejects(
+    Streamer.create(context, graph, { timestep: zgal.Timestep.fixed(0.25), open: (path, c) => c.loadAssetStream(path), file: 'huge.bin' }),
+    /^Error: Streaming's stream-buffer scene holds 4294967296 bytes, but streamed events give its size as a uint, so it must be under 4 GiB$/,
+  );
+  graph.destroy();
 });

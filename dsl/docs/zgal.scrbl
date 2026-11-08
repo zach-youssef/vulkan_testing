@@ -1157,8 +1157,9 @@ ending within its header, failing or throwing while it's read, giving more than 
 or ending before it's full (including within its last word) fails the next frame
 (@tt{RenderGraph::execute()}, or an app's @tt{beginFrame()} when the app has a streamed handler
 for that graph), and every one after, with
-@tt{ErrorCode::InvalidData}. Stream-buffers are native only, for now (@tt{not-on-web}), and take no
-@tt{#:when}.
+@tt{ErrorCode::InvalidData}. Stream-buffers take no @tt{#:when}. On the web, the opener is a
+@tt{zgal.StreamOpener} (usually @tt{context.loadAssetStream}, streaming fetch bodies), the
+semantics are the same, and a frame takes what has arrived without waiting (@tt{docs/web.md}).
 
 @(zgal-example stream-buffer-source)
 @(generated-file stream-buffer-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto stream_scene" #:to #rx"result.buffers.scene")
@@ -1768,9 +1769,10 @@ files (RGBA8) have read events.
 A streamed event is how an app shows progress, or draws only what has arrived (a count from
 @tt{arrived}, a @tt{uint} multiple of 4, as a per-frame input). Before each frame the app reads
 the coming frame's bytes of the stream (@tt{RenderGraph::readStreams()}, which may block while the
-stream does), so @tt{beginFrame()} fails, as the frame would, once the stream has. Sizes are
-@tt{uint}s, so a streamed buffer is under 4 GiB: the app's @tt{create()} fails with
-@tt{ErrorCode::InvalidData} otherwise (e.g. when a header's word count is corrupt).
+stream does natively, and never does on the web), so @tt{beginFrame()} fails, as the frame would,
+once the stream has. Sizes are @tt{uint}s, so a streamed buffer is under 4 GiB: the app's
+@tt{create()} fails with @tt{ErrorCode::InvalidData} otherwise (e.g. when a header's word count is
+corrupt).
 
 Cursor positions are in [-1, 1] across the window, y down, like Vulkan's clip space. Keys are
 @tt{a}-@tt{z}, @tt{0}-@tt{9}, @tt{space}, @tt{escape}, @tt{enter}, @tt{tab}, @tt{backspace},

@@ -688,6 +688,50 @@ export class Staged {
   }
 }
 
+// graph Streaming: build() adds its resources, materials and nodes to a RenderGraph
+export interface StreamingInputs {
+  open: zgal.StreamOpener;
+  file: string;
+}
+
+export class Streaming {
+  images: {} = {} as Streaming['images'];
+  buffers: { scene: zgal.GraphBuffer; firstHalf: zgal.GraphBuffer } = {} as Streaming['buffers'];
+  nodes: { copyHalf: zgal.NodeId; readScene: zgal.NodeId } = {} as Streaming['nodes'];
+
+  // The elements readback readScene copied in the most recent frame (waiting for it)
+  readSceneContents(graph: zgal.RenderGraph): Promise<number[]> {
+    return graph.node<zgal.BufferReadbackNode>(this.nodes.readScene).contents<number>();
+  }
+
+  // Adds the graph's resources, materials and nodes to `graph`. Its materials and nodes keep
+  // the inputs' functions, so whatever those use must outlive the graph.
+  static async build(context: zgal.Context, graph: zgal.RenderGraph, inputs: StreamingInputs): Promise<Streaming> {
+    const result = new Streaming();
+    const need = <T>(x: T | undefined, what: string): T => {
+      if (x === undefined) throw new Error(`Streaming: ${what} isn't created (its #:when is false)`);
+      return x;
+    };
+    void need;
+    const stream_scene = await zgal.openStream(inputs.open, inputs.file, context, Settings, 'loading Streaming\'s stream-buffer scene');
+    const header_scene = stream_scene.header;
+    const buffer_scene = graph.createStreamBuffer('scene', stream_scene.stream, header_scene.target, 4096);
+    result.buffers.scene = buffer_scene;
+    const constant_halves = (zgal.math.div('uint', header_scene.target, 2) as number);
+    const buffer_firstHalf = graph.createBuffer('firstHalf', zgal.uint, constant_halves);
+    result.buffers.firstHalf = buffer_firstHalf;
+    {
+      const node = graph.add(new zgal.CopyNode('copyHalf', graph, buffer_scene, buffer_firstHalf, (frame) => 0, (frame) => 0, (frame) => constant_halves));
+      result.nodes.copyHalf = node;
+    }
+    {
+      const node = graph.add(new zgal.BufferReadbackNode('readScene', graph, buffer_scene));
+      result.nodes.readScene = node;
+    }
+    return result;
+  }
+}
+
 // app Counter: its state, the handlers computing the next one, and graph Tallying
 export interface CounterState {
   rounds: number;
@@ -843,5 +887,118 @@ export class Counter {
   private enabled_tally(): boolean {
     const state = this.current;
     return !state.paused;
+  }
+}
+
+// app Streamer: its state, the handlers computing the next one, and graph Streaming
+export interface StreamerState {
+  arrived: number;
+}
+
+// What the page or Node gives it: the parameters, the clock, and graph inputs the app doesn't compute
+export interface StreamerInputs {
+  open: StreamingInputs['open'];
+  file: StreamingInputs['file'];
+}
+
+export class Streamer {
+  readonly context: zgal.Context;
+  private readonly inputs: StreamerInputs;
+  private readonly graph0: zgal.RenderGraph;
+  private ids0!: Streaming;
+  private active: zgal.RenderGraph;
+  // The frame being drawn (frameNumber; 0 until the first), and the frames begun
+  private frameNumber = 0;
+  private framesBegun = 0;
+  private current: StreamerState;
+  private quit = false;
+  private resize: [number, number] | null = null;
+  // The bytes of scene the last streamed event gave
+  private arrived0 = 0;
+
+  private constructor(context: zgal.Context, graph: zgal.RenderGraph, inputs: StreamerInputs) {
+    this.context = context;
+    this.inputs = inputs;
+    this.graph0 = graph;
+    this.active = graph;
+    this.current = this.initialState();
+  }
+
+  // The app, with its initial state, adding its graph to `graph`. The graphs' callbacks use the app, so it must outlive their use.
+  static async create(context: zgal.Context, graph: zgal.RenderGraph, inputs: StreamerInputs): Promise<Streamer> {
+    const app = new Streamer(context, graph, inputs);
+    app.ids0 = await Streaming.build(context, app.graph0, {
+      open: inputs.open,
+      file: inputs.file,
+    });
+    if (app.graph0.streamTotal(app.ids0.buffers.scene) > 0xFFFFFFFF) {
+      throw new Error(`Streaming's stream-buffer scene holds ${app.graph0.streamTotal(app.ids0.buffers.scene)} bytes, but streamed events give its size as a uint, so it must be under 4 GiB`);
+    }
+    return app;
+  }
+
+  get state(): StreamerState {
+    return this.current;
+  }
+
+  // Replaces the state, e.g. for tests driving the app
+  setState(state: StreamerState): void {
+    this.current = state;
+  }
+
+  // Graph Streaming's ids: its images, buffers and nodes
+  get ids(): Streaming {
+    return this.ids0;
+  }
+
+  // The graph to draw this frame
+  renderGraph(): zgal.RenderGraph {
+    return this.active;
+  }
+
+  // Whether a handler asked to quit (quit!)
+  quitRequested(): boolean {
+    return this.quit;
+  }
+
+  // The size a handler last asked for (resize!), once: the canvas's, or headless, the graphs' surface extent
+  takeResize(): [number, number] | null {
+    const size = this.resize;
+    this.resize = null;
+    return size;
+  }
+
+  // Sets the surface extent of every graph the app runs, headless
+  setSurfaceExtent(extent: [number, number]): void {
+    this.graph0.setSurfaceExtent(extent);
+  }
+
+  // Runs the handler for event, if the app has one
+  handle(event: zgal.Event): void {
+    void event;
+  }
+
+  // Each frame, before drawing: the handlers of streams' new bytes, the frame handler, then which graph is drawn and which of its nodes are enabled
+  beginFrame(): void {
+    this.frameNumber = this.framesBegun++;
+    {
+      this.graph0.readStreams();
+      const arrived = this.graph0.streamArrived(this.ids0.buffers.scene);
+      if (arrived !== this.arrived0) {
+        this.arrived0 = arrived;
+        this.current = this.on0(this.current, arrived, this.graph0.streamTotal(this.ids0.buffers.scene));
+      }
+    }
+  }
+
+  private initialState(): StreamerState {
+    return { arrived: 0 };
+  }
+
+  private on0(state: StreamerState, arrived: number, total: number): StreamerState {
+    zgal.output.line([String(arrived), ' of ', String(total)].join(''));
+    let zgalUpdated1: StreamerState = { ...state };
+    zgalUpdated1.arrived = arrived;
+    return zgalUpdated1;
   }
 }

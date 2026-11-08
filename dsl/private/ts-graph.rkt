@@ -95,6 +95,7 @@
         (if (eq? (entry-kind (hash-ref env input)) 'per-frame-data)
             (format "data_~a(frame).length" input)
             (format "inputs.~a.length" input))]
+       [(stream-header) (format "header_~a" (e-ref-name (first args)))]
        [(float) (format "zgal.math.toFloat(~a)" (recur (first args)))]
        [(int) (format "zgal.math.toInt(~a)" (recur (first args)))]
        [(uint) (format "zgal.math.toUint(~a)" (recur (first args)))]
@@ -133,10 +134,6 @@
   (for ([item (in-list items)])
     (match item
       [(g-import-images n _ l) (web-error l "WebGPU has no arrays of bindings, so ~a's images can't be imported for one" n)]
-      ;; Until the web backend streams (VZ2b). Every stream-buffer reads a stream input, so this
-      ;; refuses them too.
-      [(g-input n 'stream _ l)
-       (web-error l "the web backend doesn't stream buffers yet, so stream input ~a (and the stream-buffers it fills) has no web form" n)]
       [(g-sampler n o l)
        (when (eq? (cond [(assq 'address o) => cdr] [else #f]) 'clamp-to-border)
          (web-error l "WebGPU's samplers have no border colour, so sampler ~a can't clamp to one" n))]
@@ -177,6 +174,7 @@
                 ['extern (format "(graph: zgal.RenderGraph, ids: ~a~a) => zgal.NodeId[]" name
                                  (string-append* (for/list ([a (in-list t)] [i (in-naturals)]) (format ", a~a: ~a" i (ts-value-type a)))))]
                 ['path "string"]
+                ['stream "zgal.StreamOpener"]
                 ['meshes "readonly zgal.Mesh[]"]))]
       [(g-import n _ _) (line! "  ~a: GPUTexture;" n)]
       [(g-import-buffer n _ _) (line! "  ~a: GPUBuffer;" n)]
@@ -190,7 +188,7 @@
     (append (members "GraphImage" (λ (i) (or (g-import? i) (g-image-file? i) (g-model-textures? i))) graph-item-name (λ (_) #f))
             (members "GraphImage" g-image? graph-item-name g-image-when)))
   (define buffer-members
-    (append (members "GraphBuffer" (λ (i) (or (g-import-buffer? i) (g-upload? i) (g-buffer-file? i) (g-model-factors? i) (g-model-draws? i) (g-model-bounds? i)))
+    (append (members "GraphBuffer" (λ (i) (or (g-import-buffer? i) (g-upload? i) (g-buffer-file? i) (g-model-factors? i) (g-model-draws? i) (g-model-bounds? i) (g-stream-buffer? i)))
                      graph-item-name (λ (i) (and (g-buffer-file? i) (g-buffer-file-when i))))
             (members "GraphBuffer" g-buffer? graph-item-name g-buffer-when)))
   (define node-members
@@ -311,6 +309,14 @@
        (line! "    result.buffers.~a = buffer_~a;" n n)]
       [(g-constant n e t _)
        (line! "    const constant_~a = ~a;" n (expr e t))]
+      ;; Opened and its header read now; its bytes arrive over frames
+      [(g-stream-buffer n opener header source words per-frame _)
+       (line! "    const stream_~a = await zgal.openStream(inputs.~a, ~a, context, ~a, ~a);" n opener
+              (if (asset-source-path source) (ts-string (asset-source-path source)) (format "inputs.~a" (asset-source-input source)))
+              (ts-layout-type header) (ts-string (format "loading ~a's stream-buffer ~a" name n)))
+       (line! "    const header_~a = stream_~a.header;" n n)
+       (line! "    const buffer_~a = graph.createStreamBuffer(~a, stream_~a.stream, ~a, ~a);" n (ts-string n) n (uint-expr words) (uint-expr per-frame))
+       (line! "    result.buffers.~a = buffer_~a;" n n)]
       [(g-sampler n o _)
        (define (opt k) (cond [(assq k o) => cdr] [else #f]))
        (define filter (if (eq? (opt 'filter) 'nearest) "nearest" "linear"))

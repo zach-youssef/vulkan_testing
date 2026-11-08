@@ -50,6 +50,7 @@
   (define (kind-of h) (event-kind (handler-event h)))
   (define frame-handler (findf (λ (h) (eq? (kind-of h) 'frame)) handlers))
   (define read-handlers (filter (λ (h) (eq? (kind-of h) 'read)) handlers))
+  (define streamed-handlers (filter (λ (h) (eq? (kind-of h) 'streamed)) handlers))
   (define (run-graph r) (graph-run-graph r))
   (define (run-index r) (index-of runs r))
   (define (graph-member r) (format "this.graph~a" (run-index r)))
@@ -125,6 +126,9 @@
     (line! "  private current: ~a;" state-type)
     (line! "  private quit = false;")
     (line! "  private resize: [number, number] | null = null;")
+    (for ([h (in-list streamed-handlers)])
+      (line! "  // The bytes of ~a the last streamed event gave" (stream-event-buffer (event-stream (handler-event h))))
+      (line! "  private arrived~a = 0;" (index-of handlers h)))
     (line! "")
     (define graphs-parameter
       (cond [(or single? (null? runs)) "graph: zgal.RenderGraph"] [else (format "graphs: ~aGraphs" name)]))
@@ -160,7 +164,17 @@
       (line! "    app.ids~a = await ~a.build(context, app.graph~a, {" (run-index r) (graph-name g) (run-index r))
       (for ([m (in-list (sort (append computed given) < #:key (λ (m) (index-of order (car m)))))])
         (line! "      ~a: ~a," (car m) (cdr m)))
-      (line! "    });"))
+      (line! "    });")
+      ;; Streamed events give uint sizes, which a buffer of 4 GiB or more (e.g. from a corrupt
+      ;; header) would wrap
+      (for ([h (in-list streamed-handlers)]
+            #:when (eq? (run-of-graph (stream-event-graph (event-stream (handler-event h)))) r))
+        (define buffer (stream-event-buffer (event-stream (handler-event h))))
+        (define total (format "app.graph~a.streamTotal(app.ids~a.buffers.~a)" (run-index r) (run-index r) buffer))
+        (line! "    if (~a > 0xFFFFFFFF) {" total)
+        (line! "      throw new Error(`~a's stream-buffer ~a holds ${~a} bytes, but streamed events give its size as a uint, so it must be under 4 GiB`);"
+               (graph-name g) buffer total)
+        (line! "    }")))
     (line! "    return app;")
     (line! "  }")
     (line! "")
@@ -237,8 +251,9 @@
     (line! "")
 
     ;; beginFrame
-    (line! "  // Each frame, before drawing: ~athe frame handler, then which graph is drawn and which of its nodes are enabled"
-           (if (null? read-handlers) "" "the handlers of readbacks' finished copies, "))
+    (line! "  // Each frame, before drawing: ~a~athe frame handler, then which graph is drawn and which of its nodes are enabled"
+           (if (null? read-handlers) "" "the handlers of readbacks' finished copies, ")
+           (if (null? streamed-handlers) "" "the handlers of streams' new bytes, "))
     (line! "  beginFrame(): void {")
     (line! "    this.frameNumber = this.framesBegun++;")
     (for ([h (in-list read-handlers)])
@@ -257,6 +272,22 @@
                                      (if image? (format "zgal.decode<~a>(~a, copied.pixels)" (ts-value-type element) (ts-layout-type element)) "copied")
                                      (if looped? (format ", ~a.nodes.~a.indexOf(~a)" (ids-member r) node-name id) "")
                                      (if image? ", copied.size" ""))))))
+    ;; Streams' bytes for the frame, read now (execute() doesn't read them again) so the handlers
+    ;; see what the frame's nodes will. A graph not drawn this frame keeps what it read for a later
+    ;; one.
+    (for ([h (in-list streamed-handlers)])
+      (match-define (stream-event g-name buffer _) (event-stream (handler-event h)))
+      (define r (run-of-graph g-name))
+      (define i (index-of handlers h))
+      (define id (format "~a.buffers.~a" (ids-member r) buffer))
+      (line! "    {")
+      (line! "      ~a.readStreams();" (graph-member r))
+      (line! "      const arrived = ~a.streamArrived(~a);" (graph-member r) id)
+      (line! "      if (arrived !== this.arrived~a) {" i)
+      (line! "        this.arrived~a = arrived;" i)
+      (line! "        this.current = this.~a(this.current, arrived, ~a.streamTotal(~a));" (handler-name h) (graph-member r) id)
+      (line! "      }")
+      (line! "    }"))
     (when frame-handler
       (line! "    this.current = this.~a(this.current, this.inputs.timestep.next());" (handler-name frame-handler)))
     (unless (or single? (null? runs))
@@ -301,7 +332,7 @@
       (define r (event-readback ev))
       (define binding-type
         (case (kind-of h)
-          [(frame) "number"]
+          [(frame streamed) "number"]
           [(read) (format "readonly ~a[]" (ts-value-type (read-event-element r)))]
           [else "[number, number]"]))
       (define parameters
@@ -309,7 +340,10 @@
                 (if (memq (kind-of h) '(key-pressed key-released)) '()
                     (list (format "~a: ~a" (if binding (ts-name binding) "_value") binding-type)))
                 (if (and r (read-event-looped? r)) (list (format "~a: number" (if (read-event-index r) (ts-name (read-event-index r)) "_index"))) '())
-                (if (and r (read-event-image? r)) (list (format "~a: ~a" (if (read-event-size r) (ts-name (read-event-size r)) "_size") (ts-value-type (vector-t 'uint 2)))) '())))
+                (if (and r (read-event-image? r)) (list (format "~a: ~a" (if (read-event-size r) (ts-name (read-event-size r)) "_size") (ts-value-type (vector-t 'uint 2)))) '())
+                ;; A streamed event's buffer size follows its bytes arrived
+                (let ([st (event-stream ev)])
+                  (if st (list (format "~a: number" (ts-name (stream-event-total st)))) '()))))
       (line! "")
       (lines! (ts-body-function (format "private ~a(~a): ~a" (handler-name h) (string-join parameters ", ") state-type)
                                 (handler-body h) "  ")))

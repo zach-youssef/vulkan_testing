@@ -110,14 +110,29 @@
                     "streamed scene is already handled")
   (check-zgal-error (string-replace app "(run G))" "(run G (open 1)))") 'type-mismatch "open is a stream input, which C++ gives"))
 
-(test-case "The web backend refuses stream inputs and buffers until it streams them"
-  (define (check-not-on-web text fragment)
-    (define e (zgal-error-of text #:web? #t))
-    (with-check-info (['program text])
-      (check-true (exn:zgal? e))
-      (when (exn:zgal? e)
-        (check-equal? (exn:zgal-id e) 'not-on-web)
-        (check-true (string-contains? (exn-message e) fragment) (exn-message e)))))
-  (check-not-on-web app "stream input open (and the stream-buffers it fills) has no web form")
-  ;; Native-only programs still compile natively alongside
-  (check-false (zgal-error-of app)))
+(test-case "On the web, stream buffers are opened and read as natively, and apps get the same streamed events"
+  (define ts (named (compile-text app #:web-dir "web") ".zgal.ts"))
+  (check-true (string-contains? ts "open: zgal.StreamOpener;"))
+  (check-true (string-contains? ts "const stream_scene = await zgal.openStream(inputs.open, inputs.file, context, Header, 'loading G\\'s stream-buffer scene');"))
+  (check-true (string-contains? ts "const header_scene = stream_scene.header;"))
+  (check-true (string-contains? ts "const buffer_scene = graph.createStreamBuffer('scene', stream_scene.stream, header_scene.words, 64);"))
+  (check-true (string-contains? ts "scene: zgal.GraphBuffer"))
+  ;; Its header is a build-time value, as natively
+  (check-true (regexp-match? #rx"header_scene = .*const constant_n = header_scene.words;" ts))
+  ;; The app: create refuses a buffer streamed sizes would wrap; beginFrame reads the streams and
+  ;; calls the handler when the bytes arrived changed, before the frame handler
+  (check-true (string-contains? ts "if (app.graph0.streamTotal(app.ids0.buffers.scene) > 0xFFFFFFFF) {"))
+  (check-true (string-contains? ts "throw new Error(`G's stream-buffer scene holds ${app.graph0.streamTotal(app.ids0.buffers.scene)} bytes, but streamed events give its size as a uint, so it must be under 4 GiB`);"))
+  (check-true (string-contains? ts "this.graph0.readStreams();"))
+  (check-true (string-contains? ts "const arrived = this.graph0.streamArrived(this.ids0.buffers.scene);"))
+  (check-true (string-contains? ts "if (arrived !== this.arrived0) {"))
+  (check-true (string-contains? ts "this.current = this.on0(this.current, arrived, this.graph0.streamTotal(this.ids0.buffers.scene));"))
+  (check-true (string-contains? ts "private on0(state: AState, arrived: number, total: number): AState {"))
+  (check-true (string-contains? ts "private arrived0 = 0;"))
+  (define with-frame (string-replace app "(run G))" "(on (frame dt) state) (run G))"))
+  (check-true (regexp-match? #rx"this.current = this.on0[(].*this.current = this.on1[(]this.current, this.inputs.timestep.next[(][)][)];"
+                             (named (compile-text with-frame #:web-dir "web") ".zgal.ts")))
+  ;; A string path
+  (define literal (string-replace app "open file #:words" "open \"scene.stream\" #:words"))
+  (check-true (string-contains? (named (compile-text literal #:web-dir "web") ".zgal.ts")
+                                "zgal.openStream(inputs.open, 'scene.stream', context, Header, ")))

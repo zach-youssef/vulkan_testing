@@ -50,7 +50,7 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   number). A frame failing after its writes (e.g. recording) keeps them; one failing before them
   (e.g. sizing a buffer) leaves its bytes for the next frame that writes. A buffer larger than the device's `maxBufferSize` fails its first frame
   (the app's 4 GiB refusal at `create()` comes first). `web/tests/streaming.test.ts` tests stream
-  buffers with uneven chunks under Node.
+  buffers with uneven chunks and the generated streamed events under Node.
 - `context.loadAssetStream(path)`, the streaming sibling of `loadAsset`, opens an asset through
   `ContextOptions.assetStreams`: browsers stream fetch bodies (and the `Blob`s given to
   `runHeadless`), and `createNodeContext` streams the file, opened (in the first asset directory
