@@ -1906,8 +1906,8 @@ file of its own (@secref["main-inputs"]).
        command line: a flag sets a @tt{bool} parameter when given; an option takes a value
        (@tt{int}, @tt{uint}, @tt{float} or @tt{path}), with a default and optionally a range, and
        @tt{#:given} also sets a @tt{bool} parameter when it's given; positionals are required, in
-       order. Paths are relative to the working directory. Each parameter is set by one option at
-       most.}
+       order. Paths are relative to the working directory, and an empty one stays empty (e.g. an
+       optional path's @tt{#:default ""}). Each parameter is set by one option at most.}
 ]
 
 Every program also has the built-in options:

@@ -106,9 +106,9 @@ std::optional<std::string> parseNumber(const std::string& text, T& out, std::opt
 }
 
 // A path given on the command line, which is relative to the working directory (asset search paths
-// don't apply to it)
+// don't apply to it). An empty one (e.g. an optional path option's default) stays empty: no path.
 inline std::filesystem::path commandLinePath(const std::string& text) {
-    return std::filesystem::absolute(text);
+    return text.empty() ? std::filesystem::path{} : std::filesystem::absolute(text);
 }
 
 /*

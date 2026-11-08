@@ -26,6 +26,7 @@ test('a program without a window runs headless in a page, not in a canvas', () =
   assert.ok(launch instanceof zgal.Launch);
   assert.equal(launch.frames, 1);
   assert.equal(launch.capture, zgal.commandLinePath('out.png')); // as the program's path parameters are
+  assert.equal(zgal.commandLinePath(''), ''); // An optional path option's default stays empty
   assert.equal(launch.window, false);
   const canvas = zgal.parseCommandLine(program, [...args], program.defaults(), 'canvas');
   assert.ok(!(canvas instanceof zgal.Launch));

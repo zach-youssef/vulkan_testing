@@ -93,10 +93,11 @@ export function parseNumber(kind: 'int' | 'uint' | 'float', text: string, set: (
 }
 
 // A path given on the command line: under Node, relative to the working directory (asset
-// directories don't apply to it); in a page, relative to the page
+// directories don't apply to it); in a page, relative to the page. An empty one (e.g. an optional
+// path option's default) stays empty: no path.
 export function commandLinePath(text: string): string {
   const process = (globalThis as { process?: { cwd(): string; versions?: { node?: string } } }).process;
-  if (!process?.versions?.node || text.startsWith('/')) return text;
+  if (!process?.versions?.node || text === '' || text.startsWith('/')) return text;
   return `${process.cwd()}/${text}`;
 }
 

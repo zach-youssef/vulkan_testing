@@ -38,3 +38,9 @@ TEST_CASE("Generated mains capture several frames into a directory, running as m
     CHECK(std::get<int>(parse({"--capture-frames", "0", "--capture", "d"})) == 2);              // Frames count from 1
     CHECK(std::get<int>(parse({"--capture-frames", "9", "--capture", "d", "--frames", "4"})) == 2);
 }
+
+TEST_CASE("Command-line paths are relative to the working directory, and an empty one stays empty") {
+    CHECK(zgal::commandLinePath("shots") == std::filesystem::absolute("shots"));
+    CHECK(zgal::commandLinePath("/tmp/shots") == std::filesystem::path("/tmp/shots"));
+    CHECK(zgal::commandLinePath("").empty()); // An optional path option's default (libstdc++'s absolute throws on it)
+}
