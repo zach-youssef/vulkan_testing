@@ -214,7 +214,8 @@
   (define (of-type pred) (filter pred items))
   (define (conditional? n)
     (match (hash-ref env n #f)
-      [(entry (or 'image 'buffer) _ item) (and (if (g-image? item) (g-image-when item) (g-buffer-when item)) #t)]
+      [(entry (or 'image 'buffer 'upload) _ item)
+       (and (match item [(? g-image?) (g-image-when item)] [(? g-buffer?) (g-buffer-when item)] [(? g-buffer-file?) (g-buffer-file-when item)] [_ #f]) #t)]
       [_ #f]))
   ;; An image's or buffer's id, checked to exist if it's conditional
   (define (resource-ref n)
@@ -280,7 +281,7 @@
   (id-struct "Buffers"
              (append (for/list ([b (in-list buffer-imports)]) (list "BufferId" (g-import-buffer-name b) b))
                      (for/list ([b (in-list uploads)]) (list "BufferId" (g-upload-name b) b))
-                     (for/list ([b (in-list buffer-files)]) (list "BufferId" (g-buffer-file-name b) b))
+                     (for/list ([b (in-list buffer-files)]) (list (id-type "BufferId" (g-buffer-file-when b)) (g-buffer-file-name b) b))
                      (for/list ([b (in-list model-factors)]) (list "BufferId" (g-model-factors-name b) b))
                      (for/list ([b (in-list model-draws)]) (list "BufferId" (g-model-draws-name b) b))
                      (for/list ([b (in-list model-bounds)]) (list "BufferId" (g-model-bounds-name b) b))
@@ -431,19 +432,28 @@
                   (cpp-string (format "~a's upload ~a" name n))))
     (at u (format "        const BufferId buffer_~a = graph.importBuffer<~a>(~a, upload_~a);" n (cpp-type (g-upload-type u)) (cpp-string n) n))
     (gen (format "        result.buffers.~a = buffer_~a;" n n)))
-  ;; Buffer files: read, uploaded, then imported
-  (for ([f (in-list buffer-files)])
-    (define n (g-buffer-file-name f))
-    (define t (cpp-type (g-buffer-file-type f)))
-    (at f (format "        TRY_ASSIGN(auto file_~a, zgal::loadBufferFile<~a>(context, {~a}, ~a));" n t
-                  (string-join (map asset-path (g-buffer-file-sources f)) ", ")
-                  (cpp-string (format "~a's buffer-file ~a" name n))))
-    (at f (format "        const BufferId buffer_~a = graph.importBuffer<~a>(~a, file_~a);" n t (cpp-string n) n))
-    (gen (format "        result.buffers.~a = buffer_~a;" n n)))
   ;; Constants
   (for ([c (in-list (of-type g-constant?))])
     (at c (format "        const ~a constant_~a = ~a;" (value-cpp-type (g-constant-type c)) (g-constant-name c)
                   (build-expr (g-constant-expr c) (g-constant-type c)))))
+  ;; Buffer files: read, uploaded, then imported; conditional ones only when their condition (which
+  ;; may use constants) holds
+  (for ([f (in-list buffer-files)])
+    (define n (g-buffer-file-name f))
+    (define t (cpp-type (g-buffer-file-type f)))
+    (define created-if (g-buffer-file-when f))
+    (define pad (if created-if "    " ""))
+    (when created-if
+      (at f (format "        std::optional<BufferId> buffer_~a;" n))
+      (at f (format "        if (~a) {" (build-expr created-if (scalar-t 'bool)))))
+    (at f (format "~a        TRY_ASSIGN(auto file_~a, zgal::loadBufferFile<~a>(context, {~a}, ~a));" pad n t
+                  (string-join (map asset-path (g-buffer-file-sources f)) ", ")
+                  (cpp-string (format "~a's buffer-file ~a" name n))))
+    (if created-if
+        (at f (format "            buffer_~a = graph.importBuffer<~a>(~a, file_~a);" n t (cpp-string n) n))
+        (at f (format "        const BufferId buffer_~a = graph.importBuffer<~a>(~a, file_~a);" n t (cpp-string n) n)))
+    (when created-if (gen "        }"))
+    (gen (format "        result.buffers.~a = buffer_~a;" n n)))
   ;; Samplers
   (for ([s (in-list (of-type g-sampler?))])
     (define o (g-sampler-options s))
@@ -858,6 +868,6 @@
 
 (define (item-loc item)
   (match item
-    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-model-draws _ _ _ l) l] [(g-model-bounds _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-buffer-file _ _ _ l) l] [(g-constant _ _ _ l) l]
+    [(g-parameter _ _ l) l] [(g-input _ _ _ l) l] [(g-import _ _ l) l] [(g-image-file _ _ _ l) l] [(g-model _ _ _ l) l] [(g-model-textures _ _ l) l] [(g-model-factors _ _ l) l] [(g-model-draws _ _ _ l) l] [(g-model-bounds _ _ l) l] [(g-import-images _ _ l) l] [(g-import-buffer _ _ l) l] [(g-upload _ _ _ l) l] [(g-buffer-file _ _ _ _ l) l] [(g-constant _ _ _ l) l]
     [(g-sampler _ _ l) l] [(g-uniform _ _ _ l) l] [(g-image _ _ _ _ _ l) l] [(g-buffer _ _ _ _ _ l) l]
     [(g-target _ _ _ l) l] [(g-material _ _ _ _ _ _ _ l) l] [(g-node _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ l) l]))

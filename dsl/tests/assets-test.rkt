@@ -87,6 +87,30 @@
   (check-zgal-error (string-append buffer-files "(graph S (buffer-file keys uint \"k.bin\") (buffer n uint 1 #:frames shared) (sort s keys #:count (at n 0)))")
                     'type-mismatch "sort's keys keys are read from files, whose size the graph doesn't know"))
 
+(test-case "A buffer file with #:when is read and created only when its condition holds"
+  (define conditional
+    (string-replace (string-replace buffer-files "(graph G (input more path)" "(graph G (input more path) (parameter on bool)")
+                    "\"pairs.bin\" more)" "\"pairs.bin\" more #:when on)"))
+  (define h (named (compile-text conditional) ".zgal.h"))
+  (check-true (string-contains? h "std::optional<BufferId> pairs;"))
+  (check-true (string-contains? h "std::optional<BufferId> buffer_pairs;\n"))
+  (check-true (string-contains? h "if (in->on) {\n"))
+  (check-true (string-contains? h "    TRY_ASSIGN(auto file_pairs, zgal::loadBufferFile<Pair>(context, {std::filesystem::path(\"pairs.bin\"), in->more}, \"G's buffer-file pairs\"));"))
+  (check-true (string-contains? h "buffer_pairs = graph.importBuffer<Pair>(\"pairs\", file_pairs);"))
+  ;; Uses of it check that it was created, as for a buffer's
+  (check-true (string-contains? h "graph.storageBufferEntry(zgal::require(buffer_pairs, \"G\", \"pairs\"))"))
+  (define ts (named (compile-text conditional #:web-dir "out/web") ".zgal.ts"))
+  (check-true (string-contains? ts "pairs: zgal.GraphBuffer | undefined"))
+  (check-true (string-contains? ts "const buffer_pairs = inputs.on ? await zgal.loadBufferFile(context, graph, 'pairs', Pair, ['pairs.bin', inputs.more]) : undefined;"))
+  (check-true (string-contains? ts "need(buffer_pairs, 'pairs')"))
+  ;; Its condition may use constants, which are computed before it
+  (define with-constant
+    (string-replace (string-replace conditional "#:when on" "#:when wanted") "(parameter on bool)" "(parameter on bool) (constant wanted (not on))"))
+  (define constant-h (named (compile-text with-constant) ".zgal.h"))
+  (check-true (regexp-match? #rx"constant_wanted = .*if [(]constant_wanted[)]" constant-h))
+  (check-zgal-error (string-replace conditional "#:when on" "#:when 1") 'type-mismatch "#:when")
+  (check-zgal-error (string-replace conditional "#:when on" "#:frames shared") 'bad-option "frames"))
+
 (define models
   (string-append
    "(vertex-format V (position vec3) (normal vec3 #:as snorm8) (colour vec3 #:default (vec3 1 1 1)) (id uint #:default 3))\n"

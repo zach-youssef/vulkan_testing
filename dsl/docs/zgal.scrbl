@@ -981,7 +981,7 @@ and C++ supplies the meshes.
              (import-image name #:resting resting-state)
              (import-images name #:resting resting-state)
              (image-file name asset #:color color-space)
-             (buffer-file name type asset ...+)
+             (buffer-file name type asset ...+ maybe-when)
              (model name asset Format model-option ...)
              (import-buffer name type)
              (upload name data-input)
@@ -1087,12 +1087,14 @@ PNGs are read.
 @(zgal-example image-file-source)
 @(generated-file image-file-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto file_albedo" #:to #rx"result.images.mask")
 
-@racket[(buffer-file name type asset ...+)] reads files of binary data (e.g. memory dumps) into a
-device-local buffer of @tt{type}'s elements, like an @racket[upload]: each file holds a whole number of
-them, laid out as the generated struct is (std430, @secref["types"]), and the buffer holds the files'
-elements in order. Shaders read and write it, and the graph knows how many elements it holds only
-when it's built, so a @racket[sort] of it takes a @tt{#:count} expression. A file of another size
-fails @tt{build()} (@tt{ErrorCode::InvalidData}).
+@racket[(buffer-file name type asset ...+ maybe-when)] reads files of binary data (e.g. memory
+dumps) into a device-local buffer of @tt{type}'s elements, like an @racket[upload]: each file holds
+a whole number of them, laid out as the generated struct is (std430, @secref["types"]), and the
+buffer holds the files' elements in order. Shaders read and write it, and the graph knows how many
+elements it holds only when it's built, so a @racket[sort] of it takes a @tt{#:count} expression. A
+file of another size fails @tt{build()} (@tt{ErrorCode::InvalidData}). With @tt{#:when}, the files
+are read only when the condition holds, so an optional file (an option's path with @tt{#:given}) may
+be missing otherwise.
 
 @(zgal-example buffer-file-source)
 @(generated-file buffer-file-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto file_sprites" #:to #rx"result.buffers.sprites")
@@ -1211,12 +1213,13 @@ Image formats:
 
 @(format-table)
 
-With @tt{#:when}, an image, buffer, target or material is created only if the condition holds, and
-C++ gets a @tt{std::optional} id for an image or buffer. Using one when it wasn't created (e.g. in a
-target or binding the condition doesn't cover, or by a node without the condition) is a contract
-violation when the graph is built. A program drawing to a window only when it has one gives its
-surface target, the materials drawing into it and their nodes @tt{#:when (not headless)}: a
-headless graph has no surface.
+With @tt{#:when}, an image, buffer, buffer file, target or material is created only if the
+condition holds (a buffer file's files aren't read otherwise), and C++ gets a @tt{std::optional} id
+for an image, buffer or buffer file (in TypeScript, one that may be @tt{undefined}). Using one when
+it wasn't created (e.g. in a target or binding the condition doesn't cover, or by a node without the
+condition) is a contract violation when the graph is built. A program drawing to a window only when
+it has one gives its surface target, the materials drawing into it and their nodes
+@tt{#:when (not headless)}: a headless graph has no surface.
 
 @subsection{Materials and nodes}
 

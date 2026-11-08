@@ -47,7 +47,7 @@
     [(g-import-buffer _ t _) (entry 'import-buffer t item)]
     [(g-upload _ _ t _) (entry 'upload t item)]
     ;; Like an upload, with its elements from files
-    [(g-buffer-file _ t _ _) (entry 'upload t item)]
+    [(g-buffer-file _ t _ _ _) (entry 'upload t item)]
     [(g-constant _ _ t _) (entry 'constant t item)]
     [(g-sampler _ _ _) (entry 'sampler #f item)]
     [(g-uniform _ t _ _) (entry 'uniform t item)]
@@ -543,9 +543,9 @@
       ['buffer-file
        (unless (>= (length args) 3)
          (zgal-error 'malformed stx "expected (buffer-file name type asset ...+)"))
-       (check-known-options options '() form)
+       (check-known-options options '(#:when) form)
        (declare! (g-buffer-file (item-name) (buffer-element-type (second args) form)
-                                (map parse-asset-source (cddr args)) (stx->loc stx))
+                                (map parse-asset-source (cddr args)) (condition options '#:when) (stx->loc stx))
                  stx)]
       ['constant
        (args! 2 "(constant name expression)")
@@ -1067,7 +1067,7 @@
           (match (entry-item (hash-ref env b))
             [(g-buffer _ _ _ frames _ _) (eq? frames 'shared)]
             [(g-upload _ _ _ _) #t]
-            [(g-buffer-file _ _ _ _) #t]
+            [(g-buffer-file _ _ _ _ _) #t]
             [_ #f]))
         'shared
         'per-frame))

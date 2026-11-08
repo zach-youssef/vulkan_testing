@@ -187,7 +187,7 @@
             (members "GraphImage" g-image? graph-item-name g-image-when)))
   (define buffer-members
     (append (members "GraphBuffer" (λ (i) (or (g-import-buffer? i) (g-upload? i) (g-buffer-file? i) (g-model-factors? i) (g-model-draws? i) (g-model-bounds? i)))
-                     graph-item-name (λ (_) #f))
+                     graph-item-name (λ (i) (and (g-buffer-file? i) (g-buffer-file-when i))))
             (members "GraphBuffer" g-buffer? graph-item-name g-buffer-when)))
   (define node-members
     (for/list ([n (in-list nodes)])
@@ -245,6 +245,7 @@
         [(g-image _ _ _ _ when _) (values (format "image_~a" n) when)]
         [(or (g-import _ _ _) (g-image-file _ _ _ _) (g-model-textures _ _ _)) (values (format "image_~a" n) #f)]
         [(g-buffer _ _ _ _ when _) (values (format "buffer_~a" n) when)]
+        [(g-buffer-file _ _ _ when _) (values (format "buffer_~a" n) when)]
         [_ (values (format "buffer_~a" n) #f)]))
     (if conditional? (format "need(~a, ~a)" variable (ts-string n)) variable))
   (define (instance-ref prefix n)
@@ -293,11 +294,16 @@
          [else
           (line! "    const buffer_~a = graph.upload(~a, ~a, inputs.~a);" n (ts-string n) (ts-layout-type t) source)])
        (line! "    result.buffers.~a = buffer_~a;" n n)]
-      [(g-buffer-file n t sources _)
-       (line! "    const buffer_~a = await zgal.loadBufferFile(context, graph, ~a, ~a, [~a]);" n (ts-string n) (ts-layout-type t)
-              (string-join (for/list ([s (in-list sources)])
-                             (if (asset-source-path s) (ts-string (asset-source-path s)) (format "inputs.~a" (asset-source-input s))))
-                           ", "))
+      [(g-buffer-file n t sources when _)
+       ;; A conditional one's files are read only when its condition holds
+       (define load
+         (format "await zgal.loadBufferFile(context, graph, ~a, ~a, [~a])" (ts-string n) (ts-layout-type t)
+                 (string-join (for/list ([s (in-list sources)])
+                                (if (asset-source-path s) (ts-string (asset-source-path s)) (format "inputs.~a" (asset-source-input s))))
+                              ", ")))
+       (if when
+           (line! "    const buffer_~a = ~a ? ~a : undefined;" n (bool-expr when) load)
+           (line! "    const buffer_~a = ~a;" n load))
        (line! "    result.buffers.~a = buffer_~a;" n n)]
       [(g-constant n e t _)
        (line! "    const constant_~a = ~a;" n (expr e t))]

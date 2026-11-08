@@ -150,6 +150,14 @@
   (dispatch tally tallying)
   (readback readCounts counts))
 
+;; A buffer file read only when its condition holds (so the file may be missing otherwise), and a
+;; node using it under the same condition
+(graph Saved
+  (parameter withSaved bool)
+  (input savedPath path)
+  (buffer-file saved uint savedPath #:when withSaved)
+  (readback readSaved saved #:when withSaved))
+
 ;; cpu nodes on imported buffers: an input's function gets the buffers its nodes read or write,
 ;; by name, those some of its nodes don't use optional
 (graph Staged

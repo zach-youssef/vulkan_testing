@@ -392,6 +392,10 @@
   (image-file albedoMap "textures/albedo.png" #:color srgb)
   (image-file decalMap decalPath #:color linear)
   (buffer-file savedLights Lights "lights/day.bin" "lights/night.bin")
+  ;; Read only when its condition holds, so the file may be missing otherwise
+  (parameter lightSets uint)
+  (constant extraLights (> lightSets 1))
+  (buffer-file moreLights Lights "lights/extra.bin" #:when extraLights)
   (input frameLights (per-frame Lights))
   (uniform lightBuffer Lights frameLights)
   (image mask rgba8 (extent-of decalMap) #:frames shared)

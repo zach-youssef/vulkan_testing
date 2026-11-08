@@ -612,6 +612,41 @@ export class Tallying {
   }
 }
 
+// graph Saved: build() adds its resources, materials and nodes to a RenderGraph
+export interface SavedInputs {
+  withSaved: boolean;
+  savedPath: string;
+}
+
+export class Saved {
+  images: {} = {} as Saved['images'];
+  buffers: { saved: zgal.GraphBuffer | undefined } = {} as Saved['buffers'];
+  nodes: { readSaved: zgal.NodeId | undefined } = {} as Saved['nodes'];
+
+  // The elements readback readSaved copied in the most recent frame (waiting for it)
+  readSavedContents(graph: zgal.RenderGraph): Promise<number[]> {
+    return graph.node<zgal.BufferReadbackNode>(zgal.need(this.nodes.readSaved, 'readSaved')).contents<number>();
+  }
+
+  // Adds the graph's resources, materials and nodes to `graph`. Its materials and nodes keep
+  // the inputs' functions, so whatever those use must outlive the graph.
+  static async build(context: zgal.Context, graph: zgal.RenderGraph, inputs: SavedInputs): Promise<Saved> {
+    const result = new Saved();
+    const need = <T>(x: T | undefined, what: string): T => {
+      if (x === undefined) throw new Error(`Saved: ${what} isn't created (its #:when is false)`);
+      return x;
+    };
+    void need;
+    const buffer_saved = inputs.withSaved ? await zgal.loadBufferFile(context, graph, 'saved', zgal.uint, [inputs.savedPath]) : undefined;
+    result.buffers.saved = buffer_saved;
+    if (inputs.withSaved) {
+      const node = graph.add(new zgal.BufferReadbackNode('readSaved', graph, need(buffer_saved, 'saved')));
+      result.nodes.readSaved = node;
+    }
+    return result;
+  }
+}
+
 // graph Staged: build() adds its resources, materials and nodes to a RenderGraph
 export interface StagedInputs {
   fill: (frame: zgal.FrameInfo, buffers: { staging?: ArrayBuffer; results?: ArrayBuffer }) => void;
