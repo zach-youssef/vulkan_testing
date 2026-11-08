@@ -10,6 +10,7 @@
 #include "graph/nodes/IndirectDrawNode.h"
 #include "resources/Buffer.h"
 #include "resources/Image.h"
+#include "zgal/Stream.h"
 
 #include <glm/glm.hpp>
 
