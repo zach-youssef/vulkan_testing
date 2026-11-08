@@ -349,7 +349,8 @@ test-decode-steps:
 	$(NODE) --test --test-reporter=spec $(TEST_ARGS) $(WEB_DIR)/decode/tests/decode.test.ts
 
 # The examples' pages (image_filter's, without a window, run from its query string, its capture
-# compared with the approved one), embedding programs (web/tests/mount.html), loading image files
+# compared with the approved one), embedding programs (web/tests/mount.html), releasing held keys
+# and buttons when focus leaves (web/tests/held-keys.html), loading image files
 # (web/tests/image-file.html), the compute library (web/tests/kernels.html), indirect work
 # (web/tests/indirect.html), models (web/tests/models.html), programs without a window
 # (web/tests/headless.html), functions storing into images they're given (web/tests/stamps.html)
@@ -394,7 +395,7 @@ test-pages-steps:
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/blur_edges-$$browser.png \
 	    'image_filter/image_filter.zgal.html?arg=/tests/assets/input.png&arg=out.png&blur=2&edges' || exit 1; \
 	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/blur_edges-$$browser.png 2 || exit 1; \
-	  for page in mount image-file image-decode kernels indirect models headless stamps; do \
+	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \
 	done

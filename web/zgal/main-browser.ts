@@ -161,16 +161,50 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
     };
     const keys: EventTarget = options.keys === 'page' ? window : canvas;
     if (options.keys !== 'page' && !canvas.hasAttribute('tabindex')) canvas.tabIndex = 0;
+    // What is held, so each press gets one release: from its keyup or mouseup, or, as GLFW does
+    // natively, when focus leaves (the keyup or mouseup then goes elsewhere, or comes later and is
+    // ignored)
+    const heldKeys = new Set<Key>();
+    const heldButtons = new Set<MouseButton>();
+    let lastCursor: [number, number] = [0, 0];
+    const pressKey = (key: Key) => {
+      if (heldKeys.has(key)) return;
+      heldKeys.add(key);
+      app.handle({ kind: 'key-pressed', key });
+    };
+    const releaseKey = (key: Key) => {
+      if (heldKeys.delete(key)) app.handle({ kind: 'key-released', key });
+    };
+    const pressButton = (button: MouseButton, at: [number, number]) => {
+      lastCursor = at;
+      if (heldButtons.has(button)) return;
+      heldButtons.add(button);
+      app.handle({ kind: 'mouse-pressed', button, cursor: at });
+    };
+    const releaseButton = (button: MouseButton, at: [number, number]) => {
+      lastCursor = at;
+      if (heldButtons.delete(button)) app.handle({ kind: 'mouse-released', button, cursor: at });
+    };
+    const releaseAll = () => {
+      for (const key of [...heldKeys]) releaseKey(key);
+      for (const button of [...heldButtons]) releaseButton(button, lastCursor);
+    };
     keys.addEventListener('keydown', (e) => {
       const event = e as KeyboardEvent;
       const key = keyOf(event.code);
       if (!key) return;
       event.preventDefault();
-      if (!event.repeat) app.handle({ kind: 'key-pressed', key });
+      // A repeat presses a key held while focus came back
+      pressKey(key);
     }, { signal });
     keys.addEventListener('keyup', (e) => {
       const key = keyOf((e as KeyboardEvent).code);
-      if (key) app.handle({ kind: 'key-released', key });
+      if (key) releaseKey(key);
+    }, { signal });
+    window.addEventListener('blur', releaseAll, { signal });
+    if (keys !== window) keys.addEventListener('blur', releaseAll, { signal });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') releaseAll();
     }, { signal });
     canvas.addEventListener('contextmenu', (event) => event.preventDefault(), { signal });
     // Capturing the pointer keeps a drag's moves and its release coming to the canvas when they
@@ -181,13 +215,16 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
     }, { signal });
     canvas.addEventListener('mousedown', (event) => {
       const button = buttonOf(event.button);
-      if (button) app.handle({ kind: 'mouse-pressed', button, cursor: cursor(event) });
+      if (button) pressButton(button, cursor(event));
     }, { signal });
     canvas.addEventListener('mouseup', (event) => {
       const button = buttonOf(event.button);
-      if (button) app.handle({ kind: 'mouse-released', button, cursor: cursor(event) });
+      if (button) releaseButton(button, cursor(event));
     }, { signal });
-    canvas.addEventListener('mousemove', (event) => app.handle({ kind: 'cursor-moved', cursor: cursor(event) }), { signal });
+    canvas.addEventListener('mousemove', (event) => {
+      lastCursor = cursor(event);
+      app.handle({ kind: 'cursor-moved', cursor: lastCursor });
+    }, { signal });
     canvas.addEventListener('wheel', (event) => {
       event.preventDefault();
       // In lines, y up, as GLFW gives them

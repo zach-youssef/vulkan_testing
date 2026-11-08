@@ -64,6 +64,8 @@ then:
 3. runs `make test-pages`: the particles and scene pages, image_filter's page (run from its query
    string, its capture saved with the checkers' `--save-capture` and compared with
    `blur_edges.approved.png`), `web/tests/mount.html` (mounts two programs and stops one),
+   `web/tests/held-keys.html` (held keys and mouse buttons released once each, also when focus
+   leaves),
    `web/tests/image-file.html`, `web/tests/image-decode.html`, the kernels, indirect and models
    pages, and `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main)
    and `web/tests/stamps.html` (functions storing into the storage images they're given),

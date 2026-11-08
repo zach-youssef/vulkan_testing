@@ -1698,6 +1698,9 @@ Cursor positions are in [-1, 1] across the window, y down, like Vulkan's clip sp
 @tt{a}-@tt{z}, @tt{0}-@tt{9}, @tt{space}, @tt{escape}, @tt{enter}, @tt{tab}, @tt{backspace},
 @tt{left}, @tt{right}, @tt{up}, @tt{down}, @tt{minus}, @tt{equal}, @tt{keypad-add},
 @tt{keypad-subtract} and @tt{f1}-@tt{f12}. An event is handled once: a key belongs to one handler.
+Each press gets one release: keys and buttons still held when the window loses focus are released
+then, natively (GLFW) and on the web, where the page being hidden or, when the canvas takes the
+keys, the canvas losing focus also count. A key still held when focus returns is pressed again.
 
 Effects, which only handlers have:
 @itemlist[

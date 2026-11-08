@@ -1,0 +1,105 @@
+<!doctype html>
+<!-- Releasing held keys and mouse buttons when focus leaves (zgal.mountProgram), checked by make
+     test-pages (web/tools/chromium.ts and firefox.ts): a particles program, its app's events
+     recorded, gets each press released once, by its keyup or mouseup or when the window blurs, the
+     canvas blurs or the page is hidden, and not again by a keyup or mouseup coming later. Served
+     from build/web/tests, beside particles/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL held keys test</title>
+<style>
+  body { margin: 0; }
+  /* A fixed size, whatever the browser's window */
+  #program { flex: none; width: 320px; height: 240px; background: #000; }
+</style>
+</head>
+<body>
+<div id="program"><canvas id="canvas"></canvas></div>
+<pre id="zgal-message"></pre>
+<script type="module">
+import { program } from '../particles/particles.zgal.main.js';
+import { mountProgram } from '../particles/zgal/index.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+const finish = (state) => { document.documentElement.dataset.zgal = state; };
+const fail = (text) => { log(text); finish('failed'); };
+
+// The app's key and button events, as 'key-pressed W', 'mouse-released left', ...
+const events = [];
+const recording = {
+  ...program,
+  create: async (...args) => {
+    const app = await program.create(...args);
+    const handle = app.handle.bind(app);
+    app.handle = (event) => {
+      if (event.kind !== 'cursor-moved' && event.kind !== 'scrolled') events.push(`${event.kind} ${event.key ?? event.button}`);
+      handle(event);
+    };
+    return app;
+  },
+};
+const take = () => events.splice(0).join(', ');
+const expect = (what, expected) => {
+  const got = take();
+  if (got !== expected) throw new Error(`${what}: the app got [${got}], not [${expected}]`);
+};
+
+const canvas = document.getElementById('canvas');
+const key = (type, code, repeat = false) => canvas.dispatchEvent(new KeyboardEvent(type, { code, repeat, bubbles: true }));
+const mouse = (type, button) => canvas.dispatchEvent(new MouseEvent(type, { button, bubbles: true }));
+const hide = (state) => {
+  Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+  document.dispatchEvent(new Event('visibilitychange'));
+};
+
+try {
+  let states = [];
+  let reached = null;
+  const mounted = mountProgram(canvas, recording, new URL('../particles/assets/', import.meta.url), {
+    scaling: 'fit',
+    args: ['--size', '320x240', '--particles', '1000'],
+    onState: (state) => { states.push(state); reached?.(); },
+    onMessage: log,
+  });
+  while (!states.includes('running') && !states.includes('failed')) await new Promise((done) => { reached = done; });
+  if (states.includes('failed')) throw new Error('the program failed');
+
+  key('keydown', 'KeyW');
+  key('keydown', 'KeyW', true);
+  key('keyup', 'KeyW');
+  expect('a press, its repeat and its release', 'key-pressed W, key-released W');
+
+  key('keydown', 'KeyW');
+  key('keydown', 'KeyA');
+  mouse('mousedown', 0);
+  mouse('mousedown', 2);
+  window.dispatchEvent(new Event('blur'));
+  expect('the window blurring', 'key-pressed W, key-pressed A, mouse-pressed left, mouse-pressed right, key-released W, key-released A, mouse-released left, mouse-released right');
+  key('keyup', 'KeyW');
+  mouse('mouseup', 0);
+  window.dispatchEvent(new Event('blur'));
+  expect('keyup, mouseup and blur after the blur', '');
+
+  key('keydown', 'KeyS', true);
+  expect('a repeat of a key held while focus came back', 'key-pressed S');
+  hide('hidden');
+  expect('the page hidden', 'key-released S');
+  hide('visible');
+
+  key('keydown', 'KeyD');
+  canvas.dispatchEvent(new FocusEvent('blur'));
+  expect('the canvas blurring', 'key-pressed D, key-released D');
+  key('keyup', 'KeyD');
+  expect('keyup after the canvas blurred', '');
+
+  await mounted.stop();
+  log('held keys and buttons were released once each');
+  finish('stopped');
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
+</script>
+</body>
+</html>
