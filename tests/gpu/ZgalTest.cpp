@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <numeric>
+#include <optional>
 
 // The generated code is in the namespace of its file, interfaces.zgal
 using namespace interfaces;
@@ -245,6 +246,210 @@ TEST_CASE_FIXTURE(GpuTest, "ZGAL buffer files hold their files' elements in orde
                 ErrorCode::NotFound, "Asset 'missing.bin' not found");
     ctx.waitIdleAll();
     std::filesystem::remove_all(directory);
+}
+
+namespace {
+
+// A scene stream: a SceneHeader (giving the total in words) and then patterned words
+std::vector<std::byte> sceneBytes(uint32_t words, uint32_t headerWords) {
+    std::vector<std::byte> bytes(size_t(words) * 4);
+    for (size_t k = 0; k < bytes.size(); ++k) {
+        bytes[k] = std::byte(static_cast<uint8_t>(k * 31 + 7));
+    }
+    const SceneHeader header{0x5343454Eu, headerWords};
+    std::memcpy(bytes.data(), &header, sizeof(header));
+    return bytes;
+}
+
+// Gives its bytes in uneven chunks (cycling through chunks, each cut to the room asked for), then
+// ends; it remembers the path it was opened with
+struct ChunkedStream {
+    std::vector<std::byte> bytes;
+    std::vector<size_t> chunks;
+    size_t offset = 0;
+    size_t calls = 0;
+    std::filesystem::path opened;
+
+    zgal::StreamOpener opener() {
+        return [this](const std::filesystem::path& path) -> Result<zgal::Stream> {
+            opened = path;
+            return zgal::Stream([this](std::span<std::byte> out) -> Result<size_t> {
+                const size_t count = std::min({out.size(), chunks[calls++ % chunks.size()], bytes.size() - offset});
+                std::memcpy(out.data(), bytes.data() + offset, count);
+                offset += count;
+                return count;
+            });
+        };
+    }
+
+    std::vector<uint32_t> words() const {
+        std::vector<uint32_t> result(bytes.size() / 4);
+        std::memcpy(result.data(), bytes.data(), result.size() * 4);
+        return result;
+    }
+};
+
+} // namespace
+
+TEST_CASE_FIXTURE(GpuTest, "ZGAL stream buffers fill over frames, sized by their stream's header, and tell apps as bytes arrive") {
+    auto& ctx = context();
+    const uint32_t originalFrames = ctx.framesInFlight();
+    ctx.setFramesInFlight(2);
+    {
+        constexpr uint32_t kWords = 100;   // 400 bytes, at most 64 a frame
+        ChunkedStream stream{sceneBytes(kWords, kWords), {5, 13, 1, 2, 7, 70, 33, 3, 50, 6}};
+        RenderGraph graph(ctx);
+        auto app = Streaming::create(ctx, graph, Streaming::Inputs{.open = stream.opener(), .file = "scenes/one.stream"}).value();
+        // The opener gets the path as given, and the header is read when the graph is built
+        CHECK(stream.opened == std::filesystem::path("scenes/one.stream"));
+        CHECK(stream.offset == sizeof(SceneHeader));
+        CHECK(app->state().events == 0);
+
+        // Each frame's beginFrame tells the app of the bytes the frame will hold, when they changed
+        const auto expected = stream.words();
+        uint32_t last = 0;
+        uint32_t events = 0;
+        int quiet = 0;
+        int frame = 0;
+        int framesAfterEnd = 0;
+        while (framesAfterEnd < 3) {
+            CAPTURE(frame);
+            if (frame == 3) {
+                ctx.setFramesInFlight(3);
+            }
+            app->beginFrame().value();
+            const auto state = app->state();
+            CHECK(state.arrived % 4 == 0);
+            CHECK(state.arrived - last <= 64);
+            if (state.arrived != last) {
+                ++events;
+                CHECK(state.total == kWords * 4);
+            } else if (state.arrived < kWords * 4) {
+                ++quiet;   // A frame whose chunk didn't finish a word
+            }
+            CHECK(state.events == events);
+            last = state.arrived;
+            graph.execute().value();
+
+            // What has arrived is the stream's, and the shader reading the buffer that frame saw it
+            if (frame % 3 == 0 || state.arrived == kWords * 4) {
+                const size_t arrivedWords = state.arrived / 4;
+                const auto scene = app->ids().sceneReadContents(graph).value();
+                const auto copied = app->ids().copiedReadContents(graph).value();
+                REQUIRE(scene.size() == kWords);
+                REQUIRE(copied.size() == kWords);
+                CHECK(std::equal(expected.begin(), expected.begin() + arrivedWords, scene.begin()));
+                CHECK(std::equal(expected.begin(), expected.begin() + arrivedWords, copied.begin()));
+            }
+            framesAfterEnd += state.arrived == kWords * 4;
+            ++frame;
+            REQUIRE(frame < 200);
+        }
+        CHECK(quiet > 0);
+        CHECK(last == kWords * 4);
+        CHECK(app->state().events == events);
+        CHECK(stream.offset == stream.bytes.size());
+        // Back to the frames in flight the test began with, which takes a frame
+        ctx.setFramesInFlight(originalFrames);
+        app->beginFrame().value();
+        graph.execute().value();
+        CHECK(app->state().events == events);
+        graph.waitIdle().value();
+    }
+
+    // zgal::assetStream opens files found as other assets are
+    {
+        const auto directory = std::filesystem::temp_directory_path() / "zgal-stream-buffers";
+        std::filesystem::create_directories(directory);
+        const auto bytes = sceneBytes(40, 40);
+        {
+            std::ofstream file(directory / "scene.stream", std::ios::binary);
+            file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        }
+        RenderGraph graph(ctx);
+        auto app = Streaming::create(ctx, graph, Streaming::Inputs{.open = zgal::assetStream(ctx), .file = directory / "scene.stream"}).value();
+        int frames = 0;
+        while (app->state().arrived < 160) {
+            app->beginFrame().value();
+            graph.execute().value();
+            CHECK(app->state().arrived <= 64 * frames + 64);
+            REQUIRE(++frames < 20);
+        }
+        const auto copied = app->ids().copiedReadContents(graph).value();
+        REQUIRE(copied.size() == 40);
+        CHECK(std::memcmp(copied.data(), bytes.data(), bytes.size()) == 0);
+        graph.waitIdle().value();
+        RenderGraph missing(ctx);
+        CHECK_ERROR(Streaming::create(ctx, missing, Streaming::Inputs{.open = zgal::assetStream(ctx), .file = "missing.stream"}),
+                    ErrorCode::NotFound, "Asset 'missing.stream' not found");
+        std::filesystem::remove_all(directory);
+    }
+
+    // An opener failing fails the build
+    {
+        RenderGraph graph(ctx);
+        const zgal::StreamOpener failing = [](const std::filesystem::path&) -> Result<zgal::Stream> {
+            return Error(ErrorCode::NotFound, "no such scene");
+        };
+        CHECK_ERROR(Streaming::create(ctx, graph, Streaming::Inputs{.open = failing, .file = "missing.stream"}), ErrorCode::NotFound,
+                    "no such scene");
+        CHECK_ERROR(Streamed::build(ctx, graph, Streamed::Inputs{.open = failing, .file = "missing.stream"}), ErrorCode::NotFound,
+                    "opening stream 'missing.stream'");
+    }
+
+    // A stream failing (here, ending within its header) fails the first frame, and every one after
+    {
+        ChunkedStream stream{sceneBytes(1, 0), {64}};
+        stream.bytes.resize(6);
+        RenderGraph graph(ctx);
+        auto app = Streaming::create(ctx, graph, Streaming::Inputs{.open = stream.opener(), .file = "short.stream"}).value();
+        CHECK_ERROR(app->beginFrame(), ErrorCode::InvalidData, "ended after 6 bytes of its 8-byte header");
+        CHECK_ERROR(graph.execute(), ErrorCode::InvalidData, "ended after 6 bytes of its 8-byte header");
+        CHECK_ERROR(app->beginFrame(), ErrorCode::InvalidData, "streaming buffer 'scene'");
+        CHECK(app->state().events == 0);
+        graph.waitIdle().value();
+    }
+
+    // As does a stream holding more than its header said
+    {
+        ChunkedStream stream{sceneBytes(24, 16), {64}};
+        RenderGraph graph(ctx);
+        auto app = Streaming::create(ctx, graph, Streaming::Inputs{.open = stream.opener(), .file = "long.stream"}).value();
+        const auto frame = [&]() -> Result<void> {
+            TRY(app->beginFrame());
+            TRY(graph.execute());
+            return {};
+        };
+        // Frames succeed until the read that would fill the buffer finds more (it asks for a byte
+        // more than the buffer has room for), then fail
+        std::optional<Error> failure;
+        for (int frames = 0; !failure; ++frames) {
+            REQUIRE(frames < 10);
+            if (auto result = frame(); !result) {
+                failure = result.error();
+            }
+        }
+        CHECK(failure->code == ErrorCode::InvalidData);
+        CHECK(failure->describe().find("the stream holds more than the buffer's 64 bytes") != std::string::npos);
+        CHECK(app->state().arrived < 64);
+        CHECK_ERROR(frame(), ErrorCode::InvalidData, "the stream holds more than the buffer's 64 bytes");
+        graph.waitIdle().value();
+    }
+
+    // A header giving 4 GiB or more (its streamed sizes would wrap a uint) fails the app's create;
+    // the graph alone builds (it isn't executed, which would allocate the buffer)
+    {
+        ChunkedStream stream{sceneBytes(2, 0x40000001u), {64}};
+        RenderGraph graph(ctx);
+        CHECK_ERROR(Streaming::create(ctx, graph, Streaming::Inputs{.open = stream.opener(), .file = "huge.stream"}),
+                    ErrorCode::InvalidData, "holds 4294967300 bytes, but streamed events give its size as a uint");
+        ChunkedStream again{sceneBytes(2, 0x40000001u), {64}};
+        RenderGraph alone(ctx);
+        auto ids = Streamed::build(ctx, alone, Streamed::Inputs{.open = again.opener(), .file = "huge.stream"}).value();
+        CHECK(alone.bufferSize(ids.buffers.scene, 0) == VkDeviceSize(0x40000001u) * 4);
+    }
+    ctx.waitIdleAll();
+    ctx.collectRetired();
 }
 
 TEST_CASE_FIXTURE(GpuTest, "ZGAL graphs draw models with their materials' base colours") {

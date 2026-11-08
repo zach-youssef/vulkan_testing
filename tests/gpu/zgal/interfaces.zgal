@@ -927,3 +927,30 @@
   (dispatch stamp stamping)
   (readback readFirst firstStamps)
   (readback readSecond secondStamps))
+
+;; A buffer a stream fills over frames, sized by the stream's header, which a shader copies as it
+;; arrives; an app counts its streamed events
+(struct SceneHeader (magic uint) (words uint))
+
+(compute-material CopyWords
+  (workgroup 64)
+  (bindings (from (buffer-array uint)) (to (buffer-array uint)))
+  (push (count uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (write! (at to i) (at from i))))))
+
+(graph Streamed (input open (stream SceneHeader)) (input file path)
+  (stream-buffer scene open file #:words (.words (stream-header scene)) #:per-frame 64)
+  (constant words (.words (stream-header scene)))
+  (buffer copied uint words #:frames shared)
+  (material copying CopyWords (from scene) (to copied) #:push ((count words)) #:invocations (words))
+  (dispatch copy copying)
+  (readback sceneRead scene)
+  (readback copiedRead copied))
+
+(app Streaming
+  (state (arrived uint 0) (total uint 0) (events uint 0))
+  (on (streamed scene arrived total) (with state #:arrived arrived #:total total #:events (+ state.events 1)))
+  (run Streamed))
