@@ -15,7 +15,8 @@ import {
   type GraphicsMaterialDesc,
   type MaterialDesc,
 } from './material.ts';
-import { decode, encode, stride, type Type } from './types.ts';
+import type { Stream } from './stream.ts';
+import { decode, encode, stride, uint, type Type } from './types.ts';
 
 export interface FrameInfo {
   // Always 0: WebGPU's queue orders frames, so per-frame resources aren't duplicated
@@ -404,6 +405,24 @@ interface NodeRecord {
   leader: NodeId | null;
 }
 
+// A streamed buffer's source and progress (createStreamBuffer). Bytes read wait in pending until a
+// frame writes their whole words.
+interface StreamRecord {
+  readonly stream: Stream;
+  readonly bytesPerFrame: number;
+  // Read, not yet written: the first pendingBytes bytes, at most bytesPerFrame (or the size plus
+  // the end probe)
+  pending: Uint8Array<ArrayBuffer>;
+  pendingBytes: number;
+  // Bytes written into the buffer by submitted frames
+  committed: number;
+  // Bytes of pending the coming frame writes
+  planned: number;
+  ended: boolean;
+  // Kept: every later frame fails with it
+  error: Error | null;
+}
+
 export class RenderGraph {
   private images: GraphImage[] = [];
   private buffers: GraphBuffer[] = [];
@@ -422,6 +441,11 @@ export class RenderGraph {
   // The gathering node after which the surface can't be drawn this frame (see attachmentView)
   private surfaceExpiredBy: string | null = null;
   private lastSubmissions = 0;
+  private streams = new Map<GraphBuffer, StreamRecord>();
+  // The frames that have written their streamed bytes, and the count readStreams last read at: it
+  // reads again once a frame has written (frameNumber counts only frames that submit)
+  private streamFrames = 0;
+  private streamsReadAt = -1;
 
   readonly context: Context;
 
@@ -476,6 +500,85 @@ export class RenderGraph {
     const buffer = new GraphBuffer(name, element, count);
     this.buffers.push(buffer);
     return buffer;
+  }
+
+  // A buffer of words uints that stream fills over frames, e.g. a scene streamed from a file while
+  // it renders (as native RenderGraph::createStreamBuffer). Created once, never recreated, and not
+  // zeroed: its first streamArrived() bytes are what the stream gave, the rest undefined.
+  //
+  // Before each frame's nodes, the frame writes at most bytesPerFrame new bytes into it, after any
+  // already there. Writes are whole words: 1-3 trailing bytes wait until the rest of their word
+  // arrives. Each frame takes what has arrived, up to what fits in the frame, without waiting for
+  // more (see readStreams).
+  //
+  // stream must give exactly words * 4 bytes, then end. A stream that fails, gives more, or ends
+  // early (including within the last word) makes the frame's execute(), and every one after,
+  // fail. bytesPerFrame must be a positive multiple of 4. Destroying the graph cancels the stream.
+  createStreamBuffer(name: string, stream: Stream, words: number, bytesPerFrame: number): GraphBuffer {
+    if (!Number.isInteger(bytesPerFrame) || bytesPerFrame <= 0 || bytesPerFrame % 4 !== 0) {
+      throw new RangeError(`streamed buffer '${name}' appends ${bytesPerFrame} bytes per frame, which isn't a positive multiple of 4`);
+    }
+    if (!Number.isInteger(words) || words < 0) throw new RangeError(`streamed buffer '${name}' holds ${words} words, which isn't a whole number`);
+    const buffer = new GraphBuffer(name, uint, words);
+    this.buffers.push(buffer);
+    this.streams.set(buffer, {
+      stream,
+      bytesPerFrame,
+      // bytesPerFrame, or the size plus the end probe
+      pending: new Uint8Array(Math.min(bytesPerFrame, words * 4 + 1)),
+      pendingBytes: 0,
+      committed: 0,
+      planned: 0,
+      ended: false,
+      error: null,
+    });
+    return buffer;
+  }
+
+  private streamOf(b: GraphBuffer): StreamRecord {
+    const record = this.streams.get(b);
+    if (!record) throw new Error(`buffer '${b.name}' isn't streamed`);
+    return record;
+  }
+
+  // The bytes of a streamed buffer its nodes see: those of the coming frame once readStreams() has
+  // run for it (inside execute(), or before it), otherwise those of the last frame. Always a
+  // multiple of 4, at most streamTotal().
+  streamArrived(b: GraphBuffer): number {
+    const record = this.streamOf(b);
+    return record.committed + record.planned;
+  }
+
+  // A streamed buffer's size in bytes: what its stream gives in all
+  streamTotal(b: GraphBuffer): number {
+    this.streamOf(b);
+    return (b.count as number) * 4;
+  }
+
+  // Takes the coming frame's bytes of every streamed buffer, once per frame: execute() does it
+  // first thing, unless this already ran for the frame, so an application can call it before
+  // execute() to learn what the frame will hold (streamArrived()), e.g. to update its state before
+  // the frame. The bytes are kept until a frame writes them (queue.writeBuffer, which takes effect
+  // whether or not the frame then submits), so a frame failing before that loses none. Throws (and
+  // keeps throwing) a stream's error; a stream failing is cancelled. A graph not executed for a
+  // while (one not drawn) reads again only for the frame it next draws.
+  readStreams(): void {
+    if (this.streamsReadAt !== this.streamFrames) {
+      this.streamsReadAt = this.streamFrames;
+      for (const [b, record] of this.streams) {
+        record.planned = 0;
+        if (record.error) continue;
+        try {
+          readStream(record, (b.count as number) * 4);
+        } catch (error) {
+          record.error = new Error(`streaming buffer '${b.name}': ${(error as Error).message}`, { cause: error });
+          record.stream.cancel();
+          continue;
+        }
+        record.planned = Math.floor(record.pendingBytes / 4) * 4;
+      }
+    }
+    for (const record of this.streams.values()) if (record.error) throw record.error;
   }
 
   // A buffer the application owns, or the graph if owned (destroyed with it)
@@ -636,6 +739,9 @@ export class RenderGraph {
     const count = typeof b.count === 'number' ? b.count : b.count(frame);
     const size = Math.max(4, Math.ceil((count * stride(b.element)) / 4) * 4);
     if (b.buffer && b.buffer.size === size) return;
+    if (this.streams.has(b) && size > this.context.device.limits.maxBufferSize) {
+      throw new Error(`streamed buffer '${b.name}' holds ${size} bytes, more than the device's buffers can (maxBufferSize ${this.context.device.limits.maxBufferSize})`);
+    }
     b.buffer?.destroy();
     b.buffer = this.context.device.createBuffer({ label: b.name, size, usage: bufferUsage });
     b.generation++;
@@ -661,9 +767,17 @@ export class RenderGraph {
 
   private async executeFrame(): Promise<void> {
     while (this.inFlight.length >= this.context.framesInFlight) await this.inFlight.shift();
+    this.readStreams();
     const frame = this.frameInfo();
     for (const image of this.images) this.ensureImage(image, frame);
     for (const b of this.buffers) this.ensureBuffer(b, frame);
+    // The streamed bytes go first (the queue's writes come before the frame's commands)
+    const streamWrites: StreamRecord[] = [];
+    for (const [b, record] of this.streams) {
+      if (record.planned === 0) continue;
+      this.context.device.queue.writeBuffer(b.buffer!, record.committed, record.pending, 0, record.planned);
+      streamWrites.push(record);
+    }
     const active = this.nodes.filter((r) => r.enabled);
     const device = this.context.device;
     this.inFrame = true;
@@ -723,6 +837,14 @@ export class RenderGraph {
         this.inFlight.push(device.queue.onSubmittedWorkDone());
         this.frameNumber++;
       }
+      // The queue has the writes, whether or not the frame submitted
+      for (const record of streamWrites) {
+        record.committed += record.planned;
+        record.pending.copyWithin(0, record.planned, record.pendingBytes);
+        record.pendingBytes -= record.planned;
+        record.planned = 0;
+      }
+      this.streamFrames++;
     }
   }
 
@@ -738,11 +860,40 @@ export class RenderGraph {
   }
 
   destroy(): void {
+    for (const record of this.streams.values()) record.stream.cancel();
     for (const r of this.nodes) (r.node as { destroy?(): void }).destroy?.();
     for (const image of this.images) if (image.extent) image.texture?.destroy();
     for (const b of this.buffers) if (b.count !== null) b.buffer?.destroy();
     for (const o of this.owned) o.destroy();
   }
+}
+
+// A frame's read of a stream (readStreams): what has arrived, up to what fits in the frame, and one
+// byte more once the total has arrived, to see that the stream ends there
+function readStream(record: StreamRecord, total: number): void {
+  if (record.ended) return;
+  const had = record.pendingBytes;
+  // At most total (else an error)
+  const received = record.committed + had;
+  const room = Math.min(record.bytesPerFrame - had, total - received + 1);
+  // A frame that failed before submitting left a full frame's bytes
+  if (room === 0) return;
+  let bytes: Uint8Array | null;
+  try {
+    bytes = record.stream.read(room);
+  } catch (error) {
+    throw new Error(`the source failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
+  if (bytes === null) {
+    record.ended = true;
+  } else {
+    if (bytes.length > room) throw new Error(`the source read ${bytes.length} bytes into room for ${room}`);
+    record.pending.set(bytes, had);
+    record.pendingBytes += bytes.length;
+  }
+  const now = record.committed + record.pendingBytes;
+  if (now > total) throw new Error(`the stream holds more than the buffer's ${total} bytes`);
+  if (record.ended && now < total) throw new Error(`the stream ended after ${now} of the buffer's ${total} bytes`);
 }
 
 const bufferUsage = 0x80 | 0x4 | 0x8 | 0x100 | 0x20; // STORAGE | COPY_SRC | COPY_DST | INDIRECT | VERTEX

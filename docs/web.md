@@ -29,7 +29,28 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   buffer-file does. Every reference to a stream shares its read position, as copies of a native one
   do. `readableStream(source, name)` wraps any `ReadableStream` of bytes, reading it as fast as it
   gives bytes and keeping them until they're read (a stream-buffer's buffer holds the whole stream
-  anyway).
+  anyway). `cancel()` (required of every `Stream`) stops one: waiting bytes are dropped, waits
+  reject, later reads throw and the source, unless it has ended, is cancelled; graphs cancel their streams when destroyed
+  (so a page stopped mid-stream stops fetching) and when one fails. `peekStream(stream, count)`
+  reads a stream's first bytes and gives them back with a stream replaying them before the rest
+  (its first read may give them and more, so a first frame can take more than the header): for an
+  opener that checks a header (e.g. its magic) before a stream-buffer reads the stream whole.
+  `openStream` is what a graph's build does for a stream-buffer, as native `zgal::openStream`: the
+  opener gets the path unresolved, its failure rejects the build, and a short or failing header
+  leaves the header zeroed and the stream failing the first frame.
+- `RenderGraph.createStreamBuffer(name, stream, words, bytesPerFrame)` is a stream-buffer's buffer,
+  with native `RenderGraph::createStreamBuffer`'s semantics: before its nodes each frame writes
+  (`queue.writeBuffer`) at most `bytesPerFrame` bytes of what has arrived, whole words only, and a
+  stream that fails, gives too much or ends early fails that frame and every later one, with native
+  messages. Unlike native, a frame never waits for the stream: it takes what has arrived, possibly
+  nothing. `readStreams()` takes the coming frame's bytes once per frame (`execute()` calls it), so
+  an app calls it in `beginFrame()` and compares `streamArrived()` with the bytes its last
+  `streamed` event gave, before the frame handler, as native apps do; a graph not drawn reads again
+  only when next drawn (natively an idle graph keeps topping up, as its epoch is the context's frame
+  number). A frame failing after its writes (e.g. recording) keeps them; one failing before them
+  (e.g. sizing a buffer) leaves its bytes for the next frame that writes. A buffer larger than the device's `maxBufferSize` fails its first frame
+  (the app's 4 GiB refusal at `create()` comes first). `web/tests/streaming.test.ts` tests stream
+  buffers with uneven chunks under Node.
 - `context.loadAssetStream(path)`, the streaming sibling of `loadAsset`, opens an asset through
   `ContextOptions.assetStreams`: browsers stream fetch bodies (and the `Blob`s given to
   `runHeadless`), and `createNodeContext` streams the file, opened (in the first asset directory

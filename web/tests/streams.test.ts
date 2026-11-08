@@ -162,3 +162,60 @@ test('a context given only whole assets streams none, and the other way round', 
   await assert.rejects(streamed.loadAsset('a.bin'), /can't load asset a\.bin: this context reads no whole assets/);
   streamed.destroy();
 });
+
+test('cancelling a stream drops what waits, rejects waits, fails reads and cancels its source', async () => {
+  let reason: unknown = 'not cancelled';
+  let source!: ReadableStreamDefaultController<Uint8Array>;
+  const readable = new ReadableStream<Uint8Array>({
+    start(controller) { source = controller; },
+    cancel(why) { reason = why; },
+  });
+  const stream = zgal.readableStream(readable, 'scripted');
+  source.enqueue(bytes(0, 4));
+  await stream.ready(4);
+  const waiting = stream.ready(10);
+  stream.cancel();
+  await assert.rejects(waiting, /^Error: scripted: cancelled$/);
+  assert.throws(() => stream.read(4), /scripted: cancelled/);
+  await assert.rejects(stream.ready(1), /scripted: cancelled/);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(reason, undefined);
+  // Again: nothing more happens
+  stream.cancel();
+  assert.throws(() => stream.read(4), /scripted: cancelled/);
+});
+
+test('peekStream reads a stream\'s start and gives it again with the rest', async () => {
+  const { stream, source } = scripted();
+  const peeking = zgal.peekStream(stream, 6);
+  source.enqueue(bytes(0, 4));
+  assert.equal(await settled(peeking), false);
+  source.enqueue(bytes(4, 5));
+  const { head, stream: replay } = await peeking;
+  assert.deepEqual(head, bytes(0, 6));
+  // Reads span the head and the rest; ready counts the head
+  await replay.ready(9);
+  assert.deepEqual(replay.read(4), bytes(0, 4));
+  assert.deepEqual(replay.read(4), bytes(4, 4));
+  const more = replay.ready(3);
+  assert.equal(await settled(more), false);
+  source.enqueue(bytes(9, 3));
+  source.close();
+  await more;
+  assert.deepEqual(await readAll(replay, 5), bytes(8, 4));
+  // A stream shorter than the peek: head holds what there was, then the stream ends
+  const short = await zgal.peekStream(zgal.readableStream(new Blob([bytes(0, 3)]).stream(), 'blob'), 8);
+  assert.deepEqual(short.head, bytes(0, 3));
+  assert.deepEqual(await readAll(short.stream, 8), bytes(0, 3));
+  // A failing stream rejects; cancelling the replay cancels the stream
+  const failing = scripted();
+  const failed = zgal.peekStream(failing.stream, 4);
+  failing.source.error(new Error('gone'));
+  await assert.rejects(failed, /scripted: gone/);
+  const cancelled = scripted();
+  cancelled.source.enqueue(bytes(0, 4));
+  const peeked = await zgal.peekStream(cancelled.stream, 2);
+  peeked.stream.cancel();
+  assert.throws(() => peeked.stream.read(1), /scripted: cancelled/);
+  assert.throws(() => cancelled.stream.read(1), /scripted: cancelled/);
+});
