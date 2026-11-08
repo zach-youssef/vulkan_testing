@@ -10,3 +10,4 @@ export * as glsl from './glsl.ts';
 export * from './assets.ts';
 export * from './main-browser.ts';
 export * from './model.ts';
+export * from './stream.ts';

@@ -2521,7 +2521,7 @@ under Node; next is what graphs on the web can't use yet.
   (list @tt{include/zgal/Main.h} "what the generated mains use: the command line, validation, captures, running headless")
   (list @tt{include/zgal/Window.h} "running an app in a VulkanApp's window, and windowed programs")
   (list @tt{dsl/docs/} "this document, and the helpers compiling its examples")
-  (list @tt{web/zgal/} "what the generated TypeScript uses at runtime: Context, RenderGraph, nodes, materials, types' layouts, apps' events and clocks, C++'s arithmetic (math.ts) and built-in functions (glsl.ts), mains (main.ts, main-node.ts, main-browser.ts), PNGs (png-pixels.ts, png-write.ts), the image decoder (image-decode.ts, stb_image built to WebAssembly from web/decode); node.ts and png.ts for Node")
+  (list @tt{web/zgal/} "what the generated TypeScript uses at runtime: Context, RenderGraph, nodes, materials, types' layouts, apps' events and clocks, C++'s arithmetic (math.ts) and built-in functions (glsl.ts), mains (main.ts, main-node.ts, main-browser.ts), PNGs (png-pixels.ts, png-write.ts), streams (stream.ts), the image decoder (image-decode.ts, stb_image built to WebAssembly from web/decode); node.ts and png.ts for Node")
   (list @tt{web/} "the web backend's packages (npm: TypeScript, and Dawn, WebGPU for Node), tools (tools/check-wgsl.ts compiles WGSL with Dawn; tools/firefox.ts and tools/chromium.ts check a page in Firefox or headless Chromium) and tests")
   (list @tt{dsl/tests/} "the compiler's tests (make test-dsl)"))]
 

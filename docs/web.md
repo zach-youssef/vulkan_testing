@@ -18,6 +18,25 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   program's option metadata (`ProgramOption`'s `value`, `default`, `range` and `output`, which
   `ts-main.rkt` emits). `main.ts`'s `runHeadlessFrames` is the frame loop both share with
   `main-node.ts`, and `parseCommandLine`'s `where` (`node`, `browser` or `canvas`) is what differs.
+- `stream.ts` has streams (`Stream`), bytes a program reads as they arrive (a stream-buffer's file),
+  with native `zgal::Stream`'s semantics. `read(maxBytes)` never waits: it takes what has arrived
+  (an empty array if nothing has), and gives null once the stream has ended and been read.
+  `ready(minBytes)` resolves once that many bytes are waiting or the stream has ended. A source that
+  fails (or gives chunks other than `Uint8Array`s) rejects `ready` and makes every later `read`
+  throw, its message prefixed with the stream's name, even with bytes from before the failure
+  waiting (the graph then fails, as natively with InvalidData). A `StreamOpener`,
+  `(path, context) => Promise<Stream>`, rejects when it can't open, failing the build as a missing
+  buffer-file does. Every reference to a stream shares its read position, as copies of a native one
+  do. `readableStream(source, name)` wraps any `ReadableStream` of bytes, reading it as fast as it
+  gives bytes and keeping them until they're read (a stream-buffer's buffer holds the whole stream
+  anyway).
+- `context.loadAssetStream(path)`, the streaming sibling of `loadAsset`, opens an asset through
+  `ContextOptions.assetStreams`: browsers stream fetch bodies (and the `Blob`s given to
+  `runHeadless`), and `createNodeContext` streams the file, opened (in the first asset directory
+  that has it) before `loadAssetStream` resolves. Without `assets` or `assetStreams`,
+  `Context.create` fetches both from `assets/` beside the page; given only one, the other's loads
+  fail rather than quietly fetching from elsewhere. `web/tests/streams.test.ts` tests streams under
+  Node.
 - `png-write.ts` writes PNGs in any environment (`encodePngStream`, with `CompressionStream`);
   `png.ts` (Node only) uses zlib.
 - The web keeps Vulkan's clip space (the WGSL negates y), so web pixel expectations match native
@@ -67,8 +86,9 @@ then:
    `web/tests/held-keys.html` (held keys and mouse buttons released once each, also when focus
    leaves),
    `web/tests/image-file.html`, `web/tests/image-decode.html`, the kernels, indirect and models
-   pages, and `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main)
-   and `web/tests/stamps.html` (functions storing into the storage images they're given),
+   pages, `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main),
+   `web/tests/stamps.html` (functions storing into the storage images they're given) and
+   `web/tests/streams.html` (assets streamed from fetch bodies, and Blobs' streams),
    in each browser of `BROWSERS`: by default only headless Chromium. Firefox opens windows, so it
    runs only when asked, `make test-web BROWSERS="chromium firefox"` (as before pushing a stack's
    top), and has no WebGPU on Linux (CI skips it). A browser found nowhere is skipped (Chromium is

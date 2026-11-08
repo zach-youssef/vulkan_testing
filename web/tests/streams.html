@@ -1,0 +1,61 @@
+<!doctype html>
+<!-- Streams (zgal.Stream) in a browser: Context.create's default loaders stream texels.png from the
+     fetch response's body, byte for byte as loadAsset reads it, a missing asset fails when it's
+     opened, and a Blob's stream reads in pieces (web/tests/streams.test.ts checks the rest under
+     Node). Checked by make test-pages (web/tools/chromium.ts and firefox.ts); the page's state is
+     in <html data-zgal>. Served from build/web/tests, beside particles/ (whose runtime it uses) and
+     assets/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL stream test</title>
+</head>
+<body>
+<pre id="zgal-message"></pre>
+<script type="module">
+import * as zgal from '../particles/zgal/index.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+
+// Everything a stream gives, read in pieces of size bytes as they arrive
+async function readAll(stream, size) {
+  const parts = [];
+  for (;;) {
+    await stream.ready(size);
+    const part = stream.read(size);
+    if (part === null) break;
+    if (part.length === 0 || part.length > size) throw new Error(`a read of ${size} gave ${part.length} bytes`);
+    parts.push(part.slice());
+  }
+  return new Uint8Array(await new Blob(parts).arrayBuffer());
+}
+
+let context;
+try {
+  // Fetched from assets/ beside the page
+  context = await zgal.Context.create();
+  const whole = await context.loadAsset('texels.png');
+  const streamed = await readAll(await context.loadAssetStream('texels.png'), 7);
+  if (streamed.join() !== whole.join()) throw new Error(`texels.png streamed ${streamed.length} bytes unlike its ${whole.length}`);
+  let failed = false;
+  try {
+    await context.loadAssetStream('missing.bin');
+  } catch (error) {
+    failed = /can't open asset stream missing\.bin: .*404/.test(error.message);
+  }
+  if (!failed) throw new Error('a missing asset stream wasn\'t reported when it was opened');
+  const bytes = Uint8Array.from({ length: 100_003 }, (_, i) => i & 0xff);
+  const blob = await readAll(zgal.readableStream(new Blob([bytes]).stream(), 'blob'), 4093);
+  if (blob.join() !== bytes.join()) throw new Error('a Blob streamed other bytes than it holds');
+  log('streams read as expected');
+  document.documentElement.dataset.zgal = 'stopped';
+} catch (error) {
+  log(error instanceof Error ? error.message : String(error));
+  document.documentElement.dataset.zgal = 'failed';
+} finally {
+  context?.destroy();
+}
+</script>
+</body>
+</html>

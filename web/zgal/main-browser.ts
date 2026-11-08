@@ -9,7 +9,7 @@
 // the page's state in <html data-zgal="running|stopped|failed"> (stopped: the app quit or ran its
 // --frames), so tools (web/tools/firefox.ts, chromium.ts) can wait for it.
 
-import { Context, type AssetLoader } from './context.ts';
+import { Context, type AssetLoader, type AssetStreamLoader } from './context.ts';
 import { RenderGraph } from './graph.ts';
 import { Launch, parseCommandLine, runHeadlessFrames, type Program, type RunnableApp } from './main.ts';
 import { encodePngStream } from './png-write.ts';
@@ -125,7 +125,7 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
     const launch = parsed;
     resize(launch.size);
     try {
-      context = await Context.create({ assets: assetLoader(assets, {}) });
+      context = await Context.create(assetLoaders(assets, {}));
     } catch (error) {
       // E.g. no WebGPU adapter (headless browsers)
       fail(error);
@@ -292,15 +292,22 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
 // URL (relative to the page) to fetch
 export type ProgramFiles = Readonly<Record<string, Blob | URL | string>>;
 
-// A program's assets: the files given, else fetched from assets (relative paths, e.g. the command
-// line's, resolve against it)
-function assetLoader(assets: URL, files: ProgramFiles): AssetLoader {
-  return async (path) => {
+// A program's assets, read whole and streamed: the files given, else fetched from assets (relative
+// paths, e.g. the command line's, resolve against it)
+function assetLoaders(assets: URL, files: ProgramFiles): { assets: AssetLoader; assetStreams: AssetStreamLoader } {
+  const find = async (path: string): Promise<Blob | Response> => {
     const given = Object.hasOwn(files, path) ? files[path] : undefined;
-    if (given instanceof Blob) return new Uint8Array(await given.arrayBuffer());
+    if (given instanceof Blob) return given;
     const response = await fetch(given === undefined ? new URL(path, assets) : new URL(given, globalThis.location?.href));
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return new Uint8Array(await response.arrayBuffer());
+    return response;
+  };
+  return {
+    assets: async (path) => new Uint8Array(await (await find(path)).arrayBuffer()),
+    assetStreams: async (path) => {
+      const found = await find(path);
+      return (found instanceof Blob ? found.stream() : found.body) ?? new Blob([]).stream();
+    },
   };
 }
 
@@ -368,7 +375,7 @@ export function runHeadless<A extends RunnableApp, I>(program: Program<A, I>, as
       return;
     }
     const launch = parsed;
-    context = await Context.create({ assets: assetLoader(assets, options.files ?? {}) });
+    context = await Context.create(assetLoaders(assets, options.files ?? {}));
     if (stopping) return;
     const ready = context;
     const app = await program.create(ready, launch, inputs, () => {
