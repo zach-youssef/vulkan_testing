@@ -200,6 +200,25 @@ int main() { return exitStatus(runApp()); }            // prints the error
   the fill.
   `graph.sampledEntry(id)`, `storageEntry(id)` and `storageBufferEntry(id)` give materials entries
   for graph resources that follow recreation (and give them the usage).
+  `createStreamBuffer(name, source, words, bytesPerFrame)` creates a buffer that a stream fills
+  over frames (ZGAL's `stream-buffer`), e.g. a scene shown while it loads. `source` is a
+  `StreamSource` (`Result<size_t>(std::span<std::byte>)`, 0 meaning ended), such as a
+  `zgal::Stream` (`zgal/Stream.h`: `fileStream(path)`, and `openStream<H>(opener, path)`, which
+  reads a std430 header H first and replays it, so the buffer holds the whole stream). The
+  buffer is device local, shared by every frame, never recreated (it gets every buffer usage)
+  and not zeroed. Each frame calls the source once, before beginning the frame and on the
+  thread calling `readStreams()` or `execute()`, for at most what fits in `bytesPerFrame`. The
+  frame's first submission copies the whole words read (1–3 trailing bytes wait for the rest of
+  their word) after the bytes already there, as a tracked transfer write like the zero fill. It
+  copies them through a host-visible staging region per frame slot of `bytesPerFrame` (or the
+  buffer's size, if smaller), which grows with frames in flight and is freed once the stream
+  has ended and its last bytes are copied. Bytes read but not copied (a skipped frame, a frame
+  without submissions, a failure before submitting) wait for the next frame.
+  `streamArrived(id)` is the bytes the frame's nodes see. `readStreams()` reads the coming
+  frame's bytes early, so the application can see that count before `execute()`, which then
+  doesn't read again. A source that fails or throws (a contract violation is rethrown), gives
+  more than `words * 4` bytes or ends before them makes that frame's `execute()`, and every
+  later one, fail with `ErrorCode::InvalidData`.
 - **Nodes** declare what they use. `RenderablesNode`, `DispatchNode` and `ReadbackNode` cover common
   cases. GPU-driven work reads commands shaders wrote: `DispatchNode(material, BufferOffset{buffer,
   offset})` dispatches indirectly, and `IndirectDrawNode` draws `VkDraw(Indexed)IndirectCommand`s

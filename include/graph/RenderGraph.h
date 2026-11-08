@@ -24,6 +24,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <variant>
 
 /*
@@ -336,6 +337,95 @@ public: // Resources
         return addBuffer(std::move(record));
     }
 
+    // Reads up to bytes.size() bytes of a stream into bytes, returning how many it read: 0 once
+    // the stream has ended. It may block. zgal::Stream is one.
+    using StreamSource = std::function<Result<size_t>(std::span<std::byte>)>;
+
+    // A device-local buffer of words 32-bit words that source fills over frames, e.g. a scene
+    // streamed from a file while it renders. Shared by every frame, created once (with every
+    // usage a buffer use needs, so it's never recreated) and not zeroed: its first streamArrived()
+    // bytes are what source gave, the rest undefined.
+    //
+    // Before each frame's nodes, the frame's first submission copies at most bytesPerFrame new
+    // bytes into it, after any bytes already there, as a write tracked like the nodes' (its uses
+    // wait for it). Copies are whole words: 1-3 trailing bytes wait until the rest of their word
+    // arrives. Each frame calls source once (see readStreams), on the thread calling readStreams()
+    // or execute(), asking for what fits in the frame, and stages the bytes in a region per frame
+    // slot of bytesPerFrame (or the buffer's size, if smaller), freed once the stream has ended
+    // and its last bytes are copied.
+    //
+    // source must give exactly words * 4 bytes, then end. A source that fails or throws (other
+    // than a contract violation), gives more, or ends early (including within the last word) makes
+    // the frame's execute(), and every one after, fail with ErrorCode::InvalidData. bytesPerFrame
+    // must be a positive multiple of 4.
+    BufferId createStreamBuffer(std::string name, StreamSource source, VkDeviceSize words, VkDeviceSize bytesPerFrame) {
+        if (!source) {
+            contractViolation("Streamed buffer '" + name + "' has no source");
+        }
+        if (bytesPerFrame == 0 || bytesPerFrame % 4 != 0) {
+            contractViolation("Streamed buffer '" + name + "' appends " + std::to_string(bytesPerFrame)
+                              + " bytes per frame, which isn't a positive multiple of 4");
+        }
+        BufferRecord record;
+        record.name = std::move(name);
+        record.kind = BufferKind::Created;
+        record.size = words * 4;
+        record.stream = std::make_unique<StreamRecord>();
+        record.stream->source = std::move(source);
+        record.stream->bytesPerFrame = bytesPerFrame;
+        record.stream->pending.reserve(std::min(bytesPerFrame, record.size + 1));   // bytesPerFrame, or the size plus the end probe
+        return addBuffer(std::move(record));
+    }
+
+    // The bytes of a streamed buffer its nodes see: those of the coming frame once readStreams()
+    // has run for it (inside execute(), or before it), otherwise those of the last frame. Always
+    // a multiple of 4, at most bufferSize().
+    VkDeviceSize streamArrived(BufferId id) {
+        auto& record = bufferRecord(id);
+        if (!record.stream) {
+            contractViolation("Buffer '" + record.name + "' isn't streamed");
+        }
+        return record.stream->committed + record.stream->planned;
+    }
+
+    // Reads the coming frame's bytes of every streamed buffer, once per frame: execute() does it
+    // first thing, unless this already ran for the frame, so an application can call it before
+    // execute() to learn what the frame will hold (streamArrived()), e.g. to update its state
+    // before the frame. The bytes are kept until a frame copies them, so a frame that is skipped
+    // or fails before submitting loses none. Returns (and keeps returning) a stream's error.
+    Result<void> readStreams() {
+        const uint64_t frameNumber = context_->frameNumber();
+        if (streamsReadFrame_ != frameNumber) {
+            streamsReadFrame_ = frameNumber;
+            streamCopiesPending_ = false;
+            for (auto& record : buffers_) {
+                if (!record->stream) {
+                    continue;
+                }
+                auto& stream = *record->stream;
+                stream.planned = 0;
+                if (stream.error) {
+                    continue;
+                }
+                if (auto read = readStream(stream, record->size); !read) {
+                    stream.error = std::move(read).error().withContext("streaming buffer '" + record->name + "'");
+                    continue;
+                }
+                stream.planned = stream.pending.size() / 4 * 4;
+                streamCopiesPending_ = streamCopiesPending_ || stream.planned > 0;
+                if (stream.done()) {
+                    retireStreamStaging(stream);
+                }
+            }
+        }
+        for (const auto& record : buffers_) {
+            if (record->stream && record->stream->error) {
+                return *record->stream->error;
+            }
+        }
+        return {};
+    }
+
     // The image used in a frame. Created images exist once the graph has compiled (compile(), or
     // the first execute()); asking for one earlier, or for the surface, is a contract violation.
     Handle<Image> image(ImageId id, uint32_t frameIndex) {
@@ -525,6 +615,7 @@ public: // Compiling and running
             bool& flag;
             ~Executing() { flag = false; }
         } executing{executing_};
+        TRY(readStreams());
         TRY(context_->beginFrame());
         const uint32_t frame = context_->currentFrame();
         FrameResult result;
@@ -788,6 +879,24 @@ private:
         std::unique_ptr<PerFrame<ResourceSyncState>> frameStates;
     };
 
+    // A streamed buffer (createStreamBuffer). Bytes read wait in pending until a frame's first
+    // submission copies their whole words through the frame slot's staging region.
+    struct StreamRecord {
+        StreamSource source;
+        VkDeviceSize bytesPerFrame = 0;
+        std::vector<std::byte> pending;   // Read, not yet copied: at most bytesPerFrame
+        VkDeviceSize committed = 0;       // Bytes copied into the buffer by submitted frames
+        VkDeviceSize planned = 0;         // Bytes of pending the coming frame copies
+        bool ended = false;
+        std::optional<Error> error;       // Kept: every later frame fails with it
+        struct Staging {
+            std::unique_ptr<Buffer<std::byte>> buffer;
+            Buffer<std::byte>::Mapping mapping;   // Persistent; destroyed before the buffer
+        };
+        std::unique_ptr<PerFrame<Staging>> staging;   // Created with the buffer, freed once done
+        bool done() const { return ended && pending.empty(); }
+    };
+
     struct BufferRecord {
         std::string name;
         BufferKind kind = BufferKind::Created;
@@ -808,6 +917,7 @@ private:
         std::unique_ptr<PerFrame<Handle<Buffer<uint8_t>>>> perFrameBuffers;
         ResourceSyncState sharedState = ResourceSyncState::forBuffer();
         std::unique_ptr<PerFrame<ResourceSyncState>> frameStates;
+        std::unique_ptr<StreamRecord> stream;   // A streamed buffer's source and progress
     };
 
     // Descriptor entries the graph keeps up to date for one of its resources
@@ -900,8 +1010,60 @@ private:
     // (zeroFill), host-visible ones on the CPU when created (createGraphBuffer)
     static ResourceSyncState initialBufferState(const BufferRecord& record) {
         auto state = ResourceSyncState::forBuffer();
-        state.zeroFill = record.kind == BufferKind::Created && !(record.memory & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        state.zeroFill = record.kind == BufferKind::Created && !(record.memory & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+                         && !record.stream;
         return state;
+    }
+
+    // Every usage a buffer use can need (requiredBufferUsage), so a streamed buffer is never recreated
+    static constexpr VkBufferUsageFlags kStreamUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+        | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+        | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+
+    // A frame's read of a stream (readStreams): one call to its source for what fits in the frame,
+    // and one byte more once the total has arrived, to see that the stream ends there
+    static Result<void> readStream(StreamRecord& stream, VkDeviceSize total) {
+        if (stream.ended) {
+            return {};
+        }
+        const size_t had = stream.pending.size();
+        const VkDeviceSize received = stream.committed + had;   // At most total (else an error)
+        const size_t room = static_cast<size_t>(std::min<VkDeviceSize>(stream.bytesPerFrame - had, total - received + 1));
+        if (room == 0) {
+            return {};   // A frame without submissions left a full frame's bytes
+        }
+        stream.pending.resize(had + room);
+        Result<size_t> read = size_t(0);
+        try {
+            read = stream.source(std::span<std::byte>(stream.pending.data() + had, room));
+        } catch (const ContractViolation&) {
+            stream.pending.resize(had);
+            throw;
+        } catch (const std::exception& exception) {
+            read = Error(ErrorCode::InvalidData, std::string("the source threw: ") + exception.what());
+        } catch (...) {
+            read = Error(ErrorCode::InvalidData, "the source threw");
+        }
+        if (!read) {
+            stream.pending.resize(had);
+            return Error(ErrorCode::InvalidData, "the source failed: " + read.error().describe());
+        }
+        if (*read > room) {
+            stream.pending.resize(had);
+            return Error(ErrorCode::InvalidData, "the source read " + std::to_string(*read) + " bytes into room for "
+                                                 + std::to_string(room));
+        }
+        stream.pending.resize(had + *read);
+        stream.ended = *read == 0;
+        const VkDeviceSize now = stream.committed + stream.pending.size();
+        if (now > total) {
+            return Error(ErrorCode::InvalidData, "the stream holds more than the buffer's " + std::to_string(total) + " bytes");
+        }
+        if (stream.ended && now < total) {
+            return Error(ErrorCode::InvalidData, "the stream ended after " + std::to_string(now) + " of the buffer's "
+                                                 + std::to_string(total) + " bytes");
+        }
+        return {};
     }
 
     static ResourceSyncState initialImageState(const ImageRecord& record) {
@@ -1113,7 +1275,7 @@ private:
             if (record.kind != BufferKind::Created) {
                 continue;
             }
-            const VkBufferUsageFlags usage = bufferUsage[i] | record.extraUsage;
+            const VkBufferUsageFlags usage = record.stream ? kStreamUsage : bufferUsage[i] | record.extraUsage;
             const bool exists = record.perFrame ? record.perFrameBuffers != nullptr : static_cast<bool>(record.shared);
             if ((exists && usage == record.usage && record.size == record.realizedSize) || usage == 0) {
                 continue;
@@ -1140,9 +1302,37 @@ private:
             }
             fillsPending_ = fillsPending_ || initialBufferState(record).zeroFill;
         }
+        TRY(createStreamStaging());
         // Only now, so a failure above is retried
         structureDirty_ = false;
         realizedSurfaceExtent_ = surfaceExtent_;
+        return {};
+    }
+
+    // Streamed buffers' staging: a host-visible region per frame slot of bytesPerFrame (at most the
+    // buffer's size, which is all a frame can copy), which the slot's frames write after
+    // beginFrame waited for its previous frame, so its last copy is done. More frames in flight
+    // add regions (a failure fails the change); fewer remove them.
+    Result<void> createStreamStaging() {
+        for (auto& record : buffers_) {
+            if (!record->stream || record->stream->staging || record->stream->done() || !record->shared) {
+                continue;
+            }
+            const VkDeviceSize size = std::min(record->stream->bytesPerFrame, std::max<VkDeviceSize>(4, record->size));
+            auto create = [context = context_, size](uint32_t) -> Result<StreamRecord::Staging> {
+                StreamRecord::Staging staging;
+                TRY_ASSIGN(staging.buffer, Buffer<std::byte>::createScoped(*context, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                                                          | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+                TRY_ASSIGN(staging.mapping, staging.buffer->getPersistentMapping(0, VK_WHOLE_SIZE));
+                return staging;
+            };
+            auto staging = PerFrame<StreamRecord::Staging>::create(*context_, create);
+            if (!staging) {
+                return std::move(staging).error().withContext("creating the staging of streamed buffer '" + record->name + "'");
+            }
+            record->stream->staging = std::make_unique<PerFrame<StreamRecord::Staging>>(std::move(*staging));
+        }
         return {};
     }
 
@@ -1212,6 +1402,14 @@ private:
                 shared.reset();
                 perFrame.reset();
             });
+        }
+    }
+
+    // Frees a finished stream's staging once the frames that copied from it have completed
+    void retireStreamStaging(StreamRecord& stream) {
+        stream.pending.shrink_to_fit();
+        if (std::shared_ptr<PerFrame<StreamRecord::Staging>> staging{stream.staging.release()}) {
+            context_->retire([staging]() mutable { staging.reset(); });
         }
     }
 
@@ -1634,9 +1832,38 @@ private:
                 }
             }
         }
+        // Streamed buffers' new bytes, staged in this frame slot's region (its previous frame has
+        // finished), copied like the fills: tracked writes that the bytes' uses wait for
+        struct StreamCopy {
+            VkBuffer staging;
+            VkBuffer buffer;
+            VkBufferCopy region;
+        };
+        std::vector<StreamCopy> streamCopies;
+        if (streamCopiesPending_) {
+            streamCopiesPending_ = false;
+            for (uint32_t index = 0; index < buffers_.size(); ++index) {
+                auto& record = *buffers_[index];
+                if (!record.stream || record.stream->planned == 0) {
+                    continue;
+                }
+                auto& stream = *record.stream;
+                auto& staging = (*stream.staging)[frame];
+                std::memcpy(staging.mapping.get(), stream.pending.data(), stream.planned);
+                applyBufferUse(index, SyncUse::of(Access::TransferDst, 0, queue), fillBarriers);
+                streamCopies.push_back({staging.buffer->getBuffer(), record.shared->getBuffer(),
+                                        VkBufferCopy{0, stream.committed, stream.planned}});
+                stream.committed += stream.planned;
+                stream.pending.erase(stream.pending.begin(), stream.pending.begin() + static_cast<std::ptrdiff_t>(stream.planned));
+                stream.planned = 0;
+            }
+        }
         recordBarriers(fillBarriers);
         for (VkBuffer fill : fills) {
             vkCmdFillBuffer(commandBuffer, fill, 0, VK_WHOLE_SIZE, 0);
+        }
+        for (const auto& copy : streamCopies) {
+            vkCmdCopyBuffer(commandBuffer, copy.staging, copy.buffer, 1, &copy.region);
         }
 
         for (uint32_t node : submission.nodes) {
@@ -1863,6 +2090,9 @@ private:
     // Some buffer copy may still be waiting for its zero fill (ResourceSyncState::zeroFill), so
     // submissions look for them; false in steady state
     bool fillsPending_ = false;
+    // The frame (number) streams were last read for (readStreams), and whether it has bytes to copy
+    std::optional<uint64_t> streamsReadFrame_;
+    bool streamCopiesPending_ = false;
     std::optional<uint32_t> lastTimedSlot_;   // The frame slot of the last frame timed
 };
 

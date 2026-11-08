@@ -5,6 +5,8 @@
 #include "graph/nodes/BufferReadbackNode.h"
 #include "graph/nodes/ReadbackNode.h"
 #include "descriptors/DescriptorHeap.h"
+#include "zgal/Stream.h"
+#include "common/ResultChecks.h"
 
 #include <cmath>
 #include <cstring>
@@ -1113,4 +1115,268 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph measures its nodes' GPU time when asked"
     ctx.setFramesInFlight(2);
     graph.execute().value();
     graph.waitIdle().value();
+}
+
+namespace {
+
+struct StreamHeader {
+    uint32_t magic;
+    uint32_t words;
+};
+
+// A stream of a header (StreamHeader, giving the total in words) and then patterned bytes
+std::vector<std::byte> streamBytes(uint32_t words) {
+    std::vector<std::byte> bytes(words * 4);
+    for (size_t k = 0; k < bytes.size(); ++k) {
+        bytes[k] = std::byte(static_cast<uint8_t>(k * 31 + 7));
+    }
+    const StreamHeader header{0x5354524Du, words};
+    std::memcpy(bytes.data(), &header, sizeof(header));
+    return bytes;
+}
+
+// Gives bytes in uneven chunks (cycling through chunks, each cut to the room asked for), then
+// ends, unless told to fail: with an error or an exception after failAfter bytes
+struct ScriptedStream {
+    std::vector<std::byte> bytes;
+    std::vector<size_t> chunks;
+    enum class Failure { None, Error, Throw } failure = Failure::None;
+    size_t failAfter = 0;
+    size_t offset = 0;
+    size_t calls = 0;
+
+    zgal::StreamOpener opener() {
+        return [this](const std::filesystem::path&) -> Result<zgal::Stream> {
+            return zgal::Stream([this](std::span<std::byte> out) -> Result<size_t> {
+                if (failure != Failure::None && offset >= failAfter) {
+                    if (failure == Failure::Throw) {
+                        throw std::runtime_error("the disk caught fire");
+                    }
+                    return Error(ErrorCode::NotFound, "the file went away");
+                }
+                const size_t count = std::min({out.size(), chunks[calls++ % chunks.size()], bytes.size() - offset});
+                std::memcpy(out.data(), bytes.data() + offset, count);
+                offset += count;
+                return count;
+            });
+        };
+    }
+};
+
+} // namespace
+
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph streams a buffer in whole words, a frame's worth at a time, across changes of frames in flight") {
+    auto& ctx = context();
+    const uint32_t originalFrames = ctx.framesInFlight();
+    ctx.setFramesInFlight(2);
+    {
+        constexpr uint32_t kWords = 300;
+        constexpr VkDeviceSize kPerFrame = 64;
+        ScriptedStream script{streamBytes(kWords), {5, 13, 1, 2, 7, 70, 33, 3, 50, 6}};
+        RenderGraph graph(ctx);
+        auto opened = zgal::openStream<StreamHeader>(script.opener(), "scene.stream").value();
+        CHECK(opened.header.magic == 0x5354524Du);
+        CHECK(opened.header.words == kWords);
+
+        // What the graph asks for and gets, through the opened stream
+        std::vector<size_t> requests;
+        VkDeviceSize delivered = 0;
+        const BufferId scene = graph.createStreamBuffer("scene", [&, stream = std::move(opened.stream)](std::span<std::byte> out) mutable {
+            requests.push_back(out.size());
+            auto read = stream.read(out);
+            if (read) {
+                delivered += *read;
+            }
+            return read;
+        }, opened.header.words, kPerFrame);
+        CHECK(graph.streamArrived(scene) == 0);
+
+        // The frame's first submission (which copies the bytes), a CPU node, then the read in a
+        // later submission (on another queue, if the device has one)
+        const BufferId other = graph.createBuffer("other", FrameMode::PerFrame, 16);
+        const NodeId first = graph.addTransfer("first", [&](NodeBuilder& builder) { builder.write(other, Access::TransferDst); },
+                                               [&](RecordContext& record) {
+                                                   vkCmdFillBuffer(record.commandBuffer, record.graph.buffer(other, record.frameIndex),
+                                                                   0, VK_WHOLE_SIZE, 3);
+                                               });
+        const NodeId between = graph.addCpu("between", nullptr, [](FrameContext&) {});
+        const NodeId readback = graph.add<BufferReadbackNode>("readback", scene);
+        graph.addDependency(first, between);
+        graph.addDependency(between, readback);
+        graph.compile().value();
+        CAPTURE(graph.queueOf(first).value());
+        CAPTURE(graph.queueOf(readback).value());
+        CHECK(graph.bufferSize(scene, ctx.currentFrame()) == kWords * 4);
+        const VkBuffer sceneBuffer = graph.buffer(scene, ctx.currentFrame());
+
+        VkDeviceSize arrived = 0;
+        VkDeviceSize arrivedBeforeDisabled = 0;
+        int heldBack = 0;
+        int frame = 0;
+        int framesAfterEnd = 0;
+        while (framesAfterEnd < 3) {
+            CAPTURE(frame);
+            // Frames in flight change mid-stream, up and back down
+            if (frame == 10) {
+                ctx.setFramesInFlight(3);
+            } else if (frame == 30) {
+                ctx.setFramesInFlight(2);
+            }
+            // Two frames with no GPU nodes copy nothing: what they read is kept for later frames
+            const bool disabled = frame == 20 || frame == 21;
+            if (frame == 20) {
+                graph.setEnabled(first, false);
+                graph.setEnabled(readback, false);
+                arrivedBeforeDisabled = arrived;
+            } else if (frame == 22) {
+                graph.setEnabled(first, true);
+                graph.setEnabled(readback, true);
+                CHECK(arrived > arrivedBeforeDisabled);   // Read while disabled (the chunks are scripted)
+            }
+            const size_t requestsBefore = requests.size();
+            graph.readStreams().value();
+            const VkDeviceSize now = graph.streamArrived(scene);
+            CAPTURE(delivered);
+            CHECK(now % 4 == 0);
+            CHECK(now == delivered / 4 * 4);
+            CHECK(now - arrived <= kPerFrame);
+            CHECK(requests.size() - requestsBefore <= 1);
+            for (size_t r = requestsBefore; r < requests.size(); ++r) {
+                CHECK(requests[r] >= 1);
+                CHECK(requests[r] <= kPerFrame);
+            }
+            heldBack += delivered % 4 != 0;
+            // Reading again in the same frame changes nothing, and execute() doesn't read again
+            graph.readStreams().value();
+            CHECK(requests.size() - requestsBefore <= 1);
+            const size_t requestsRead = requests.size();
+            graph.execute().value();
+            CHECK(requests.size() == requestsRead);
+            CHECK(graph.streamArrived(scene) == now);
+            arrived = now;
+
+            // The bytes arrived are those of the stream (checked every few frames, letting the
+            // others overlap)
+            if (!disabled && (frame % 7 == 0 || frame == 22 || arrived == kWords * 4)) {
+                const auto bytes = graph.nodeAs<BufferReadbackNode>(readback).bytes().value();
+                REQUIRE(bytes.size() == kWords * 4);
+                CHECK(std::memcmp(bytes.data(), script.bytes.data(), arrived) == 0);
+            }
+            framesAfterEnd += arrived == kWords * 4;
+            ++frame;
+            REQUIRE(frame < 1000);
+        }
+        CHECK(heldBack > 0);
+        CHECK(delivered == kWords * 4);
+        // Once the stream has ended, frames don't read it
+        const size_t requestsAtEnd = requests.size();
+        graph.execute().value();
+        CHECK(requests.size() == requestsAtEnd);
+        // Never recreated
+        CHECK(graph.buffer(scene, ctx.currentFrame()) == sceneBuffer);
+        graph.waitIdle().value();
+    }
+    ctx.setFramesInFlight(originalFrames);
+    ctx.waitIdleAll();
+    ctx.collectRetired();
+}
+
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph's streamed buffers fail frames with InvalidData when their stream does") {
+    auto& ctx = context();
+    constexpr uint32_t kWords = 8;
+    constexpr VkDeviceSize kPerFrame = 8;
+    ScriptedStream script{streamBytes(kWords), {3, 9}};
+    RenderGraph::StreamSource raw;   // Used instead of the opened script when set
+    std::string expected;
+    int goodFrames = 0;
+    SUBCASE("a source reading more than it was given room for") {
+        raw = [](std::span<std::byte> out) -> Result<size_t> { return out.size() + 1; };
+        expected = "the source read 9 bytes into room for 8";
+    }
+    SUBCASE("a short header") {
+        script.bytes.resize(5);
+        expected = "ended after 5 bytes of its 8-byte header";
+    }
+    SUBCASE("a source returning an error") {
+        script.failure = ScriptedStream::Failure::Error;
+        script.failAfter = 20;
+        expected = "the file went away";
+        goodFrames = 2;
+    }
+    SUBCASE("a source throwing") {
+        script.failure = ScriptedStream::Failure::Throw;
+        script.failAfter = 20;
+        expected = "the source threw: the disk caught fire";
+        goodFrames = 2;
+    }
+    SUBCASE("more bytes than the buffer holds") {
+        script.bytes.resize(kWords * 4 + 2);
+        expected = "the stream holds more than the buffer's 32 bytes";
+        goodFrames = 4;
+    }
+    SUBCASE("an end before the buffer is full") {
+        script.bytes.resize(kWords * 4 - 4);
+        expected = "the stream ended after 28 of the buffer's 32 bytes";
+        goodFrames = 4;
+    }
+    SUBCASE("an end within the last word") {
+        script.bytes.resize(kWords * 4 - 1);
+        expected = "the stream ended after 31 of the buffer's 32 bytes";
+        goodFrames = 4;
+    }
+    {
+        RenderGraph graph(ctx);
+        auto opened = zgal::openStream<StreamHeader>(script.opener(), "scene.stream").value();
+        const BufferId scene = graph.createStreamBuffer("scene", raw ? raw : std::move(opened.stream), kWords, kPerFrame);
+        graph.add<BufferReadbackNode>("readback", scene);
+        int frame = 0;
+        Result<FrameResult> result = FrameResult{};
+        while ((result = graph.execute())) {
+            ++frame;
+            REQUIRE(frame < 100);
+        }
+        CHECK(frame >= goodFrames);
+        CHECK_ERROR(result, ErrorCode::InvalidData, "streaming buffer 'scene': ");
+        CHECK_ERROR(result, ErrorCode::InvalidData, expected);
+        // And every frame after
+        CHECK_ERROR(graph.execute(), ErrorCode::InvalidData, expected);
+        CHECK_ERROR(graph.readStreams(), ErrorCode::InvalidData, expected);
+        graph.waitIdle().value();
+    }
+    ctx.waitIdleAll();
+    ctx.collectRetired();
+}
+
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph's streamed buffers rethrow their source's contract violations") {
+    auto& ctx = context();
+    {
+        RenderGraph graph(ctx);
+        int calls = 0;
+        const BufferId scene = graph.createStreamBuffer("scene", [&](std::span<std::byte> out) -> Result<size_t> {
+            if (++calls == 3) {
+                contractViolation("the source was misused");
+            }
+            return std::min<size_t>(out.size(), 4);
+        }, 8, 8);
+        graph.add<BufferReadbackNode>("readback", scene);
+        graph.execute().value();
+        graph.execute().value();
+        CHECK_THROWS_AS(graph.execute(), ContractViolation);
+        CHECK(calls == 3);
+        CHECK(graph.streamArrived(scene) == 8);   // What the source gave before
+        graph.waitIdle().value();
+    }
+    ctx.waitIdleAll();
+    ctx.collectRetired();
+}
+
+TEST_CASE_FIXTURE(GpuTest, "RenderGraph checks streamed buffers' arguments") {
+    auto& ctx = context();
+    RenderGraph graph(ctx);
+    auto source = [](std::span<std::byte>) -> Result<size_t> { return size_t(0); };
+    CHECK_THROWS_AS(graph.createStreamBuffer("odd", source, 4, 6), ContractViolation);
+    CHECK_THROWS_AS(graph.createStreamBuffer("none", source, 4, 0), ContractViolation);
+    CHECK_THROWS_AS(graph.createStreamBuffer("sourceless", nullptr, 4, 4), ContractViolation);
+    const BufferId plain = graph.createBuffer("plain", FrameMode::Shared, 4);
+    CHECK_THROWS_AS(graph.streamArrived(plain), ContractViolation);
 }
