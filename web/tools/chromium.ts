@@ -8,6 +8,11 @@
 //
 //   PAGE, --serve, --wait, --timeout, --keys, --screenshot, --compare, --save-capture: as
 //                       firefox.ts's
+//   --touch STEPS       once the page runs (after --keys), touches the canvas (#zgal) with touch
+//                       events, a step at a time: each step the fingers down after it, as x,y
+//                       points in CSS pixels from its top-left corner separated by spaces, steps
+//                       separated by ';' (e.g. '40,60; 80,60;': down, move, up; see pages.ts's
+//                       parseTouches)
 //   --hardware          uses the machine's GPU rather than SwiftShader
 //   --chromium PATH     the Chromium binary (default $CHROMIUM, else the newest headless shell
 //                       Playwright installed: npx playwright install chromium-headless-shell)
@@ -74,6 +79,7 @@ await runChecker<Options>('chromium', {
     chromium: { type: 'string', default: process.env.CHROMIUM },
   },
   usage: '[--hardware] [--chromium PATH]',
+  touches: true,
   async launch(options, log): Promise<Browser> {
     const shell = playwrightShell();
     const binary = findBrowser('Chromium', options.chromium, shell ? [shell] : [],
@@ -118,6 +124,21 @@ await runChecker<Options>('chromium', {
         const event = keyEvent(key);
         await send(cdp, 'Input.dispatchKeyEvent', { type: 'keyDown', ...event }, session);
         await send(cdp, 'Input.dispatchKeyEvent', { type: 'keyUp', ...event }, session);
+      },
+      async touch(id, steps) {
+        const [left, top] = (await evaluate(`(() => {
+          const r = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();
+          return [r.left, r.top];
+        })()`)) as number[];
+        // Each step sends every finger still down (the protocol works out which changed): a start
+        // when fingers are added, an end when some are lifted, else a move
+        let down = 0;
+        for (const fingers of steps) {
+          const type = fingers.length > down ? 'touchStart' : fingers.length < down ? 'touchEnd' : 'touchMove';
+          const touchPoints = fingers.map(([x, y], finger) => ({ x: left + x, y: top + y, id: finger }));
+          await send(cdp, 'Input.dispatchTouchEvent', { type, touchPoints }, session);
+          down = fingers.length;
+        }
       },
       async screenshot(id) {
         const [x, y, width, height] = (await evaluate(`(() => {

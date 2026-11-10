@@ -152,5 +152,8 @@ browser where they look by default.
   overrides `--enable-gpu`). `navigator.gpu` needs a secure context, which `--serve`'s `127.0.0.1`
   is. Dawn's npm package, which runs the Node tests, uses the machine's GPU (Metal on the Mac), or
   lavapipe where that's the only Vulkan driver (in CI).
+- **Chromium** can touch a page's canvas (`--touch`, with the DevTools protocol's
+  `Input.dispatchTouchEvent`), which gives the page real touch pointer events; firefox.ts refuses
+  it. A page checking touches records what its app gets and checks it itself.
 - Check a page's outcome through `data-zgal` and `#zgal-message`, not only its pixels.
 - Test pages need fixed layouts (`flex: none`): Firefox's window is 1024 pixels wide.

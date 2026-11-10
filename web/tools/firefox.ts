@@ -13,6 +13,7 @@
 //                       page stops (its app quits or runs its ?frames=N), fails, or --timeout passes
 //   --timeout MS        how long to wait for the page to stop (default 60000)
 //   --keys KEYS         presses each character of KEYS once the page runs (e.g. '3' or 'ab')
+//   --touch STEPS       chromium.ts's only: refused here (exits with 2)
 //   --screenshot FILE   writes the canvas's pixels (at its own resolution, not the page's scale)
 //   --compare FILE      compares the canvas with an approved PNG of the same size
 //   --save-capture FILE writes the first capture a headless program's page shows (its download)
@@ -44,6 +45,7 @@ await runChecker<Options>('firefox', {
     firefox: { type: 'string', default: process.env.FIREFOX },
   },
   usage: '[--headless] [--firefox PATH]',
+  touches: false,
   async launch(options, log): Promise<Browser> {
     const binary = findBrowser('Firefox', options.firefox, ['/Applications/Firefox.app/Contents/MacOS/firefox', 'firefox'],
       'install it, or set FIREFOX or --firefox');

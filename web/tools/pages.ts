@@ -1,6 +1,6 @@
 // What the page checkers (firefox.ts, chromium.ts) share: their command line, serving a directory,
-// running a ZGAL page (FILE.zgal.html) until it stops, pressing keys, and screenshotting its canvas
-// and comparing it with an approved PNG. Each checker only launches and drives its browser.
+// running a ZGAL page (FILE.zgal.html) until it stops, pressing keys, touching its canvas, and
+// screenshotting its canvas and comparing it with an approved PNG. Each checker only launches and drives its browser.
 //
 // A page reports its state in <html data-zgal="running|stopped|failed"> (web/zgal/main-browser.ts).
 // Checkers exit with 0 when the page ran without errors (and matched), 1 when it failed, didn't match
@@ -22,6 +22,10 @@ export interface Browser {
   evaluate(expression: string): Promise<unknown>;
   // Presses and releases a key, given as the character it types
   pressKey(key: string): Promise<void>;
+  // Touches the element with this id: each step gives the fingers down after it, at CSS pixels from
+  // the element's top-left corner, a finger by its place in the list (see parseTouches). Only the
+  // checkers whose touches is true.
+  touch?(id: string, steps: Touches): Promise<void>;
   // A PNG of the element with this id, as the page shows it
   screenshot(id: string): Promise<Uint8Array>;
   close(): Promise<void>;
@@ -31,6 +35,8 @@ export interface Checker<O> {
   // The checker's own options (parseArgs's), and their usage lines
   options: NonNullable<ParseArgsConfig['options']>;
   usage: string;
+  // Whether its browser can touch (--touch), refused on the command line otherwise
+  touches: boolean;
   // Starts the browser with the parsed options, printing the page's console with log
   launch(options: O, log: (line: string) => void): Promise<Browser>;
 }
@@ -40,6 +46,7 @@ const common = {
   wait: { type: 'string' },
   timeout: { type: 'string', default: '60000' },
   keys: { type: 'string', default: '' },
+  touch: { type: 'string' },
   screenshot: { type: 'string' },
   compare: { type: 'string' },
   'save-capture': { type: 'string' },
@@ -72,6 +79,31 @@ async function serve(root: string): Promise<{ server: Server; port: number }> {
   return { server, port: (server.address() as AddressInfo).port };
 }
 
+// Touch steps: each the fingers down after it, as [x, y] points
+export type Touches = [number, number][][];
+
+// --touch's steps, separated by ';', each the fingers down after it as 'x,y' points separated by
+// spaces (in CSS pixels from the canvas's top-left corner), a finger by its place in the list, so
+// fingers lift from the end of the list (a step can't lift the first and keep the second): e.g.
+// '40,60; 80,60; 80,60 200,120; 80,60;' puts a finger down, moves it, puts a second one down, lifts
+// it, then lifts the first (the empty step after the last ';'). Null when malformed.
+export function parseTouches(text: string): Touches | null {
+  const steps: Touches = [];
+  for (const step of text.split(';')) {
+    const points = step.trim() === '' ? [] : step.trim().split(/\s+/);
+    const fingers: [number, number][] = [];
+    for (const point of points) {
+      const match = /^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/.exec(point);
+      if (!match) return null;
+      fingers.push([Number(match[1]), Number(match[2])]);
+    }
+    // Lifting fingers when none are down
+    if (fingers.length === 0 && (steps.at(-1)?.length ?? 0) === 0) return null;
+    steps.push(fingers);
+  }
+  return steps.length > 0 ? steps : null;
+}
+
 export const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
 // The canvas's pixels from a screenshot of it shown at a whole multiple of its size (the page scales
@@ -96,7 +128,7 @@ function unscale(shot: { width: number; height: number; rgba: Uint8Array }, widt
 // page in the checker's browser and exits
 export async function runChecker<O>(name: string, checker: Checker<O>): Promise<never> {
   const usage = `usage: node web/tools/${name}.ts [--serve DIR] [--wait MS | --timeout MS] [--keys KEYS]
-       [--screenshot FILE] [--compare FILE] [--save-capture FILE] ${checker.usage} PAGE`;
+       [--touch STEPS] [--screenshot FILE] [--compare FILE] [--save-capture FILE] ${checker.usage} PAGE`;
   let parsed;
   try {
     parsed = parseArgs({ allowPositionals: true, options: { ...common, ...checker.options } });
@@ -120,6 +152,15 @@ export async function runChecker<O>(name: string, checker: Checker<O>): Promise<
   };
   const wait = milliseconds('wait', options.wait);
   const timeout = milliseconds('timeout', options.timeout)!;
+  const touches = options.touch === undefined ? null : parseTouches(options.touch);
+  if (options.touch !== undefined && !checker.touches) {
+    console.error(`--touch: ${name} can't touch\n${usage}`);
+    process.exit(2);
+  }
+  if (options.touch !== undefined && !touches) {
+    console.error(`--touch expects steps of x,y points, e.g. '40,60; 80,60;', not '${options.touch}'\n${usage}`);
+    process.exit(2);
+  }
   if (positionals.length !== 1) {
     console.error(usage);
     process.exit(2);
@@ -161,6 +202,11 @@ export async function runChecker<O>(name: string, checker: Checker<O>): Promise<
       if (reached !== 'running') break;
       await page.pressKey(key);
       console.log(`pressed ${key}`);
+    }
+    if (touches && reached === 'running') {
+      if (!page.touch) throw new Error(`${name} can't touch (--touch)`);
+      await page.touch('zgal', touches);
+      console.log(`touched: ${options.touch}`);
     }
     if (wait !== undefined) {
       await sleep(wait);
