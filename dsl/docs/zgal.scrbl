@@ -2404,8 +2404,15 @@ too). The options are @tt{scaling} (required: @tt{'whole-multiples'} shows the c
 whole multiple of its size that fits, pixelated, @tt{'fit'} at the largest size, smoothly),
 @tt{args} (its command line, as under Node), @tt{keys} (@tt{'canvas'}, the default, takes key
 presses while the canvas has focus, which it takes when clicked; @tt{'page'} takes the whole
-page's), @tt{onState} (called with @tt{running}, @tt{stopped} or @tt{failed}) and @tt{onMessage}
-(errors and usage, by default to the console). The canvas is shown at the centre of its parent,
+page's), @tt{onState} (called with @tt{running}, @tt{stopped} or @tt{failed}), @tt{onMessage}
+(errors and usage, by default to the console) and @tt{onProgress} (@tt{zgal.AssetProgress}, called
+as its assets' bytes arrive, read whole or streamed, e.g. for a progress bar: with the asset's path
+as the program opens it, the bytes loaded so far and its total size, or null if that isn't known;
+once when it's opened, with 0, then as each piece arrives, counted as it passes, so it neither
+slows nor buffers the asset. The total is a @tt{Blob}'s size or a response's @tt{Content-Length},
+unless the response is compressed or more bytes than it arrive (the total is then null from that
+call); while it is null, the last call, once the asset has ended, gives
+@tt{total} = @tt{loaded}). The canvas is shown at the centre of its parent,
 which must have a size of its own. Each mounted program has its own device, so a page can run
 several, e.g.
 
@@ -2418,7 +2425,9 @@ await particles.stop();
 
 Its own page calls the main's @tt{run()}, which mounts the program in the page's canvas, and Node
 runs the main when it is the program run (not imported). @tt{make test-pages} checks mounting with
-@tt{web/tests/mount.html}.
+@tt{web/tests/mount.html}, and @tt{onProgress} (through @tt{runHeadless}, which shares the loaders)
+with @tt{web/tests/headless.html} (assets read whole) and @tt{web/tests/stream-buffers.html}
+(streamed).
 
 Every program's main also exports @tt{runHeadless(options)} (@tt{zgal.runHeadless}), which runs it
 headless in a page as Node would, with its own WebGPU device: its frames (@tt{--frames}, by default
@@ -2428,7 +2437,7 @@ Node), @tt{files} (the files it reads, by the paths @tt{args} gives them: a @tt{
 input's @tt{File}, or a URL relative to the page; other paths are fetched from @tt{assets/}),
 @tt{onCapture} (called with each capture: its @tt{path}, the file Node would write, @tt{frame}
 (@tt{--capture-frames}' frame, or null), @tt{size}, @tt{rgba} pixels and @tt{png}, a PNG
-@tt{Blob}), @tt{onState} and @tt{onMessage}, as @tt{mount}'s. It returns an object whose @tt{done}
+@tt{Blob}), @tt{onState}, @tt{onMessage} and @tt{onProgress}, as @tt{mount}'s. It returns an object whose @tt{done}
 promise gives the state it ended in (@tt{stopped}, or @tt{failed} for a bad command line, an
 error or WebGPU's validation errors) and whose @tt{stop()} stops it, resolving once its device is
 destroyed. Runs are independent, each creating a device, so a page running again on input (e.g. a

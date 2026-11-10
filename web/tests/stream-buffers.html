@@ -4,7 +4,11 @@
      and from a Blob the page gives, each summed whole once its streamed events say it has arrived; a
      stream that can't be opened and a bad --per-frame fail the run; and stopping a run mid-stream
      cancels the stream's source while it's still open, where a run reading the whole of its stream
-     cancels nothing (web/tests/streaming.test.ts checks the rest under Node). Checked by
+     cancels nothing; onProgress counts each stream's bytes to its total (the served file's
+     Content-Length, the Blob's size, or for a response without Content-Length, a compressed one or
+     one whose Content-Length is too small, null until it ends),
+     and a run stopped mid-stream with it still cancels the source (web/tests/streaming.test.ts
+     checks the rest under Node). Checked by
      make test-pages (web/tools/chromium.ts and firefox.ts); the page's state is in <html data-zgal>.
      Served from build/web/tests, beside streamer/. -->
 <html lang="en">
@@ -38,8 +42,9 @@ output.line = (text) => {
   printed?.(text);
 };
 
-// Runs streamer headless to its end; stopWhen(messages) stops it early
-async function run(args, files, stopWhen = () => false) {
+// Runs streamer headless to its end; stopWhen(messages) stops it early; its onProgress calls go to
+// progress, if given
+async function run(args, files, stopWhen = () => false, progress = null) {
   const messages = [];
   let program;
   let stopped = null;
@@ -48,7 +53,8 @@ async function run(args, files, stopWhen = () => false) {
     if (stopped === null && stopWhen(messages)) stopped = program.stop();
   };
   printed = note;
-  program = streamer.runHeadless({ args, files, onMessage: note });
+  const onProgress = progress ? (...call) => progress.push(call) : undefined;
+  program = streamer.runHeadless({ args, files, onMessage: note, onProgress });
   const state = await program.done;
   await stopped;
   return { state, messages };
@@ -72,11 +78,53 @@ function checkRun(what, result, size, perFrame, sum) {
   check(result.messages.at(-1) === `summed ${size / 4} words: ${sum}`, `${what}'s run summed:\n${printed}`);
 }
 
+// Checks a stream's onProgress calls: opened at 0, growing to size, total throughout (null, for a
+// response without Content-Length, until the last call gives size)
+function checkProgress(what, progress, size, total) {
+  const calls = progress.map((call) => call.join()).join(' ');
+  check(progress.every(([path]) => path === 'scene.bin'), `${what}'s progress named other paths: ${calls}`);
+  check(progress.length >= 2 && progress[0][1] === 0 && progress.at(-1)[1] === size && progress.at(-1)[2] === size, `${what}'s progress didn't go from 0 to ${size}: ${calls}`);
+  for (let i = 1; i < progress.length; i++) {
+    check(progress[i][1] >= progress[i - 1][1], `${what}'s progress went back: ${calls}`);
+  }
+  const totals = total === null ? progress.slice(0, -1) : progress;
+  check(totals.every((call) => call[2] === total), `${what}'s progress didn't give a total of ${total}: ${calls}`);
+}
+
 try {
   // The served file: 1024 words, summing to 1569910 (tests/stream/assets/scene.bin)
   const unchanged = cancels;
-  const served = await run(['scene.bin', '--per-frame', '1000', '--frames', '1000'], {});
+  let progress = [];
+  const served = await run(['scene.bin', '--per-frame', '1000', '--frames', '1000'], {}, undefined, progress);
   checkRun('the served scene', served, 4096, 1000, 1569910);
+  checkProgress('the served scene', progress, 4096, 4096);
+
+  // Served with its headers changed by edit (fetch wrapped for the run), counted for onProgress
+  const servedWith = async (what, edit) => {
+    const fetchWith = globalThis.fetch;
+    globalThis.fetch = async (...args) => {
+      const response = await fetchWith(...args);
+      const headers = new Headers(response.headers);
+      edit(headers);
+      return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+    };
+    const counted = [];
+    try {
+      checkRun(what, await run(['scene.bin', '--per-frame', '1000', '--frames', '1000'], {}, undefined, counted), 4096, 1000, 1569910);
+    } finally {
+      globalThis.fetch = fetchWith;
+    }
+    return counted;
+  };
+  // Without Content-Length (as a chunked response is)
+  checkProgress('the scene without Content-Length', await servedWith('the scene without Content-Length', (h) => h.delete('Content-Length')), 4096, null);
+  // Compressed: its Content-Length isn't its size
+  checkProgress('the compressed scene', await servedWith('the compressed scene', (h) => h.set('Content-Encoding', 'gzip')), 4096, null);
+  // A Content-Length too small: its total until more bytes arrive, then none until the end
+  progress = await servedWith('the scene with too small a Content-Length', (h) => h.set('Content-Length', '100'));
+  const small = progress.map((call) => call.join()).join(' ');
+  check(progress.length >= 3 && progress[0].join() === 'scene.bin,0,100' && progress.at(-1).join() === 'scene.bin,4096,4096', `too small a Content-Length's progress: ${small}`);
+  check(progress.slice(1, -1).every(([, loaded, total]) => total === (loaded > 100 ? null : 100)), `too small a Content-Length's progress: ${small}`);
 
   // A Blob: a header and 301 more words
   const words = new Uint32Array(303);
@@ -87,8 +135,10 @@ try {
     words[i] = (i * 2654435761) >>> 16;
     sum = (sum + words[i]) >>> 0;
   }
-  const blob = await run(['scene.bin', '--per-frame', '64', '--frames', '1000'], { 'scene.bin': new Blob([words]) });
+  progress = [];
+  const blob = await run(['scene.bin', '--per-frame', '64', '--frames', '1000'], { 'scene.bin': new Blob([words]) }, undefined, progress);
   checkRun('the Blob', blob, words.length * 4, 64, sum);
+  checkProgress('the Blob', progress, words.length * 4, words.length * 4);
   check(cancels === unchanged, `runs that read their whole streams cancelled ${cancels - unchanged} sources`);
 
   // Failures
@@ -119,6 +169,15 @@ try {
   check(stopped.state === 'stopped', `a run stopped mid-stream ended ${stopped.state}:\n${stopped.messages.join('\n')}`);
   check(stopped.messages.length >= 3 && stopped.messages.every((m) => /^streamed \d+ of 4000000$/.test(m)), `a run stopped mid-stream printed:\n${stopped.messages.join('\n')}`);
   check(cancelledOpen, 'stopping a run mid-stream didn\'t cancel its open stream');
+  // The same, its bytes counted for onProgress
+  open = true;
+  cancelledOpen = false;
+  progress = [];
+  const counted = await run(['scene.bin', '--per-frame', '4', '--frames', '100000'], { 'scene.bin': new Trickle([]) }, (m) => m.length === 3, progress);
+  open = false;
+  check(counted.state === 'stopped', `a run stopped mid-stream with onProgress ended ${counted.state}:\n${counted.messages.join('\n')}`);
+  check(progress.length >= 3, `a run stopped mid-stream counted ${progress.map((call) => call.join()).join(' ')}`);
+  check(cancelledOpen, 'stopping a run mid-stream with onProgress didn\'t cancel its open stream');
 
   log('streamed buffers as expected');
   document.documentElement.dataset.zgal = 'stopped';

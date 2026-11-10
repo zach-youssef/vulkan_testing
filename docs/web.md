@@ -108,12 +108,13 @@ then:
    `web/tests/held-keys.html` (held keys and mouse buttons released once each, also when focus
    leaves),
    `web/tests/image-file.html`, `web/tests/image-decode.html`, the kernels, indirect and models
-   pages, `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main),
+   pages, `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main, and
+   `onProgress` for an asset read whole),
    `web/tests/stamps.html` (functions storing into the storage images they're given) and
    `web/tests/streams.html` (assets streamed from fetch bodies, and Blobs' streams),
    `web/tests/stream-buffers.html` (`tests/stream/streamer.zgal`'s stream-buffer filled from a
-   served file and from a `Blob` through `runHeadless`, its failures, and runs stopped mid-stream
-   cancelling their streams),
+   served file and from a `Blob` through `runHeadless`, its failures, runs stopped mid-stream
+   cancelling their streams, and `onProgress` with and without `Content-Length`),
    in each browser of `BROWSERS`: by default only headless Chromium. Firefox opens windows, so it
    runs only when asked, `make test-web BROWSERS="chromium firefox"` (as before pushing a stack's
    top), and has no WebGPU on Linux (CI skips it). A browser found nowhere is skipped (Chromium is

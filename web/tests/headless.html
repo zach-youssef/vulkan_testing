@@ -2,7 +2,8 @@
 <!-- Running a program without a window in a page (zgal.runHeadless and zgal.mountHeadless, through
      image_filter's generated main): its capture of examples/image_filter/tests/input.png with
      --blur 2 --edges matches blur_edges.approved.png (to 2 per channel, as under Node), whether the
-     file is given as a Blob or a URL; the PNG Blob holds the capture's pixels; --help stops, a
+     file is given as a Blob or a URL, onProgress counting the file's bytes (read whole) to its size
+     either way; the PNG Blob holds the capture's pixels; --help stops, a
      missing argument fails, stop() stops a run without capturing; the form (mount) runs the same
      command line from its inputs, showing the same capture as an image to download; submitting it
      again during a run stops that run first (submitting twice runs only the last, and the stopped
@@ -83,15 +84,24 @@ async function run(args, files) {
   const captures = [];
   const messages = [];
   const states = [];
+  const progress = [];
   const program = image_filter.runHeadless({
     args,
     files,
     onCapture: (capture) => captures.push(capture),
+    onProgress: (...call) => progress.push(call),
     onState: (state) => states.push(state),
     onMessage: (text) => messages.push(text),
   });
   const state = await program.done;
-  return { state, states, captures, messages: messages.join('\n') };
+  return { state, states, captures, progress, messages: messages.join('\n') };
+}
+
+// Checks a run's onProgress calls: input.png's bytes, from 0 to its size, each with its size
+function checkProgress(what, progress, size) {
+  const calls = progress.map((call) => call.join()).join(' ');
+  check(progress.length >= 2 && progress[0][1] === 0 && progress.at(-1)[1] === size, `${what}'s progress didn't go from 0 to ${size}: ${calls}`);
+  check(progress.every(([path, loaded, total], i) => path === 'input.png' && total === size && (i === 0 || loaded >= progress[i - 1][1])), `${what}'s progress: ${calls}`);
 }
 
 try {
@@ -104,6 +114,7 @@ try {
   check(blob.state === 'stopped', `a run ended ${blob.state}:\n${blob.messages}`);
   check(blob.states.join() === 'running,stopped', `a run's states were ${blob.states.join(' ')}`);
   check(blob.captures.length === 1, `a run made ${blob.captures.length} captures`);
+  checkProgress('a Blob', blob.progress, input.length);
   const capture = blob.captures[0];
   check(capture.path === 'out.png' && capture.frame === null, `the capture is ${capture.path} (frame ${capture.frame})`);
   check(capture.size.join('x') === `${approved.width}x${approved.height}`, `the capture is ${capture.size.join('x')}, not ${approved.width}x${approved.height}`);
@@ -118,6 +129,7 @@ try {
   const url = await run(args, { 'input.png': 'assets/input.png' });
   check(url.state === 'stopped' && url.captures.length === 1, `a run from a URL ended ${url.state}:\n${url.messages}`);
   check(differing(url.captures[0].rgba, capture.rgba, 0) === 0, 'a URL\'s capture differs from a Blob\'s');
+  checkProgress('a URL', url.progress, input.length);
 
   // Its usage, and a bad command line
   const help = await run(['--help'], {});

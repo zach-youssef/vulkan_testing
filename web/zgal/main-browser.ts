@@ -48,6 +48,8 @@ export interface MountOptions {
   onState?(state: ProgramState): void;
   // The program's messages (errors, usage), by default to the console
   onMessage?(text: string): void;
+  // Called as its assets' bytes arrive (see AssetProgress)
+  onProgress?: AssetProgress;
 }
 
 export interface MountedProgram {
@@ -125,7 +127,7 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
     const launch = parsed;
     resize(launch.size);
     try {
-      context = await Context.create(assetLoaders(assets, {}));
+      context = await Context.create(assetLoaders(assets, {}, options.onProgress));
     } catch (error) {
       // E.g. no WebGPU adapter (headless browsers)
       fail(error);
@@ -292,9 +294,26 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
 // URL (relative to the page) to fetch
 export type ProgramFiles = Readonly<Record<string, Blob | URL | string>>;
 
+// How much of an asset (read whole or streamed) has arrived, by its path as the program opens it:
+// called once it's opened (loaded 0), then as each piece of it arrives, counted as it passes (it
+// neither slows nor buffers the asset). total is its size when known: a Blob's size, or a response's
+// Content-Length (unless it's compressed, or proves too small); else null until the asset has
+// ended, when a last call gives total = loaded.
+export type AssetProgress = (path: string, loaded: number, total: number | null) => void;
+
+// A response's size from its Content-Length, unless its body is compressed (Content-Length is then
+// the compressed size)
+function contentLength(response: Response): number | null {
+  const length = response.headers.get('Content-Length');
+  const encoding = response.headers.get('Content-Encoding');
+  if (length === null || (encoding !== null && encoding.trim().toLowerCase() !== 'identity')) return null;
+  const size = Number(length);
+  return length.trim() !== '' && Number.isSafeInteger(size) && size >= 0 ? size : null;
+}
+
 // A program's assets, read whole and streamed: the files given, else fetched from assets (relative
-// paths, e.g. the command line's, resolve against it)
-function assetLoaders(assets: URL, files: ProgramFiles): { assets: AssetLoader; assetStreams: AssetStreamLoader } {
+// paths, e.g. the command line's, resolve against it), their bytes counted for onProgress if given
+function assetLoaders(assets: URL, files: ProgramFiles, onProgress: AssetProgress | undefined): { assets: AssetLoader; assetStreams: AssetStreamLoader } {
   const find = async (path: string): Promise<Blob | Response> => {
     const given = Object.hasOwn(files, path) ? files[path] : undefined;
     if (given instanceof Blob) return given;
@@ -302,12 +321,39 @@ function assetLoaders(assets: URL, files: ProgramFiles): { assets: AssetLoader; 
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return response;
   };
+  const open = (path: string, found: Blob | Response): ReadableStream<Uint8Array> => {
+    const source = (found instanceof Blob ? found.stream() : found.body) ?? new Blob([]).stream();
+    if (!onProgress) return source;
+    let total = found instanceof Blob ? found.size : contentLength(found);
+    let loaded = 0;
+    const counted = source.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        controller.enqueue(chunk);
+        loaded += chunk.byteLength;
+        // E.g. a cross-origin response whose compression is hidden
+        if (total !== null && loaded > total) total = null;
+        onProgress(path, loaded, total);
+      },
+      flush() {
+        if (total === null) onProgress(path, loaded, loaded);
+      },
+    }));
+    // Opened: if onProgress throws, the asset fails, and its source (e.g. a fetch's body) is closed
+    try {
+      onProgress(path, loaded, total);
+    } catch (error) {
+      void counted.cancel(error);
+      throw error;
+    }
+    return counted;
+  };
   return {
-    assets: async (path) => new Uint8Array(await (await find(path)).arrayBuffer()),
-    assetStreams: async (path) => {
+    assets: async (path) => {
       const found = await find(path);
-      return (found instanceof Blob ? found.stream() : found.body) ?? new Blob([]).stream();
+      if (!onProgress) return new Uint8Array(await found.arrayBuffer());
+      return new Uint8Array(await new Response(open(path, found)).arrayBuffer());
     },
+    assetStreams: async (path) => open(path, await find(path)),
   };
 }
 
@@ -333,6 +379,8 @@ export interface HeadlessOptions {
   files?: ProgramFiles;
   // Called with each capture, once it's read
   onCapture?(capture: Capture): void;
+  // Called as its assets' bytes arrive (see AssetProgress)
+  onProgress?: AssetProgress;
   // Called as the program's state changes
   onState?(state: ProgramState): void;
   // The program's messages (errors, usage), by default to the console
@@ -375,7 +423,7 @@ export function runHeadless<A extends RunnableApp, I>(program: Program<A, I>, as
       return;
     }
     const launch = parsed;
-    context = await Context.create(assetLoaders(assets, options.files ?? {}));
+    context = await Context.create(assetLoaders(assets, options.files ?? {}, options.onProgress));
     if (stopping) return;
     const ready = context;
     const app = await program.create(ready, launch, inputs, () => {
