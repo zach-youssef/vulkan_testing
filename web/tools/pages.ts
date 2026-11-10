@@ -59,7 +59,9 @@ async function serve(root: string): Promise<{ server: Server; port: number }> {
     try {
       if (file !== root && !file.startsWith(root + sep)) throw new Error('outside the served directory');
       const body = readFileSync(file);
-      response.writeHead(200, { 'Content-Type': contentTypes[extname(file)] ?? 'application/octet-stream' });
+      // With its Content-Length, as servers give a file (onProgress's total; writeHead would
+      // otherwise send it chunked)
+      response.writeHead(200, { 'Content-Type': contentTypes[extname(file)] ?? 'application/octet-stream', 'Content-Length': body.length });
       response.end(body);
     } catch {
       response.writeHead(404);
