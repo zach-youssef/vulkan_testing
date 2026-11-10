@@ -2379,7 +2379,7 @@ program without a window runs headless in its page too (see below). A program wi
 its page, @tt{FILE.zgal.html}, which loads the main built to
 JavaScript (@tt{zgal-web-program}, @secref["building"]): the app draws into the page's canvas
 each animation frame, at the window's size scaled to fit the page, with the canvas's keyboard,
-mouse and wheel events, and options from the query string (@tt{?frames=60&level=3}, @tt{arg=...}
+pointer (mouse, pen or touch) and wheel events, and options from the query string (@tt{?frames=60&level=3}, @tt{arg=...}
 for positional arguments). Serve the directory over HTTP (modules don't load from @tt{file:} URLs)
 and open the page in a browser with WebGPU (e.g. Firefox, Safari or Chrome); headless browsers
 usually have no WebGPU adapter, which the page reports. Assets are found in @tt{assets/} beside the main,
@@ -2413,7 +2413,13 @@ slows nor buffers the asset. The total is a @tt{Blob}'s size or a response's @tt
 unless the response is compressed or more bytes than it arrive (the total is then null from that
 call); while it is null, the last call, once the asset has ended, gives
 @tt{total} = @tt{loaded}). The canvas is shown at the centre of its parent,
-which must have a size of its own. Each mounted program has its own device, so a page can run
+which must have a size of its own. The app's mouse events come from the canvas's pointer events,
+whether from a mouse, a pen or a finger, but only the primary pointer's (the mouse, or the first
+finger down; further fingers are ignored), so a one-finger drag is a left-button drag. A press
+follows its pointer, ignoring others (e.g. a finger while the mouse is pressed), until its buttons
+are released, it is cancelled or the canvas loses it (which releases them). While
+mounted, the canvas has @tt{touch-action: none}, so touches are the program's rather than the
+page's to scroll or zoom; @tt{stop()} gives it back its own. Each mounted program has its own device, so a page can run
 several, e.g.
 
 @verbatim{
@@ -2425,7 +2431,8 @@ await particles.stop();
 
 Its own page calls the main's @tt{run()}, which mounts the program in the page's canvas, and Node
 runs the main when it is the program run (not imported). @tt{make test-pages} checks mounting with
-@tt{web/tests/mount.html}, and @tt{onProgress} (through @tt{runHeadless}, which shares the loaders)
+@tt{web/tests/mount.html}, touch with @tt{web/tests/touch.html} (in Chromium, whose checker
+touches the canvas, @tt{web/tools/chromium.ts --touch}), and @tt{onProgress} (through @tt{runHeadless}, which shares the loaders)
 with @tt{web/tests/headless.html} (assets read whole) and @tt{web/tests/stream-buffers.html}
 (streamed).
 

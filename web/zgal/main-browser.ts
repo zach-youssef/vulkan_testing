@@ -30,6 +30,9 @@ function buttonOf(button: number): MouseButton | null {
   return button === 0 ? 'left' : button === 2 ? 'right' : button === 1 ? 'middle' : null;
 }
 
+// Each button's bit in PointerEvent.buttons
+const buttonBit: Record<MouseButton, number> = { left: 1, right: 2, middle: 4 };
+
 // running: it started; stopped: the app quit, ran its --frames, printed its usage (--help) or was
 // stopped; failed: it couldn't start, threw, or WebGPU reported errors
 export type ProgramState = 'running' | 'stopped' | 'failed';
@@ -54,15 +57,17 @@ export interface MountOptions {
 
 export interface MountedProgram {
   // Stops the program, while it starts too, and frees what it used (its WebGPU device, its graphs,
-  // the canvas's configuration and the listeners on the page). The same promise each time.
+  // the canvas's configuration and the listeners on the page), giving the canvas back its own
+  // touch-action. The same promise each time.
   stop(): Promise<void>;
 }
 
 // Runs a program in a canvas: at its --size (or the size the app sets), shown as scaling says at the
 // centre of the canvas's parent, which must have a size of its own (the canvas is positioned
-// absolutely in it, and the parent made position: relative if it was static). Each mounted program
-// has its own WebGPU device. assets: the URL its assets are fetched from (the generated main's mount
-// gives assets/ beside it).
+// absolutely in it, and the parent made position: relative if it was static; the canvas has
+// touch-action: none until stop() gives it back its own, so touches are the program's). Each mounted
+// program has its own WebGPU device. assets: the URL its assets are fetched from (the generated
+// main's mount gives assets/ beside it).
 export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement, program: Program<A, I>, assets: URL,
   options: MountOptions): MountedProgram {
   const message = options.onMessage ?? ((text: string) => console.log(text));
@@ -91,6 +96,10 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
   if (getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
   canvas.style.position = 'absolute';
   canvas.style.imageRendering = options.scaling === 'whole-multiples' ? 'pixelated' : 'auto';
+  // Touches on the canvas are the program's, not the page's to scroll or zoom, until it stops
+  const touchAction = canvas.style.touchAction;
+  canvas.style.touchAction = 'none';
+  signal.addEventListener('abort', () => { canvas.style.touchAction = touchAction; });
   let box = { left: 0, top: 0, width: parent.clientWidth, height: parent.clientHeight };
   const fit = () => {
     const ratio = Math.min(box.width / canvas.width, box.height / canvas.height);
@@ -168,6 +177,8 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
     // ignored)
     const heldKeys = new Set<Key>();
     const heldButtons = new Set<MouseButton>();
+    // The pointer whose buttons are held (see the pointer events below)
+    let pressing: number | null = null;
     let lastCursor: [number, number] = [0, 0];
     const pressKey = (key: Key) => {
       if (heldKeys.has(key)) return;
@@ -190,6 +201,7 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
     const releaseAll = () => {
       for (const key of [...heldKeys]) releaseKey(key);
       for (const button of [...heldButtons]) releaseButton(button, lastCursor);
+      pressing = null;
     };
     keys.addEventListener('keydown', (e) => {
       const event = e as KeyboardEvent;
@@ -209,24 +221,56 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
       if (document.visibilityState === 'hidden') releaseAll();
     }, { signal });
     canvas.addEventListener('contextmenu', (event) => event.preventDefault(), { signal });
-    // Capturing the pointer keeps a drag's moves and its release coming to the canvas when they
-    // leave it (the mouse events follow the capture)
+    // Pointer events, from a mouse, a pen or a finger, so a one-finger drag is a left-button drag.
+    // Only a primary pointer's (the mouse, or the first finger down): further fingers are ignored.
+    // A press follows its pointer until its buttons are all released (or it's cancelled), ignoring
+    // others meanwhile (a mouse and a finger are both primary). Capturing the pointer keeps a drag's
+    // moves and its release coming to the canvas when they leave it.
+    const ours = (event: PointerEvent) => (pressing === null ? event.isPrimary : event.pointerId === pressing);
     canvas.addEventListener('pointerdown', (event) => {
-      canvas.setPointerCapture(event.pointerId);
+      if (!ours(event)) return;
+      pressing = event.pointerId;
+      try {
+        canvas.setPointerCapture(event.pointerId);
+      } catch {
+        // A pointer no longer active (e.g. lifted before this ran) has nothing to capture
+      }
       if (options.keys !== 'page') canvas.focus();
-    }, { signal });
-    canvas.addEventListener('mousedown', (event) => {
       const button = buttonOf(event.button);
       if (button) pressButton(button, cursor(event));
     }, { signal });
-    canvas.addEventListener('mouseup', (event) => {
+    canvas.addEventListener('pointerup', (event) => {
+      if (!ours(event)) return;
+      if (event.buttons === 0) pressing = null;
       const button = buttonOf(event.button);
       if (button) releaseButton(button, cursor(event));
     }, { signal });
-    canvas.addEventListener('mousemove', (event) => {
-      lastCursor = cursor(event);
-      app.handle({ kind: 'cursor-moved', cursor: lastCursor });
+    canvas.addEventListener('pointermove', (event) => {
+      if (!ours(event)) return;
+      const at = cursor(event);
+      // A button pressed or released while another is held comes as a move whose button is the one
+      // that changed (a chord), possibly without moving
+      const button = event.button >= 0 ? buttonOf(event.button) : null;
+      if (!button || at[0] !== lastCursor[0] || at[1] !== lastCursor[1]) {
+        lastCursor = at;
+        app.handle({ kind: 'cursor-moved', cursor: at });
+      }
+      if (button) {
+        if (event.buttons & buttonBit[button]) pressButton(button, at);
+        else releaseButton(button, at);
+      }
     }, { signal });
+    // The browser taking the pointer (e.g. to scroll), or the canvas losing its capture (releasePointerCapture,
+    // or another element capturing the pointer, so the release goes elsewhere), ends its drag.
+    // Capture is lost after every release too, when nothing is pressing. (A canvas removed mid-drag
+    // gets lostpointercapture on the document instead, and hiding it doesn't drop the capture.)
+    const cancel = (event: PointerEvent) => {
+      if (pressing === null || event.pointerId !== pressing) return;
+      pressing = null;
+      for (const button of [...heldButtons]) releaseButton(button, lastCursor);
+    };
+    canvas.addEventListener('pointercancel', cancel, { signal });
+    canvas.addEventListener('lostpointercapture', cancel, { signal });
     canvas.addEventListener('wheel', (event) => {
       event.preventDefault();
       // In lines, y up, as GLFW gives them

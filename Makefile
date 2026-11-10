@@ -358,7 +358,8 @@ test-decode-steps:
 
 # The examples' pages (image_filter's, without a window, run from its query string, its capture
 # compared with the approved one), embedding programs (web/tests/mount.html), releasing held keys
-# and buttons when focus leaves (web/tests/held-keys.html), loading image files
+# and buttons when focus leaves (web/tests/held-keys.html), touch as the mouse (web/tests/touch.html,
+# in Chromium only, whose checker can touch), loading image files
 # (web/tests/image-file.html), the compute library (web/tests/kernels.html), indirect work
 # (web/tests/indirect.html), models (web/tests/models.html), programs without a window
 # (web/tests/headless.html), functions storing into images they're given (web/tests/stamps.html),
@@ -408,6 +409,10 @@ test-pages-steps:
 	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps streams stream-buffers; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \
+	  if [ $$browser = chromium ]; then \
+	    $(NODE) $(WEB_DIR)/tools/chromium.ts --serve $(OUT)/web \
+	      --touch '40,60; 80,60; 160,120; ; 40,60; 40,60 240,180; 80,60 280,180; 80,60;' tests/touch.html || exit 1; \
+	  fi; \
 	done
 
 # The examples whose programs run on the web (simple's app is C++)

@@ -1,0 +1,94 @@
+<!doctype html>
+<!-- Touch as the mouse (zgal.mountProgram), checked by make test-pages in Chromium only
+     (web/tools/chromium.ts --touch, which touches the canvas with the DevTools protocol's touch
+     events): a particles program, its app's events recorded, gets a one-finger drag as a left-button
+     drag, and a second finger ignored; the canvas has touch-action: none while mounted, and its own
+     back once stopped. The touches, given by the Makefile, are a drag from (40, 60) through (80, 60)
+     to (160, 120) and lifted, then a finger down at (40, 60), a second one down at (240, 180), both
+     moved 40 pixels right, the second lifted, then the first: in
+     '40,60; 80,60; 160,120; ; 40,60; 40,60 240,180; 80,60 280,180; 80,60;'. Served from
+     build/web/tests, beside particles/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL touch test</title>
+<style>
+  body { margin: 0; }
+  /* A fixed size, whatever the browser's window, the canvas shown at its own size */
+  #program { flex: none; width: 320px; height: 240px; background: #000; }
+</style>
+</head>
+<body>
+<div id="program"><canvas id="zgal"></canvas></div>
+<pre id="zgal-message"></pre>
+<script type="module">
+import { program } from '../particles/particles.zgal.main.js';
+import { mountProgram } from '../particles/zgal/index.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+const finish = (state) => { document.documentElement.dataset.zgal = state; };
+const fail = (text) => { log(text); finish('failed'); };
+
+// The app's button and cursor events, as 'mouse-pressed left -0.750,-0.500', 'cursor-moved 0.000,0.000'
+const events = [];
+let recorded = () => {};
+const recording = {
+  ...program,
+  create: async (...args) => {
+    const app = await program.create(...args);
+    const handle = app.handle.bind(app);
+    app.handle = (event) => {
+      if (event.cursor) {
+        events.push([event.kind, event.button, event.cursor.map((c) => c.toFixed(3)).join(',')].filter((part) => part !== undefined).join(' '));
+        recorded();
+      }
+      handle(event);
+    };
+    return app;
+  },
+};
+
+const canvas = document.getElementById('zgal');
+try {
+  // The page's own touch-action, which stop() gives back
+  canvas.style.touchAction = 'pan-y';
+  let states = [];
+  let reached = null;
+  const mounted = mountProgram(canvas, recording, new URL('../particles/assets/', import.meta.url), {
+    scaling: 'fit',
+    args: ['--size', '320x240', '--particles', '1000'],
+    onState: (state) => { states.push(state); reached?.(); },
+    onMessage: log,
+  });
+  const touchAction = getComputedStyle(canvas).touchAction;
+  if (touchAction !== 'none') throw new Error(`the mounted canvas has touch-action: ${touchAction}, not none`);
+  while (!states.includes('running') && !states.includes('failed')) await new Promise((done) => { reached = done; });
+  if (states.includes('failed')) throw new Error('the program failed');
+
+  // The checker touches the canvas once the page runs: until both gestures' releases, then a moment
+  // for anything after them
+  finish('running');
+  const deadline = Date.now() + 20000;
+  const released = () => events.filter((event) => event.startsWith('mouse-released')).length;
+  while (released() < 2 && Date.now() < deadline) {
+    await new Promise((done) => { recorded = done; setTimeout(done, 100); });
+  }
+  await new Promise((done) => setTimeout(done, 200));
+  const expected = [
+    'mouse-pressed left -0.750,-0.500', 'cursor-moved -0.500,-0.500', 'cursor-moved 0.000,0.000', 'mouse-released left 0.000,0.000',
+    'mouse-pressed left -0.750,-0.500', 'cursor-moved -0.500,-0.500', 'mouse-released left -0.500,-0.500',
+  ].join(', ');
+  const got = events.join(', ');
+  if (got !== expected) throw new Error(`the app got [${got}], not [${expected}]`);
+
+  await mounted.stop();
+  if (canvas.style.touchAction !== 'pan-y') throw new Error(`the stopped canvas has touch-action: ${canvas.style.touchAction}, not its own pan-y`);
+  log('a one-finger drag was a left-button drag, and the second finger was ignored');
+  finish('stopped');
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
+</script>
+</body>
+</html>

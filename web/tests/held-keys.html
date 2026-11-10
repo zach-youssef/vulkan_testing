@@ -1,9 +1,10 @@
 <!doctype html>
 <!-- Releasing held keys and mouse buttons when focus leaves (zgal.mountProgram), checked by make
      test-pages (web/tools/chromium.ts and firefox.ts): a particles program, its app's events
-     recorded, gets each press released once, by its keyup or mouseup or when the window blurs, the
-     canvas blurs or the page is hidden, and not again by a keyup or mouseup coming later. Served
-     from build/web/tests, beside particles/. -->
+     recorded, gets each press released once, by its keyup or pointerup (or a chord's move), its
+     pointer cancelled or losing capture, or when the window blurs, the canvas blurs or the page is
+     hidden, and not again by a keyup or pointerup coming later; another pointer (a finger while the
+     mouse is pressed) is ignored. Served from build/web/tests, beside particles/. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -48,7 +49,15 @@ const expect = (what, expected) => {
 
 const canvas = document.getElementById('canvas');
 const key = (type, code, repeat = false) => canvas.dispatchEvent(new KeyboardEvent(type, { code, repeat, bubbles: true }));
-const mouse = (type, button) => canvas.dispatchEvent(new MouseEvent(type, { button, bubbles: true }));
+// The mouse's pointer events: a button pressed or released while another is held is a move (a
+// chord), its buttons those held after it
+const mouse = (type, button, buttons) => canvas.dispatchEvent(new PointerEvent(type, {
+  button, buttons, pointerId: 1, pointerType: 'mouse', isPrimary: true, bubbles: true,
+}));
+// A finger's, also primary (one primary pointer for each type)
+const finger = (type, buttons) => canvas.dispatchEvent(new PointerEvent(type, {
+  button: type === 'pointermove' ? -1 : 0, buttons, pointerId: 2, pointerType: 'touch', isPrimary: true, bubbles: true,
+}));
 const hide = (state) => {
   Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
   document.dispatchEvent(new Event('visibilitychange'));
@@ -73,14 +82,45 @@ try {
 
   key('keydown', 'KeyW');
   key('keydown', 'KeyA');
-  mouse('mousedown', 0);
-  mouse('mousedown', 2);
+  mouse('pointerdown', 0, 1);
+  mouse('pointermove', 2, 3);
   window.dispatchEvent(new Event('blur'));
   expect('the window blurring', 'key-pressed W, key-pressed A, mouse-pressed left, mouse-pressed right, key-released W, key-released A, mouse-released left, mouse-released right');
   key('keyup', 'KeyW');
-  mouse('mouseup', 0);
+  mouse('pointerup', 0, 0);
   window.dispatchEvent(new Event('blur'));
   expect('keyup, mouseup and blur after the blur', '');
+
+  mouse('pointerdown', 0, 1);
+  mouse('pointermove', 2, 3);
+  mouse('pointermove', 2, 1);
+  mouse('pointerup', 0, 0);
+  expect('a chord', 'mouse-pressed left, mouse-pressed right, mouse-released right, mouse-released left');
+
+  mouse('pointerdown', 0, 1);
+  mouse('pointercancel', -1, 0);
+  mouse('pointerup', 0, 0);
+  expect('a drag cancelled, then its pointerup', 'mouse-pressed left, mouse-released left');
+  mouse('pointerdown', 0, 1);
+  mouse('lostpointercapture', -1, 1);
+  mouse('pointerup', 0, 0);
+  expect('a drag losing its capture, then its pointerup', 'mouse-pressed left, mouse-released left');
+
+  mouse('pointerdown', 0, 1);
+  finger('pointerdown', 1);
+  finger('pointermove', 1);
+  finger('pointerup', 0);
+  expect('a finger while the mouse is pressed', 'mouse-pressed left');
+  mouse('pointerup', 0, 0);
+  expect('the mouse released after the finger', 'mouse-released left');
+
+  // Blurring ends the followed pointer too, so a finger is then followed, though the mouse's own
+  // pointerup never came
+  mouse('pointerdown', 0, 1);
+  window.dispatchEvent(new Event('blur'));
+  finger('pointerdown', 1);
+  finger('pointerup', 0);
+  expect('a finger after a blur, with no pointerup for the mouse', 'mouse-pressed left, mouse-released left, mouse-pressed left, mouse-released left');
 
   key('keydown', 'KeyS', true);
   expect('a repeat of a key held while focus came back', 'key-pressed S');

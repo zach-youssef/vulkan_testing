@@ -106,7 +106,10 @@ then:
    string, its capture saved with the checkers' `--save-capture` and compared with
    `blur_edges.approved.png`), `web/tests/mount.html` (mounts two programs and stops one),
    `web/tests/held-keys.html` (held keys and mouse buttons released once each, also when focus
-   leaves),
+   leaves, chorded buttons, cancelled pointers and lost captures, and a finger ignored while the
+   mouse is pressed), `web/tests/touch.html` (in Chromium only, touched by
+   `chromium.ts --touch`: a one-finger drag is a left-button drag, a second finger is ignored, and
+   the canvas has `touch-action: none` while mounted),
    `web/tests/image-file.html`, `web/tests/image-decode.html`, the kernels, indirect and models
    pages, `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main, and
    `onProgress` for an asset read whole),
@@ -154,6 +157,6 @@ browser where they look by default.
   lavapipe where that's the only Vulkan driver (in CI).
 - **Chromium** can touch a page's canvas (`--touch`, with the DevTools protocol's
   `Input.dispatchTouchEvent`), which gives the page real touch pointer events; firefox.ts refuses
-  it. A page checking touches records what its app gets and checks it itself.
+  it. A page checking touches records what its app gets and checks it itself, as `touch.html` does.
 - Check a page's outcome through `data-zgal` and `#zgal-message`, not only its pixels.
 - Test pages need fixed layouts (`flex: none`): Firefox's window is 1024 pixels wide.
