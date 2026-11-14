@@ -49,11 +49,20 @@ class ReadableSourceStream implements Stream {
   private readonly waiters: { minBytes: number; resolve: () => void; reject: (error: Error) => void }[] = [];
   private readonly name: string;
   private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
+  // Removes the abort listener once the stream is over (ended, failed or cancelled)
+  private detach: () => void = () => {};
 
-  constructor(source: ReadableStream<Uint8Array>, name: string) {
+  constructor(source: ReadableStream<Uint8Array>, name: string, signal?: AbortSignal) {
     this.name = name;
     this.reader = source.getReader();
     void this.pump(this.reader);
+    if (signal) {
+      // Cancelled when the signal aborts (at once if it already has)
+      const onAbort = () => this.cancel();
+      signal.addEventListener('abort', onAbort, { once: true });
+      this.detach = () => signal.removeEventListener('abort', onAbort);
+      if (signal.aborted) this.cancel();
+    }
   }
 
   private async pump(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
@@ -71,8 +80,10 @@ class ReadableSourceStream implements Stream {
         this.settle();
       }
       this.ended = true;
+      this.detach();
     } catch (error) {
       if (this.cancelled) return;
+      this.detach();
       this.failure = new Error(`${this.name}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
       reader.cancel(error).catch(() => {});
     }
@@ -152,6 +163,7 @@ class ReadableSourceStream implements Stream {
   cancel(): void {
     if (this.cancelled) return;
     this.cancelled = true;
+    this.detach();
     this.chunks = [];
     this.head = 0;
     this.offset = 0;
@@ -165,9 +177,10 @@ class ReadableSourceStream implements Stream {
 
 // A ReadableStream of bytes (a fetch response's body, a Blob's stream(), a Node file's, or one a
 // program makes) as a Stream, whose failures' messages start with name. The source's chunks must be
-// Uint8Arrays; anything else fails the stream.
-export function readableStream(source: ReadableStream<Uint8Array>, name: string): Stream {
-  return new ReadableSourceStream(source, name);
+// Uint8Arrays; anything else fails the stream. It is cancelled (with its source) when signal aborts,
+// if it is still going then.
+export function readableStream(source: ReadableStream<Uint8Array>, name: string, signal?: AbortSignal): Stream {
+  return new ReadableSourceStream(source, name, signal);
 }
 
 // A stream's first count bytes (a whole number; fewer if it ends first), read without losing them:

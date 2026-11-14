@@ -246,7 +246,8 @@ MAIN_TEST_WEB = $(OUT)/web/main
 $(eval $(call zgal-web-program,$(TEST_DIR)/main/painter.zgal,$(MAIN_TEST_WEB)))
 
 # A program streaming a file into a stream-buffer (its opener in streamer.inputs.ts), for the web
-# only: make test-web runs it under Node, and web/tests/stream-buffers.html in browsers
+# only: make test-web runs it under Node (and web/tests/stop.test.ts), and
+# web/tests/stream-buffers.html in browsers
 STREAM_TEST_WEB = $(OUT)/web/streamer
 
 $(eval $(call zgal-web-program,$(TEST_DIR)/stream/streamer.zgal,$(STREAM_TEST_WEB)))
@@ -305,7 +306,8 @@ test-dsl: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 test-dsl-steps: docs
 	$(ZGAL_TEST_ENV) $(RACO) test -q $(DSL_DIR)/tests
 
-# The web runtime's tests: web/tests/*.zgal compiled to TypeScript and WGSL beside a copy of the
+# The web runtime's tests: web/tests/*.zgal (and image_filter's and streamer's mains, which
+# image-filter.test.ts and stop.test.ts run) compiled to TypeScript and WGSL beside a copy of the
 # runtime (as an application would have it), type checked, then run on Dawn
 WEB_TEST_OUT = $(OUT)/web-tests
 # The models web/tests/models.zgal draws, shared with the native tests
@@ -318,8 +320,8 @@ test-web-steps:
 	$(MAKE) test-decode
 	rm -rf $(WEB_TEST_OUT)
 	@mkdir -p $(WEB_TEST_OUT)
-	for f in $(WEB_DIR)/tests/*.zgal $(IMAGE_FILTER_DIR)/image_filter.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) $$f || exit 1; done
-	cp -R $(WEB_DIR)/zgal $(WEB_DIR)/tests $(WEB_DIR)/tools $(WEB_DIR)/package.json $(WEB_DIR)/tsconfig.json $(WEB_TEST_OUT)/
+	for f in $(WEB_DIR)/tests/*.zgal $(IMAGE_FILTER_DIR)/image_filter.zgal $(TEST_DIR)/stream/streamer.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) $$f || exit 1; done
+	cp -R $(WEB_DIR)/zgal $(WEB_DIR)/tests $(WEB_DIR)/tools $(WEB_DIR)/package.json $(WEB_DIR)/tsconfig.json $(TEST_DIR)/stream/streamer.inputs.ts $(WEB_TEST_OUT)/
 	cp $(MODEL_ASSETS) $(IMAGE_FILTER_TEST_DIR)/input.png $(WEB_TEST_OUT)/tests/assets/
 	ln -s $(CURDIR)/$(WEB_DIR)/node_modules $(WEB_TEST_OUT)/node_modules
 	cd $(WEB_TEST_OUT) && $(NODE) node_modules/typescript/bin/tsc -p . && $(NODE) --test --test-reporter=spec $(TEST_ARGS) 'tests/*.test.ts'

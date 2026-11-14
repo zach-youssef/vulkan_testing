@@ -58,16 +58,20 @@ export interface MountOptions {
 export interface MountedProgram {
   // Stops the program, while it starts too, and frees what it used (its WebGPU device, its graphs,
   // the canvas's configuration and the listeners on the page), giving the canvas back its own
-  // touch-action. The same promise each time.
+  // touch-action. It ends the program's downloads at once, without waiting for them: fetches are
+  // aborted and streams cancelled. The same promise each time.
   stop(): Promise<void>;
 }
 
 // Runs a program in a canvas: at its --size (or the size the app sets), shown as scaling says at the
 // centre of the canvas's parent, which must have a size of its own (the canvas is positioned
 // absolutely in it, and the parent made position: relative if it was static; the canvas has
-// touch-action: none until stop() gives it back its own, so touches are the program's). Each mounted
-// program has its own WebGPU device. assets: the URL its assets are fetched from (the generated
-// main's mount gives assets/ beside it).
+// touch-action: none until the program ends, so touches are the program's). Each mounted program
+// has its own WebGPU device. assets: the URL its assets are fetched from (the generated main's mount
+// gives assets/ beside it). A program ending by itself (it quits, runs its --frames or fails) ends
+// as stop() does, except that its device and the canvas's configuration stay until stop(), so its
+// last frame stays shown (and fitted to the canvas's parent): its downloads end, its graphs are
+// freed and its listeners removed.
 export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement, program: Program<A, I>, assets: URL,
   options: MountOptions): MountedProgram {
   const message = options.onMessage ?? ((text: string) => console.log(text));
@@ -84,6 +88,8 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
   let stopping = false;
   const listeners = new AbortController();
   const signal = listeners.signal;
+  // The program's loads (its context's signal), which end with it
+  const loads = new AbortController();
   let context: Context | null = null;
   let surface: GPUCanvasContext | null = null;
   const graphs: RenderGraph[] = [];
@@ -123,7 +129,6 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
     fit();
   });
   observer.observe(parent);
-  signal.addEventListener('abort', () => observer.disconnect());
 
   const start = async (): Promise<void> => {
     const inputs = program.defaults();
@@ -136,7 +141,7 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
     const launch = parsed;
     resize(launch.size);
     try {
-      context = await Context.create(assetLoaders(assets, {}, options.onProgress));
+      context = await Context.create({ ...assetLoaders(assets, {}, options.onProgress), signal: loads.signal });
     } catch (error) {
       // E.g. no WebGPU adapter (headless browsers)
       fail(error);
@@ -160,7 +165,8 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
         return graph;
       });
     } catch (error) {
-      fail(error);
+      // Stopping ends its loads, which fails a build waiting for one
+      if (!stopping) fail(error);
       return;
     }
     if (stopping) return;
@@ -286,6 +292,7 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
       if (stopping) return;
       if (app.quitRequested() || (launch.frames !== null && frame >= launch.frames)) {
         setState(gpuErrors ? 'failed' : 'stopped');
+        void end().catch(() => {});
         return;
       }
       frame++;
@@ -295,7 +302,11 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
         if (size) resize(size);
         await app.renderGraph().execute();
       } catch (error) {
-        fail(error);
+        // A frame running as it stops may fail on its cancelled streams
+        if (!stopping) {
+          fail(error);
+          void end().catch(() => {});
+        }
         return;
       }
       if (ready.errors.length > 0) {
@@ -306,7 +317,30 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
     };
     animation = requestAnimationFrame(() => { frameDone = step(); });
   };
-  const started = start().catch(fail);
+  const started = start().catch((error) => { if (!stopping) fail(error); });
+
+  // Ends the program, however it ends (it quits, runs its --frames or fails, or stop()), once: ends
+  // its loads (aborting their fetches and cancelling its streams, so nothing waits for them), removes
+  // its listeners, then frees its graphs once it has started and its frames are done. Its device,
+  // the canvas's configuration and the resize observer (which keeps the last frame fitted) are
+  // stop()'s to free, so the last frame stays shown until then.
+  let ending: Promise<void> | null = null;
+  const end = (): Promise<void> => {
+    ending ??= (async () => {
+      loads.abort();
+      listeners.abort();
+      await started;
+      await frameDone;
+      try {
+        for (const graph of graphs) await graph.finish();
+      } finally {
+        for (const graph of graphs) graph.destroy();
+      }
+    })();
+    return ending;
+  };
+  // A program that ended while starting (a failure, or its usage) ends at once too
+  void started.then(() => { if (state !== 'running') void end().catch(() => {}); });
 
   let stopped: Promise<void> | null = null;
   return {
@@ -314,18 +348,13 @@ export function mountProgram<A extends RunnableApp, I>(canvas: HTMLCanvasElement
       stopped ??= (async () => {
         stopping = true;
         if (animation !== null) cancelAnimationFrame(animation);
-        listeners.abort();
-        await started;
-        await frameDone;
-        const ended = context;
-        if (ended) {
-          try {
-            for (const graph of graphs) await graph.finish();
-          } finally {
-            for (const graph of graphs) graph.destroy();
-            surface?.unconfigure();
-            ended.destroy();
-          }
+        try {
+          await end();
+        } finally {
+          // Kept until now, so a program that quit keeps fitting its last frame to its parent
+          observer.disconnect();
+          surface?.unconfigure();
+          context?.destroy();
         }
         if (state === null || state === 'running') setState('stopped');
       })();
@@ -358,10 +387,10 @@ function contentLength(response: Response): number | null {
 // A program's assets, read whole and streamed: the files given, else fetched from assets (relative
 // paths, e.g. the command line's, resolve against it), their bytes counted for onProgress if given
 function assetLoaders(assets: URL, files: ProgramFiles, onProgress: AssetProgress | undefined): { assets: AssetLoader; assetStreams: AssetStreamLoader } {
-  const find = async (path: string): Promise<Blob | Response> => {
+  const find = async (path: string, signal: AbortSignal): Promise<Blob | Response> => {
     const given = Object.hasOwn(files, path) ? files[path] : undefined;
     if (given instanceof Blob) return given;
-    const response = await fetch(given === undefined ? new URL(path, assets) : new URL(given, globalThis.location?.href));
+    const response = await fetch(given === undefined ? new URL(path, assets) : new URL(given, globalThis.location?.href), { signal });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return response;
   };
@@ -392,12 +421,12 @@ function assetLoaders(assets: URL, files: ProgramFiles, onProgress: AssetProgres
     return counted;
   };
   return {
-    assets: async (path) => {
-      const found = await find(path);
+    assets: async (path, signal) => {
+      const found = await find(path, signal);
       if (!onProgress) return new Uint8Array(await found.arrayBuffer());
       return new Uint8Array(await new Response(open(path, found)).arrayBuffer());
     },
-    assetStreams: async (path) => open(path, await find(path)),
+    assetStreams: async (path, signal) => open(path, await find(path, signal)),
   };
 }
 
@@ -438,7 +467,9 @@ export interface HeadlessProgram extends MountedProgram {
 }
 
 // Runs a program headless, as under Node: its frames (--frames, or 1), its captures given to
-// onCapture rather than written to files. It has its own WebGPU device, freed when it ends.
+// onCapture rather than written to files. It has its own WebGPU device, freed when it ends. However
+// it ends (its frames, a quit, a failure or stop()), its downloads end: fetches are aborted and
+// streams cancelled, and stop() ends them at once, without waiting for them.
 // assets: the URL its assets are fetched from (the generated main's runHeadless gives assets/ beside
 // it).
 export function runHeadless<A extends RunnableApp, I>(program: Program<A, I>, assets: URL, options: HeadlessOptions): HeadlessProgram {
@@ -457,6 +488,8 @@ export function runHeadless<A extends RunnableApp, I>(program: Program<A, I>, as
   let stopping = false;
   let context: Context | null = null;
   const graphs: RenderGraph[] = [];
+  // The run's loads (its context's signal), which end with it
+  const loads = new AbortController();
 
   const run = async (): Promise<void> => {
     const inputs = program.defaults();
@@ -467,7 +500,7 @@ export function runHeadless<A extends RunnableApp, I>(program: Program<A, I>, as
       return;
     }
     const launch = parsed;
-    context = await Context.create(assetLoaders(assets, options.files ?? {}, options.onProgress));
+    context = await Context.create({ ...assetLoaders(assets, options.files ?? {}, options.onProgress), signal: loads.signal });
     if (stopping) return;
     const ready = context;
     const app = await program.create(ready, launch, inputs, () => {
@@ -489,8 +522,10 @@ export function runHeadless<A extends RunnableApp, I>(program: Program<A, I>, as
     try {
       await run();
     } catch (error) {
-      fail(error);
+      // Stopping ends its loads, which fails a build waiting for one, and a frame's cancelled streams
+      if (!stopping) fail(error);
     }
+    loads.abort();
     const ended = context as Context | null;
     if (ended) {
       try {
@@ -513,6 +548,7 @@ export function runHeadless<A extends RunnableApp, I>(program: Program<A, I>, as
     done,
     stop() {
       stopping = true;
+      loads.abort();
       return done.then(() => {});
     },
   };

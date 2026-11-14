@@ -18,6 +18,14 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   program's option metadata (`ProgramOption`'s `value`, `default`, `range` and `output`, which
   `ts-main.rkt` emits). `main.ts`'s `runHeadlessFrames` is the frame loop both share with
   `main-node.ts`, and `parseCommandLine`'s `where` (`node`, `browser` or `canvas`) is what differs.
+  A program's downloads end when it does, never holding it up: `stop()` aborts its context's loads
+  (see `Context.signal` below) before waiting for anything, so it settles promptly even while an
+  asset or a stream stalls, and a mounted program ending by itself (it quits, runs its `--frames`
+  or fails) ends them, removes its listeners and frees its graphs at once, leaving only its device
+  and the canvas's configuration (the last frame shown) for `stop()`. `runHeadless` (which
+  `mountHeadless` runs) ends its loads when its frames end, however they end. Errors raised
+  once `stop()` has begun (the loads it ended, but also any create or frame failure racing it) aren't
+  failures: the state goes to `stopped`, as before.
 - `stream.ts` has streams (`Stream`), bytes a program reads as they arrive (a stream-buffer's file),
   with native `zgal::Stream`'s semantics. `read(maxBytes)` never waits: it takes what has arrived
   (an empty array if nothing has), and gives null once the stream has ended and been read.
@@ -56,8 +64,13 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   `runHeadless`), and `createNodeContext` streams the file, opened (in the first asset directory
   that has it) before `loadAssetStream` resolves. Without `assets` or `assetStreams`,
   `Context.create` fetches both from `assets/` beside the page; given only one, the other's loads
-  fail rather than quietly fetching from elsewhere. `web/tests/streams.test.ts` tests streams under
-  Node.
+  fail rather than quietly fetching from elsewhere. `Context.signal` is aborted when the context's
+  loads end (`ContextOptions.signal` aborted, or `destroy()`): loaders get it (the defaults and
+  pages' give it to `fetch`), a load waiting rejects at once whatever its loader does, later ones
+  reject, and the streams `loadAssetStream` opened that are still downloading are cancelled with their
+  sources (a finished one has nothing to cancel).
+  `web/tests/streams.test.ts` tests streams under Node, and `web/tests/stop.test.ts` ending loads
+  (a context's, and `runHeadless` stopped or quitting while a served stream stalls).
 - `png-write.ts` writes PNGs in any environment (`encodePngStream`, with `CompressionStream`);
   `png.ts` (Node only) uses zlib.
 - The web keeps Vulkan's clip space (the WGSL negates y), so web pixel expectations match native
@@ -93,7 +106,8 @@ selects from all of them) runs `make test-decode` ([the image decoder](#the-imag
 then:
 
 1. compiles `web/tests/*.zgal` (and the image_filter example, which `image-filter.test.ts` runs
-   without the `texture-formats-tier2` feature) to TypeScript and WGSL in `build/web-tests`, beside
+   without the `texture-formats-tier2` feature, and `tests/stream/streamer.zgal`, which
+   `stop.test.ts` runs) to TypeScript and WGSL in `build/web-tests`, beside
    a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node;
 2. builds the particles, image_filter and scene examples for the web (`make web`, into
    `build/web/<name>`) and runs them under Node, comparing image_filter's outputs with
@@ -109,7 +123,7 @@ then:
    leaves, chorded buttons, cancelled pointers and lost captures, and a finger ignored while the
    mouse is pressed), `web/tests/touch.html` (in Chromium only, touched by
    `chromium.ts --touch`: a one-finger drag is a left-button drag, a second finger is ignored, and
-   the canvas has `touch-action: none` while mounted),
+   the canvas has `touch-action: none` until the program ends),
    `web/tests/image-file.html`, `web/tests/image-decode.html`, the kernels, indirect and models
    pages, `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main, and
    `onProgress` for an asset read whole),

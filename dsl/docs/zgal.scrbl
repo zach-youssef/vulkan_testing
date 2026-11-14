@@ -2400,8 +2400,13 @@ and Linux alike, which the tool passes (see @tt{docs/web.md}).
 Other pages embed programs: the main of a program with a window exports @tt{mount(canvas, options)},
 which runs it in a canvas of the page (@tt{zgal.mountProgram}) and returns an object whose
 @tt{stop()} stops it and frees its WebGPU device, its graphs and its listeners (while it starts,
-too). The options are @tt{scaling} (required: @tt{'whole-multiples'} shows the canvas at the largest
-whole multiple of its size that fits, pixelated, @tt{'fit'} at the largest size, smoothly),
+too). Its downloads never hold @tt{stop()} up: it first aborts them (the fetches of assets read
+whole and of streams, whose sources are cancelled), so it settles promptly even while an asset
+stalls. A program ending by itself (it quits, runs its @tt{--frames} or fails) ends its downloads,
+removes its listeners and frees its graphs at once, as @tt{stop()} would, keeping its last frame
+shown (and fitted to the canvas's parent) until @tt{stop()} frees the device. The options are
+@tt{scaling} (required: @tt{'whole-multiples'} shows the canvas at the largest whole multiple of
+its size that fits, pixelated, @tt{'fit'} at the largest size, smoothly),
 @tt{args} (its command line, as under Node), @tt{keys} (@tt{'canvas'}, the default, takes key
 presses while the canvas has focus, which it takes when clicked; @tt{'page'} takes the whole
 page's), @tt{onState} (called with @tt{running}, @tt{stopped} or @tt{failed}), @tt{onMessage}
@@ -2418,9 +2423,9 @@ whether from a mouse, a pen or a finger, but only the primary pointer's (the mou
 finger down; further fingers are ignored), so a one-finger drag is a left-button drag. A press
 follows its pointer, ignoring others (e.g. a finger while the mouse is pressed), until its buttons
 are released, it is cancelled or the canvas loses it (which releases them). While
-mounted, the canvas has @tt{touch-action: none}, so touches are the program's rather than the
-page's to scroll or zoom; @tt{stop()} gives it back its own. Each mounted program has its own device, so a page can run
-several, e.g.
+running, the canvas has @tt{touch-action: none}, so touches are the program's rather than the
+page's to scroll or zoom; once the program ends (or @tt{stop()}) it has its own back. Each mounted
+program has its own device, so a page can run several, e.g.
 
 @verbatim{
 import { mount } from './particles/particles.zgal.main.js';
@@ -2447,8 +2452,10 @@ input's @tt{File}, or a URL relative to the page; other paths are fetched from @
 @tt{Blob}), @tt{onState}, @tt{onMessage} and @tt{onProgress}, as @tt{mount}'s. It returns an object whose @tt{done}
 promise gives the state it ended in (@tt{stopped}, or @tt{failed} for a bad command line, an
 error or WebGPU's validation errors) and whose @tt{stop()} stops it, resolving once its device is
-destroyed. Runs are independent, each creating a device, so a page running again on input (e.g. a
-slider) should @tt{await} the previous run's @tt{stop()} before starting the next, and start only the latest of several quick inputs, e.g.
+destroyed: as @tt{mount}'s, it aborts the run's downloads first, so it never waits for them, and a
+run ends them as soon as its frames end, however they end. Runs are independent, each creating a
+device, so a page running again on input (e.g. a slider) should @tt{await} the previous run's
+@tt{stop()} before starting the next, and start only the latest of several quick inputs, e.g.
 
 @verbatim{
 import { runHeadless } from './image_filter/image_filter.zgal.main.js';
