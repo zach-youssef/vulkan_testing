@@ -132,6 +132,9 @@ then:
    `web/tests/stream-buffers.html` (`tests/stream/streamer.zgal`'s stream-buffer filled from a
    served file and from a `Blob` through `runHeadless`, its failures, runs stopped mid-stream
    cancelling their streams, and `onProgress` with and without `Content-Length`),
+   `web/tests/stop-streams.html` (streamer mounted on a fetch that stalls part way: `stop()` while
+   it starts or runs settles at once and aborts the fetch, and quitting with Escape ends the fetch
+   before any `stop()`),
    in each browser of `BROWSERS`: by default only headless Chromium. Firefox opens windows, so it
    runs only when asked, `make test-web BROWSERS="chromium firefox"` (as before pushing a stack's
    top), and has no WebGPU on Linux (CI skips it). A browser found nowhere is skipped (Chromium is

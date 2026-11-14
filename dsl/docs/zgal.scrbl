@@ -2439,7 +2439,8 @@ runs the main when it is the program run (not imported). @tt{make test-pages} ch
 @tt{web/tests/mount.html}, touch with @tt{web/tests/touch.html} (in Chromium, whose checker
 touches the canvas, @tt{web/tools/chromium.ts --touch}), and @tt{onProgress} (through @tt{runHeadless}, which shares the loaders)
 with @tt{web/tests/headless.html} (assets read whole) and @tt{web/tests/stream-buffers.html}
-(streamed).
+(streamed), and downloads ending with @tt{web/tests/stop-streams.html} (a stalled stream ended by
+@tt{stop()} and by quitting with Escape).
 
 Every program's main also exports @tt{runHeadless(options)} (@tt{zgal.runHeadless}), which runs it
 headless in a page as Node would, with its own WebGPU device: its frames (@tt{--frames}, by default

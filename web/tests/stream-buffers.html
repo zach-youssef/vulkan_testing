@@ -142,9 +142,9 @@ try {
   check(cancels === unchanged, `runs that read their whole streams cancelled ${cancels - unchanged} sources`);
 
   // Failures
-  const missing = await run(['missing.bin'], {});
+  const missing = await run(['missing.bin', '--frames', '1000'], {});
   check(missing.state === 'failed' && /opening stream 'missing\.bin': .*404/.test(missing.messages.join('\n')), `a missing scene's run ended ${missing.state}:\n${missing.messages.join('\n')}`);
-  const odd = await run(['scene.bin', '--per-frame', '6'], {});
+  const odd = await run(['scene.bin', '--per-frame', '6', '--frames', '1000'], {});
   check(odd.state === 'failed' && /appends 6 bytes per frame, which isn't a positive multiple of 4/.test(odd.messages.join('\n')), `--per-frame 6 ended ${odd.state}:\n${odd.messages.join('\n')}`);
 
   // Stopped mid-stream: a source a word every few milliseconds, of a scene of a million words that

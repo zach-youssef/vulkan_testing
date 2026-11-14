@@ -1,8 +1,10 @@
 ;; A program streaming a file into a stream-buffer (web/tests/stream-buffers.html): its header
 ;; gives its size in words, and each frame sums the words that have arrived, printing each streamed
-;; event and, once the whole file is summed, the sum, then quits. Its opener (streamer.inputs.ts)
-;; streams the file the command line names through the context's assets: fetched beside the
-;; program, or a Blob the page gives.
+;; event and, once the whole file is summed, the sum, then quits (as it does on Escape). Its opener
+;; (streamer.inputs.ts) streams the file the command line names through the context's assets:
+;; fetched beside the program, or a Blob the page gives. It has a window (drawing nothing in it), so
+;; that a page can mount it (web/tests/stop-streams.html: stopping it, or quitting with Escape,
+;; mid-stream ends its download); headless, it runs its --frames.
 
 (struct SceneHeader
   (magic uint)
@@ -37,6 +39,7 @@
   (on (streamed scene arrived total)
     (print! "streamed " arrived " of " total)
     (with state #:arrived arrived #:total total))
+  (on (key-pressed escape) (quit!))
   (on (read readSums sums)
     (when (and (> state.total 0) (= (* (at sums 1) 4) state.total))
       (print! "summed " (at sums 1) " words: " (at sums 0))
@@ -46,5 +49,6 @@
 
 (main Streamer
   (about "Sums a streamed file's words")
+  (window "Streamer" 64 64)
   (option perFrame "--per-frame" "the bytes a frame streams" #:default 4096 #:range (4 1048576))
   (positional source "the file to stream: a SceneHeader, then the rest of its words"))

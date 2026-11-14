@@ -1,0 +1,149 @@
+<!doctype html>
+<!-- A mounted program's downloads end when it ends, without stop() waiting for them: through
+     tests/stream/streamer.zgal's mount, its scene fetched from a fetch wrapped to stall part way
+     (in the header, while the program starts, or after some words, while it runs). stop() settles
+     at once and aborts the fetch in both, and the program quitting by itself (Escape on the canvas)
+     ends the fetch before any stop(), giving the canvas back its touch-action. Checked by
+     make test-pages (web/tools/chromium.ts and firefox.ts); web/tests/stop.test.ts checks
+     runHeadless and contexts under Node. The page's state is in <html data-zgal>. Served from
+     build/web/tests, beside streamer/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL stop test</title>
+<style>
+  body { margin: 0; }
+  /* Fixed sizes, whatever the browser's window */
+  #program { flex: none; width: 128px; height: 128px; background: #000; }
+</style>
+</head>
+<body>
+<div id="program"><canvas id="canvas"></canvas></div>
+<pre id="zgal-message"></pre>
+<script type="module">
+import { mount } from '../streamer/streamer.zgal.main.js';
+import { output } from '../streamer/zgal/index.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+const check = (ok, text) => { if (!ok) throw new Error(text); };
+
+// How long ending may take: far less than any download's timeout
+const bound = 5000;
+const within = (promise, what) => Promise.race([promise,
+  new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} took more than ${bound} ms`)), bound))]);
+
+// A scene of a million words (it never finishes): its header and words words, of which the stalled
+// response gives sent bytes
+function sceneStart(words) {
+  const scene = new Uint32Array(2 + words);
+  scene[0] = 0x5a47;
+  scene[1] = 1000000;
+  for (let i = 2; i < scene.length; i++) scene[i] = i;
+  return new Uint8Array(scene.buffer);
+}
+
+// fetch, giving scene.bin's first bytes and then stalling, as a slow network would, until the
+// request's signal aborts it (as fetch does) or its body is cancelled. begun resolves once it's
+// fetched, and ended with how it ended.
+let stalled = null;
+const fetchWith = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  if (!stalled || !String(input instanceof Request ? input.url : input).endsWith('/scene.bin')) return fetchWith(input, init);
+  const { bytes, begin, end } = stalled;
+  begin();
+  const signal = init?.signal;
+  signal?.throwIfAborted();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      signal?.addEventListener('abort', () => {
+        controller.error(signal.reason);
+        end('aborted');
+      });
+    },
+    cancel() { end('cancelled'); },
+  });
+  return new Response(body, { headers: { 'Content-Type': 'application/octet-stream' } });
+};
+const stall = (bytes) => {
+  let begin, end;
+  const begun = new Promise((done) => { begin = done; });
+  const ended = new Promise((done) => { end = done; });
+  stalled = { bytes, begin, end };
+  return { begun, ended };
+};
+
+// The program's print! lines
+let printed = () => {};
+output.line = (text) => {
+  console.log(text);
+  printed(text);
+};
+
+// Mounts streamer on scene.bin; reached(state) resolves once it reaches that state, and streamed
+// once it has printed a streamed event
+function mounted() {
+  const canvas = document.getElementById('canvas');
+  const touchAction = canvas.style.touchAction;
+  const states = [];
+  const waiting = [];
+  let streamed;
+  const streaming = new Promise((done) => { streamed = done; });
+  printed = (text) => {
+    check(/^streamed \d+ of 4000000$/.test(text), `streamer printed ${text}`);
+    streamed();
+  };
+  const program = mount(canvas, {
+    scaling: 'whole-multiples',
+    args: ['scene.bin', '--per-frame', '4'],
+    onState: (state) => {
+      states.push(state);
+      for (const w of waiting.splice(0)) w();
+    },
+    onMessage: (text) => log(`streamer: ${text}`),
+  });
+  const reached = async (state) => {
+    while (!states.includes(state)) await new Promise((done) => waiting.push(done));
+  };
+  return { canvas, touchAction, program, states, reached, streaming };
+}
+
+try {
+  // Stopped while it starts, its build waiting for the rest of the header
+  let { begun, ended } = stall(sceneStart(0).subarray(0, 4));
+  let run = mounted();
+  await within(begun, 'fetching the scene');
+  await within(run.program.stop(), 'stop() while the header stalls');
+  check(run.states.join() === 'stopped', `stopped while its header stalled, it went ${run.states.join(' -> ')}`);
+  log(`stopped while its header stalled: the fetch was ${await within(ended, 'ending the fetch')}`);
+
+  // Stopped while it runs, its stream stalled after some words
+  ({ ended } = stall(sceneStart(100)));
+  run = mounted();
+  await within(run.streaming, 'streaming');
+  await within(run.program.stop(), 'stop() while the stream stalls');
+  check(run.states.join() === 'running,stopped', `stopped while its stream stalled, it went ${run.states.join(' -> ')}`);
+  log(`stopped while its stream stalled: the fetch was ${await within(ended, 'ending the fetch')}`);
+
+  // Quitting with Escape while its stream stalls, before any stop()
+  ({ ended } = stall(sceneStart(100)));
+  run = mounted();
+  await within(run.streaming, 'streaming');
+  check(run.canvas.style.touchAction === 'none', `the running canvas's touch-action is ${run.canvas.style.touchAction}`);
+  run.canvas.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape', bubbles: true }));
+  await within(run.reached('stopped'), 'quitting');
+  log(`quit while its stream stalled: the fetch was ${await within(ended, 'ending the fetch')}`);
+  check(run.canvas.style.touchAction === run.touchAction, `the canvas's touch-action is ${run.canvas.style.touchAction} once quit, not its own`);
+  await within(run.program.stop(), 'stop() once quit');
+  check(run.states.join() === 'running,stopped', `quitting, it went ${run.states.join(' -> ')}`);
+
+  log('stopped and quit as expected');
+  document.documentElement.dataset.zgal = 'stopped';
+} catch (error) {
+  log(error instanceof Error ? error.message : String(error));
+  document.documentElement.dataset.zgal = 'failed';
+}
+</script>
+</body>
+</html>

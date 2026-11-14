@@ -247,7 +247,7 @@ $(eval $(call zgal-web-program,$(TEST_DIR)/main/painter.zgal,$(MAIN_TEST_WEB)))
 
 # A program streaming a file into a stream-buffer (its opener in streamer.inputs.ts), for the web
 # only: make test-web runs it under Node (and web/tests/stop.test.ts), and
-# web/tests/stream-buffers.html in browsers
+# web/tests/stream-buffers.html and stop-streams.html in browsers
 STREAM_TEST_WEB = $(OUT)/web/streamer
 
 $(eval $(call zgal-web-program,$(TEST_DIR)/stream/streamer.zgal,$(STREAM_TEST_WEB)))
@@ -366,7 +366,8 @@ test-decode-steps:
 # (web/tests/indirect.html), models (web/tests/models.html), programs without a window
 # (web/tests/headless.html), functions storing into images they're given (web/tests/stamps.html),
 # streamed assets (web/tests/streams.html), stream-buffers (web/tests/stream-buffers.html, through
-# tests/stream/streamer.zgal's main)
+# tests/stream/streamer.zgal's main), mounted programs' downloads ending when they stop or quit
+# (web/tests/stop-streams.html, streamer mounted)
 # and the image decoder (web/tests/image-decode.html, comparing with native decodes stb_dump saves
 # beside the images), with web/tests' graphs built into graphs/, in each of BROWSERS: by default
 # only headless Chromium on SwiftShader. Firefox opens windows (it has no WebGPU adapter headless,
@@ -408,7 +409,7 @@ test-pages-steps:
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/blur_edges-$$browser.png \
 	    'image_filter/image_filter.zgal.html?arg=/tests/assets/input.png&arg=out.png&blur=2&edges' || exit 1; \
 	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/blur_edges-$$browser.png 2 || exit 1; \
-	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps streams stream-buffers; do \
+	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps streams stream-buffers stop-streams; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \
 	  if [ $$browser = chromium ]; then \
