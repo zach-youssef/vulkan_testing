@@ -1,8 +1,9 @@
 // web.zgal's Shadows on Dawn: a depth image both sampled and compared, with one ZGAL sampler doing
 // both, bound as the variants WebGPU needs (a non-filtering sampler for the depth texture, a
-// comparison sampler), directly and through functions. All in compute shaders: the fragment stage's
-// path (textureSample, comparisons in a function under the uniformity analysis) is only compiled,
-// by the golden Lit material and Dawn under make test-dsl
+// comparison sampler), directly and through functions; a linear sampler filters the depth image
+// by hand (WebGPU samples depth textures only with non-filtering samplers) as Vulkan's would. All in
+// compute shaders: the fragment stage's path (textureSample, comparisons in a function under the
+// uniformity analysis) is only compiled, by the golden Lit material and Dawn under make test-dsl
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import * as zgal from '../zgal/index.ts';
@@ -14,6 +15,21 @@ const size = 8;
 const depthAt = (i: number, j: number) => (i + 0.5) / 32 + (j + 0.5) / 16;
 const clamp = (x: number) => Math.min(Math.max(x, 0), size - 1);
 const nearest = (u: number, v: number) => depthAt(clamp(Math.floor(u * size)), clamp(Math.floor(v * size)));
+// The linear sampler repeats: the texel block around uv, each texel's value (or its comparison
+// with the reference) weighted by uv's position in the block
+const repeat = (x: number) => ((x % size) + size) % size;
+function bilinear(u: number, v: number, texel: (i: number, j: number) => number): number {
+  const x = u * size - 0.5;
+  const y = v * size - 0.5;
+  const i = Math.floor(x);
+  const j = Math.floor(y);
+  const fx = x - i;
+  const fy = y - j;
+  const row = (jj: number) => texel(repeat(i), repeat(jj)) * (1 - fx) + texel(repeat(i + 1), repeat(jj)) * fx;
+  return row(j) * (1 - fy) + row(j + 1) * fy;
+}
+const linear = (u: number, v: number) => bilinear(u, v, depthAt);
+const compared = (u: number, v: number, reference: number) => bilinear(u, v, (i, j) => (reference < depthAt(i, j) ? 1 : 0));
 // The picture's constant red (0xFF4080C0 texels)
 const red = 0xc0 / 255;
 
@@ -27,6 +43,9 @@ const points: [number, number, number][] = [
   [1.2, -0.5, 0.3],
   [0.95, 0.95, 0.7],
   [0.5, 0.5, 0.33],
+  [0.4, 0.3, 0.2],
+  [0.4, 0.3, 0.26],
+  [0.96, 0.98, 0.5],
 ];
 
 let context: zgal.Context;
@@ -79,6 +98,16 @@ test('a function only sampling its texture takes the depth image and a colour im
   }
 });
 
+test('a nearest sampler with a linear mipmap filter samples nearest texels: one level has no mipmaps to filter', async () => {
+  const samples = await shadows.readMipSamplesContents(graph);
+  for (const [k, [u, v, reference]] of points.entries()) {
+    const [sampled, comparedTo] = samples[k];
+    const depth = nearest(u, v);
+    assert.ok(Math.abs(sampled - depth) < 1e-6, `point ${k}: sampled ${sampled}, expected ${depth}`);
+    assert.equal(comparedTo, reference < depth ? 1 : 0, `point ${k}: compared`);
+  }
+});
+
 test('comparing with a sampler without #:compare is refused', async () => {
   const other = new zgal.RenderGraph(context);
   try {
@@ -99,3 +128,20 @@ test('sampling a depth image without comparing with it needs a nearest sampler',
   }
 });
 
+test('a linear sampler filters the depth image bilinearly, wrapping as it says, and its comparisons', async () => {
+  const samples = await shadows.readLinearSamplesContents(graph);
+  const reds = await shadows.readLinearRedsContents(graph);
+  for (const [k, [u, v, reference]] of points.entries()) {
+    const [sampled, comparedTo, viaFunction, comparedViaFunction] = samples[k];
+    const depth = linear(u, v);
+    const test = compared(u, v, reference);
+    // The filter by hand is exact; the comparisons are filtered by the device, with its weights
+    assert.ok(Math.abs(sampled - depth) < 1e-5, `point ${k}: sampled ${sampled}, expected ${depth}`);
+    assert.ok(Math.abs(comparedTo - test) < 1 / 128, `point ${k}: compared ${comparedTo}, expected ${test}`);
+    assert.ok(Math.abs(viaFunction - depth) < 1e-5, `point ${k}: sampled through lit ${viaFunction}, expected ${depth}`);
+    assert.ok(Math.abs(comparedViaFunction - test) < 1 / 128, `point ${k}: compared through lit ${comparedViaFunction}, expected ${test}`);
+    const [ofDepth, ofPicture] = reds[k];
+    assert.ok(Math.abs(ofDepth - depth) < 1e-5, `point ${k}: red of the depth image ${ofDepth}, expected ${depth}`);
+    assert.ok(Math.abs(ofPicture - red) < 1e-6, `point ${k}: red of the picture ${ofPicture}, expected ${red}`);
+  }
+});

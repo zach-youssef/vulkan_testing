@@ -2242,8 +2242,11 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        samplers each do one thing (a comparison sampler only compares, and a depth texture is
        sampled only with a non-filtering sampler), so a ZGAL sampler @tt{s} is bound as the variants
        the stage uses: @tt{s}, as the graph describes it, sampling other textures;
-       @tt{zgalDepth_s}, a non-filtering one sampling depth textures; and @tt{zgalCompare_s}, a
-       comparison sampler. The runtime makes them from the one sampler (comparing needs its
+       @tt{zgalDepth_s}, a non-filtering one sampling depth textures, with the pipeline constant
+       @tt{zgalLinear_s} saying whether @tt{s} filters, which the module then does by hand (a
+       bilinear filter of the texels the sampler's address mode gives, as Vulkan's linear filter
+       of a depth image); and @tt{zgalCompare_s}, a comparison sampler, which WebGPU filters
+       (comparing each texel). The runtime makes them from the one sampler (comparing needs its
        @racket[#:compare]). A function's sampler parameter is likewise the variants the function
        uses, and a function given a depth texture for a parameter it only samples is specialized
        for it (@tt{zgalDepth_0_f} for its first parameter).}

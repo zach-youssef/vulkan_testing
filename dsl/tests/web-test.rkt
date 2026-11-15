@@ -230,14 +230,19 @@
     (check-true (string-contains? wgsl "@group(0) @binding(3) var zgalCompare_smp: sampler_comparison;"))
     (check-true (string-contains? wgsl "@group(0) @binding(4) var picture: texture_2d<f32>;"))
     (check-true (string-contains? wgsl "@group(0) @binding(6) var<uniform> zgalPush: ZgalPush;"))
+    ;; Whether the depth variant's sampler filters, for the filter by hand
+    (check-true (string-contains? wgsl "override zgalLinear_smp: bool;"))
+    (check-true (string-contains? wgsl "fn zgalSampleDepth(t: texture_depth_2d, s: sampler, uv: vec2f, level: i32, linear: bool) -> f32"))
     ;; A function's sampler is the variants it uses; one only sampling is specialized for a depth
     ;; texture (its sampler then the non-filtering variant), the colour texture's keeps its name
-    (check-true (string-contains? wgsl "fn both(map: texture_depth_2d, zgalDepth_s: sampler, zgalCompare_s: sampler_comparison, uv: vec2f) -> vec2f"))
+    (check-true (string-contains? wgsl "fn both(map: texture_depth_2d, zgalDepth_s: sampler, zgalLinear_s: bool, zgalCompare_s: sampler_comparison, uv: vec2f) -> vec2f"))
+    (check-true (string-contains? wgsl "zgalSampleDepth(map, zgalDepth_s, uv, 0i, zgalLinear_s)"))
     (check-true (string-contains? wgsl "textureSampleCompareLevel(map, zgalCompare_s, uv, 0.5f)"))
     (check-true (string-contains? wgsl "fn red(t: texture_2d<f32>, s: sampler, uv: vec2f) -> f32"))
-    (check-true (string-contains? wgsl "fn zgalDepth_0_red(t: texture_depth_2d, zgalDepth_s: sampler, uv: vec2f) -> f32"))
-    (check-true (string-contains? wgsl "both(shadow, zgalDepth_smp, zgalCompare_smp, zgalPush.uv)"))
-    (check-true (string-contains? wgsl "zgalDepth_0_red(shadow, zgalDepth_smp, zgalPush.uv)"))
+    (check-true (string-contains? wgsl "textureSampleLevel(t, s, uv, 0.0f).x"))
+    (check-true (string-contains? wgsl "fn zgalDepth_0_red(t: texture_depth_2d, zgalDepth_s: sampler, zgalLinear_s: bool, uv: vec2f) -> f32"))
+    (check-true (string-contains? wgsl "both(shadow, zgalDepth_smp, zgalLinear_smp, zgalCompare_smp, zgalPush.uv)"))
+    (check-true (string-contains? wgsl "zgalDepth_0_red(shadow, zgalDepth_smp, zgalLinear_smp, zgalPush.uv)"))
     (check-true (string-contains? wgsl "red(picture, smp, zgalPush.uv)"))))
 
 (test-case "Only the function variants called are emitted"
@@ -273,4 +278,5 @@
     (check-true (string-contains? wgsl "var shadow: texture_depth_2d;"))
     (check-true (string-contains? wgsl "var zgalDepth_smp: sampler;"))
     (check-false (string-contains? wgsl "zgalCompare_smp"))
-    (check-true (string-contains? wgsl "vec4f(textureSampleLevel(shadow, zgalDepth_smp, vec2f(0.5f), 0i), 0.0f, 0.0f, 1.0f).x"))))
+    (check-true (string-contains? wgsl "override zgalLinear_smp: bool;"))
+    (check-true (string-contains? wgsl "vec4f(zgalSampleDepth(shadow, zgalDepth_smp, vec2f(0.5f), 0i, zgalLinear_smp), 0.0f, 0.0f, 1.0f).x"))))

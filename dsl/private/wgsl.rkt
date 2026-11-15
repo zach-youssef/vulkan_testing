@@ -121,9 +121,10 @@
 ;;
 ;; WebGPU's samplers each do one thing, so a ZGAL sampler s is up to three bindings, the variants
 ;; its stages use (sampler-variants): s ('sample), a sampler as the graph describes it; zgalDepth_s
-;; ('depth), a non-filtering one sampling depth textures, which WebGPU refuses filtering samplers on;
-;; and zgalCompare_s ('compare), a comparison sampler. The runtime binds them from the one
-;; description.
+;; ('depth), a non-filtering one sampling depth textures, which WebGPU refuses filtering samplers on
+;; (with the override zgalLinear_s, whether s filters: then the module filters by hand, see
+;; zgalSampleDepth); and zgalCompare_s ('compare), a comparison sampler. The runtime binds them
+;; from the one description.
 (struct wgsl-binding (name source index kind access stages depth?) #:transparent)
 
 (define sampler-variants '(sample depth compare))
@@ -136,6 +137,10 @@
     [(sample) (wgsl-name name)]
     [(depth) (string-append "zgalDepth_" name)]
     [(compare) (string-append "zgalCompare_" name)]))
+
+;; The override (or a function's parameter) saying whether sampler `name` filters, which goes with
+;; its depth variant
+(define (linear-name name) (string-append "zgalLinear_" name))
 
 ;; The spelling of a binding in modules
 (define (wgsl-binding-identifier wb)
@@ -479,6 +484,9 @@
                   (raw-declaration-type st (binding-name b) #f)
                   (wgsl-type (if (eq? (binding-kind b) 'buffer) (binding-element b) (runtime-array-t (binding-element b)))
                              (binding-loc b)))])))
+  ;; Whether each depth sampler's ZGAL sampler filters, which the runtime sets per pipeline
+  (for ([wb (in-list layout)] #:when (and (eq? (wgsl-binding-kind wb) 'depth-sampler) (memq stage (wgsl-binding-stages wb))))
+    (line! "override ~a: bool;" (linear-name (binding-name (wgsl-binding-source wb)))))
   (when (and push-layout (state-push-used? st))
     (line! "")
     (line! "struct ZgalPush {")
@@ -996,6 +1004,27 @@
               "        a31 * b01 - a30 * b03 - a32 * b00, a20 * b03 - a21 * b01 + a22 * b00) * (1.0f / det);\n"
               "}")]))))
 
+;; Sampling a depth texture with a non-filtering sampler, as the ZGAL sampler does: filtering
+;; nothing, or, for a linear one, the bilinear filter by hand (WebGPU samples depth textures only
+;; with non-filtering samplers). The texel block around uv is gathered at its centre, so its texels
+;; are the ones the sampler's address mode gives, and weighted by uv's position in it. A texture
+;; has one level, which the gather reads
+(define (sample-depth-helper st)
+  (helper! st "zgalSampleDepth"
+    (λ ()
+      (string-append
+       "fn zgalSampleDepth(t: texture_depth_2d, s: sampler, uv: vec2f, level: i32, linear: bool) -> f32 {\n"
+       "    if (!linear) {\n"
+       "        return textureSampleLevel(t, s, uv, level);\n"
+       "    }\n"
+       "    let size = vec2f(textureDimensions(t));\n"
+       "    let at = uv * size - 0.5f;\n"
+       "    let block = floor(at);\n"
+       "    let weight = at - block;\n"
+       "    let texels = textureGather(t, s, (block + 1.0f) / size);\n"
+       "    return mix(mix(texels.w, texels.z, weight.x), mix(texels.x, texels.y, weight.x), weight.y);\n"
+       "}"))))
+
 (define (print-texture st op as where)
   (define (p e) (print-expr st e))
   (define fragment? (eq? (state-stage st) 'fragment))
@@ -1003,6 +1032,9 @@
   (define (depth? e) (set-member? depth (opaque-name e)))
   ;; The sampler's variant sampling t: a non-filtering one for a depth texture
   (define (sampling t s) (variant-name (opaque-name s) (if (depth? t) 'depth 'sample)))
+  ;; Sampling a depth texture, filtering by hand where its sampler filters (WebGPU's can't)
+  (define (sample-depth t s uv level)
+    (format "~a(~a, ~a, ~a, ~a, ~a)" (sample-depth-helper st) (p t) (sampling t s) (p uv) level (linear-name (opaque-name s))))
   ;; Sampling a depth texture gives its depth, which Vulkan gives as (depth, 0, 0, 1)
   (define (depth-texel t text) (if (depth? t) (format "vec4f(~a, 0.0f, 0.0f, 1.0f)" text) text))
   ;; An element of an array of textures: a texture array and its layer
@@ -1031,11 +1063,17 @@
      #:when layer
      (format "vec2i(textureDimensions(~a, ~a))" (p-texture t) (p lod))]
     [('sample (list t s uv))
-     (depth-texel t (if fragment?
-                  (format "textureSample(~a, ~a, ~a)" (p t) (sampling t s) (p uv))
-                  (format "textureSampleLevel(~a, ~a, ~a, 0~a)" (p t) (sampling t s) (p uv) (if (depth? t) "i" ".0f"))))]
+     #:when (depth? t)
+     (depth-texel t (sample-depth t s uv "0i"))]
     [('sample-lod (list t s uv lod))
-     (depth-texel t (format "textureSampleLevel(~a, ~a, ~a, ~a)" (p t) (sampling t s) (p uv) (if (depth? t) (format "i32(~a)" (p lod)) (p lod))))]
+     #:when (depth? t)
+     (depth-texel t (sample-depth t s uv (format "i32(~a)" (p lod))))]
+    [('sample (list t s uv))
+     (if fragment?
+         (format "textureSample(~a, ~a, ~a)" (p t) (sampling t s) (p uv))
+         (format "textureSampleLevel(~a, ~a, ~a, 0.0f)" (p t) (sampling t s) (p uv)))]
+    [('sample-lod (list t s uv lod))
+     (format "textureSampleLevel(~a, ~a, ~a, ~a)" (p t) (sampling t s) (p uv) (p lod))]
     [('fetch (list t _ texel lod)) (depth-texel t (format "textureLoad(~a, ~a, ~a)" (p t) (p texel) (p lod)))]
     [('sample-compare (list t s uv ref))
      (define comparing (variant-name (opaque-name s) 'compare))
@@ -1227,14 +1265,17 @@
            (append*
             (for/list ([p (in-list (function-decl-params d))] [a (in-list as)])
               (if (equal? (cdr p) (opaque-t 'sampler))
-                  (for/list ([v (in-list sampler-variants)] #:when (set-member? (hash-ref uses (car p) (set)) v))
-                    (variant-name (opaque-name a) v))
+                  (append*
+                   (for/list ([v (in-list sampler-variants)] #:when (set-member? (hash-ref uses (car p) (set)) v))
+                     (cons (variant-name (opaque-name a) v)
+                           (if (eq? v 'depth) (list (linear-name (opaque-name a))) '()))))
                   (list (print-expr st a)))))
            ", ")))
 
 ;; A function's parameters as WGSL declares them: its depth textures (those it compares, and those
 ;; the variant is given) are depth ones, and a sampler is the variants the function uses it as
-;; (none for one it doesn't sample or compare with). Functions with image2D parameters never get
+;; (none for one it doesn't sample or compare with; the depth variant with whether it filters).
+;; Functions with image2D parameters never get
 ;; here: the checker inlines them where they're called (body.rkt's inline-function?), which WGSL
 ;; needs too, as Firefox's naga rejects storage textures as parameters
 (define (parameter-declarations st f uses)
@@ -1245,8 +1286,10 @@
        [(opaque-t 'texture2D)
         (list (format "~a: ~a" (wgsl-name name) (if (set-member? (state-depth st) name) "texture_depth_2d" "texture_2d<f32>")))]
        [(opaque-t 'sampler)
-        (for/list ([v (in-list sampler-variants)] #:when (set-member? (hash-ref uses name (set)) v))
-          (format "~a: ~a" (variant-name name v) (if (eq? v 'compare) "sampler_comparison" "sampler")))]
+        (append*
+         (for/list ([v (in-list sampler-variants)] #:when (set-member? (hash-ref uses name (set)) v))
+           (cons (format "~a: ~a" (variant-name name v) (if (eq? v 'compare) "sampler_comparison" "sampler"))
+                 (if (eq? v 'depth) (list (format "~a: bool" (linear-name name))) '()))))]
        [(opaque-t k) (error 'parameter-declarations "~a's parameter ~a is ~a, which should have been inlined" (function-decl-name f) name k)]
        [_ (list (format "~a: ~a" (wgsl-name name) (wgsl-type t (function-decl-loc f))))]))))
 

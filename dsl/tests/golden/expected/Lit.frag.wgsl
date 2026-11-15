@@ -29,6 +29,7 @@ struct Settings {
 @group(0) @binding(3) var albedoSampler: sampler;
 @group(0) @binding(4) var zgalDepth_albedoSampler: sampler;
 @group(0) @binding(5) var picture: texture_storage_2d<rgba8unorm, read>;
+override zgalLinear_albedoSampler: bool;
 
 struct ZgalPush {
     transform: mat4x4f,
@@ -67,6 +68,18 @@ fn zgalMod_float3(x: vec3f, y: vec3f) -> vec3f {
     return x - y * floor(x / y);
 }
 
+fn zgalSampleDepth(t: texture_depth_2d, s: sampler, uv: vec2f, level: i32, linear: bool) -> f32 {
+    if (!linear) {
+        return textureSampleLevel(t, s, uv, level);
+    }
+    let size = vec2f(textureDimensions(t));
+    let at = uv * size - 0.5f;
+    let block = floor(at);
+    let weight = at - block;
+    let texels = textureGather(t, s, (block + 1.0f) / size);
+    return mix(mix(texels.w, texels.z, weight.x), mix(texels.x, texels.y, weight.x), weight.y);
+}
+
 fn negativeInfinity() -> f32 {
     return bitcast<f32>(zgalRuntime_uint(4286578688u));
 }
@@ -96,7 +109,7 @@ struct ZgalFragmentOutput {
 @fragment
 fn main(@location(0) tint: vec4f, @location(1) @interpolate(linear) screen: vec2f, @location(2) @interpolate(flat) id: u32, @builtin(position) zgalPosition: vec4f) -> ZgalFragmentOutput {
     var lit: f32 = shadowed(shadowMap, zgalCompare_shadowSampler, screen);
-    var depth: vec4f = vec4f(textureSample(shadowMap, zgalDepth_albedoSampler, screen), 0.0f, 0.0f, 1.0f);
+    var depth: vec4f = vec4f(zgalSampleDepth(shadowMap, zgalDepth_albedoSampler, screen, 0i, zgalLinear_albedoSampler), 0.0f, 0.0f, 1.0f);
     if (lit < 0.1f) {
         discard;
     }

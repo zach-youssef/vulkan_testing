@@ -14,6 +14,7 @@ import {
   type ComputeMaterialDesc,
   type GraphicsMaterialDesc,
   type MaterialDesc,
+  type Stage,
 } from './material.ts';
 import type { Stream } from './stream.ts';
 import { decode, encode, stride, uint, type Type } from './types.ts';
@@ -140,8 +141,11 @@ export type Bound =
 export class Sampler {
   readonly name: string;
   readonly descriptor: GPUSamplerDescriptor;
-  // Whether it filters (a linear filter): what WebGPU counts as a filtering sampler
+  // Whether it filters (any linear filter): what WebGPU counts as a filtering sampler
   readonly filtering: boolean;
+  // Whether it filters texels (its filter is linear; ZGAL's #:filter sets magFilter and minFilter
+  // alike): a linear mipmap filter alone filters nothing of a texture with one level
+  readonly linear: boolean;
   private readonly device: GPUDevice;
   private described: GPUSampler | null = null;
   private nearest: GPUSampler | null = null;
@@ -151,6 +155,7 @@ export class Sampler {
     this.name = name;
     this.descriptor = descriptor;
     this.filtering = descriptor.magFilter === 'linear' || descriptor.minFilter === 'linear' || descriptor.mipmapFilter === 'linear';
+    this.linear = descriptor.magFilter === 'linear';
   }
 
   // As described, without its comparison (a 'sampler' binding)
@@ -255,6 +260,18 @@ export class MaterialInstance {
     return layout;
   }
 
+  // A stage's pipeline-overridable constants: whether the ZGAL sampler of each depth sampler the
+  // stage declares filters (a module's zgalLinear_<sampler>), which the WGSL then does by hand
+  private constants(stage: Stage): Record<string, number> {
+    const constants: Record<string, number> = {};
+    for (const b of this.desc.bindings) {
+      if (b.kind !== 'depth-sampler' || !b.stages.includes(stage)) continue;
+      const bound = this.bindings[b.resource];
+      if ('sampler' in bound) constants[`zgalLinear_${b.resource}`] = bound.sampler.linear ? 1 : 0;
+    }
+    return constants;
+  }
+
   computePipeline(): GPUComputePipeline {
     const desc = this.desc as ComputeMaterialDesc;
     const formats = this.formats();
@@ -264,7 +281,7 @@ export class MaterialInstance {
       const device = this.graph.context.device;
       const source = desc.withoutSubgroups && !this.graph.context.hasFeature('subgroups') ? desc.withoutSubgroups : desc.compute;
       const module = device.createShaderModule({ label: `${desc.name}.comp`, code: source(storageFormats(desc, formats)) });
-      p = device.createComputePipeline({ label: desc.name, layout: this.layout(formats).pipeline, compute: { module, entryPoint: 'main' } });
+      p = device.createComputePipeline({ label: desc.name, layout: this.layout(formats).pipeline, compute: { module, entryPoint: 'main', constants: this.constants('compute') } });
       this.pipelines.set(key, p);
     }
     return p;
@@ -297,6 +314,7 @@ export class MaterialInstance {
         vertex: {
           module: device.createShaderModule({ label: `${desc.name}.vert`, code: desc.vertex(storage) }),
           entryPoint: 'main',
+          constants: this.constants('vertex'),
           buffers: desc.vertexInput
             ? [{ arrayStride: desc.vertexInput.stride, attributes: desc.vertexInput.attributes.map((a) => ({ shaderLocation: a.location, offset: a.offset, format: a.format })) }]
             : [],
@@ -306,6 +324,7 @@ export class MaterialInstance {
           : {
             module: fragmentModule,
             entryPoint: 'main',
+            constants: this.constants('fragment'),
             targets: colorFormats.map((format) => (blend ? { format, blend } : { format })),
           },
         // Shaders flip y (ZGAL's clip space is Vulkan's), keeping triangles where they are on the
