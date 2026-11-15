@@ -289,18 +289,19 @@ test-bench-steps:
 	./$(BENCH_BIN) --count 100000 --draws 64 --frames 3 --timings --validation | grep -q "^sortCounted "
 
 # The ZGAL compiler's tests, and its documentation, whose examples are compiled as it's built.
-# The tests compile generated code with the build's tools and flags.
+# The tests compile generated code with the build's tools and flags (and naga, zgal.mk's, which
+# they build if it isn't installed).
 DOCS_OUT = $(OUT)/docs
 ZGAL_TEST_ENV = ZGAL_GLSLC='glslc' ZGAL_GLSLC_FLAGS='$(GLSLC_FLAGS:-I%=-I$(CURDIR)/%)' \
                  ZGAL_CXX='$(CXX)' ZGAL_CXXFLAGS='$(subst -I./,-I$(CURDIR)/,$(CXXFLAGS))' \
-                 ZGAL_NODE='$(NODE)' ZGAL_WEB='$(CURDIR)/$(WEB_DIR)'
+                 ZGAL_NODE='$(NODE)' ZGAL_WEB='$(CURDIR)/$(WEB_DIR)' ZGAL_NAGA='$(ZGAL_NAGA)'
 
 # The web runtime (web/): its npm packages (TypeScript, and Dawn, WebGPU for Node, for tests),
 # installed by zgal.mk's rule
 WEB_DIR = web
 WEB_PACKAGES = $(ZGAL_WEB_PACKAGES)
 
-test-dsl: $(ZGAL_COMPILED) $(WEB_PACKAGES)
+test-dsl: $(ZGAL_COMPILED) $(WEB_PACKAGES) $(ZGAL_NAGA)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-dsl-steps
 
 test-dsl-steps: docs

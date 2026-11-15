@@ -103,6 +103,28 @@ $(ZGAL_WEB_PACKAGES): $(ZGAL_WEB_DIR)/package.json $(ZGAL_WEB_DIR)/package-lock.
 	cd $(ZGAL_WEB_DIR) && $(NPM) ci
 	@touch $@
 
+# naga (naga-cli), which translates the SPIR-V glslc compiles from GLSL shaders into WGSL for the
+# web, pinned by .github/actions/setup-zgal/naga.sh. NAGA names an installed one, a path or a name
+# on PATH (setup-zgal sets it in CI); without it, the pinned version is built with cargo into
+# $(ZGAL_ROOT)/.cache (git-ignored, kept by make clean) the first time it's needed: make naga.
+# ZGAL_NAGA is its absolute path, for tools run from other directories (the tests).
+ZGAL_NAGA_SCRIPT = $(ZGAL_ROOT)/.github/actions/setup-zgal/naga.sh
+ZGAL_NAGA_VERSION := $(shell sh $(ZGAL_NAGA_SCRIPT) version)
+ifeq ($(NAGA),)
+ZGAL_NAGA = $(abspath $(ZGAL_ROOT)/.cache/naga-$(ZGAL_NAGA_VERSION)/bin/naga)
+# Named by its version, so it's built again only when the pin changes, not when the script does
+$(ZGAL_NAGA):
+	sh $(ZGAL_NAGA_SCRIPT) install $(ZGAL_ROOT)/.cache/naga-$(ZGAL_NAGA_VERSION)
+else ifeq ($(findstring /,$(NAGA)),)
+ZGAL_NAGA := $(or $(shell command -v $(NAGA)),$(error NAGA=$(NAGA) isn't on PATH))
+else
+ZGAL_NAGA = $(abspath $(NAGA))
+endif
+
+naga: $(ZGAL_NAGA)
+
+.PHONY: naga
+
 # A program for the web (a .zgal file with a main): generates its TypeScript into <out>/src beside a
 # copy of the runtime (web/zgal) and the program's own TypeScript, the .ts files beside the .zgal file
 # (<name>.inputs.ts defining its mainInputs, if it has MainInputs), and builds it to JavaScript in

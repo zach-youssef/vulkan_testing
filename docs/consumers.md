@@ -22,6 +22,8 @@ Its CI can reuse this repository's actions from the submodule:
 that build no C++, and `npm-lockfile: external/vulkan_test/web/package-lock.json`) and
 `./external/vulkan_test/.github/actions/commits`. The `web` toolchain also installs wasi-sdk
 (exporting `WASI_SDK_PATH`) and clang, which the web runtime's image decoder builds and tests with.
+Both toolchains build naga with the runner's cargo (the version `setup-zgal/naga.sh` pins, cached;
+exported as `NAGA`), which ZGAL's web backend translates GLSL shaders with.
 `toolchain` is required, but GitHub doesn't
 enforce that for composite actions: a job that omits it fails in setup-zgal's first step.
 

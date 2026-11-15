@@ -10,6 +10,8 @@
 #     version, with VULKAN_SDK, PATH, LD_LIBRARY_PATH and VK_ADD_LAYER_PATH exported;
 #   - native: clang++ through ccache as CXX, with the ccache directory cached per branch (falling back to
 #     the default branch's) and keyed by the checked-out commit (only restored with save-ccache: false);
+#   - naga (naga-cli, built with the runner's cargo), the release naga.sh pins, cached by version,
+#     with NAGA exported: it translates GLSL shaders' SPIR-V to WGSL for the web;
 #   - Racket (full distribution, with Scribble) for ZGAL's compiler and docs;
 #   - Node with npm's cache keyed by the web backend's lockfile.
 name: setup-zgal
@@ -135,6 +137,29 @@ runs:
         sh "$GITHUB_ACTION_PATH/wasi-sdk.sh" install "$HOME/wasi-sdk"
         echo "WASI_SDK_PATH=$HOME/wasi-sdk" >> "$GITHUB_ENV"
 
+    - name: naga's pinned version
+      id: naga-version
+      shell: bash
+      run: echo "version=$(sh "$GITHUB_ACTION_PATH/naga.sh" version)" >> "$GITHUB_OUTPUT"
+
+    # Built once per version (about a minute), then restored. Both toolchains: the cpu job's ZGAL
+    # tests and the web job's web builds translate GLSL shaders with it
+    - name: Cache naga
+      id: naga-cache
+      uses: actions/cache@v6
+      with:
+        path: ~/naga
+        key: naga-${{ runner.os }}-${{ runner.arch }}-${{ steps.naga-version.outputs.version }}
+
+    - name: Build naga
+      if: steps.naga-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: sh "$GITHUB_ACTION_PATH/naga.sh" install "$HOME/naga"
+
+    - name: Use naga
+      shell: bash
+      run: echo "NAGA=$HOME/naga/bin/naga" >> "$GITHUB_ENV"
+
     - uses: Bogdanp/setup-racket@2466913449df77df2bad149d1f2fc4e1ea4795dd # v1.15
       with:
         version: ${{ inputs.racket-version }}
@@ -162,5 +187,6 @@ runs:
         if [ "$TOOLCHAIN" = web ]; then
           "$WASI_SDK_PATH/bin/clang" --version | head -1
         fi
+        "$NAGA" --version
         racket --version
         node --version

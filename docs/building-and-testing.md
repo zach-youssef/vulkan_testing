@@ -6,7 +6,9 @@ The Vulkan SDK, `glslc`, GLFW and GLM for the wrapper; Racket 8 (`racket` and `r
 Scribble, as in the main distribution) for ZGAL; Node 24 (which runs TypeScript) and npm for ZGAL's
 web backend, plus `curl` and `tar`, with which the build downloads the pinned
 [wasi-sdk](https://github.com/WebAssembly/wasi-sdk) the first time it builds the web runtime's image
-decoder (see below). Development happens on an Apple M4 with MoltenVK
+decoder (see below), and Rust's `cargo` (from [rustup](https://rustup.rs)), with which it builds the
+pinned [naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga-cli) the first time ZGAL's tests need
+it (below). Development happens on an Apple M4 with MoltenVK
 ([wrapper.md](wrapper.md#the-development-device) has what that means for code).
 
 `zgal.mk` finds the Vulkan headers and loader in `$VULKAN_SDK` when it's set (the SDK's
@@ -24,6 +26,13 @@ names an installed one; without it, `web/decode/decode.mk` downloads and checks 
 into `.cache/wasi-sdk-<version>` (git-ignored, about 600 MB unpacked, kept by `make clean`; each
 worktree has its own, so point `WASI_SDK_PATH` at one to share it). Nothing is installed
 system-wide.
+
+ZGAL's web backend translates GLSL shaders to WGSL through `glslc` and naga (`naga-cli`, a Rust
+crate), whose version `.github/actions/setup-zgal/naga.sh` pins (setup-zgal builds the same in CI,
+cached by version). `NAGA` names an installed binary (a path, or a name on `PATH`); without it,
+`zgal.mk` builds the pinned version with `cargo` into `.cache/naga-<version>/bin/naga` (about a
+minute, once per worktree, kept by `make clean`) the first time `make test-dsl` needs it, or `make
+naga` does.
 
 ## Make targets
 
@@ -58,6 +67,8 @@ system-wide.
   (no GPU; [web.md](web.md#the-image-decoder)); `make test-web` runs it first. `make
   build/web-decode/stb_image.wasm` builds the decoder, and `make wasi-sdk` only installs its
   compiler.
+- `make naga`: builds naga ([Requirements](#requirements)) if it isn't installed; `make test-dsl`
+  does too.
 - `make test-tools`: tests the pre-push hook and the GPU lock (`tests/tools/hook-test.sh`, no GPU
   needed; `make test` includes it).
 - `make run-bench`: times ZGAL's library kernels (`tools/bench`; see "Profiling").
@@ -101,7 +112,7 @@ commit; the hook blocks the push instead:
 
 | Check | Where | Runs | Device |
 |---|---|---|---|
-| `cpu` | [cpu.yml](../.github/workflows/cpu.yml) | builds the examples and both test programs; `make test-cpu`, `make test-dsl`, `make test-tools` | no Vulkan tests; Dawn on lavapipe checks ZGAL's WGSL |
+| `cpu` | [cpu.yml](../.github/workflows/cpu.yml) | builds the examples and both test programs; `make test-cpu`, `make test-dsl`, `make test-tools` | no Vulkan tests; Dawn on lavapipe checks ZGAL's WGSL (naga's too) |
 | `web` | [web.yml](../.github/workflows/web.yml) | `make test-web BROWSERS=chromium` | Dawn under Node on lavapipe; Chromium's headless shell on SwiftShader |
 | `gpu` | [gpu.yml](../.github/workflows/gpu.yml) | `make test-gpu`, `make -k test-examples` | lavapipe, validation and synchronization validation required |
 | pre-push hook | [tools/git-hooks/pre-push](../tools/git-hooks/pre-push), on the Mac | builds, then `make -k test-gpu test-examples test-web BROWSERS="chromium firefox"` | MoltenVK; Dawn on Metal; Chromium and Firefox |
@@ -109,7 +120,7 @@ commit; the hook blocks the push instead:
 The CI jobs run on Ubuntu 24.04 with clang++. In web.yml, `CHROMIUM` names the headless shell, so
 a missing one fails the pages rather than skipping them; Firefox is skipped, as it has no WebGPU on
 Linux. Commits from before web.yml or gpu.yml existed get no `web` or `gpu` check (the commits job
-leaves them out). The toolchain (apt packages, the LunarG SDK, ccache, Racket, Node) comes from
+leaves them out). The toolchain (apt packages, the LunarG SDK, ccache, naga, Racket, Node) comes from
 `.github/actions/setup-zgal`, whose `toolchain` input is `native` or `web` (no SDK or ccache, but
 wasi-sdk, as `WASI_SDK_PATH`, for the image decoder, and clang for its native test helper).
 
@@ -156,6 +167,8 @@ the Mac's comes from a local run (`make test-gpu`, then `make approve-screenshot
   `$(origin CXX)` (`default`, or `undefined` under `make -R`) instead.
 - ZGAL's toolchain tests run `ZGAL_CXX` as a single program, so CI puts ccache first on `PATH` as a
   `clang++` symlink rather than setting `CXX="ccache clang++"`.
+- `raco test` runs from `dsl/tests`, so the paths `ZGAL_TEST_ENV` passes (include directories,
+  `ZGAL_WEB`, `ZGAL_NAGA`) are absolute; a tool given by name is found on `PATH`.
 - Each commit's job takes its actions from the pushed tip's `.github` (checked out into `.ci`), as
   older commits have none or older ones.
 - Only jobs that run no code from the commits, npm or third-party actions hold a token that can post
