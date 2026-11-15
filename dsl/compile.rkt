@@ -95,7 +95,7 @@
                 (or (read-body (shader-path s))
                     (zgal-error 'shader-not-found (shader-loc s) "shader body ~a doesn't exist" (shader-path s)))))
          (define out-path (join shader-dir (shader-name s)))
-         (output out-path (emit-shader prog m s body out-path #:glsl-files glsl-files))))
+         (output out-path (emit-shader prog m s body out-path #:interface 'bindless #:glsl-files glsl-files))))
      (define main
        (if (program-main prog)
            (let ([path (join header-dir (main-file-name source))])

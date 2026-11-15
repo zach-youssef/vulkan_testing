@@ -2604,7 +2604,7 @@ under Node; next is what graphs on the web can't use yet.
   (list @tt{dsl/lib/kernels/} "the compute library's materials, which graph.rkt instantiates (parse.rkt reads them)")
   (list @tt{dsl/private/errors.rkt} "the error catalog")
   (list @tt{dsl/private/writer.rkt} "writing generated code with #line directives")
-  (list @tt{dsl/private/glsl.rkt} "the GLSL backend")
+  (list @tt{dsl/private/glsl.rkt} "the GLSL backend: a shader with the bindless interface, or the web one")
   (list @tt{dsl/private/wgsl.rkt} "the WGSL backend (WebGPU)")
   (list @tt{dsl/private/ts.rkt} "the TypeScript backend (WebGPU): structs and materials")
   (list @tt{dsl/private/ts-graph.rkt} "the TypeScript backend for graphs")
