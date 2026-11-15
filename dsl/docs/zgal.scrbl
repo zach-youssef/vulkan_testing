@@ -5,7 +5,7 @@
 
 @title{ZGAL: shaders, render graphs and apps for the Vulkan wrapper}
 
-ZGAL (Zach's Graphics Application Language) is a small language for a Vulkan application's
+ZGAL (Zoey's Graphics Application Language) is a small language for a Vulkan application's
 shaders and render graphs. A @tt{.zgal} file declares a material's interface (the structs in its
 buffers, its bindings and push constants, its vertex format, what one stage passes to the next)
 once, and its shaders in an expression language. The compiler generates both sides: complete GLSL

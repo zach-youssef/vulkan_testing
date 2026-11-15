@@ -1,6 +1,6 @@
 # ZGAL
 
-ZGAL (Zach's Graphics Application Language) declares materials, their shaders, the render graphs
+ZGAL (Zoey's Graphics Application Language) declares materials, their shaders, the render graphs
 using them and the apps running a graph, in `.zgal` files that compile to C++ and GLSL for the
 wrapper ([wrapper.md](wrapper.md)) or to TypeScript and WGSL for WebGPU ([web.md](web.md)). Its
 compiler is Racket (`dsl/`).
