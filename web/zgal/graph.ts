@@ -131,8 +131,47 @@ export class Uniform<T> {
 export type Bound =
   | { readonly image: GraphImage }
   | { readonly buffer: GraphBuffer }
-  | { readonly sampler: GPUSampler; readonly filtering: boolean }
+  | { readonly sampler: Sampler }
   | { readonly uniform: Uniform<any> };
+
+// A graph's sampler, as the ZGAL graph describes it, and the GPUSamplers materials bind it as:
+// WebGPU's samplers each do one thing (see material.ts's BindingKind), so a binding gets the one
+// it needs, made when first bound
+export class Sampler {
+  readonly name: string;
+  readonly descriptor: GPUSamplerDescriptor;
+  // Whether it filters (a linear filter): what WebGPU counts as a filtering sampler
+  readonly filtering: boolean;
+  private readonly device: GPUDevice;
+  private described: GPUSampler | null = null;
+  private nearest: GPUSampler | null = null;
+  private comparing: GPUSampler | null = null;
+  constructor(device: GPUDevice, name: string, descriptor: GPUSamplerDescriptor) {
+    this.device = device;
+    this.name = name;
+    this.descriptor = descriptor;
+    this.filtering = descriptor.magFilter === 'linear' || descriptor.minFilter === 'linear' || descriptor.mipmapFilter === 'linear';
+  }
+
+  // As described, without its comparison (a 'sampler' binding)
+  asDescribed(): GPUSampler {
+    const { compare: _, ...descriptor } = this.descriptor;
+    return (this.described ??= this.device.createSampler({ label: this.name, ...descriptor }));
+  }
+
+  // Filtering nothing, otherwise as described (a 'depth-sampler' binding, and a 'sampler' one
+  // where the layout can't allow filtering); anisotropy needs linear filters
+  nonFiltering(): GPUSampler {
+    const { compare: _, maxAnisotropy: __, ...descriptor } = this.descriptor;
+    return (this.nearest ??= this.device.createSampler({ label: `${this.name} non-filtering`, ...descriptor, magFilter: 'nearest', minFilter: 'nearest', mipmapFilter: 'nearest' }));
+  }
+
+  // Comparing depths with its #:compare (a 'comparison-sampler' binding)
+  comparison(material: string): GPUSampler {
+    if (!this.descriptor.compare) throw new Error(`material ${material} compares depths with sampler ${this.name}, which has no #:compare`);
+    return (this.comparing ??= this.device.createSampler({ label: `${this.name} comparison`, ...this.descriptor }));
+  }
+}
 
 export interface PipelineOptions {
   readonly topology?: GPUPrimitiveTopology;
@@ -167,27 +206,39 @@ export class MaterialInstance {
     this.invocations = invocations;
     this.options = options;
     for (const b of desc.bindings) {
-      if (!(b.name in bindings)) throw new Error(`material ${desc.name}'s binding ${b.name} isn't given`);
+      if (!(b.resource in bindings)) throw new Error(`material ${desc.name}'s binding ${b.resource} isn't given`);
     }
   }
 
+  // Why a plain sampler of this material can't filter, or null: it samples a depth image without
+  // comparing with it (a texture_2d<f32>, which WebGPU samples only with non-filtering samplers; a
+  // depth texture is filtered by hand) or a 32-bit format the device can't filter. Which sampler
+  // samples which texture isn't described, so every plain sampler is non-filtering then
+  unfilterable(): string | null {
+    const filterable = this.graph.context.hasFeature('float32-filterable');
+    let format: string | null = null;
+    for (const b of this.desc.bindings) {
+      const bound = this.bindings[b.resource];
+      if (!('image' in bound) || (b.kind !== 'texture' && b.kind !== 'texture-array') || b.depth) continue;
+      if (isDepthFormat(bound.image.format)) return `samples depth image ${bound.image.name} without comparing with it, which the web does only with a nearest sampler`;
+      if (!filterable && /32float|32uint|32sint/.test(bound.image.format)) format ??= `samples ${bound.image.name}, whose ${bound.image.format} this device can't filter (no float32-filterable)`;
+    }
+    return format;
+  }
+
+  // The textures' formats, and whether each plain sampler filters (none does where a texture can't
+  // be filtered: unfilterable())
   formats(): BoundFormats {
     const textures: Record<string, GPUTextureFormat> = {};
     const samplers: Record<string, 'filtering' | 'non-filtering'> = {};
-    let unfilterable = false;
-    const filterable = this.graph.context.hasFeature('float32-filterable');
+    const unfilterable = this.unfilterable() !== null;
     for (const b of this.desc.bindings) {
-      const bound = this.bindings[b.name];
-      if ('image' in bound) {
-        textures[b.name] = bound.image.format;
-        if ((b.kind === 'texture' || b.kind === 'texture-array') && !b.depth && (isDepthFormat(bound.image.format) || (!filterable && /32float|32uint|32sint/.test(bound.image.format)))) {
-          unfilterable = true;
-        }
-      }
+      const bound = this.bindings[b.resource];
+      if ('image' in bound) textures[b.name] = bound.image.format;
     }
     for (const b of this.desc.bindings) {
-      const bound = this.bindings[b.name];
-      if ('sampler' in bound) samplers[b.name] = unfilterable || !bound.filtering ? 'non-filtering' : 'filtering';
+      const bound = this.bindings[b.resource];
+      if (b.kind === 'sampler' && 'sampler' in bound) samplers[b.name] = unfilterable || !bound.sampler.filtering ? 'non-filtering' : 'filtering';
     }
     return { textures, samplers };
   }
@@ -333,7 +384,7 @@ export class MaterialBinder {
     const desc = instance.desc;
     const key = desc.bindings
       .map((b) => {
-        const bound = instance.bindings[b.name];
+        const bound = instance.bindings[b.resource];
         if ('image' in bound) return `i${bound.image.generation}`;
         if ('buffer' in bound) return `b${bound.buffer.generation}`;
         if ('uniform' in bound) return `u${bound.uniform.resource.generation}`;
@@ -341,12 +392,19 @@ export class MaterialBinder {
       })
       .join(',');
     if (!this.group || key !== this.key) {
+      const formats = instance.formats();
       const entries: GPUBindGroupEntry[] = desc.bindings.map((b, i) => {
-        const bound = instance.bindings[b.name];
+        const bound = instance.bindings[b.resource];
         if ('image' in bound) return { binding: i, resource: graph.viewOf(bound.image, b.kind === 'texture-array' ? '2d-array' : '2d') };
         if ('buffer' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.buffer) } };
         if ('uniform' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.uniform.resource) } };
-        return { binding: i, resource: bound.sampler };
+        const { sampler } = bound;
+        if (b.kind === 'comparison-sampler') return { binding: i, resource: sampler.comparison(desc.name) };
+        if (b.kind === 'depth-sampler') return { binding: i, resource: sampler.nonFiltering() };
+        if (formats.samplers[b.name] === 'non-filtering' && sampler.filtering) {
+          throw new Error(`${this.nodeName}: material ${desc.name} ${instance.unfilterable()}, and sampler ${sampler.name} filters: give it nearest filters (#:filter and #:mipmap)`);
+        }
+        return { binding: i, resource: sampler.asDescribed() };
       });
       if (desc.push) entries.push({ binding: desc.push.binding, resource: { buffer: this.pushBuffer! } });
       this.group = graph.context.device.createBindGroup({ label: this.nodeName, layout: instance.groupLayout(), entries });
@@ -602,8 +660,8 @@ export class RenderGraph {
     return this.importBuffer(name, element, buffer, true);
   }
 
-  sampler(descriptor: GPUSamplerDescriptor): GPUSampler {
-    return this.context.device.createSampler(descriptor);
+  sampler(name: string, descriptor: GPUSamplerDescriptor): Sampler {
+    return new Sampler(this.context.device, name, descriptor);
   }
 
   uniform<T>(name: string, type: Type<T>, source: FrameSource<T>): Uniform<T> {

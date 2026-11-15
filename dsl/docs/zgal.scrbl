@@ -2220,10 +2220,11 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
 @subsection{Shaders}
 
 @itemlist[
- @item{A material's bindings are a bind group of their own (group 0): the @italic{i}th binding is
-       @tt{@"@"binding(i)}. Its push constants are a uniform buffer after them (@tt{zgalPush}, of
-       struct @tt{ZgalPush}), so they're scalars, vectors and matrices: uniform buffers pad arrays
-       and structs differently. A module declares only the bindings its stage uses.}
+ @item{A material's bindings are a bind group of their own (group 0), numbered in the material's
+       order (a sampler bound as several variants, below, takes several numbers). Its push
+       constants are a uniform buffer after them (@tt{zgalPush}, of struct @tt{ZgalPush}), so
+       they're scalars, vectors and matrices: uniform buffers pad arrays and structs differently. A
+       module declares only the bindings its stage uses.}
  @item{WGSL has no 8- and 16-bit integers, and has atomics only on @tt{atomic<u32>} variables. A
        buffer or shared variable holding small integers, or one that atomics act on, is declared as
        32-bit words and read and written through generated functions at its std430 offsets, so the
@@ -2236,9 +2237,16 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
  @item{Subgroup scans other than adds and multiplies are shuffles, ballot counts count bits, and
        @racket[subgroupId] and @racket[subgroupCount] assume invocations form subgroups in order of
        their local index.}
- @item{A texture compared with depths (@racket[sample-compare]) is a depth texture, and its sampler a
-       comparison sampler, which only compares: sampling the texture gives @tt{(depth, 0, 0, 1)}, as
-       Vulkan does, but with another sampler.}
+ @item{A texture compared with depths (@racket[sample-compare], in any of the material's stages)
+       is a depth texture: sampling it gives @tt{(depth, 0, 0, 1)}, as Vulkan does. WebGPU's
+       samplers each do one thing (a comparison sampler only compares, and a depth texture is
+       sampled only with a non-filtering sampler), so a ZGAL sampler @tt{s} is bound as the variants
+       the stage uses: @tt{s}, as the graph describes it, sampling other textures;
+       @tt{zgalDepth_s}, a non-filtering one sampling depth textures; and @tt{zgalCompare_s}, a
+       comparison sampler. The runtime makes them from the one sampler (comparing needs its
+       @racket[#:compare]). A function's sampler parameter is likewise the variants the function
+       uses, and a function given a depth texture for a parameter it only samples is specialized
+       for it (@tt{zgalDepth_0_f} for its first parameter).}
  @item{A storage image's texel format is part of its WGSL type: modules are written with
        @tt{rgba8unorm}.}
  @item{WebGPU's vertex shaders can't write: buffers and storage images a vertex shader uses must be
@@ -2682,13 +2690,15 @@ This document is part of the language: change it in the same commit as the compi
        @tt{npm ci}), and the golden GLSL bodies through glslc and naga to WGSL that Dawn accepts,
        with glslc's and naga's errors mapped to the sources.}
  @item{@tt{dsl/tests/web-test.rkt}: what compiling for the web reports that Vulkan allows,
-       that functions with @tt{image2D} parameters reach WGSL inlined, and the web interface of
+       that functions with @tt{image2D} parameters reach WGSL inlined, how a sampler that samples
+       and compares, and a texture compared in one stage, are declared, and the web interface of
        GLSL bodies' shaders and what it refuses.}
  @item{@tt{web/tests}: @tt{web.zgal} and @tt{apps.zgal} compiled to TypeScript and WGSL and run on Dawn under Node
        (@tt{make test-web}, which type checks it first): the generated WGSL computes what the GLSL
        would (layouts of small integers, shared memory, emulated atomics and subgroup scans,
        expressions WGSL spells differently, draws with depth tests, functions storing into the
-       images they're given), and generated graphs run as
+       images they're given, a depth image sampled and compared with one sampler), and generated
+       graphs run as
        the C++ ones do (loops, conditions, enables and once nodes, per-frame inputs, uploads,
        copies, buffer files (also conditional ones), cpu nodes (also reading and writing imported
        buffers, in graph order)

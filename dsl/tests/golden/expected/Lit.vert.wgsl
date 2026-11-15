@@ -28,7 +28,7 @@ struct ZgalPush {
     transform: mat4x4f,
     layer: u32,
 }
-@group(0) @binding(5) var<uniform> zgalPush: ZgalPush;
+@group(0) @binding(6) var<uniform> zgalPush: ZgalPush;
 
 struct ZgalVertexOutput {
     @builtin(position) zgalPosition: vec4f,

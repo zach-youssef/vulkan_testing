@@ -206,3 +206,71 @@
                  "8- and 16-bit")
   (check-refused "(struct P (a uint))\n(compute-material C (shaders \"c.comp\") (workgroup 1) (push (p P)))"
                  "push constant"))
+
+(test-case "A sampler sampling and comparing is bound as the variants WebGPU's samplers need, and functions are specialized for the depth textures they're given"
+  (define wgsl
+    (web-shader
+     "(define (both [map : texture2D] [s : sampler] [uv : vec2]) : vec2
+        (vec2 (.x (sample map s uv)) (sample-compare map s uv 0.5)))
+      (define (red [t : texture2D] [s : sampler] [uv : vec2]) : float
+        (.x (sample t s uv)))
+      (compute-material Shade
+        (workgroup 1)
+        (bindings (shadow texture) (smp sampler) (picture texture) (results (buffer-array vec4)))
+        (push (uv vec2))
+        (compute
+          (write! (at results 0)
+                  (vec4 (both shadow smp uv) (red shadow smp uv) (red picture smp uv)))))"
+     "Shade.comp.wgsl"))
+  (with-check-info (['wgsl wgsl])
+    ;; The variants, in the material's order, then the push constants
+    (check-true (string-contains? wgsl "@group(0) @binding(0) var shadow: texture_depth_2d;"))
+    (check-true (string-contains? wgsl "@group(0) @binding(1) var smp: sampler;"))
+    (check-true (string-contains? wgsl "@group(0) @binding(2) var zgalDepth_smp: sampler;"))
+    (check-true (string-contains? wgsl "@group(0) @binding(3) var zgalCompare_smp: sampler_comparison;"))
+    (check-true (string-contains? wgsl "@group(0) @binding(4) var picture: texture_2d<f32>;"))
+    (check-true (string-contains? wgsl "@group(0) @binding(6) var<uniform> zgalPush: ZgalPush;"))
+    ;; A function's sampler is the variants it uses; one only sampling is specialized for a depth
+    ;; texture (its sampler then the non-filtering variant), the colour texture's keeps its name
+    (check-true (string-contains? wgsl "fn both(map: texture_depth_2d, zgalDepth_s: sampler, zgalCompare_s: sampler_comparison, uv: vec2f) -> vec2f"))
+    (check-true (string-contains? wgsl "textureSampleCompareLevel(map, zgalCompare_s, uv, 0.5f)"))
+    (check-true (string-contains? wgsl "fn red(t: texture_2d<f32>, s: sampler, uv: vec2f) -> f32"))
+    (check-true (string-contains? wgsl "fn zgalDepth_0_red(t: texture_depth_2d, zgalDepth_s: sampler, uv: vec2f) -> f32"))
+    (check-true (string-contains? wgsl "both(shadow, zgalDepth_smp, zgalCompare_smp, zgalPush.uv)"))
+    (check-true (string-contains? wgsl "zgalDepth_0_red(shadow, zgalDepth_smp, zgalPush.uv)"))
+    (check-true (string-contains? wgsl "red(picture, smp, zgalPush.uv)"))))
+
+(test-case "Only the function variants called are emitted"
+  (define wgsl
+    (web-shader
+     "(define (red [t : texture2D] [s : sampler] [uv : vec2]) : float
+        (.x (sample t s uv)))
+      ;; Compares its map, so it gives red a depth texture
+      (define (shadowed [map : texture2D] [s : sampler] [uv : vec2]) : float
+        (* (red map s uv) (sample-compare map s uv 0.5)))
+      (compute-material Shade
+        (workgroup 1)
+        (bindings (shadow texture) (smp sampler) (results (buffer-array float)))
+        (compute (write! (at results 0) (shadowed shadow smp (vec2 0.5)))))"
+     "Shade.comp.wgsl"))
+  (with-check-info (['wgsl wgsl])
+    (check-true (string-contains? wgsl "fn zgalDepth_0_red(t: texture_depth_2d, zgalDepth_s: sampler, "))
+    (check-false (string-contains? wgsl "fn red("))
+    (check-regexp-match #rx"fn shadowed\\(map: texture_depth_2d, zgalDepth_s: sampler, .*zgalCompare_s: sampler_comparison, uv: vec2f\\) -> f32" wgsl)
+    (check-regexp-match #rx"zgalDepth_0_red\\(map, zgalDepth_s, .*uv\\)" wgsl)))
+
+(test-case "A texture compared in one stage is a depth texture in the others"
+  (define wgsl
+    (web-shader
+     "(graphics-material Lit
+        (bindings (shadow texture) (smp sampler))
+        (varyings (height float))
+        (outputs (color vec4))
+        (vertex (results #:position (vec4 0.0 0.0 0.0 1.0) #:height (.x (sample shadow smp (vec2 0.5)))))
+        (fragment (vec4 (sample-compare shadow smp (vec2 0.5) height))))"
+     "Lit.vert.wgsl"))
+  (with-check-info (['wgsl wgsl])
+    (check-true (string-contains? wgsl "var shadow: texture_depth_2d;"))
+    (check-true (string-contains? wgsl "var zgalDepth_smp: sampler;"))
+    (check-false (string-contains? wgsl "zgalCompare_smp"))
+    (check-true (string-contains? wgsl "vec4f(textureSampleLevel(shadow, zgalDepth_smp, vec2f(0.5f), 0i), 0.0f, 0.0f, 1.0f).x"))))

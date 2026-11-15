@@ -374,3 +374,85 @@
   (dispatch bumpAfter bump #:push ((amount after)) #:invocations (4))
   (readback readSums sums)
   (readback readResults results))
+
+;; A depth image both sampled and compared, with one sampler doing both (WebGPU's samplers each do
+;; one thing, so the sampler is bound as its variants): directly, through a function doing both,
+;; and through one that only samples, given the depth image and a colour image in turn
+(graphics-material Slope
+  (outputs)
+  (vertex
+   ;; Depth rising along x and, twice as fast, y
+   (let* ([at (vec2 (float (bitand (shl vertexIndex 1) 2)) (float (bitand vertexIndex 2)))])
+     (results #:position (vec4 (- (* at 2.0) 1.0) (* 0.25 (+ at.x (* 2.0 at.y))) 1.0))))
+  (fragment))
+
+(define (lit [map : texture2D] [s : sampler] [uv : vec2] [reference : float]) : vec2
+  (vec2 (.x (sample map s uv)) (sample-compare map s uv reference)))
+
+(define (red [picture : texture2D] [s : sampler] [uv : vec2]) : float
+  (.x (sample picture s uv)))
+
+(compute-material Shade
+  (workgroup 1)
+  (bindings
+   (shadow texture)
+   (shadowSampler sampler)
+   (picture texture)
+   (points (buffer-array vec4))      ; uv and a reference depth
+   (samples (buffer-array vec4))     ; sampled, compared, and both through lit
+   (reds (buffer-array vec2)))       ; red through red: of the depth image, and of the picture
+  (compute
+   (let* ([i globalInvocationId.x]
+          [p (at points i)]
+          [both (lit shadow shadowSampler p.xy p.z)])
+     (write! (at samples i) (vec4 (.x (sample shadow shadowSampler p.xy)) (sample-compare shadow shadowSampler p.xy p.z) both.x both.y))
+     (write! (at reds i) (vec2 (red shadow shadowSampler p.xy) (red picture shadowSampler p.xy))))))
+
+(graph Shadows
+  (parameter count uint)
+  (input points (data vec4))
+  (upload pointBuffer points)
+  (image shadowMap d32 (fixed 8 8) #:frames shared)
+  (target slope (depth shadowMap #:clear 1 #:store store))
+  (material sloping Slope)
+  (draw drawSlope slope sloping 3)
+  (image picture rgba8 (fixed 2 2) #:frames shared)
+  (buffer pictureTexels uint 4 #:frames shared)
+  (clear fillPicture pictureTexels #:value #xFF4080C0)
+  (copy toPicture pictureTexels picture)
+  (sampler nearest #:filter nearest #:address clamp-to-edge #:compare less)
+  (buffer samples vec4 count #:frames shared)
+  (buffer reds vec2 count #:frames shared)
+  (material shading Shade (shadow shadowMap) (shadowSampler nearest) (picture picture) (points pointBuffer)
+            (samples samples) (reds reds) #:invocations (count))
+  (dispatch shade shading)
+  (readback readSamples samples)
+  (readback readReds reds))
+
+;; What the runtime refuses: comparing with a sampler without #:compare, and sampling a depth
+;; image, without comparing with it, with a linear sampler (the web samples such an image, a
+;; texture_2d<f32>, only with non-filtering samplers)
+(graph Uncompared
+  (parameter count uint)
+  (input points (data vec4))
+  (upload pointBuffer points)
+  (image shadowMap d32 (fixed 8 8) #:frames shared)
+  (image picture rgba8 (fixed 2 2) #:frames shared)
+  (sampler plain #:filter nearest)
+  (buffer samples vec4 count #:frames shared)
+  (buffer reds vec2 count #:frames shared)
+  (material shading Shade (shadow shadowMap) (shadowSampler plain) (picture picture) (points pointBuffer)
+            (samples samples) (reds reds) #:invocations (count))
+  (dispatch shade shading))
+
+(compute-material Peek
+  (workgroup 1)
+  (bindings (map texture) (s sampler) (results (buffer-array float)))
+  (compute (write! (at results 0) (.x (sample map s (vec2 0.5))))))
+
+(graph PeekDepth
+  (image shadowMap d32 (fixed 8 8) #:frames shared)
+  (sampler linear)
+  (buffer results float 1 #:frames shared)
+  (material peeking Peek (map shadowMap) (s linear) (results results) #:invocations (1))
+  (dispatch peek peeking))

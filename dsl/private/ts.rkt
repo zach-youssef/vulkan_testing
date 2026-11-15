@@ -1,8 +1,8 @@
 #lang racket/base
 ;; The TypeScript backend (the web, with WebGPU): a module per .zgal file, name.zgal.ts, with its
-;; structs (an interface and their layout), materials (descriptions of their bindings and push
-;; constants, and their WGSL) and graphs, using the runtime in web/zgal (imported as ./zgal/, which
-;; the build copies beside the module).
+;; structs (an interface and their layout), materials (descriptions of their bindings (as WebGPU
+;; binds them: wgsl.rkt's wgsl-binding) and push constants, and their WGSL) and graphs, using the
+;; runtime in web/zgal (imported as ./zgal/, which the build copies beside the module).
 
 (require racket/list
          racket/match
@@ -133,14 +133,14 @@
          (format "  name: ~a," (ts-string (material-name m)))
          "  bindings: [")
    (for/list ([b (in-list bindings)])
-     (format "    { name: ~a, kind: '~a', access: ~a, stages: ~a, depth: ~a },"
-             (ts-string (wgsl-binding-name b)) (wgsl-binding-kind b)
+     (format "    { name: ~a, resource: ~a, kind: '~a', access: ~a, stages: ~a, depth: ~a },"
+             (ts-string (wgsl-binding-name b)) (ts-string (binding-name (wgsl-binding-source b))) (wgsl-binding-kind b)
              (if (wgsl-binding-access b) (format "'~a'" (wgsl-binding-access b)) "null")
              (stages-text b) (if (wgsl-binding-depth? b) "true" "false")))
    (list "  ],")
    (if push
        (append
-        (list (format "  push: { binding: ~a, size: ~a, fields: {" (wgsl-push-binding m) (cdr push)))
+        (list (format "  push: { binding: ~a, size: ~a, fields: {" (wgsl-push-binding bindings) (cdr push)))
         (for/list ([entry (in-list (car push))])
           (format "    ~a: { offset: ~a, type: ~a }," (field-name (car entry)) (cdr entry) (ts-layout-type (field-type (car entry)))))
         (list "  } },"))
@@ -149,7 +149,12 @@
      [(compute)
       (match-define (list x y z) (material-workgroup m))
       (define fallback (hash-ref (program-fallbacks prog) (material-name m) #f))
-      (when (and fallback (not (equal? (wgsl-bindings prog fallback) bindings)))
+      ;; Compared as bound (a binding's source is the variant's own parse of the ZGAL binding)
+      (define (as-bound layout)
+        (for/list ([b (in-list layout)])
+          (list (wgsl-binding-name b) (binding-name (wgsl-binding-source b)) (wgsl-binding-index b) (wgsl-binding-kind b)
+                (wgsl-binding-access b) (wgsl-binding-stages b) (wgsl-binding-depth? b))))
+      (when (and fallback (not (equal? (as-bound (wgsl-bindings prog fallback)) (as-bound bindings))))
         (error 'emit-material "~a's variant without subgroups binds its resources differently" (material-name m)))
       (append
        (list (format "  workgroup: [~a, ~a, ~a]," x y z)

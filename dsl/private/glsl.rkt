@@ -118,9 +118,10 @@
   (define push (material-push m))
   (cond
     [web
-     ;; The push constants: a uniform block at the binding after the bindings'
+     ;; The push constants: a uniform block at the binding after the bindings' (one descriptor per
+     ;; ZGAL binding: a GLSL body's samplers have no variants)
      (unless (null? push)
-       (emit! w (format "layout(std430, set = 0, binding = ~a) uniform ZgalPush {" (wgsl-push-binding m)) #:at (material-loc m))
+       (emit! w (format "layout(std430, set = 0, binding = ~a) uniform ZgalPush {" (wgsl-push-binding (material-bindings m))) #:at (material-loc m))
        (for ([f (in-list push)])
          (emit! w (string-append "    " (declaration (field-type f) (field-name f))) #:at (field-loc f)))
        (emit! w "} materialPush;" #:at (material-loc m)))

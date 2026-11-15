@@ -24,16 +24,17 @@ struct Settings {
 }
 
 @group(0) @binding(0) var shadowMap: texture_depth_2d;
-@group(0) @binding(1) var shadowSampler: sampler_comparison;
+@group(0) @binding(1) var zgalCompare_shadowSampler: sampler_comparison;
 @group(0) @binding(2) var albedo: texture_2d<f32>;
 @group(0) @binding(3) var albedoSampler: sampler;
-@group(0) @binding(4) var picture: texture_storage_2d<rgba8unorm, read>;
+@group(0) @binding(4) var zgalDepth_albedoSampler: sampler;
+@group(0) @binding(5) var picture: texture_storage_2d<rgba8unorm, read>;
 
 struct ZgalPush {
     transform: mat4x4f,
     layer: u32,
 }
-@group(0) @binding(5) var<uniform> zgalPush: ZgalPush;
+@group(0) @binding(6) var<uniform> zgalPush: ZgalPush;
 
 fn zgalRuntime_uint(x: u32) -> u32 {
     return x;
@@ -83,8 +84,8 @@ fn shade(v: vec3f, n: i32, m: mat4x4f) -> vec4f {
     return vec4f(select(zgalMod_float3(v, vec3f(2.0f)), min(v, vec3f(0.5f)), (v < vec3f(0.25f))), (((w.x + s.zgal_loop) + f32(1i << u32(n))) + f32((-2147483647i - 1i))) + max(negativeInfinity(), 0.0f));
 }
 
-fn shadowed(map: texture_depth_2d, s: sampler_comparison, uv: vec2f) -> f32 {
-    return textureSampleCompare(map, s, uv, 0.5f);
+fn shadowed(map: texture_depth_2d, zgalCompare_s: sampler_comparison, uv: vec2f) -> f32 {
+    return textureSampleCompare(map, zgalCompare_s, uv, 0.5f);
 }
 
 struct ZgalFragmentOutput {
@@ -94,8 +95,8 @@ struct ZgalFragmentOutput {
 
 @fragment
 fn main(@location(0) tint: vec4f, @location(1) @interpolate(linear) screen: vec2f, @location(2) @interpolate(flat) id: u32, @builtin(position) zgalPosition: vec4f) -> ZgalFragmentOutput {
-    var lit: f32 = shadowed(shadowMap, shadowSampler, screen);
-    var depth: vec4f = vec4f(textureSample(shadowMap, albedoSampler, screen), 0.0f, 0.0f, 1.0f);
+    var lit: f32 = shadowed(shadowMap, zgalCompare_shadowSampler, screen);
+    var depth: vec4f = vec4f(textureSample(shadowMap, zgalDepth_albedoSampler, screen), 0.0f, 0.0f, 1.0f);
     if (lit < 0.1f) {
         discard;
     }

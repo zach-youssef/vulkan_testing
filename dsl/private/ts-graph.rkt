@@ -325,11 +325,10 @@
        (define mipmap (case (opt 'mipmap) [(nearest) "nearest"] [(linear) "linear"] [else filter]))
        (define address (case (opt 'address) [(mirrored-repeat) "mirror-repeat"] [(clamp-to-edge) "clamp-to-edge"] [else "repeat"]))
        (define anisotropic? (and (not (eq? (opt 'anisotropy) 'no)) (equal? filter "linear") (equal? mipmap "linear")))
-       (line! "    const sampler_~a = graph.sampler({ magFilter: '~a', minFilter: '~a', mipmapFilter: '~a', addressModeU: '~a', addressModeV: '~a', addressModeW: '~a', lodMaxClamp: ~a~a~a });"
-              n filter filter mipmap address address address (number-text (or (opt 'max-lod) 0) (scalar-t 'float))
+       (line! "    const sampler_~a = graph.sampler(~a, { magFilter: '~a', minFilter: '~a', mipmapFilter: '~a', addressModeU: '~a', addressModeV: '~a', addressModeW: '~a', lodMaxClamp: ~a~a~a });"
+              n (ts-string n) filter filter mipmap address address address (number-text (or (opt 'max-lod) 0) (scalar-t 'float))
               (if anisotropic? ", maxAnisotropy: 16" "")
-              (if (opt 'compare) (format ", compare: '~a'" (compare-function (opt 'compare))) ""))
-       (line! "    const filtering_~a = ~a;" n (if (or (equal? filter "linear") (equal? mipmap "linear")) "true" "false"))]
+              (if (opt 'compare) (format ", compare: '~a'" (compare-function (opt 'compare))) ""))]
       [(g-uniform n t source _)
        (line! "    const uniform_~a = graph.uniform(~a, ~a, inputs.~a);" n (ts-string n) (ts-layout-type t) source)]
       [(g-image n f extent _ when _)
@@ -404,7 +403,7 @@
                      ['array (if (list? resource)
                                  (format "{ image: array_~a_~a }" n (binding-name b))
                                  (format "{ image: ~a }" (resource-ref resource)))]
-                     ['sampler (format "{ sampler: sampler_~a, filtering: filtering_~a }" resource resource)]
+                     ['sampler (format "{ sampler: sampler_~a }" resource)]
                      ['uniform (format "{ uniform: uniform_~a }" resource)]
                      [(or 'image 'import) (format "{ image: ~a }" (resource-ref resource))]
                      [_ (format "{ buffer: ~a }" (resource-ref resource))]))))

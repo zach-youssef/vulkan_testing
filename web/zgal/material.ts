@@ -1,17 +1,25 @@
 // Materials as the generated code describes them, and the pipelines and bind groups the runtime
 // makes from them. WebGPU has no bindless descriptors: a material's bindings are bind group 0
-// (binding i is its i'th binding), and its push constants a uniform buffer after them.
+// (binding i is the i'th of its description's, in the material's order), and its push constants a
+// uniform buffer after them.
 
 import type { Type } from './types.ts';
 
 export type Stage = 'vertex' | 'fragment' | 'compute';
 // A texture-array is an array binding of textures (WebGPU has no arrays of bindings): a
-// texture_2d_array, each layer an element
-export type BindingKind = 'texture' | 'texture-array' | 'sampler' | 'storage-image' | 'buffer' | 'buffer-array';
+// texture_2d_array, each layer an element. WebGPU's samplers each do one thing, so a ZGAL sampler
+// is up to three bindings of one resource (a Sampler), the variants its stages use: sampler, as
+// the graph describes it; depth-sampler (zgalDepth_<name>), a non-filtering one sampling depth
+// textures, which WebGPU refuses filtering samplers on; and comparison-sampler
+// (zgalCompare_<name>), comparing depths
+export type BindingKind = 'texture' | 'texture-array' | 'sampler' | 'depth-sampler' | 'comparison-sampler' | 'storage-image' | 'buffer' | 'buffer-array';
 export type Access = 'read' | 'write' | 'read-write';
 
 export interface BindingDesc {
+  // Its name in the material's WGSL and its description
   readonly name: string;
+  // The ZGAL binding it's bound from (the name a graph gives a resource for)
+  readonly resource: string;
   readonly kind: BindingKind;
   readonly access: Access | null;
   // The stages using it
@@ -95,7 +103,8 @@ export function isDepthFormat(f: GPUTextureFormat): boolean {
 }
 
 // What a material's bindings are bound to, as far as its pipeline cares: the formats of its
-// textures and storage images
+// textures and storage images, and whether its samplers (the plain ones: depth and comparison
+// samplers are what they are) filter
 export interface BoundFormats {
   readonly textures: Readonly<Record<string, GPUTextureFormat>>;
   readonly samplers: Readonly<Record<string, 'filtering' | 'non-filtering'>>;
@@ -122,7 +131,11 @@ export function layoutEntries(device: GPUDevice, m: MaterialDesc, formats: Bound
         return { binding: i, visibility, texture: { sampleType, viewDimension: b.kind === 'texture' ? '2d' : '2d-array' } };
       }
       case 'sampler':
-        return { binding: i, visibility, sampler: { type: b.depth ? 'comparison' : (formats.samplers[b.name] ?? 'filtering') } };
+        return { binding: i, visibility, sampler: { type: formats.samplers[b.name] ?? 'filtering' } };
+      case 'depth-sampler':
+        return { binding: i, visibility, sampler: { type: 'non-filtering' } };
+      case 'comparison-sampler':
+        return { binding: i, visibility, sampler: { type: 'comparison' } };
       case 'storage-image': {
         const format = formats.textures[b.name];
         if (b.access !== 'read' && b.access !== 'write' && format && !readWriteCore.has(format) && !device.features.has('texture-formats-tier2')) {

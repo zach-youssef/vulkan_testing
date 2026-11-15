@@ -1,8 +1,9 @@
 #lang racket/base
 ;; The WGSL backend (WebGPU): one module per material shader. WebGPU has no bindless descriptors, so
-;; a material's bindings are a bind group of their own (group 0, binding i for the material's i'th
-;; binding) and its push constants a uniform buffer after them (the TypeScript runtime gives each
-;; node's push constants their own offset in it).
+;; a material's bindings are a bind group of their own (group 0, in the material's order, a sampler
+;; used in several ways being several bindings: see wgsl-binding) and its push constants a uniform
+;; buffer after them (the TypeScript runtime gives each node's push constants their own offset in
+;; it).
 ;;
 ;; WGSL has no 8- or 16-bit integers, and atomics only on atomic<u32> and atomic<i32> variables. A
 ;; buffer or shared variable holding small integers, or one that atomics act on, is declared as
@@ -109,29 +110,68 @@
 ;; ---------------------------------------------------------------------------------------------
 ;; Bindings and push constants, as the runtime lays out the bind group
 
-;; A binding as WebGPU binds it. index: its @binding. kind: 'texture 'texture-array 'sampler
+;; A binding as WebGPU binds it. name: its name in the material's description and (spelled by
+;; wgsl-name for a binding's own name) in modules. source: the ZGAL binding it binds. index: its
+;; @binding. kind: 'texture 'texture-array 'sampler 'depth-sampler 'comparison-sampler
 ;; 'storage-image 'buffer 'buffer-array ('texture-array: an array binding of textures, which WebGPU
-;; has no arrays of bindings for, as a texture_2d_array whose layers are its elements). access: 'read 'write 'read-write (buffers, storage images) or #f.
-;; stages: the stages using it ('vertex 'fragment 'compute). depth?: a texture sampled with a
-;; comparison (texture_depth_2d) or a comparison sampler.
-(struct wgsl-binding (name index kind access stages depth?) #:transparent)
+;; has no arrays of bindings for, as a texture_2d_array whose layers are its elements). access:
+;; 'read 'write 'read-write (buffers, storage images) or #f. stages: the stages using it ('vertex
+;; 'fragment 'compute). depth?: a texture compared with depths (texture_depth_2d) or a comparison
+;; sampler.
+;;
+;; WebGPU's samplers each do one thing, so a ZGAL sampler s is up to three bindings, the variants
+;; its stages use (sampler-variants): s ('sample), a sampler as the graph describes it; zgalDepth_s
+;; ('depth), a non-filtering one sampling depth textures, which WebGPU refuses filtering samplers on;
+;; and zgalCompare_s ('compare), a comparison sampler. The runtime binds them from the one
+;; description.
+(struct wgsl-binding (name source index kind access stages depth?) #:transparent)
 
-;; m's bindings in bind group order, with which stages use them and whether they compare depths
-(define (wgsl-bindings prog m)
-  (define uses (for/hash ([s (in-list (material-shaders m))]) (values (shader-stage s) (stage-usage prog m s))))
-  (for/list ([b (in-list (material-bindings m))] [i (in-naturals)])
-    (when (and (eq? (binding-kind b) 'array) (not (eq? (binding-resource-kind b) 'texture)))
-      (web-error (binding-loc b) "WebGPU has no arrays of bindings (descriptor indexing), so ~a can't be an array of ~as (arrays of textures are texture arrays on the web)"
-                 (binding-name b) (binding-resource-kind b)))
-    (define stages
-      (for/list ([s (in-list (material-shaders m))]
-                 #:when (set-member? (usage-bindings (hash-ref uses (shader-stage s))) (binding-name b)))
-        (shader-stage s)))
-    (wgsl-binding (binding-name b) i (if (eq? (binding-kind b) 'array) 'texture-array (binding-kind b)) (binding-access b) stages
-                  (for/or ([u (in-hash-values uses)]) (set-member? (usage-depth u) (binding-name b))))))
+(define sampler-variants '(sample depth compare))
 
-;; The binding index of m's push constants' uniform buffer
-(define (wgsl-push-binding m) (length (material-bindings m)))
+(define (variant-kind v) (case v [(sample) 'sampler] [(depth) 'depth-sampler] [(compare) 'comparison-sampler]))
+
+;; The name of a sampler's variant v (the module's spelling, for a binding or a parameter)
+(define (variant-name name v)
+  (case v
+    [(sample) (wgsl-name name)]
+    [(depth) (string-append "zgalDepth_" name)]
+    [(compare) (string-append "zgalCompare_" name)]))
+
+;; The spelling of a binding in modules
+(define (wgsl-binding-identifier wb)
+  (if (memq (wgsl-binding-kind wb) '(depth-sampler comparison-sampler))
+      (wgsl-binding-name wb)
+      (wgsl-name (wgsl-binding-name wb))))
+
+;; m's bindings in bind group order, with which stages use them and whether they compare depths.
+;; usages: each stage's usage (material-usages)
+(define (wgsl-bindings prog m [usages (material-usages prog m)])
+  (define index -1)
+  (define (next!) (set! index (add1 index)) index)
+  (define (stages-where used?)
+    (for/list ([s (in-list (material-shaders m))] #:when (used? (hash-ref usages (shader-stage s)))) (shader-stage s)))
+  (append*
+   (for/list ([b (in-list (material-bindings m))])
+     (define name (binding-name b))
+     (when (and (eq? (binding-kind b) 'array) (not (eq? (binding-resource-kind b) 'texture)))
+       (web-error (binding-loc b) "WebGPU has no arrays of bindings (descriptor indexing), so ~a can't be an array of ~as (arrays of textures are texture arrays on the web)"
+                  name (binding-resource-kind b)))
+     (define (uses? u v) (set-member? (hash-ref (usage-opaque u) name (set)) v))
+     (define (compared?) (for/or ([u (in-hash-values usages)]) (uses? u 'compare)))
+     (case (binding-kind b)
+       [(sampler)
+        (define variants (for/list ([v (in-list sampler-variants)] #:when (for/or ([u (in-hash-values usages)]) (uses? u v))) v))
+        ;; A sampler no stage uses is still a binding, as every binding is
+        (for/list ([v (in-list (if (null? variants) '(sample) variants))])
+          (wgsl-binding (if (eq? v 'sample) name (variant-name name v)) b (next!) (variant-kind v) #f
+                        (stages-where (λ (u) (uses? u v))) (eq? v 'compare)))]
+       [else
+        (list (wgsl-binding name b (next!) (if (eq? (binding-kind b) 'array) 'texture-array (binding-kind b)) (binding-access b)
+                            (stages-where (λ (u) (set-member? (usage-bindings u) name)))
+                            (compared?)))]))))
+
+;; The binding index of the push constants' uniform buffer, after the bindings of layout
+(define (wgsl-push-binding layout) (length layout))
 
 ;; The uniform layout of m's push constants: (list (cons field offset) ...) and the size (a
 ;; multiple of 16), or #f without push constants. Uniform buffers align vectors as std430 does,
@@ -152,10 +192,11 @@
 ;; ---------------------------------------------------------------------------------------------
 ;; What a shader's body does with the material's variables
 
-;; bindings: the names of the bindings it uses. depth: the textures and samplers it compares
-;; depths with. raw: the buffers and shared variables declared as words (see the top), and
-;; atomic: those of them that are atomic words.
-(struct usage (bindings depth raw atomic) #:transparent)
+;; bindings: the names of the bindings it uses. opaque: how it uses its textures and samplers
+;; (opaque-uses). functions: the variants of functions it calls and their uses (function-uses).
+;; raw: the buffers and shared variables declared as words (see the top), and atomic: those of
+;; them that are atomic words.
+(struct usage (bindings opaque functions raw atomic) #:transparent)
 
 (define (body-of s)
   (unless (zgal-shader? s)
@@ -175,11 +216,103 @@
 ;; Whether memory of type t holds small integers
 (define (holds-small? t) (pair? (small-integer-kinds-in t)))
 
-(define (stage-usage prog m s)
-  (define body (body-of s))
+;; Each stage's usage of m: stage -> usage. A texture any stage compares is a depth texture in all
+;; of them (its binding is one)
+(define (material-usages prog m)
+  (define functions (program-function-table prog))
+  (define bodies (for/list ([s (in-list (material-shaders m))]) (cons (shader-stage s) (body-of s))))
+  (define compared
+    (for/fold ([names (set)]) ([b (in-list bodies)])
+      (set-union names (compared-names (cdr b) functions (make-hash)))))
+  (for/hash ([b (in-list bodies)])
+    (values (car b) (stage-usage (cdr b) functions (λ (name) (set-member? compared name))))))
+
+;; How body uses its textures and samplers (bindings, or a function's parameters), directly or
+;; through the functions it calls: name -> a set of 'sample (a sampler sampling a texture), 'depth
+;; (a sampler sampling a depth texture) and 'compare (a texture compared with depths, or the sampler
+;; comparing). depth-texture?: whether a texture name is a depth texture here (one compared in the
+;; material, or in the function). memo: the memo of function variants (function-uses)
+(define (opaque-uses body functions depth-texture? memo)
+  (define uses (make-hash))
+  (define (use! e variant)
+    (define name (opaque-name e))
+    (when name (hash-update! uses name (λ (vs) (set-add vs variant)) (set))))
+  (for ([e (in-list (subexpressions body))])
+    (match e
+      [(t-texture (or 'sample 'sample-lod) (list t s _ ...) _ _)
+       (use! s (if (depth-texture? (opaque-name t)) 'depth 'sample))]
+      [(t-texture 'sample-compare (list t s _ _) _ _) (use! t 'compare) (use! s 'compare)]
+      [(t-user-call f args _ _)
+       (define d (hash-ref functions f #f))
+       (when (function-decl? d)
+         (define inner (function-uses d (call-signature d args depth-texture? functions memo) functions memo))
+         (for ([p (in-list (function-decl-params d))] [a (in-list args)])
+           (for ([v (in-set (hash-ref inner (car p) (set)))]) (use! a v))))]
+      [_ (void)]))
+  uses)
+
+;; The textures and samplers body compares depths with (not depending on which are depth textures)
+(define (compared-names body functions memo)
+  (for/set ([(name vs) (in-hash (opaque-uses body functions (λ (name) #f) memo))]
+            #:when (set-member? vs 'compare))
+    name))
+
+;; A function is specialized for the depth textures it's given: a call's signature is the texture
+;; parameters getting depth textures, beyond those the function compares (and so takes as depth
+;; textures anyway), sorted. The variant of signature '() is the function's own name
+(define (call-signature d args depth-texture? functions memo)
+  (define compared (function-compared d functions memo))
+  (sort (for/list ([p (in-list (function-decl-params d))] [a (in-list args)]
+                   #:when (and (equal? (cdr p) (opaque-t 'texture2D))
+                               (not (set-member? compared (car p)))
+                               (depth-texture? (opaque-name a))))
+          (car p))
+        string<?))
+
+(define (function-variant-name d signature)
+  (define name (function-decl-name d))
+  (if (null? signature)
+      (wgsl-name name)
+      ;; zgalDepth_ and the positions of the parameters given depth textures, then the name: no
+      ;; program's name starts with zgal, and a sampler variant's name (zgalDepth_s) can't start with
+      ;; a digit after the prefix
+      (format "zgalDepth_~a_~a"
+              (string-join (for/list ([p (in-list (function-decl-params d))] [i (in-naturals)]
+                                      #:when (member (car p) signature))
+                             (number->string i))
+                           "_")
+              name)))
+
+;; The parameters function d compares depths with, memoized in memo under (name . compared). The
+;; search uses a memo of its own: with no depth textures given, it would record variants no call
+;; needs
+(define (function-compared d functions memo)
+  (hash-ref! memo (cons (function-decl-name d) 'compared)
+             (λ () (compared-names (function-decl-body d) functions (make-hash)))))
+
+;; The variant of function d with a signature: its uses of its parameters (opaque-uses), memoized
+;; in memo under (name . signature), so the memo's keys with a list signature are the
+;; variants a body needs
+(define (function-uses d signature functions memo)
+  (hash-ref! memo (cons (function-decl-name d) signature)
+             (λ ()
+               (define depth (set-union (function-compared d functions memo) (list->set signature)))
+               (opaque-uses (function-decl-body d) functions (λ (name) (set-member? depth name)) memo))))
+
+;; The signatures of function `name`'s variants a usage needs, sorted ('() when none, as a
+;; function a constant calls)
+(define (variant-signatures u name)
+  (define signatures
+    (for/list ([k (in-hash-keys (usage-functions u))] #:when (and (equal? (car k) name) (list? (cdr k)))) (cdr k)))
+  (if (null? signatures)
+      '(())
+      (sort signatures string<? #:key (λ (s) (string-join s " ")))))
+
+(define (stage-usage body functions depth-texture?)
   (define all (subexpressions body))
   (define bindings (for/set ([e (in-list all)] #:when (and (t-global? e) (eq? (t-global-kind e) 'binding))) (t-global-name e)))
-  (define depth (depth-names body (program-function-table prog)))
+  (define memo (make-hash))
+  (define opaque (opaque-uses body functions depth-texture? memo))
   (define atomic-targets
     (for/set ([e (in-list all)] #:when (t-atomic? e)) (t-global-name (place-root (t-atomic-place e)))))
   (define raw
@@ -195,25 +328,12 @@
                           (set-member? raw (t-global-name (place-root (t-write-place e))))
                           (needs-read-modify-write? (texpr-type (t-write-place e)) (address-alignment (t-write-place e)))))
       (t-global-name (place-root (t-write-place e)))))
-  (usage bindings depth raw (set-union atomic-targets partial-writes)))
+  (usage bindings opaque memo raw (set-union atomic-targets partial-writes)))
 
 ;; The program's functions and constants by name
 (define (program-function-table prog)
   (for/hash ([d (in-list (program-functions prog))])
     (values (if (function-decl? d) (function-decl-name d) (constant-decl-name d)) d)))
-
-;; The names of the textures and samplers (bindings, or a function's parameters) body compares
-;; depths with, directly or through the functions it calls
-(define (depth-names body functions)
-  (for/fold ([names (set)]) ([e (in-list (subexpressions body))])
-    (match e
-      [(t-texture 'sample-compare (list t s _ _) _ _) (set-add (set-add names (opaque-name t)) (opaque-name s))]
-      [(t-user-call f args _ _)
-       (define d (hash-ref functions f #f))
-       (define inner (if (and d (function-decl-body d)) (depth-names (function-decl-body d) functions) (set)))
-       (for/fold ([names names]) ([p (in-list (if d (function-decl-params d) '()))] [a (in-list args)])
-         (if (and (set-member? inner (car p)) (opaque-name a)) (set-add names (opaque-name a)) names))]
-      [_ names])))
 
 (define (opaque-name e)
   (match e
@@ -298,22 +418,28 @@
 (define (emit-wgsl prog m s #:storage-format [storage-format (λ (b) "rgba8unorm")])
   (define body (body-of s))
   (define stage (shader-stage s))
-  (define u (stage-usage prog m s))
-  (define layout (wgsl-bindings prog m))
+  (define usages (material-usages prog m))
+  (define u (hash-ref usages stage))
+  (define layout (wgsl-bindings prog m usages))
   (define push-layout (wgsl-push-layout m))
   (define functions (program-function-table prog))
   (for ([name (in-list (zgal-shader-uses s))])
     (define d (hash-ref functions name))
     (when (glsl-function-decl? d)
       (web-error (function-decl-loc d) "~a is written in GLSL (extern-glsl), which WebGPU can't use: write it in ZGAL" name)))
-  (define st (make-state stage u m functions))
+  (define depth-bindings
+    (for/set ([wb (in-list layout)] #:when (and (eq? (wgsl-binding-kind wb) 'texture) (wgsl-binding-depth? wb))) (wgsl-binding-name wb)))
+  (define st (make-state stage u m functions depth-bindings))
 
-  ;; The functions and body first, so the helpers and built-ins they need are known
+  ;; The functions (each variant the stage needs) and body first, so the helpers and built-ins they
+  ;; need are known
   (define function-lines
     (append*
      (for/list ([name (in-list (zgal-shader-uses s))])
        (define d (hash-ref functions name))
-       (if (function-decl? d) (emit-function st d) (emit-constant st d)))))
+       (if (function-decl? d)
+           (append* (for/list ([signature (in-list (variant-signatures u name))]) (emit-function st d signature)))
+           (emit-constant st d)))))
   (define main-lines (emit-main st s body))
 
   (define out '())
@@ -334,17 +460,18 @@
 
   ;; Bindings this stage uses, then the push constants
   (line! "")
-  (for ([b (in-list (material-bindings m))] [wb (in-list layout)]
-        #:when (set-member? (usage-bindings u) (binding-name b)))
+  (for ([wb (in-list layout)] #:when (memq stage (wgsl-binding-stages wb)))
+    (define b (wgsl-binding-source wb))
     (line! "@group(0) @binding(~a) var~a ~a: ~a;" (wgsl-binding-index wb)
            (if (memq (binding-kind b) '(buffer buffer-array))
                (format "<storage, ~a>" (if (eq? (binding-access b) 'read) "read" "read_write"))
                "")
-           (wgsl-name (binding-name b))
-           (match (binding-kind b)
+           (wgsl-binding-identifier wb)
+           (match (wgsl-binding-kind wb)
              ['texture (if (wgsl-binding-depth? wb) "texture_depth_2d" "texture_2d<f32>")]
-             ['array "texture_2d_array<f32>"]
-             ['sampler (if (wgsl-binding-depth? wb) "sampler_comparison" "sampler")]
+             ['texture-array "texture_2d_array<f32>"]
+             [(or 'sampler 'depth-sampler) "sampler"]
+             ['comparison-sampler "sampler_comparison"]
              ['storage-image (format "texture_storage_2d<~a, ~a>" (storage-format b)
                                      (case (binding-access b) [(read) "read"] [(write) "write"] [else "read_write"]))]
              [(or 'buffer 'buffer-array)
@@ -358,7 +485,7 @@
     (for ([entry (in-list (car push-layout))])
       (line! "    ~a: ~a," (wgsl-name (field-name (car entry))) (wgsl-type (field-type (car entry)))))
     (line! "}")
-    (line! "@group(0) @binding(~a) var<uniform> zgalPush: ZgalPush;" (wgsl-push-binding m)))
+    (line! "@group(0) @binding(~a) var<uniform> zgalPush: ZgalPush;" (wgsl-push-binding layout)))
   (for ([f (in-list (material-shared m))])
     (line! "var<workgroup> ~a: ~a;" (wgsl-name (field-name f))
            (if (set-member? (usage-raw u) (field-name f))
@@ -376,14 +503,16 @@
 
 ;; ---------------------------------------------------------------------------------------------
 ;; The emitter's state for one module: the stage, what the body does, the helper functions emitted
-;; (by name, with their texts in order), private variables, and whether it uses subgroups and push
-;; constants
+;; (by name, with their texts in order), private variables, whether it uses subgroups and push
+;; constants, and depth: the depth textures of the scope being emitted (the material's depth
+;; bindings in main, and a function's compared and given ones in it)
 
-(struct state (stage usage material functions helpers [helper-texts #:mutable] [privates #:mutable]
+(struct state (stage usage material functions depth-bindings helpers [helper-texts #:mutable] [privates #:mutable]
                      [subgroups? #:mutable] [push-used? #:mutable] [entry-builtins #:mutable]
                      [depth #:mutable] [function-constants #:mutable]))
 
-(define (make-state stage u m functions) (state stage u m functions (make-hash) '() '() #f #f '() (usage-depth u) (set)))
+(define (make-state stage u m functions depth-bindings)
+  (state stage u m functions depth-bindings (make-hash) '() '() #f #f '() depth-bindings (set)))
 
 ;; Adds helper `name` once, its text made by make-text (called only the first time, so it can
 ;; add the helpers it calls first)
@@ -615,7 +744,7 @@
           [(constant) (if (set-member? (state-function-constants st) name) (format "~a()" (wgsl-name name)) (wgsl-name name))]
           [else (wgsl-name name)])]
        [(t-call f as t l) (print-call st f as t l)]
-       [(t-user-call f as _ _) (format "~a(~a)" (wgsl-name f) (args as))]
+       [(t-user-call f as _ _) (print-user-call st f as)]
        [(t-texture op as t l) (print-texture st op as l)]
        [(t-op 'negate (list a) t _)
         (define text (operand a))
@@ -872,9 +1001,8 @@
   (define fragment? (eq? (state-stage st) 'fragment))
   (define depth (state-depth st))
   (define (depth? e) (set-member? depth (opaque-name e)))
-  (when (and (memq op '(sample sample-lod)) (depth? (second as)))
-    (web-error where "sampler ~a also compares depths, and WebGPU's comparison samplers only compare: use another sampler here"
-               (opaque-name (second as))))
+  ;; The sampler's variant sampling t: a non-filtering one for a depth texture
+  (define (sampling t s) (variant-name (opaque-name s) (if (depth? t) 'depth 'sample)))
   ;; Sampling a depth texture gives its depth, which Vulkan gives as (depth, 0, 0, 1)
   (define (depth-texel t text) (if (depth? t) (format "vec4f(~a, 0.0f, 0.0f, 1.0f)" text) text))
   ;; An element of an array of textures: a texture array and its layer
@@ -904,19 +1032,16 @@
      (format "vec2i(textureDimensions(~a, ~a))" (p-texture t) (p lod))]
     [('sample (list t s uv))
      (depth-texel t (if fragment?
-                  (format "textureSample(~a, ~a, ~a)" (p t) (p s) (p uv))
-                  (format "textureSampleLevel(~a, ~a, ~a, 0~a)" (p t) (p s) (p uv) (if (depth? t) "i" ".0f"))))]
+                  (format "textureSample(~a, ~a, ~a)" (p t) (sampling t s) (p uv))
+                  (format "textureSampleLevel(~a, ~a, ~a, 0~a)" (p t) (sampling t s) (p uv) (if (depth? t) "i" ".0f"))))]
     [('sample-lod (list t s uv lod))
-     (depth-texel t (format "textureSampleLevel(~a, ~a, ~a, ~a)" (p t) (p s) (p uv) (if (depth? t) (format "i32(~a)" (p lod)) (p lod))))]
+     (depth-texel t (format "textureSampleLevel(~a, ~a, ~a, ~a)" (p t) (sampling t s) (p uv) (if (depth? t) (format "i32(~a)" (p lod)) (p lod))))]
     [('fetch (list t _ texel lod)) (depth-texel t (format "textureLoad(~a, ~a, ~a)" (p t) (p texel) (p lod)))]
     [('sample-compare (list t s uv ref))
-     #:when (not (depth? s))
-     (web-error where "sampler ~a is also used to sample, and WebGPU's samplers either sample or compare depths: use another sampler here"
-                (opaque-name s))]
-    [('sample-compare (list t s uv ref))
+     (define comparing (variant-name (opaque-name s) 'compare))
      (if fragment?
-         (format "textureSampleCompare(~a, ~a, ~a, ~a)" (p t) (p s) (p uv) (p ref))
-         (format "textureSampleCompareLevel(~a, ~a, ~a, ~a)" (p t) (p s) (p uv) (p ref)))]
+         (format "textureSampleCompare(~a, ~a, ~a, ~a)" (p t) comparing (p uv) (p ref))
+         (format "textureSampleCompareLevel(~a, ~a, ~a, ~a)" (p t) comparing (p uv) (p ref)))]
     [('texture-size (list t lod)) (format "vec2i(textureDimensions(~a, ~a))" (p t) (p lod))]
     [('image-load (list i texel)) (format "textureLoad(~a, ~a)" (p i) (p texel))]
     [('image-size (list i)) (format "vec2i(textureDimensions(~a))" (p i))]))
@@ -1088,29 +1213,55 @@
     (set! n (add1 n))
     (format "zgal~a~a" (string-titlecase base) n)))
 
-;; A function's parameter types: textures and samplers it compares depths with are depth ones.
-;; Functions with image2D parameters never get here: the checker inlines them where they're called
-;; (body.rkt's inline-function?), which WGSL needs too, as Firefox's naga rejects storage textures
-;; as parameters
-(define (parameter-type st f name t)
-  (define depth? (set-member? (depth-names (function-decl-body f) (state-functions st)) name))
-  (match t
-    [(opaque-t 'texture2D) (if depth? "texture_depth_2d" "texture_2d<f32>")]
-    [(opaque-t 'sampler) (if depth? "sampler_comparison" "sampler")]
-    [(opaque-t k) (error 'parameter-type "~a's parameter ~a is ~a, which should have been inlined" (function-decl-name f) name k)]
-    [_ (wgsl-type t (function-decl-loc f))]))
+;; A call of a function: the variant for the depth textures given (call-signature), with a sampler
+;; argument given as the variants the parameter uses
+(define (print-user-call st f as)
+  (define functions (state-functions st))
+  (define memo (usage-functions (state-usage st)))
+  (define d (hash-ref functions f))
+  (define (depth-texture? name) (set-member? (state-depth st) name))
+  (define signature (call-signature d as depth-texture? functions memo))
+  (define uses (function-uses d signature functions memo))
+  (format "~a(~a)" (function-variant-name d signature)
+          (string-join
+           (append*
+            (for/list ([p (in-list (function-decl-params d))] [a (in-list as)])
+              (if (equal? (cdr p) (opaque-t 'sampler))
+                  (for/list ([v (in-list sampler-variants)] #:when (set-member? (hash-ref uses (car p) (set)) v))
+                    (variant-name (opaque-name a) v))
+                  (list (print-expr st a)))))
+           ", ")))
 
-(define (emit-function st f)
-  ;; Its textures and samplers comparing depths are its parameters
-  (set-state-depth! st (depth-names (function-decl-body f) (state-functions st)))
+;; A function's parameters as WGSL declares them: its depth textures (those it compares, and those
+;; the variant is given) are depth ones, and a sampler is the variants the function uses it as
+;; (none for one it doesn't sample or compare with). Functions with image2D parameters never get
+;; here: the checker inlines them where they're called (body.rkt's inline-function?), which WGSL
+;; needs too, as Firefox's naga rejects storage textures as parameters
+(define (parameter-declarations st f uses)
+  (append*
+   (for/list ([p (in-list (function-decl-params f))])
+     (match-define (cons name t) p)
+     (match t
+       [(opaque-t 'texture2D)
+        (list (format "~a: ~a" (wgsl-name name) (if (set-member? (state-depth st) name) "texture_depth_2d" "texture_2d<f32>")))]
+       [(opaque-t 'sampler)
+        (for/list ([v (in-list sampler-variants)] #:when (set-member? (hash-ref uses name (set)) v))
+          (format "~a: ~a" (variant-name name v) (if (eq? v 'compare) "sampler_comparison" "sampler")))]
+       [(opaque-t k) (error 'parameter-declarations "~a's parameter ~a is ~a, which should have been inlined" (function-decl-name f) name k)]
+       [_ (list (format "~a: ~a" (wgsl-name name) (wgsl-type t (function-decl-loc f))))]))))
+
+;; The variant of function f given depth textures for the parameters in signature
+(define (emit-function st f signature)
+  (define functions (state-functions st))
+  (define memo (usage-functions (state-usage st)))
+  (define uses (function-uses f signature functions memo))
+  (set-state-depth! st (set-union (function-compared f functions memo) (list->set signature)))
   (define-values (stmts value) (lower-wgsl (function-decl-body f) (fresh-maker)))
   (define result (wgsl-type (function-decl-result f) (function-decl-loc f)))
   (append
    (list ""
-         (format "fn ~a(~a)~a {" (wgsl-name (function-decl-name f))
-                 (string-join (for/list ([p (in-list (function-decl-params f))])
-                                (format "~a: ~a" (wgsl-name (car p)) (parameter-type st f (car p) (cdr p))))
-                              ", ")
+         (format "fn ~a(~a)~a {" (function-variant-name f signature)
+                 (string-join (parameter-declarations st f uses) ", ")
                  (if result (format " -> ~a" result) "")))
    (statement-lines st stmts "    ")
    (if value (list (format "    return ~a;" (print-expr st value))) '())
@@ -1147,7 +1298,7 @@
 
 ;; The entry point, main
 (define (emit-main st s body)
-  (set-state-depth! st (usage-depth (state-usage st)))
+  (set-state-depth! st (state-depth-bindings st))
   (define m (state-material st))
   (define-values (stmts results) (lower-wgsl body (fresh-maker)))
   (define body-lines (statement-lines st stmts "    "))

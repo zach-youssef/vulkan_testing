@@ -52,9 +52,9 @@ export const Repack: zgal.ComputeMaterialDesc = {
   kind: 'compute',
   name: 'Repack',
   bindings: [
-    { name: 'texels', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
-    { name: 'packed', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
-    { name: 'settings', kind: 'buffer', access: 'read', stages: ['compute'], depth: false },
+    { name: 'texels', resource: 'texels', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
+    { name: 'packed', resource: 'packed', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
+    { name: 'settings', resource: 'settings', kind: 'buffer', access: 'read', stages: ['compute'], depth: false },
   ],
   push: null,
   workgroup: [64, 1, 1],
@@ -213,9 +213,9 @@ export const Tally: zgal.ComputeMaterialDesc = {
   kind: 'compute',
   name: 'Tally',
   bindings: [
-    { name: 'counts', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
-    { name: 'balances', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
-    { name: 'weights', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
+    { name: 'counts', resource: 'counts', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
+    { name: 'balances', resource: 'balances', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
+    { name: 'weights', resource: 'weights', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
   ],
   push: null,
   workgroup: [64, 1, 1],
@@ -304,7 +304,7 @@ export const Lanes: zgal.ComputeMaterialDesc = {
   kind: 'compute',
   name: 'Lanes',
   bindings: [
-    { name: 'result', kind: 'buffer-array', access: 'write', stages: ['compute'], depth: false },
+    { name: 'result', resource: 'result', kind: 'buffer-array', access: 'write', stages: ['compute'], depth: false },
   ],
   push: null,
   workgroup: [64, 1, 1],
@@ -393,13 +393,14 @@ export const Lit: zgal.GraphicsMaterialDesc = {
   kind: 'graphics',
   name: 'Lit',
   bindings: [
-    { name: 'shadowMap', kind: 'texture', access: null, stages: ['fragment'], depth: true },
-    { name: 'shadowSampler', kind: 'sampler', access: null, stages: ['fragment'], depth: true },
-    { name: 'albedo', kind: 'texture', access: null, stages: ['fragment'], depth: false },
-    { name: 'albedoSampler', kind: 'sampler', access: null, stages: ['fragment'], depth: false },
-    { name: 'picture', kind: 'storage-image', access: 'read', stages: ['fragment'], depth: false },
+    { name: 'shadowMap', resource: 'shadowMap', kind: 'texture', access: null, stages: ['fragment'], depth: true },
+    { name: 'zgalCompare_shadowSampler', resource: 'shadowSampler', kind: 'comparison-sampler', access: null, stages: ['fragment'], depth: true },
+    { name: 'albedo', resource: 'albedo', kind: 'texture', access: null, stages: ['fragment'], depth: false },
+    { name: 'albedoSampler', resource: 'albedoSampler', kind: 'sampler', access: null, stages: ['fragment'], depth: false },
+    { name: 'zgalDepth_albedoSampler', resource: 'albedoSampler', kind: 'depth-sampler', access: null, stages: ['fragment'], depth: false },
+    { name: 'picture', resource: 'picture', kind: 'storage-image', access: 'read', stages: ['fragment'], depth: false },
   ],
-  push: { binding: 5, size: 80, fields: {
+  push: { binding: 6, size: 80, fields: {
     transform: { offset: 0, type: zgal.mat4 },
     layer: { offset: 64, type: zgal.uint },
   } },
@@ -435,7 +436,7 @@ struct ZgalPush {
     transform: mat4x4f,
     layer: u32,
 }
-@group(0) @binding(5) var<uniform> zgalPush: ZgalPush;
+@group(0) @binding(6) var<uniform> zgalPush: ZgalPush;
 
 struct ZgalVertexOutput {
     @builtin(position) zgalPosition: vec4f,
@@ -481,16 +482,17 @@ struct Settings {
 }
 
 @group(0) @binding(0) var shadowMap: texture_depth_2d;
-@group(0) @binding(1) var shadowSampler: sampler_comparison;
+@group(0) @binding(1) var zgalCompare_shadowSampler: sampler_comparison;
 @group(0) @binding(2) var albedo: texture_2d<f32>;
 @group(0) @binding(3) var albedoSampler: sampler;
-@group(0) @binding(4) var picture: texture_storage_2d<${formats['picture']}, read>;
+@group(0) @binding(4) var zgalDepth_albedoSampler: sampler;
+@group(0) @binding(5) var picture: texture_storage_2d<${formats['picture']}, read>;
 
 struct ZgalPush {
     transform: mat4x4f,
     layer: u32,
 }
-@group(0) @binding(5) var<uniform> zgalPush: ZgalPush;
+@group(0) @binding(6) var<uniform> zgalPush: ZgalPush;
 
 fn zgalRuntime_uint(x: u32) -> u32 {
     return x;
@@ -540,8 +542,8 @@ fn shade(v: vec3f, n: i32, m: mat4x4f) -> vec4f {
     return vec4f(select(zgalMod_float3(v, vec3f(2.0f)), min(v, vec3f(0.5f)), (v < vec3f(0.25f))), (((w.x + s.zgal_loop) + f32(1i << u32(n))) + f32((-2147483647i - 1i))) + max(negativeInfinity(), 0.0f));
 }
 
-fn shadowed(map: texture_depth_2d, s: sampler_comparison, uv: vec2f) -> f32 {
-    return textureSampleCompare(map, s, uv, 0.5f);
+fn shadowed(map: texture_depth_2d, zgalCompare_s: sampler_comparison, uv: vec2f) -> f32 {
+    return textureSampleCompare(map, zgalCompare_s, uv, 0.5f);
 }
 
 struct ZgalFragmentOutput {
@@ -551,8 +553,8 @@ struct ZgalFragmentOutput {
 
 @fragment
 fn main(@location(0) tint: vec4f, @location(1) @interpolate(linear) screen: vec2f, @location(2) @interpolate(flat) id: u32, @builtin(position) zgalPosition: vec4f) -> ZgalFragmentOutput {
-    var lit: f32 = shadowed(shadowMap, shadowSampler, screen);
-    var depth: vec4f = vec4f(textureSample(shadowMap, albedoSampler, screen), 0.0f, 0.0f, 1.0f);
+    var lit: f32 = shadowed(shadowMap, zgalCompare_shadowSampler, screen);
+    var depth: vec4f = vec4f(textureSample(shadowMap, zgalDepth_albedoSampler, screen), 0.0f, 0.0f, 1.0f);
     if (lit < 0.1f) {
         discard;
     }
