@@ -1,11 +1,15 @@
 #lang racket/base
 ;; What compiling for the web reports that Vulkan allows (not-on-web): what WebGPU can't do, and what
-;; the web backend doesn't do yet; and how it compiles what some WebGPU implementations refuse
+;; the web backend doesn't do yet; how it compiles what some WebGPU implementations refuse; and the
+;; web interface of GLSL bodies' shaders
 
 (require racket/list
          racket/string
          rackunit
          "../compile.rkt"
+         "../private/ast.rkt"
+         "../private/errors.rkt"
+         "../private/web-glsl.rkt"
          "util.rkt")
 
 ;; Checks compiling text for the web reports not-on-web, with a message containing fragment
@@ -127,3 +131,78 @@
     (check-equal? (length (regexp-match* #rx"atomicAdd\\(&counts\\[\\(4u\\)" wgsl)) 1)
     (check-regexp-match #rx"atomicAdd\\(&counts\\[\\(0u\\).*atomicAdd\\(&counts\\[\\(4u\\).*atomicAdd\\(&counts\\[\\(0u\\)"
                         (regexp-replace* "\n" wgsl " "))))
+
+;; ---------------------------------------------------------------------------------------------
+;; GLSL bodies' shaders for the web (web-glsl.rkt): the GLSL backend's web interface, which glslc
+;; and naga turn into a WGSL module bound like a ZGAL body's (toolchain-test.rkt runs the tools)
+
+;; The web-flavoured GLSL of the first shader of the first material of text, with body as its body
+(define (web-glsl text body)
+  (define-values (prog _outputs) (compile-zgal "test.zgal" #:text text #:check-only? #t))
+  (define m (first (program-materials prog)))
+  (define s (first (material-shaders m)))
+  (emit-web-shader prog m s body (string-append "out/web/" (shader-name s)) #:storage-format (λ (b) "rgba8")))
+
+(test-case "A GLSL body's shader for the web declares the WGSL bind group: a descriptor per binding at its index, the push constants a uniform block after them"
+  (define glsl
+    (web-glsl
+     "(struct Lights (count uint))
+      (graphics-material S
+        (shaders \"shaders/s.vert\" \"shaders/s.frag\")
+        (bindings (lights (buffer Lights read)) (sums (buffer-array float read-write)) (albedo texture)
+                  (s sampler) (target (storage-image write)) (mask (storage-image read)))
+        (push (tint vec3) (object uint))
+        (varyings (uv vec2))
+        (outputs (color vec4)))"
+     "void main() {\n    gl_Position = vec4(0.0);\n}\n"))
+  (define (has line) (check-true (string-contains? glsl (string-append "\n" line "\n")) line))
+  (with-check-info (['glsl glsl])
+    (has "#extension GL_EXT_scalar_block_layout : require")
+    (has "layout(std430, set = 0, binding = 6) uniform ZgalPush {")
+    (has "    vec3 tint;")
+    (has "    uint object;")
+    (has "} materialPush;")
+    (has "layout(std430, set = 0, binding = 0) readonly buffer ZgalBlock_lights { Lights data; } zgal_lights;")
+    (has "layout(std430, set = 0, binding = 1) buffer ZgalBlock_sums { float data[]; } zgal_sums;")
+    (has "layout(set = 0, binding = 2) uniform texture2D zgal_albedo;")
+    (has "layout(set = 0, binding = 3) uniform sampler zgal_s;")
+    (has "layout(set = 0, binding = 4, rgba8) uniform writeonly image2D zgal_target;")
+    (has "layout(set = 0, binding = 5, rgba8) uniform readonly image2D zgal_mask;")
+    ;; Accessors as the bindless interface's, so bodies are the same
+    (has "#define lights() (zgal_lights.data)")
+    (has "#define sums() (zgal_sums.data)")
+    (has "#define albedo() (zgal_albedo)")
+    (has "#define s() (zgal_s)")
+    (has "#define target() (zgal_target)")
+    (has "#define tint() (materialPush.tint)")
+    (has "layout(location = 0) out vec2 uv;")
+    (has "#line 1 \"shaders/s.vert\"")
+    (has "    gl_Position = vec4(0.0);")
+    (check-false (string-contains? glsl "bindless"))
+    (check-false (string-contains? glsl "push_constant"))))
+
+(test-case "A GLSL body's shader for the web has no push constant block without push constants, and no index block"
+  (define glsl (web-glsl "(compute-material C (shaders \"c.comp\") (workgroup 1) (bindings (sums (buffer-array float read-write))))"
+                         "void main() {}\n"))
+  (with-check-info (['glsl glsl])
+    (check-false (string-contains? glsl "ZgalPush"))
+    (check-false (string-contains? glsl "zgalIndices"))
+    (check-true (string-contains? glsl "\nlayout(std430, set = 0, binding = 0) buffer ZgalBlock_sums { float data[]; } zgal_sums;\n"))))
+
+(test-case "What a GLSL body's web interface can't express is refused before the tools run"
+  (define (check-refused text fragment)
+    (define e (with-handlers ([exn:zgal? values]) (web-glsl text "void main() {}\n") #f))
+    (with-check-info (['program text])
+      (check-true (exn:zgal? e) "expected an error")
+      (when (exn:zgal? e)
+        (check-equal? (exn:zgal-id e) 'not-on-web)
+        (check-true (loc? (exn:zgal-where e)))
+        (check-true (string-contains? (exn-message e) fragment) (exn-message e)))))
+  (check-refused "(compute-material C (shaders \"c.comp\") (workgroup 1) (bindings (decals (array texture))))"
+                 "array of bindings")
+  (check-refused "(struct P (a uint8))\n(compute-material C (shaders \"c.comp\") (workgroup 1) (bindings (ps (buffer-array P read))))"
+                 "8- and 16-bit")
+  (check-refused "(compute-material C (shaders \"c.comp\") (workgroup 1) (shared (marks (array uint8 4))))"
+                 "8- and 16-bit")
+  (check-refused "(struct P (a uint))\n(compute-material C (shaders \"c.comp\") (workgroup 1) (push (p P)))"
+                 "push constant"))

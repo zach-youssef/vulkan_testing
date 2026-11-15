@@ -2138,6 +2138,22 @@ their names (@tt{SceneUniforms scene = scene();}). Combine a texture and a sampl
 @tt{texture(sampler2D(albedo(), albedoSampler()), uv)}, and write buffers through their accessors,
 @tt{particles()[i].velocity = v}.
 
+For the web (@secref["web"]), the same body gets a WebGPU interface instead, which glslc compiles
+to SPIR-V and @hyperlink["https://github.com/gfx-rs/wgpu/tree/trunk/naga-cli"]{naga} translates to
+WGSL (@tt{dsl/private/web-glsl.rkt}; @tt{make test-dsl} builds naga if it isn't installed): no
+@tt{bindless.glsl}, each binding a descriptor of set 0 at the binding's index in the material, the
+push constants a std430 uniform block at the binding after them (the WGSL backend's bind group),
+and the same accessors (@tt{#define albedo() (zgal_albedo)}), so a body reads the same either way.
+glslc's errors are reported at the body's lines as above, and what naga can't translate (8- and
+16-bit integers, which are refused before it runs; a function taking an @tt{image2D} parameter,
+which has no format; an instruction it lacks) at the shader's declaration, as
+@secref["error-not-on-web"]. naga negates @tt{gl_Position.y}, as the WGSL backend does for ZGAL
+bodies (@secref["web"]), and makes a texture the body compares depths with (@tt{sampler2DShadow})
+a depth texture and its sampler a comparison sampler, as the WGSL backend does; the module
+declares every binding, used or not, so the bindings a stage uses are read from the SPIR-V.
+@tt{@literal{--web-out}} doesn't use this yet: GLSL bodies still report
+@secref["error-not-on-web"] there.
+
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "cpp"]{The generated C++}
 
@@ -2605,6 +2621,7 @@ under Node; next is what graphs on the web can't use yet.
   (list @tt{dsl/private/errors.rkt} "the error catalog")
   (list @tt{dsl/private/writer.rkt} "writing generated code with #line directives")
   (list @tt{dsl/private/glsl.rkt} "the GLSL backend: a shader with the bindless interface, or the web one")
+  (list @tt{dsl/private/web-glsl.rkt} "GLSL shaders for the web: the web interface through glslc and naga to WGSL, their errors mapped to the sources")
   (list @tt{dsl/private/wgsl.rkt} "the WGSL backend (WebGPU)")
   (list @tt{dsl/private/ts.rkt} "the TypeScript backend (WebGPU): structs and materials")
   (list @tt{dsl/private/ts-graph.rkt} "the TypeScript backend for graphs")
@@ -2660,11 +2677,13 @@ This document is part of the language: change it in the same commit as the compi
        feature, and for the web for @tt{golden/web.zgal}, what the WGSL backend does differently.}
  @item{@tt{dsl/tests/toolchain-test.rkt}: the generated shaders and header through glslc and the C++
        compiler (with the build's flags, from @tt{make test-dsl}), @tt{#line} mapping, the
-       command line, the golden and examples' WGSL modules through Dawn, and the golden
+       command line, the golden and examples' WGSL modules through Dawn, the golden
        TypeScript through @tt{tsc} (@tt{web/}, whose packages @tt{make test-dsl} installs with
-       @tt{npm ci}).}
- @item{@tt{dsl/tests/web-test.rkt}: what compiling for the web reports that Vulkan allows, and
-       that functions with @tt{image2D} parameters reach WGSL inlined.}
+       @tt{npm ci}), and the golden GLSL bodies through glslc and naga to WGSL that Dawn accepts,
+       with glslc's and naga's errors mapped to the sources.}
+ @item{@tt{dsl/tests/web-test.rkt}: what compiling for the web reports that Vulkan allows,
+       that functions with @tt{image2D} parameters reach WGSL inlined, and the web interface of
+       GLSL bodies' shaders and what it refuses.}
  @item{@tt{web/tests}: @tt{web.zgal} and @tt{apps.zgal} compiled to TypeScript and WGSL and run on Dawn under Node
        (@tt{make test-web}, which type checks it first): the generated WGSL computes what the GLSL
        would (layouts of small integers, shared memory, emulated atomics and subgroup scans,

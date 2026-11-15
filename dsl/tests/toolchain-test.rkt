@@ -2,18 +2,22 @@
 ;; Generated code through the real tools: glslc and the C++ compiler, with the build's flags (the
 ;; Makefile's test-dsl target passes them in ZGAL_GLSLC, ZGAL_GLSLC_FLAGS, ZGAL_CXX and
 ;; ZGAL_CXXFLAGS), Dawn (WebGPU, under Node: ZGAL_NODE and ZGAL_WEB, the web directory with its
-;; packages installed), and the command line
+;; packages installed), naga (ZGAL_NAGA, with glslc and Dawn: GLSL bodies to WGSL), and the command
+;; line
 
 (require racket/file
          racket/list
          racket/path
          racket/port
          racket/runtime-path
+         racket/set
          racket/string
          racket/system
          rackunit
          "../compile.rkt"
          "../private/ast.rkt"
+         "../private/errors.rkt"
+         "../private/web-glsl.rkt"
          "../private/wgsl.rkt"
          "golden-test.rkt"
          "util.rkt")
@@ -21,17 +25,16 @@
 (define-runtime-path zgal.rkt "../zgal.rkt")
 (define-runtime-path repository "../..")
 
-;; Runs a program, returning its exit code and what it wrote to stdout and stderr
+;; Runs a program, returning its exit code and what it wrote to stdout and stderr (read from one
+;; port: reading them one after the other blocks once the other pipe fills, e.g. glslc's errors)
 (define (run program . arguments)
-  (define-values (process out in err)
-    (apply subprocess #f #f #f (find-executable-path* program) arguments))
+  (define-values (process out in _err)
+    (apply subprocess #f #f 'stdout (find-executable-path* program) arguments))
   (close-output-port in)
   (define output (port->string out))
-  (define errors (port->string err))
   (subprocess-wait process)
   (close-input-port out)
-  (close-input-port err)
-  (values (subprocess-status process) (string-append output errors)))
+  (values (subprocess-status process) output))
 
 (define (find-executable-path* program)
   (or (if (absolute-path? program) program (find-executable-path program))
@@ -124,6 +127,86 @@
              "-p" (path->string directory)))
       (with-check-info (['tsc text])
         (check-equal? status 0)))))
+
+;; Runs check-wgsl.ts (Dawn) on the files, returning its exit code and output
+(define (check-wgsl files)
+  (apply run (getenv "ZGAL_NODE")
+         (path->string (build-path (getenv "ZGAL_WEB") "tools" "check-wgsl.ts"))
+         (map path->string files)))
+
+;; GLSL bodies to WGSL (web-glsl.rkt), through glslc and naga, with the WGSL checked by Dawn
+(define (naga-tests)
+  (define toolchain (web-toolchain (getenv "ZGAL_GLSLC") (getenv "ZGAL_NAGA") '()))
+  (define (storage-format b) "rgba8")
+
+  (test-case "The golden GLSL bodies become WGSL modules Dawn accepts, each using the bindings its stage reads"
+    (with-temporary-directory (directory)
+      (define-values (prog _outputs)
+        (parameterize ([current-directory repository]) (compile-zgal golden-source #:check-only? #t)))
+      (define results
+        (for*/list ([m (in-list (program-materials prog))] [s (in-list (material-shaders m))] #:when (shader-path s))
+          (define body (file->string (build-path repository (shader-path s))))
+          (define glsl (emit-web-shader prog m s body (shader-name s) #:storage-format storage-format))
+          (cons (shader-name s) (web-shader->wgsl toolchain s glsl))))
+      (check-equal? (for/list ([r (in-list results)]) (cons (car r) (sort (set->list (web-wgsl-used (cdr r))) <)))
+                    '(("surface.vert" 1 5) ("surface.frag" 0 2 3 4 5) ("accumulate.comp" 0 1 2) ("plain.vert") ("plain.frag")))
+      (for ([r (in-list results)])
+        (check-equal? (web-wgsl-warnings (cdr r)) "" (car r)))
+      (define frag (web-wgsl-text (cdr (assoc "surface.frag" results))))
+      (with-check-info (['wgsl frag])
+        ;; The bind group as the WGSL backend lays it out: bindings at their indices, read-only
+        ;; buffers read, storage images with their format and access, the push constants a uniform
+        (check-regexp-match #rx"@binding\\(0\\) *\n *var<storage> zgal_lights" frag)
+        (check-regexp-match #rx"@binding\\(4\\) *\n *var zgal_mask: texture_storage_2d<rgba8unorm, *read>" frag)
+        (check-regexp-match #rx"@binding\\(5\\) *\n *var<uniform> materialPush: ZgalPush" frag)
+        (check-regexp-match #rx"@fragment" frag))
+      (define files
+        (for/list ([r (in-list results)])
+          (define file (build-path directory (string-append (car r) ".wgsl")))
+          (call-with-output-file file (λ (out) (void (write-string (web-wgsl-text (cdr r)) out))))
+          file))
+      (define-values (status text) (check-wgsl files))
+      (with-check-info (['dawn text])
+        (check-equal? status 0))))
+
+  ;; The first material's first shader of text, compiled with body
+  (define (translate text body)
+    (define-values (prog _outputs) (compile-zgal "check/c.zgal" #:text text #:check-only? #t))
+    (define m (first (program-materials prog)))
+    (define s (first (material-shaders m)))
+    (web-shader->wgsl toolchain s (emit-web-shader prog m s body (shader-name s) #:storage-format storage-format)))
+  (define (translation-error text body)
+    (with-handlers ([exn:zgal? values]) (translate text body) #f))
+
+  (test-case "glslc's errors in a GLSL body are reported at the body's line, with how many there are"
+    (define e (translation-error "(compute-material C (shaders \"shaders/broken.comp\") (workgroup 1) (push (x float)))"
+                                 "void main() {\n    float y = x() + missing;\n    float z = w;\n}\n"))
+    (check-true (exn:zgal? e))
+    (when (exn:zgal? e)
+      (check-equal? (exn:zgal-id e) 'glsl-error)
+      (check-equal? (exn:zgal-where e) (loc "check/shaders/broken.comp" 2 1))
+      (check-regexp-match #rx"^'missing' : undeclared identifier [(]glslc reports 2 errors in all[)]$" (exn-message e))))
+
+  (test-case "glslc's errors beyond what a pipe holds are read, not waited on"
+    (define e (translation-error "(compute-material C (shaders \"shaders/big.comp\") (workgroup 1))"
+                                 (string-append "void main() {\n"
+                                                (string-append* (for/list ([i (in-range 3000)]) (format "    float a~a = missing~a;\n" i i)))
+                                                "}\n")))
+    (check-true (exn:zgal? e))
+    (when (exn:zgal? e)
+      (check-equal? (exn:zgal-where e) (loc "check/shaders/big.comp" 2 1))
+      (check-regexp-match #rx"glslc reports 3000 errors in all" (exn-message e))))
+
+  (test-case "What naga can't translate is reported at the shader's declaration, as not-on-web"
+    ;; A struct of the file enables 8-bit integers, which the body then uses
+    (define e (translation-error "(struct P (a uint8))\n(compute-material C\n  (shaders \"shaders/small.comp\")\n  (workgroup 1) (bindings (sums (buffer-array float read-write))))"
+                                 "void main() {\n    uint8_t v = uint8_t(gl_GlobalInvocationID.x);\n    sums()[0] = float(v);\n}\n"))
+    (check-true (exn:zgal? e))
+    (when (exn:zgal? e)
+      (check-equal? (exn:zgal-id e) 'not-on-web)
+      (check-equal? (exn:zgal-where e) (loc "check/c.zgal" 3 12))
+      (check-regexp-match #rx"^naga can't translate small.comp to WGSL: .*[(]WGSL has no 8- and 16-bit integers[)]$" (exn-message e))
+      (check-false (string-contains? (exn-message e) "\n")))))
 
 (define (cxx-tests)
   (define (compile-cxx directory source)
@@ -228,4 +311,5 @@ CPP
   (when-tool "ZGAL_GLSLC" glslc-tests)
   (when-tool "ZGAL_CXX" cxx-tests)
   (when-tool "ZGAL_NODE" dawn-tests)
+  (when-tool "ZGAL_NAGA" naga-tests)
   (command-line-tests))
