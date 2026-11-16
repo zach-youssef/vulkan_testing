@@ -171,7 +171,8 @@ export function storageFormats(m: MaterialDesc, formats: BoundFormats): StorageF
   return result;
 }
 
-// Writes push constants (field name -> value) into bytes laid out as m's ZgalPush
+// Writes push constants (field name -> value) into bytes laid out as m's push description gives
+// (its fields' offsets and types: std430's layout, or a uniform buffer's for arrays and structs)
 export function writePush(m: MaterialDesc, values: Readonly<Record<string, unknown>>, into: DataView): void {
   if (!m.push) return;
   for (const [name, field] of Object.entries(m.push.fields)) {

@@ -1,5 +1,6 @@
 // ZGAL's types at runtime: how values of each type are laid out in buffers (std430, as the C++ and
-// the shaders lay them out), so generated code can write and read structs, vectors and arrays.
+// the shaders lay them out, or a uniform buffer's layout for push constants), so generated code can
+// write and read structs, vectors and arrays.
 //
 // Values are plain JavaScript: numbers for scalars (booleans for bools), arrays of numbers for
 // vectors, arrays of columns for matrices, arrays for arrays, and objects for structs.
@@ -108,11 +109,31 @@ export const mat3 = matrix(3);
 export const mat4 = matrix(4);
 
 export function array<T>(element: Type<T>, length: number): Type<T[]> {
-  const elementStride = stride(element);
+  return arrayAt(element, length, stride(element), element.align);
+}
+
+// A struct of fields, in order, at their std430 offsets
+export function struct<T extends object>(name: string, fields: [keyof T & string, Type<any>][]): Type<T> {
+  return structAligned(name, fields, 1);
+}
+
+// Uniform buffers (WebGPU's push constants are one) lay values out as std430 does, except that arrays
+// and structs are aligned to 16 bytes and array elements are a multiple of 16 bytes apart. Their
+// elements and fields are types of the uniform layout too (scalars, vectors and matrices are the
+// same in both).
+export function uniformArray<T>(element: Type<T>, length: number): Type<T[]> {
+  return arrayAt(element, length, Math.ceil(stride(element) / 16) * 16, 16);
+}
+
+export function uniformStruct<T extends object>(name: string, fields: [keyof T & string, Type<any>][]): Type<T> {
+  return structAligned(name, fields, 16);
+}
+
+function arrayAt<T>(element: Type<T>, length: number, elementStride: number, align: number): Type<T[]> {
   return {
     name: `(array ${element.name} ${length})`,
     size: length * elementStride,
-    align: element.align,
+    align,
     write(view, offset, value) {
       for (let i = 0; i < length; i++) element.write(view, offset + i * elementStride, value[i]);
     },
@@ -122,10 +143,10 @@ export function array<T>(element: Type<T>, length: number): Type<T[]> {
   };
 }
 
-// A struct of fields, in order, at their std430 offsets
-export function struct<T extends object>(name: string, fields: [keyof T & string, Type<any>][]): Type<T> {
+// A struct of fields at their offsets, aligned to its largest field's alignment or minAlign
+function structAligned<T extends object>(name: string, fields: [keyof T & string, Type<any>][], minAlign: number): Type<T> {
   let offset = 0;
-  let align = 1;
+  let align = minAlign;
   const placed = fields.map(([field, type]) => {
     offset = Math.ceil(offset / type.align) * type.align;
     const at = offset;
