@@ -39,15 +39,7 @@
       (workgroup 1)
       (bindings (sources (array (buffer-array uint))) (counts (buffer-array uint)))
       (compute (write! (at counts 0) (array-length sources))))"
-   "can't be an array of buffer-arrays")
-  (check-not-on-web
-   "(struct Pair (a uint) (b uint))
-    (compute-material Fill
-      (workgroup 1)
-      (bindings (values (buffer-array uint)))
-      (push (pair Pair))
-      (compute (write! (at values 0) pair.a)))"
-   "push"))
+   "can't be an array of buffer-arrays"))
 
 (test-case "Graphs using what WebGPU lacks"
   (check-not-on-web
@@ -78,6 +70,66 @@
   (define-values (_prog outputs)
     (compile-zgal "test.zgal" #:text text #:read-body (λ (path) #f) #:native? #f #:web-dir "out/web"))
   (output-text (findf (λ (o) (string-suffix? (output-path o) name)) outputs)))
+
+(test-case "Struct and array push constants are read from a uniform-layout mirror, converted at the start of main"
+  (define program
+    "(struct Inner (w float) (k uint))
+     (struct Packed (a vec2) (vals (array float 3)) (inner Inner) (tail float) (m mat2) (cols (array vec2 2)) (inners (array Inner 2)))
+     (graphics-material Show
+       (push (lead float) (p Packed) (after uint) (weights (array vec4 2)))
+       (define (pick [i : uint]) : float (at (.vals p) i))
+       (varyings (shade float))
+       (outputs (color vec4))
+       (vertex (results #:position (vec4 lead 0.0 0.0 1.0) #:shade (pick 1)))
+       (fragment (vec4 (.w (.inner p)) shade (float after) (.x (at weights 1)))))\n")
+  (define vertex (web-shader program "Show.vert.wgsl"))
+  (define fragment (web-shader program "Show.frag.wgsl"))
+  (define ts (web-shader program "test.zgal.ts"))
+  (define (has text line) (check-true (string-contains? text (string-append "\n" line "\n")) line))
+  (with-check-info (['wgsl vertex])
+    ;; The std430 shape the body reads, and its mirror: arrays of scalars and 2-component vectors
+    ;; are of 4-component ones, arrays and structs (and a mirror's first member) aligned to 16
+    (for ([l (list "struct ZgalPush {" "    lead: f32," "    p: Packed," "    after: u32," "    weights: array<vec4f, 2>,"
+                   "struct ZgalUniform_Inner {" "    @align(16) w: f32," "    k: u32,"
+                   "struct ZgalUniform_Packed {" "    @align(16) a: vec2f," "    @align(16) vals: array<vec4f, 3>,"
+                   "    @align(16) inner: ZgalUniform_Inner," "    tail: f32," "    m: mat2x2f,"
+                   "    @align(16) cols: array<vec4f, 2>," "    @align(16) inners: array<ZgalUniform_Inner, 2>,"
+                   "struct ZgalPushUniform {" "    @align(16) p: ZgalUniform_Packed," "    @align(16) weights: array<vec4f, 2>,"
+                   "@group(0) @binding(0) var<uniform> zgalPushUniform: ZgalPushUniform;"
+                   "fn zgal_push() -> ZgalPush {"
+                   "    for (var zgalI0 = 0u; zgalI0 < 3u; zgalI0++) {"
+                   "        zgalValue.p.vals[zgalI0] = zgalPushUniform.p.vals[zgalI0].x;"
+                   "        zgalValue.p.cols[zgalI0] = zgalPushUniform.p.cols[zgalI0].xy;"
+                   "        zgalValue.p.inners[zgalI0].k = zgalPushUniform.p.inners[zgalI0].k;"
+                   "    zgalValue.p.m = zgalPushUniform.p.m;"
+                   ;; Arrays whose elements are 16 bytes apart in both are copied whole
+                   "    zgalValue.weights = zgalPushUniform.weights;")])
+      (has vertex l))
+    (check-false (string-contains? vertex "var<uniform> zgalPush:"))
+    ;; Converted once at the start of main (which material functions are inlined into), into a
+    ;; local, so that values read from it stay uniform for WGSL's uniformity analysis
+    (check-equal? (length (regexp-match* #rx"\n    var zgalPush = zgal_push[(][)];\n" vertex)) 1))
+  (with-check-info (['wgsl fragment])
+    (check-equal? (length (regexp-match* #rx"\n    var zgalPush = zgal_push[(][)];\n" fragment)) 1))
+  (with-check-info (['ts ts])
+    ;; The runtime writes the values at the mirror's offsets
+    (has ts "  push: { binding: 0, size: 240, fields: {")
+    (has ts "    lead: { offset: 0, type: zgal.float },")
+    (has ts (string-append "    p: { offset: 16, type: zgal.uniformStruct<Packed>('Packed', [['a', zgal.vec2], ['vals', zgal.uniformArray(zgal.float, 3)], "
+                           "['inner', zgal.uniformStruct<Inner>('Inner', [['w', zgal.float], ['k', zgal.uint]])], ['tail', zgal.float], ['m', zgal.mat2], "
+                           "['cols', zgal.uniformArray(zgal.vec2, 2)], ['inners', zgal.uniformArray(zgal.uniformStruct<Inner>('Inner', [['w', zgal.float], ['k', zgal.uint]]), 2)]]) },"))
+    (has ts "    after: { offset: 192, type: zgal.uint },")
+    (has ts "    weights: { offset: 208, type: zgal.uniformArray(zgal.vec4, 2) },")))
+
+(test-case "Push constants of scalars, vectors and matrices are read from the uniform buffer directly"
+  (define wgsl
+    (web-shader "(compute-material C (workgroup 1) (bindings (sums (buffer-array float))) (push (scale float) (offset vec2))
+                   (compute (write! (at sums 0) (+ scale (.y offset)))))\n"
+                "C.comp.wgsl"))
+  (with-check-info (['wgsl wgsl])
+    (check-true (string-contains? wgsl "\n@group(0) @binding(1) var<uniform> zgalPush: ZgalPush;\n"))
+    (check-false (string-contains? wgsl "zgal_push"))
+    (check-false (string-contains? wgsl "ZgalPushUniform"))))
 
 (test-case "Functions with storage image parameters are inlined: Firefox's naga refuses them as WGSL parameters"
   (define wgsl
@@ -204,8 +256,14 @@
                  "8- and 16-bit")
   (check-refused "(compute-material C (shaders \"c.comp\") (workgroup 1) (shared (marks (array uint8 4))))"
                  "8- and 16-bit")
+  ;; The uniform block is std430: arrays and structs, which a uniform buffer lays out differently,
+  ;; would be read at the wrong offsets (ZGAL bodies read a mirror instead)
   (check-refused "(struct P (a uint))\n(compute-material C (shaders \"c.comp\") (workgroup 1) (push (p P)))"
-                 "push constant"))
+                 "push constant p is P")
+  (check-refused "(compute-material C (shaders \"c.comp\") (workgroup 1) (push (n uint) (weights (array float 4))))"
+                 "push constant weights is")
+  (check-refused "(struct P (a uint))\n(compute-material C (shaders \"c.comp\") (workgroup 1) (push (ps (array P 2))))"
+                 "push constant ps is"))
 
 (test-case "A sampler sampling and comparing is bound as the variants WebGPU's samplers need, and functions are specialized for the depth textures they're given"
   (define wgsl

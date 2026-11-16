@@ -121,6 +121,18 @@
     (define at (round-up offset 4))
     (values (cons (cons a at) acc) (+ at (vertex-format-bytes a)))))
 
+;; The runtime's description of type t's layout in a uniform buffer (push constants: see wgsl.rkt's
+;; wgsl-push-layout), arrays and structs aligned to 16 bytes and array elements 16 bytes apart
+(define (ts-uniform-layout-type t)
+  (match t
+    [(array-t e n) (format "zgal.uniformArray(~a, ~a)" (ts-uniform-layout-type e) n)]
+    [(struct-t d)
+     (format "zgal.uniformStruct<~a>(~a, [~a])" (struct-decl-name d) (ts-string (struct-decl-name d))
+             (string-join (for/list ([f (in-list (struct-decl-fields d))])
+                            (format "[~a, ~a]" (ts-string (field-name f)) (ts-uniform-layout-type (field-type f))))
+                          ", "))]
+    [_ (ts-layout-type t)]))
+
 (define (emit-material prog m)
   (define kind (material-kind m))
   (define bindings (wgsl-bindings prog m))
@@ -142,7 +154,7 @@
        (append
         (list (format "  push: { binding: ~a, size: ~a, fields: {" (wgsl-push-binding bindings) (cdr push)))
         (for/list ([entry (in-list (car push))])
-          (format "    ~a: { offset: ~a, type: ~a }," (field-name (car entry)) (cdr entry) (ts-layout-type (field-type (car entry)))))
+          (format "    ~a: { offset: ~a, type: ~a }," (field-name (car entry)) (cdr entry) (ts-uniform-layout-type (field-type (car entry)))))
         (list "  } },"))
        (list "  push: null,"))
    (case kind

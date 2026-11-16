@@ -71,6 +71,12 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   sources (a finished one has nothing to cancel).
   `web/tests/streams.test.ts` tests streams under Node, and `web/tests/stop.test.ts` ending loads
   (a context's, and `runHeadless` stopped or quitting while a served stream stalls).
+- `types.ts` encodes values at their std430 layout (`array`, `struct`), and at a uniform buffer's
+  (`uniformArray`, `uniformStruct`: elements and structs 16 bytes apart), which a material
+  description's push fields use when its push constants hold arrays or structs: the shaders then
+  read a mirror laid out that way (`ZgalPushUniform`) and convert it to the std430 shape the body
+  reads (`zgal_push()`; the ZGAL docs' web section). `web/tests/push.test.ts` checks every value
+  arrives.
 - `png-write.ts` writes PNGs in any environment (`encodePngStream`, with `CompressionStream`);
   `png.ts` (Node only) uses zlib.
 - The web keeps Vulkan's clip space (the WGSL negates y), so web pixel expectations match native

@@ -24,8 +24,7 @@
          "ast.rkt"
          "errors.rkt"
          "glsl.rkt"
-         "layout.rkt"
-         (only-in "wgsl.rkt" wgsl-push-layout))
+         "layout.rkt")
 
 (provide (struct-out web-toolchain)
          (struct-out web-wgsl)
@@ -63,7 +62,13 @@
     (when (pair? (small-integer-kinds-in (field-type f)))
       (web-error (field-loc f) "shared variable ~a holds ~a, and WGSL has no 8- and 16-bit integers: a GLSL shader can't use them on the web, so use uint or int, or write the shader in ZGAL"
                  (field-name f) (type-name (field-type f)))))
-  (wgsl-push-layout m)
+  ;; ZGAL bodies read structs and arrays from a uniform-layout mirror (wgsl.rkt's push-mirror?),
+  ;; which the GLSL interface's std430 block doesn't follow
+  (for ([f (in-list (material-push m))])
+    (define t (field-type f))
+    (when (or (array-t? t) (struct-t? t))
+      (web-error (field-loc f) "push constant ~a is ~a, but a GLSL shader's push constants on the web (a uniform block) are scalars, vectors and matrices: write the shader in ZGAL"
+                 (field-name f) (type-name t))))
   (emit-shader prog m s body out-path #:interface (web-interface storage-format) #:glsl-files glsl-files))
 
 ;; Runs a program, returning its exit code and what it wrote to stdout and stderr (one port, so

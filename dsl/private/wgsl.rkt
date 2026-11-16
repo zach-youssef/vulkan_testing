@@ -178,21 +178,144 @@
 ;; The binding index of the push constants' uniform buffer, after the bindings of layout
 (define (wgsl-push-binding layout) (length layout))
 
+;; Push constants are a uniform buffer, whose layout is std430's for scalars, vectors and matrices,
+;; but which aligns arrays and structs to 16 bytes and puts array elements a multiple of 16 bytes
+;; apart. A material whose push constants are all scalars, vectors and matrices reads the buffer
+;; directly as ZgalPush. Others (push-mirror?) bind it as ZgalPushUniform, a mirror of ZgalPush laid
+;; out for uniform buffers (arrays of scalars and 2-component vectors are arrays of 4-component
+;; vectors, structs are mirrored as ZgalUniform_<name>), and main (which material functions are
+;; inlined into) first converts it to the std430-shaped ZgalPush its body reads (zgal_push()), into
+;; a local variable, so values read from it stay uniform for WGSL's uniformity analysis (a private
+;; variable's wouldn't).
+
+(define (push-mirror? m)
+  (for/or ([f (in-list (material-push m))]) (or (array-t? (field-type f)) (struct-t? (field-type f)))))
+
+(define (uniform-align t)
+  (match t [(or (array-t _ _) (struct-t _)) 16] [_ (std430-align t)]))
+
+(define (uniform-size t)
+  (match t
+    [(array-t e n) (* n (uniform-stride e))]
+    [(struct-t d) (let-values ([(_ end) (place-uniform (struct-decl-fields d) 0)]) (round-up end 16))]
+    [_ (std430-size t)]))
+
+(define (uniform-stride e) (round-up (uniform-size e) 16))
+
+;; Places fields one after another from `start` in the uniform layout: as place-fields
+(define (place-uniform fields start)
+  (for/fold ([acc '()] [offset start] #:result (values (reverse acc) offset))
+            ([f (in-list fields)])
+    (define t (field-type f))
+    (define at (round-up offset (uniform-align t)))
+    (values (cons (placed f at) acc) (+ at (uniform-size t)))))
+
 ;; The uniform layout of m's push constants: (list (cons field offset) ...) and the size (a
-;; multiple of 16), or #f without push constants. Uniform buffers align vectors as std430 does,
-;; but arrays and structs to 16 bytes, so push constants are scalars, vectors and matrices.
+;; multiple of 16), or #f without push constants. Small integers, bools and what C++ lays out
+;; differently are refused for every backend (layout.rkt's push-problem), so the fields here are
+;; 32-bit scalars, vectors, matrices other than mat3, and arrays and structs of them.
 (define (wgsl-push-layout m)
   (define push (material-push m))
   (cond
     [(null? push) #f]
     [else
-     (for ([f (in-list push)])
-       (unless (or (scalar-t? (field-type f)) (vector-t? (field-type f)) (matrix-t? (field-type f)))
-         (web-error (field-loc f) "push constant ~a is ~a, but WebGPU's push constants (a uniform buffer) are scalars, vectors and matrices"
-                    (field-name f) (type-name (field-type f)))))
-     (define-values (placed end) (place-fields push 0))
+     (define-values (placed end) (place-uniform push 0))
      (cons (for/list ([p (in-list placed)]) (cons (placed-field p) (placed-offset p)))
            (round-up (max end 4) 16))]))
+
+;; The mirror's name of a struct
+(define (uniform-struct-name d) (string-append "ZgalUniform_" (struct-decl-name d)))
+
+;; The mirror's type of t
+(define (uniform-type t)
+  (match t
+    [(array-t (and e (or (scalar-t k) (vector-t k 2))) n) (format "array<~a, ~a>" (wgsl-type (vector-t k 4)) n)]
+    [(array-t e n) (format "array<~a, ~a>" (uniform-type e) n)]
+    [(struct-t d) (uniform-struct-name d)]
+    [_ (wgsl-type t)]))
+
+;; The structs the push constants hold, directly or in arrays and structs, in the program's order
+(define (push-structs prog m)
+  (define found (mutable-set))
+  (let walk ([ts (map field-type (material-push m))])
+    (for ([t (in-list ts)])
+      (match t
+        [(array-t e _) (walk (list e))]
+        [(struct-t d) (unless (set-member? found d)
+                        (set-add! found d)
+                        (walk (map field-type (struct-decl-fields d))))]
+        [_ (void)])))
+  (filter (λ (d) (set-member? found d)) (program-structs prog)))
+
+;; The members of a mirror struct: arrays, structs and the first member aligned to 16 bytes, so the
+;; struct is too and its size is a multiple of 16 (WGSL places the others as std430 does)
+(define (uniform-member-lines fields #:struct? struct?)
+  (for/list ([f (in-list fields)] [i (in-naturals)])
+    (define t (field-type f))
+    (format "    ~a~a: ~a," (if (or (array-t? t) (struct-t? t) (and struct? (= i 0))) "@align(16) " "")
+            (wgsl-name (field-name f)) (uniform-type t))))
+
+;; Statements converting `from` (of t's mirror type) into `to` (of type t). depth: the loops'
+;; nesting, naming their counters
+(define (uniform-conversion-lines to from t depth indent)
+  (match t
+    [(struct-t d)
+     (append* (for/list ([f (in-list (struct-decl-fields d))])
+                (define name (wgsl-name (field-name f)))
+                (uniform-conversion-lines (format "~a.~a" to name) (format "~a.~a" from name) (field-type f) depth indent)))]
+    [(array-t e n)
+     (define i (format "zgalI~a" depth))
+     (define element
+       (match e
+         [(scalar-t _) (list (format "~a    ~a[~a] = ~a[~a].x;" indent to i from i))]
+         [(vector-t _ 2) (list (format "~a    ~a[~a] = ~a[~a].xy;" indent to i from i))]
+         [(struct-t _) (uniform-conversion-lines (format "~a[~a]" to i) (format "~a[~a]" from i) e (add1 depth)
+                                                 (string-append indent "    "))]
+         [_ #f]))
+     (if element
+         (append (list (format "~afor (var ~a = 0u; ~a < ~au; ~a++) {" indent i i n i))
+                 element
+                 (list (format "~a}" indent)))
+         ;; Arrays of 4-component vectors and matrices have the same type in both
+         (list (format "~a~a = ~a;" indent to from)))]
+    [_ (list (format "~a~a = ~a;" indent to from))]))
+
+;; The declarations of m's push constants for a module using them: ZgalPush, and for a mirrored
+;; material the mirror's structs and zgal_push()
+(define (push-declaration-lines prog m layout)
+  (define binding (wgsl-push-binding layout))
+  (define value-struct
+    (append (list "struct ZgalPush {")
+            (for/list ([f (in-list (material-push m))])
+              (format "    ~a: ~a," (wgsl-name (field-name f)) (wgsl-type (field-type f))))
+            (list "}")))
+  (cond
+    [(push-mirror? m)
+     (append
+      value-struct
+      (append*
+       (for/list ([d (in-list (push-structs prog m))])
+         (append (list "" (format "struct ~a {" (uniform-struct-name d)))
+                 (uniform-member-lines (struct-decl-fields d) #:struct? #t)
+                 (list "}"))))
+      (list "" "struct ZgalPushUniform {")
+      (uniform-member-lines (material-push m) #:struct? #f)
+      (list "}"
+            (format "@group(0) @binding(~a) var<uniform> zgalPushUniform: ZgalPushUniform;" binding)
+            ""
+            "// The push constants as the body reads them (std430's shape)"
+            "fn zgal_push() -> ZgalPush {"
+            "    var zgalValue: ZgalPush;")
+      (append* (for/list ([f (in-list (material-push m))])
+                 (define name (wgsl-name (field-name f)))
+                 (uniform-conversion-lines (format "zgalValue.~a" name) (format "zgalPushUniform.~a" name) (field-type f) 0 "    ")))
+      (list "    return zgalValue;" "}"))]
+    [else
+     (append value-struct (list (format "@group(0) @binding(~a) var<uniform> zgalPush: ZgalPush;" binding)))]))
+
+;; The first statement of a main reading the push constants, if they need converting
+(define (push-local-lines st)
+  (if (push-mirror? (state-material st)) (list "    var zgalPush = zgal_push();") '()))
 
 ;; ---------------------------------------------------------------------------------------------
 ;; What a shader's body does with the material's variables
@@ -489,11 +612,7 @@
     (line! "override ~a: bool;" (linear-name (binding-name (wgsl-binding-source wb)))))
   (when (and push-layout (state-push-used? st))
     (line! "")
-    (line! "struct ZgalPush {")
-    (for ([entry (in-list (car push-layout))])
-      (line! "    ~a: ~a," (wgsl-name (field-name (car entry))) (wgsl-type (field-type (car entry)))))
-    (line! "}")
-    (line! "@group(0) @binding(~a) var<uniform> zgalPush: ZgalPush;" (wgsl-push-binding layout)))
+    (for ([l (in-list (push-declaration-lines prog m layout))]) (line! "~a" l)))
   (for ([f (in-list (material-shared m))])
     (line! "var<workgroup> ~a: ~a;" (wgsl-name (field-name f))
            (if (set-member? (usage-raw u) (field-name f))
@@ -1366,6 +1485,9 @@
     (define private-sets
       (for/list ([b (in-list (state-entry-builtins st))] #:when (regexp-match? #rx"In$" (second b)))
         (format "    ~a = ~a;" (regexp-replace #rx"In$" (second b) "") (second b))))
+    ;; Only main reads the push constants: material functions are inlined into it, and other
+    ;; functions can't name them
+    (define push-lines (if (state-push-used? st) (push-local-lines st) '()))
     (append
      output-struct
      (list ""
@@ -1376,6 +1498,7 @@
               [(fragment) "@fragment\n"])
             (format "fn main(~a)~a {" (string-join (append header-params builtin-params) ", ")
                     (if return-type (format " -> ~a" return-type) ""))))
+     push-lines
      private-sets
      body-lines
      output-lines

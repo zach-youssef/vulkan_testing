@@ -2142,8 +2142,9 @@ For the web (@secref["web"]), the same body gets a WebGPU interface instead, whi
 to SPIR-V and @hyperlink["https://github.com/gfx-rs/wgpu/tree/trunk/naga-cli"]{naga} translates to
 WGSL (@tt{dsl/private/web-glsl.rkt}; @tt{make test-dsl} builds naga if it isn't installed): no
 @tt{bindless.glsl}, each binding a descriptor of set 0 at the binding's index in the material, the
-push constants a std430 uniform block at the binding after them (the WGSL backend's bind group),
-and the same accessors (@tt{#define albedo() (zgal_albedo)}), so a body reads the same either way.
+push constants a std430 uniform block at the binding after them (the WGSL backend's bind group;
+so they're scalars, vectors and matrices: the WGSL backend's conversion of arrays and structs
+isn't there), and the same accessors (@tt{#define albedo() (zgal_albedo)}), so a body reads the same either way.
 glslc's errors are reported at the body's lines as above, and what naga can't translate (8- and
 16-bit integers, which are refused before it runs; a function taking an @tt{image2D} parameter,
 which has no format; an instruction it lacks) at the shader's declaration, as
@@ -2222,9 +2223,15 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
 @itemlist[
  @item{A material's bindings are a bind group of their own (group 0), numbered in the material's
        order (a sampler bound as several variants, below, takes several numbers). Its push
-       constants are a uniform buffer after them (@tt{zgalPush}, of struct @tt{ZgalPush}), so
-       they're scalars, vectors and matrices: uniform buffers pad arrays and structs differently. A
-       module declares only the bindings its stage uses.}
+       constants are a uniform buffer after them (@tt{zgalPush}, of struct @tt{ZgalPush}). A
+       uniform buffer spaces array elements and structs 16 bytes apart, unlike std430, so when the
+       push constants hold arrays or structs the buffer is a mirror laid out that way
+       (@tt{zgalPushUniform}, of struct @tt{ZgalPushUniform}, where an array of @racket[float]s is
+       an array of @tt{vec4f}s), which a generated @tt{zgal_push()} converts once, at the start of
+       @tt{main}, to the @tt{ZgalPush} the body reads (a local @tt{zgalPush}, so values read from
+       it stay uniform for WGSL's uniformity analysis). The material's TypeScript description
+       gives the mirror's offsets, so the runtime writes values there. A module declares only the
+       bindings its stage uses.}
  @item{WGSL has no 8- and 16-bit integers, and has atomics only on @tt{atomic<u32>} variables. A
        buffer or shared variable holding small integers, or one that atomics act on, is declared as
        32-bit words and read and written through generated functions at its std430 offsets, so the

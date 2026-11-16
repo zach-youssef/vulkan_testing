@@ -1,0 +1,55 @@
+;; Struct and array push constants on the web (web/tests/push.test.ts). A uniform buffer (which push
+;; constants are on WebGPU) spaces array elements and structs 16 bytes apart, so the generated WGSL
+;; reads a mirror laid out that way and converts it, once, to the shape the body reads
+
+(struct Inner (w float) (k uint))
+(struct Packed
+  (a vec2) (vals (array float 3)) (inner Inner) (tail float) (m mat2) (cols (array vec2 2))
+  (inners (array Inner 2)) (last uint))
+
+;; Writes a struct push constant whole, and sums its array (elements read at a loop's index) through
+;; shared memory, with barriers under a condition on the push constants (uniform: WGSL rejects a
+;; barrier under a condition it can't prove is the same for the whole workgroup)
+(compute-material Unpack
+  (workgroup 4)
+  (bindings (copies (buffer-array Packed)) (sums (buffer-array float)))
+  (shared (partial (array float 4)))
+  (push (lead float) (p Packed) (rounds uint))
+  (compute
+   (let* ([x localInvocationId.x])
+     (when (= x 0) (write! (at copies 0) p))
+     (write! (at partial x) (if (< x 3) (at p.vals x) lead))
+     (for ([r (range (uint 0) rounds)])
+       (barrier!)
+       (when (= x 0)
+         (write! (at sums r) (+ (at partial 0) (at partial 1) (at partial 2) (at partial 3))))
+       (barrier!)
+       (write! (at partial x) (* (at partial x) 2.0))))))
+
+;; Top-level arrays (of floats, 2-component vectors and structs), which only an application's own
+;; material instance gives (a graph's push values are scalars, vectors or structs)
+(compute-material Arrays
+  (workgroup 1)
+  (bindings (values (buffer-array float)))
+  (push (scales (array float 3)) (points (array vec2 3)) (items (array Inner 3)) (count uint))
+  (compute
+   (for ([i (range (uint 0) count)])
+     (write! (at values i) (at scales i))
+     (write! (at values (+ 3 (* 2 i))) (.x (at points i)))
+     (write! (at values (+ 4 (* 2 i))) (.y (at points i)))
+     (write! (at values (+ 9 (* 2 i))) (.w (at items i)))
+     (write! (at values (+ 10 (* 2 i))) (float (.k (at items i)))))))
+
+(graph Pushes
+  (input packed (per-frame Packed))
+  (input rounds (per-frame uint))
+  (input more (extern uint))
+  (buffer copies Packed 1 #:frames shared)
+  (buffer sums float 4 #:frames shared)
+  (buffer values float 15 #:frames shared)
+  (material unpacking Unpack (copies copies) (sums sums) #:push ((lead 10.0) (p packed) (rounds rounds)) #:invocations (4))
+  (dispatch unpack unpacking)
+  (readback readCopies copies)
+  (readback readSums sums)
+  (extern arrays more 2)
+  (readback readValues values))
