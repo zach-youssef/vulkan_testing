@@ -474,12 +474,15 @@
   (for ([s (in-list (of-type g-sampler?))])
     (define o (g-sampler-options s))
     (define (opt k) (cond [(assq k o) => cdr] [else #f]))
+    ;; Without #:border, opaque black as a float colour: SamplerDesc's default is the integer one,
+    ;; whose values are undefined on the non-integer images ZGAL samples (lavapipe's alpha is 0)
+    (define border (or (opt 'border) (and (eq? (opt 'address) 'clamp-to-border) 'opaque-black)))
     (define fields
       (filter values
               (list (and (opt 'filter) (format ".filter = ~a" (vk-enum "VK_FILTER_" (opt 'filter))))
                     (and (opt 'mipmap) (format ".mipmapMode = ~a" (vk-enum "VK_SAMPLER_MIPMAP_MODE_" (opt 'mipmap))))
                     (and (opt 'address) (format ".addressMode = ~a" (vk-enum "VK_SAMPLER_ADDRESS_MODE_" (opt 'address))))
-                    (and (opt 'border) (format ".borderColor = ~a" (border-color (opt 'border))))
+                    (and border (format ".borderColor = ~a" (border-color border)))
                     (and (opt 'compare) (format ".compareOp = ~a" (compare-op (opt 'compare))))
                     (and (opt 'anisotropy) (format ".anisotropy = ~a" (if (eq? (opt 'anisotropy) 'yes) "true" "false")))
                     (and (opt 'max-lod) (format ".maxLod = ~a" (literal->cpp (opt 'max-lod) (scalar-t 'float)))))))

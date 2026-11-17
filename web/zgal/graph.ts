@@ -135,12 +135,27 @@ export type Bound =
   | { readonly sampler: Sampler }
   | { readonly uniform: Uniform<any> };
 
+// The colour a sampler clamping to a border gives outside the image (Vulkan's float border colours)
+export type SamplerBorder = 'transparent-black' | 'opaque-black' | 'opaque-white';
+
+// VkCompareOp's values, which modules comparing by hand take (zgalCompareOp_<sampler>)
+const compareOps: Record<GPUCompareFunction, number> = {
+  never: 0, less: 1, equal: 2, 'less-equal': 3, greater: 4, 'not-equal': 5, 'greater-equal': 6, always: 7,
+};
+
+// A border's zgalBorder_<sampler> (0 is no border)
+const borderCodes: Record<SamplerBorder, number> = { 'transparent-black': 1, 'opaque-black': 2, 'opaque-white': 3 };
+
 // A graph's sampler, as the ZGAL graph describes it, and the GPUSamplers materials bind it as:
 // WebGPU's samplers each do one thing (see material.ts's BindingKind), so a binding gets the one
-// it needs, made when first bound
+// it needs, made when first bound. WebGPU's samplers have no border colour, so one clamping to a
+// border is described clamping to the edge, with its border apart: the modules sample by hand where
+// it has one (MaterialInstance's constants)
 export class Sampler {
   readonly name: string;
   readonly descriptor: GPUSamplerDescriptor;
+  // The colour it clamps to, or null where it clamps to none
+  readonly border: SamplerBorder | null;
   // Whether it filters (any linear filter): what WebGPU counts as a filtering sampler
   readonly filtering: boolean;
   // Whether it filters texels (its filter is linear; ZGAL's #:filter sets magFilter and minFilter
@@ -150,10 +165,11 @@ export class Sampler {
   private described: GPUSampler | null = null;
   private nearest: GPUSampler | null = null;
   private comparing: GPUSampler | null = null;
-  constructor(device: GPUDevice, name: string, descriptor: GPUSamplerDescriptor) {
+  constructor(device: GPUDevice, name: string, descriptor: GPUSamplerDescriptor, border: SamplerBorder | null) {
     this.device = device;
     this.name = name;
     this.descriptor = descriptor;
+    this.border = border;
     this.filtering = descriptor.magFilter === 'linear' || descriptor.minFilter === 'linear' || descriptor.mipmapFilter === 'linear';
     this.linear = descriptor.magFilter === 'linear';
   }
@@ -260,14 +276,22 @@ export class MaterialInstance {
     return layout;
   }
 
-  // A stage's pipeline-overridable constants: whether the ZGAL sampler of each depth sampler the
-  // stage declares filters (a module's zgalLinear_<sampler>), which the WGSL then does by hand
+  // A stage's pipeline-overridable constants, describing each ZGAL sampler the stage uses what
+  // WebGPU's samplers can't, for the WGSL to do by hand: whether it filters (zgalLinear_<sampler>),
+  // the border it clamps to (zgalBorder_<sampler>: 0 for none, then transparent black, opaque black
+  // and opaque white) and, where the stage compares with it, its comparison
+  // (zgalCompareOp_<sampler>, VkCompareOp's value). Fixed for an instance, as its samplers are
   private constants(stage: Stage): Record<string, number> {
     const constants: Record<string, number> = {};
     for (const b of this.desc.bindings) {
-      if (b.kind !== 'depth-sampler' || !b.stages.includes(stage)) continue;
+      if ((b.kind !== 'sampler' && b.kind !== 'depth-sampler' && b.kind !== 'comparison-sampler') || !b.stages.includes(stage)) continue;
       const bound = this.bindings[b.resource];
-      if ('sampler' in bound) constants[`zgalLinear_${b.resource}`] = bound.sampler.linear ? 1 : 0;
+      if (!('sampler' in bound)) continue;
+      const { sampler } = bound;
+      constants[`zgalLinear_${b.resource}`] = sampler.linear ? 1 : 0;
+      constants[`zgalBorder_${b.resource}`] = sampler.border ? borderCodes[sampler.border] : 0;
+      // A sampler without #:compare fails binding (Sampler.comparison) with a clearer message
+      if (b.kind === 'comparison-sampler') constants[`zgalCompareOp_${b.resource}`] = sampler.descriptor.compare ? compareOps[sampler.descriptor.compare] : 0;
     }
     return constants;
   }
@@ -420,6 +444,8 @@ export class MaterialBinder {
         const { sampler } = bound;
         if (b.kind === 'comparison-sampler') return { binding: i, resource: sampler.comparison(desc.name) };
         if (b.kind === 'depth-sampler') return { binding: i, resource: sampler.nonFiltering() };
+        // Also for a sampler clamping to a border, though the modules then filter by hand: the
+        // layout can't tell which sampler samples which texture
         if (formats.samplers[b.name] === 'non-filtering' && sampler.filtering) {
           throw new Error(`${this.nodeName}: material ${desc.name} ${instance.unfilterable()}, and sampler ${sampler.name} filters: give it nearest filters (#:filter and #:mipmap)`);
         }
@@ -679,8 +705,10 @@ export class RenderGraph {
     return this.importBuffer(name, element, buffer, true);
   }
 
-  sampler(name: string, descriptor: GPUSamplerDescriptor): Sampler {
-    return new Sampler(this.context.device, name, descriptor);
+  // A sampler as descriptor says, clamping to the border given (with clamp-to-edge address modes),
+  // or to none (null)
+  sampler(name: string, descriptor: GPUSamplerDescriptor, border: SamplerBorder | null): Sampler {
+    return new Sampler(this.context.device, name, descriptor, border);
   }
 
   uniform<T>(name: string, type: Type<T>, source: FrameSource<T>): Uniform<T> {

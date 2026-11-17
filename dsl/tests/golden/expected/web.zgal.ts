@@ -487,7 +487,11 @@ struct Settings {
 @group(0) @binding(3) var albedoSampler: sampler;
 @group(0) @binding(4) var zgalDepth_albedoSampler: sampler;
 @group(0) @binding(5) var picture: texture_storage_2d<${formats['picture']}, read>;
+override zgalLinear_shadowSampler: bool;
+override zgalBorder_shadowSampler: u32;
+override zgalCompareOp_shadowSampler: u32;
 override zgalLinear_albedoSampler: bool;
+override zgalBorder_albedoSampler: u32;
 
 struct ZgalPush {
     transform: mat4x4f,
@@ -526,7 +530,58 @@ fn zgalMod_float3(x: vec3f, y: vec3f) -> vec3f {
     return x - y * floor(x / y);
 }
 
-fn zgalSampleDepth(t: texture_depth_2d, s: sampler, uv: vec2f, level: i32, linear: bool) -> f32 {
+fn zgalBorderTexelDepth(t: texture_depth_2d, at: vec2i, color: f32) -> f32 {
+    if (any(at < vec2i(0i)) || any(at >= vec2i(textureDimensions(t)))) {
+        return color;
+    }
+    return textureLoad(t, at, 0i);
+}
+
+fn zgalBorderColor(border: u32) -> vec4f {
+    return select(vec4f(0.0f, 0.0f, 0.0f, select(0.0f, 1.0f, border == 2u)), vec4f(1.0f), border == 3u);
+}
+
+fn zgalCompare(op: u32, reference: f32, depth: f32) -> f32 {
+    return f32((op >> select(select(2u, 1u, reference == depth), 0u, reference < depth)) & 1u);
+}
+
+fn zgalFilterCompareBorder(t: texture_depth_2d, uv: vec2f, reference: f32, linear: bool, border: u32, op: u32) -> f32 {
+    let color = zgalBorderColor(border).x;
+    let size = vec2f(textureDimensions(t));
+    if (!linear) {
+        return zgalCompare(op, reference, zgalBorderTexelDepth(t, vec2i(floor(uv * size)), color));
+    }
+    let at = uv * size - 0.5f;
+    let block = floor(at);
+    let weight = at - block;
+    let i = vec2i(block);
+    return mix(mix(zgalCompare(op, reference, zgalBorderTexelDepth(t, i, color)), zgalCompare(op, reference, zgalBorderTexelDepth(t, i + vec2i(1i, 0i), color)), weight.x), mix(zgalCompare(op, reference, zgalBorderTexelDepth(t, i + vec2i(0i, 1i), color)), zgalCompare(op, reference, zgalBorderTexelDepth(t, i + vec2i(1i, 1i), color)), weight.x), weight.y);
+}
+
+fn zgalSampleCompare(t: texture_depth_2d, s: sampler_comparison, uv: vec2f, reference: f32, linear: bool, border: u32, op: u32) -> f32 {
+    if (border != 0u) {
+        return zgalFilterCompareBorder(t, uv, reference, linear, border, op);
+    }
+    return textureSampleCompare(t, s, uv, reference);
+}
+
+fn zgalFilterBorderDepth(t: texture_depth_2d, uv: vec2f, linear: bool, border: u32) -> f32 {
+    let color = zgalBorderColor(border).x;
+    let size = vec2f(textureDimensions(t));
+    if (!linear) {
+        return zgalBorderTexelDepth(t, vec2i(floor(uv * size)), color);
+    }
+    let at = uv * size - 0.5f;
+    let block = floor(at);
+    let weight = at - block;
+    let i = vec2i(block);
+    return mix(mix(zgalBorderTexelDepth(t, i, color), zgalBorderTexelDepth(t, i + vec2i(1i, 0i), color), weight.x), mix(zgalBorderTexelDepth(t, i + vec2i(0i, 1i), color), zgalBorderTexelDepth(t, i + vec2i(1i, 1i), color), weight.x), weight.y);
+}
+
+fn zgalSampleDepth(t: texture_depth_2d, s: sampler, uv: vec2f, level: i32, linear: bool, border: u32) -> f32 {
+    if (border != 0u) {
+        return zgalFilterBorderDepth(t, uv, linear, border);
+    }
     if (!linear) {
         return textureSampleLevel(t, s, uv, level);
     }
@@ -536,6 +591,33 @@ fn zgalSampleDepth(t: texture_depth_2d, s: sampler, uv: vec2f, level: i32, linea
     let weight = at - block;
     let texels = textureGather(t, s, (block + 1.0f) / size);
     return mix(mix(texels.w, texels.z, weight.x), mix(texels.x, texels.y, weight.x), weight.y);
+}
+
+fn zgalBorderTexel(t: texture_2d<f32>, at: vec2i, color: vec4f) -> vec4f {
+    if (any(at < vec2i(0i)) || any(at >= vec2i(textureDimensions(t)))) {
+        return color;
+    }
+    return textureLoad(t, at, 0i);
+}
+
+fn zgalFilterBorder(t: texture_2d<f32>, uv: vec2f, linear: bool, border: u32) -> vec4f {
+    let color = zgalBorderColor(border);
+    let size = vec2f(textureDimensions(t));
+    if (!linear) {
+        return zgalBorderTexel(t, vec2i(floor(uv * size)), color);
+    }
+    let at = uv * size - 0.5f;
+    let block = floor(at);
+    let weight = at - block;
+    let i = vec2i(block);
+    return mix(mix(zgalBorderTexel(t, i, color), zgalBorderTexel(t, i + vec2i(1i, 0i), color), weight.x), mix(zgalBorderTexel(t, i + vec2i(0i, 1i), color), zgalBorderTexel(t, i + vec2i(1i, 1i), color), weight.x), weight.y);
+}
+
+fn zgalSample(t: texture_2d<f32>, s: sampler, uv: vec2f, linear: bool, border: u32) -> vec4f {
+    if (border != 0u) {
+        return zgalFilterBorder(t, uv, linear, border);
+    }
+    return textureSample(t, s, uv);
 }
 
 fn negativeInfinity() -> f32 {
@@ -555,8 +637,8 @@ fn shade(v: vec3f, n: i32, m: mat4x4f) -> vec4f {
     return vec4f(select(zgalMod_float3(v, vec3f(2.0f)), min(v, vec3f(0.5f)), (v < vec3f(0.25f))), (((w.x + s.zgal_loop) + f32(1i << u32(n))) + f32((-2147483647i - 1i))) + max(negativeInfinity(), 0.0f));
 }
 
-fn shadowed(map: texture_depth_2d, zgalCompare_s: sampler_comparison, uv: vec2f) -> f32 {
-    return textureSampleCompare(map, zgalCompare_s, uv, 0.5f);
+fn shadowed(map: texture_depth_2d, zgalCompare_s: sampler_comparison, zgalLinear_s: bool, zgalBorder_s: u32, zgalCompareOp_s: u32, uv: vec2f) -> f32 {
+    return zgalSampleCompare(map, zgalCompare_s, uv, 0.5f, zgalLinear_s, zgalBorder_s, zgalCompareOp_s);
 }
 
 struct ZgalFragmentOutput {
@@ -566,13 +648,13 @@ struct ZgalFragmentOutput {
 
 @fragment
 fn main(@location(0) tint: vec4f, @location(1) @interpolate(linear) screen: vec2f, @location(2) @interpolate(flat) id: u32, @builtin(position) zgalPosition: vec4f) -> ZgalFragmentOutput {
-    var lit: f32 = shadowed(shadowMap, zgalCompare_shadowSampler, screen);
-    var depth: vec4f = vec4f(zgalSampleDepth(shadowMap, zgalDepth_albedoSampler, screen, 0i, zgalLinear_albedoSampler), 0.0f, 0.0f, 1.0f);
+    var lit: f32 = shadowed(shadowMap, zgalCompare_shadowSampler, zgalLinear_shadowSampler, zgalBorder_shadowSampler, zgalCompareOp_shadowSampler, screen);
+    var depth: vec4f = vec4f(zgalSampleDepth(shadowMap, zgalDepth_albedoSampler, screen, 0i, zgalLinear_albedoSampler, zgalBorder_albedoSampler), 0.0f, 0.0f, 1.0f);
     if (lit < 0.1f) {
         discard;
     }
     var zgalOut: ZgalFragmentOutput;
-    zgalOut.color = ((tint * textureSample(albedo, albedoSampler, screen)) * lit) * textureLoad(picture, vec2i(zgalPosition.xy));
+    zgalOut.color = ((tint * zgalSample(albedo, albedoSampler, screen, zgalLinear_albedoSampler, zgalBorder_albedoSampler)) * lit) * textureLoad(picture, vec2i(zgalPosition.xy));
     zgalOut.glow = (shade(tint.xyz, i32(id), zgalPush.transform) + depth) + vec4f(dpdx(screen.x), fwidth(screen.y), 0.0f, 1.0f);
     return zgalOut;
 }

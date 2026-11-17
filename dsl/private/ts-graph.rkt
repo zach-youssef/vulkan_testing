@@ -134,9 +134,6 @@
   (for ([item (in-list items)])
     (match item
       [(g-import-images n _ l) (web-error l "WebGPU has no arrays of bindings, so ~a's images can't be imported for one" n)]
-      [(g-sampler n o l)
-       (when (eq? (cond [(assq 'address o) => cdr] [else #f]) 'clamp-to-border)
-         (web-error l "WebGPU's samplers have no border colour, so sampler ~a can't clamp to one" n))]
       [_ (void)]))
 
   (define parameters (of-type g-parameter?))
@@ -323,12 +320,17 @@
        ;; Without a mipmap filter, a nearest sampler's is nearest too: with no mipmaps (#:max-lod 0)
        ;; it filters nothing, and WebGPU counts a linear one as filtering
        (define mipmap (case (opt 'mipmap) [(nearest) "nearest"] [(linear) "linear"] [else filter]))
-       (define address (case (opt 'address) [(mirrored-repeat) "mirror-repeat"] [(clamp-to-edge) "clamp-to-edge"] [else "repeat"]))
+       ;; WebGPU's samplers have no border colour: one clamping to a border clamps to the edge, and
+       ;; materials sample by hand outside the image (wgsl.rkt's zgalBorder_s), with the colour
+       ;; given here (without #:border, opaque black, as natively)
+       (define address (case (opt 'address) [(mirrored-repeat) "mirror-repeat"] [(clamp-to-edge clamp-to-border) "clamp-to-edge"] [else "repeat"]))
+       (define border (and (eq? (opt 'address) 'clamp-to-border) (or (opt 'border) 'opaque-black)))
        (define anisotropic? (and (not (eq? (opt 'anisotropy) 'no)) (equal? filter "linear") (equal? mipmap "linear")))
-       (line! "    const sampler_~a = graph.sampler(~a, { magFilter: '~a', minFilter: '~a', mipmapFilter: '~a', addressModeU: '~a', addressModeV: '~a', addressModeW: '~a', lodMaxClamp: ~a~a~a });"
+       (line! "    const sampler_~a = graph.sampler(~a, { magFilter: '~a', minFilter: '~a', mipmapFilter: '~a', addressModeU: '~a', addressModeV: '~a', addressModeW: '~a', lodMaxClamp: ~a~a~a }, ~a);"
               n (ts-string n) filter filter mipmap address address address (number-text (or (opt 'max-lod) 0) (scalar-t 'float))
               (if anisotropic? ", maxAnisotropy: 16" "")
-              (if (opt 'compare) (format ", compare: '~a'" (compare-function (opt 'compare))) ""))]
+              (if (opt 'compare) (format ", compare: '~a'" (compare-function (opt 'compare))) "")
+              (if border (format "'~a'" border) "null"))]
       [(g-uniform n t source _)
        (line! "    const uniform_~a = graph.uniform(~a, ~a, inputs.~a);" n (ts-string n) (ts-layout-type t) source)]
       [(g-image n f extent _ when _)

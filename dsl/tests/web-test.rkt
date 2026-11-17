@@ -41,16 +41,6 @@
       (compute (write! (at counts 0) (array-length sources))))"
    "can't be an array of buffer-arrays"))
 
-(test-case "Graphs using what WebGPU lacks"
-  (check-not-on-web
-   (string-append corner
-                  "(graph G
-                     (image picture rgba8 (fixed 4 4) #:frames shared)
-                     (target t (color picture #:clear (0 0 0 1)))
-                     (sampler border #:address clamp-to-border)
-                     (material m Corner)
-                     (draw d t m 3))")
-   "border"))
 
 (test-case "Graphs binding arrays of textures to what isn't copied into a texture array"
   (define (graph . items)
@@ -166,7 +156,7 @@
      "Copy.comp.wgsl"))
   (with-check-info (['wgsl wgsl])
     (check-false (regexp-match? #rx"\n +var [a-zA-Z_0-9]+: (texture|sampler)" wgsl) "no locals of them")
-    (check-true (string-contains? wgsl "textureStore(img, vec2i(0i, 0i), textureSampleLevel(tex, smp, "))))
+    (check-true (string-contains? wgsl "textureStore(img, vec2i(0i, 0i), zgalSampleLevel(tex, smp, "))))
 
 (test-case "An inlined function's texture array element argument has its index evaluated once, in order, on the web"
   (define wgsl
@@ -288,20 +278,87 @@
     (check-true (string-contains? wgsl "@group(0) @binding(3) var zgalCompare_smp: sampler_comparison;"))
     (check-true (string-contains? wgsl "@group(0) @binding(4) var picture: texture_2d<f32>;"))
     (check-true (string-contains? wgsl "@group(0) @binding(6) var<uniform> zgalPush: ZgalPush;"))
-    ;; Whether the depth variant's sampler filters, for the filter by hand
-    (check-true (string-contains? wgsl "override zgalLinear_smp: bool;"))
-    (check-true (string-contains? wgsl "fn zgalSampleDepth(t: texture_depth_2d, s: sampler, uv: vec2f, level: i32, linear: bool) -> f32"))
-    ;; A function's sampler is the variants it uses; one only sampling is specialized for a depth
-    ;; texture (its sampler then the non-filtering variant), the colour texture's keeps its name
-    (check-true (string-contains? wgsl "fn both(map: texture_depth_2d, zgalDepth_s: sampler, zgalLinear_s: bool, zgalCompare_s: sampler_comparison, uv: vec2f) -> vec2f"))
-    (check-true (string-contains? wgsl "zgalSampleDepth(map, zgalDepth_s, uv, 0i, zgalLinear_s)"))
-    (check-true (string-contains? wgsl "textureSampleCompareLevel(map, zgalCompare_s, uv, 0.5f)"))
-    (check-true (string-contains? wgsl "fn red(t: texture_2d<f32>, s: sampler, uv: vec2f) -> f32"))
-    (check-true (string-contains? wgsl "textureSampleLevel(t, s, uv, 0.0f).x"))
-    (check-true (string-contains? wgsl "fn zgalDepth_0_red(t: texture_depth_2d, zgalDepth_s: sampler, zgalLinear_s: bool, uv: vec2f) -> f32"))
-    (check-true (string-contains? wgsl "both(shadow, zgalDepth_smp, zgalLinear_smp, zgalCompare_smp, zgalPush.uv)"))
-    (check-true (string-contains? wgsl "zgalDepth_0_red(shadow, zgalDepth_smp, zgalLinear_smp, zgalPush.uv)"))
-    (check-true (string-contains? wgsl "red(picture, smp, zgalPush.uv)"))))
+    ;; What the sampler's variants can't say, for the WGSL to do by hand: whether it filters, its
+    ;; border and, as it compares, its comparison
+    (check-true (string-contains? wgsl "override zgalLinear_smp: bool;\noverride zgalBorder_smp: u32;\noverride zgalCompareOp_smp: u32;"))
+    (check-true (string-contains? wgsl "fn zgalSampleDepth(t: texture_depth_2d, s: sampler, uv: vec2f, level: i32, linear: bool, border: u32) -> f32"))
+    (check-true (string-contains? wgsl "fn zgalSampleCompareLevel(t: texture_depth_2d, s: sampler_comparison, uv: vec2f, reference: f32, linear: bool, border: u32, op: u32) -> f32"))
+    (check-true (string-contains? wgsl "fn zgalSampleLevel(t: texture_2d<f32>, s: sampler, uv: vec2f, level: f32, linear: bool, border: u32) -> vec4f"))
+    ;; A function's sampler is the variants it uses, then those properties; one only sampling is
+    ;; specialized for a depth texture (its sampler then the non-filtering variant), the colour
+    ;; texture's keeps its name
+    (check-true (string-contains? wgsl "fn both(map: texture_depth_2d, zgalDepth_s: sampler, zgalCompare_s: sampler_comparison, zgalLinear_s: bool, zgalBorder_s: u32, zgalCompareOp_s: u32, uv: vec2f) -> vec2f"))
+    (check-true (string-contains? wgsl "zgalSampleDepth(map, zgalDepth_s, uv, 0i, zgalLinear_s, zgalBorder_s)"))
+    (check-true (string-contains? wgsl "zgalSampleCompareLevel(map, zgalCompare_s, uv, 0.5f, zgalLinear_s, zgalBorder_s, zgalCompareOp_s)"))
+    (check-true (string-contains? wgsl "fn red(t: texture_2d<f32>, s: sampler, zgalLinear_s: bool, zgalBorder_s: u32, uv: vec2f) -> f32"))
+    (check-true (string-contains? wgsl "zgalSampleLevel(t, s, uv, 0.0f, zgalLinear_s, zgalBorder_s).x"))
+    (check-true (string-contains? wgsl "fn zgalDepth_0_red(t: texture_depth_2d, zgalDepth_s: sampler, zgalLinear_s: bool, zgalBorder_s: u32, uv: vec2f) -> f32"))
+    (check-true (string-contains? wgsl "both(shadow, zgalDepth_smp, zgalCompare_smp, zgalLinear_smp, zgalBorder_smp, zgalCompareOp_smp, zgalPush.uv)"))
+    (check-true (string-contains? wgsl "zgalDepth_0_red(shadow, zgalDepth_smp, zgalLinear_smp, zgalBorder_smp, zgalPush.uv)"))
+    (check-true (string-contains? wgsl "red(picture, smp, zgalLinear_smp, zgalBorder_smp, zgalPush.uv)"))))
+
+(test-case "Sampling past a border is by hand, from texels loaded, and only where the sampler has one"
+  (define wgsl
+    (web-shader
+     "(graphics-material Edge
+        (bindings (picture texture) (shadow texture) (smp sampler) (cmp sampler))
+        (outputs (color vec4))
+        (vertex (results #:position (vec4 0.0 0.0 0.0 1.0)))
+        (fragment (* (sample picture smp (vec2 1.5)) (sample-compare shadow cmp (vec2 -0.5) 0.5))))"
+     "Edge.frag.wgsl"))
+  (with-check-info (['wgsl wgsl])
+    ;; A compare-only sampler has no other variant, but still its properties
+    (check-true (string-contains? wgsl "override zgalLinear_cmp: bool;\noverride zgalBorder_cmp: u32;\noverride zgalCompareOp_cmp: u32;"))
+    (check-false (string-contains? wgsl "zgalCompareOp_smp"))
+    ;; Outside the image, the border colour; inside, the texel
+    (check-true (string-contains? wgsl "any(at >= vec2i(textureDimensions(t)))) {\n        return color;\n    }\n    return textureLoad(t, at, 0i);"))
+    ;; Without a border, the sampler's own sampling, in the branch the override folds away
+    (check-true (string-contains? wgsl "if (border != 0u) {\n        return zgalFilterBorder(t, uv, linear, border);\n    }\n    return textureSample(t, s, uv);"))
+    (check-true (string-contains? wgsl "zgalSample(picture, smp, vec2f(1.5f), zgalLinear_smp, zgalBorder_smp)"))
+    (check-true (string-contains? wgsl "zgalSampleCompare(shadow, zgalCompare_cmp, vec2f(-0.5f), 0.5f, zgalLinear_cmp, zgalBorder_cmp, zgalCompareOp_cmp)")))
+  (define vertex
+    (web-shader
+     "(graphics-material Edge
+        (bindings (layers (array texture)) (smp sampler))
+        (outputs (color vec4))
+        (vertex (results #:position (sample-lod (at layers 2) smp (vec2 0.5) 0.0)))
+        (fragment (vec4 1.0)))"
+     "Edge.vert.wgsl"))
+  (with-check-info (['wgsl vertex])
+    ;; An element of an array is a layer, clamped as WebGPU's sampling clamps it
+    (check-true (string-contains? vertex "let l = clamp(layer, 0i, i32(textureNumLayers(t)) - 1i);"))
+    (check-true (string-contains? vertex "zgalSampleArrayLevel(layers, smp, vec2f(0.5f), i32(2i), 0.0f, zgalLinear_smp, zgalBorder_smp)"))))
+
+(test-case "A sampler clamping to a border clamps to the edge on the web, its border colour beside it"
+  (define (sampler options)
+    (define ts
+      (web-shader
+       (string-append corner "(graph G
+          (image picture rgba8 (fixed 4 4) #:frames shared)
+          (target t (color picture #:clear (0 0 0 1)))
+          (sampler s " options ")
+          (material m Corner)
+          (draw d t m 3))")
+       "test.zgal.ts"))
+    (cadr (regexp-match #rx"graph.sampler\\('s', ([^\n]*)\\);" ts)))
+  (check-regexp-match #rx"addressModeU: 'clamp-to-edge'.*}, 'opaque-black'$" (sampler "#:address clamp-to-border"))
+  (check-regexp-match #rx"}, 'opaque-white'$" (sampler "#:address clamp-to-border #:border opaque-white"))
+  (check-regexp-match #rx"addressModeU: 'repeat'.*}, null$" (sampler "#:border opaque-white"))
+  ;; Natively too, opaque black without #:border, as a float colour (SamplerDesc's default is the
+  ;; integer one, undefined on non-integer images)
+  (define (native-sampler options)
+    (define h
+      (for/first ([o (in-list (compile-text (string-append corner "(graph G
+          (image picture rgba8 (fixed 4 4) #:frames shared)
+          (target t (color picture #:clear (0 0 0 1)))
+          (sampler s " options ")
+          (material m Corner)
+          (draw d t m 3))")))]
+                  #:when (string-suffix? (output-path o) ".zgal.h"))
+        (output-text o)))
+    (cadr (regexp-match #rx"auto sampler_s, VulkanSampler::create\\(context, SamplerDesc{([^}]*)}" h)))
+  (check-regexp-match #rx"borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK" (native-sampler "#:address clamp-to-border"))
+  (check-false (regexp-match? #rx"borderColor" (native-sampler "#:address clamp-to-edge"))))
 
 (test-case "Only the function variants called are emitted"
   (define wgsl
@@ -319,7 +376,7 @@
   (with-check-info (['wgsl wgsl])
     (check-true (string-contains? wgsl "fn zgalDepth_0_red(t: texture_depth_2d, zgalDepth_s: sampler, "))
     (check-false (string-contains? wgsl "fn red("))
-    (check-regexp-match #rx"fn shadowed\\(map: texture_depth_2d, zgalDepth_s: sampler, .*zgalCompare_s: sampler_comparison, uv: vec2f\\) -> f32" wgsl)
+    (check-regexp-match #rx"fn shadowed\\(map: texture_depth_2d, zgalDepth_s: sampler, zgalCompare_s: sampler_comparison, .*uv: vec2f\\) -> f32" wgsl)
     (check-regexp-match #rx"zgalDepth_0_red\\(map, zgalDepth_s, .*uv\\)" wgsl)))
 
 (test-case "A texture compared in one stage is a depth texture in the others"
@@ -336,5 +393,5 @@
     (check-true (string-contains? wgsl "var shadow: texture_depth_2d;"))
     (check-true (string-contains? wgsl "var zgalDepth_smp: sampler;"))
     (check-false (string-contains? wgsl "zgalCompare_smp"))
-    (check-true (string-contains? wgsl "override zgalLinear_smp: bool;"))
-    (check-true (string-contains? wgsl "vec4f(zgalSampleDepth(shadow, zgalDepth_smp, vec2f(0.5f), 0i, zgalLinear_smp), 0.0f, 0.0f, 1.0f).x"))))
+    (check-true (string-contains? wgsl "override zgalLinear_smp: bool;\noverride zgalBorder_smp: u32;\n"))
+    (check-true (string-contains? wgsl "vec4f(zgalSampleDepth(shadow, zgalDepth_smp, vec2f(0.5f), 0i, zgalLinear_smp, zgalBorder_smp), 0.0f, 0.0f, 1.0f).x"))))

@@ -1242,7 +1242,8 @@ surface-relative ones, when the surface resizes).
        (@tt{transparent-black}, @tt{opaque-black}, @tt{opaque-white}), @tt{#:compare} (a
        comparison, e.g. @tt{less-or-equal}, for shadow maps), @tt{#:anisotropy} (@tt{#t} or
        @tt{#f}; only linear samplers with linear mipmaps filter anisotropically) and
-       @tt{#:max-lod}. The defaults are @tt{SamplerDesc}'s.}
+       @tt{#:max-lod}. The defaults are @tt{SamplerDesc}'s, but for the border: opaque black as a
+       float colour (@tt{SamplerDesc}'s is the integer one, undefined on non-integer images).}
  @item{@racket[uniform]: a mapped buffer per frame in flight, holding a value of its type that the
        per-frame input computes once a frame, before the first material using it records, however
        many use it. To spare memory traffic, a frame's buffer is only written when the value differs
@@ -2249,14 +2250,22 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        samplers each do one thing (a comparison sampler only compares, and a depth texture is
        sampled only with a non-filtering sampler), so a ZGAL sampler @tt{s} is bound as the variants
        the stage uses: @tt{s}, as the graph describes it, sampling other textures;
-       @tt{zgalDepth_s}, a non-filtering one sampling depth textures, with the pipeline constant
-       @tt{zgalLinear_s} saying whether @tt{s} filters, which the module then does by hand (a
-       bilinear filter of the texels the sampler's address mode gives, as Vulkan's linear filter
-       of a depth image); and @tt{zgalCompare_s}, a comparison sampler, which WebGPU filters
+       @tt{zgalDepth_s}, a non-filtering one sampling depth textures, which the module filters by
+       hand (a bilinear filter of the texels the sampler's address mode gives, as Vulkan's linear
+       filter of a depth image); and @tt{zgalCompare_s}, a comparison sampler, which WebGPU filters
        (comparing each texel). The runtime makes them from the one sampler (comparing needs its
-       @racket[#:compare]). A function's sampler parameter is likewise the variants the function
-       uses, and a function given a depth texture for a parameter it only samples is specialized
-       for it (@tt{zgalDepth_0_f} for its first parameter).}
+       @racket[#:compare]). What they can't say are pipeline constants the runtime sets per
+       sampler: @tt{zgalLinear_s}, whether @tt{s} filters; @tt{zgalBorder_s}, the colour it clamps
+       to (0 for none, then transparent black, opaque black and opaque white), as WebGPU's samplers
+       have no border colour (one clamping to a border is bound clamping to the edge); and, where
+       the stage compares, @tt{zgalCompareOp_s}, its comparison (as @tt{VkCompareOp}). With a
+       border, sampling and comparing are by hand: the nearest texel, or a bilinear filter of the
+       four nearest (each compared first), loaded with @tt{textureLoad}, with the border colour
+       for those outside the image (its red, compared, for a depth texture), so without
+       anisotropic filtering (natively, a default sampler filters anisotropically); without one,
+       the branch folds away. A function's sampler parameter is likewise the variants the function
+       uses, then those constants, and a function given a depth texture for a parameter it only
+       samples is specialized for it (@tt{zgalDepth_0_f} for its first parameter).}
  @item{A storage image's texel format is part of its WGSL type: modules are written with
        @tt{rgba8unorm}.}
  @item{WebGPU's vertex shaders can't write: buffers and storage images a vertex shader uses must be
@@ -2541,9 +2550,9 @@ models and meshes: the runtime loads glTF (@tt{.gltf}, @tt{.glb}) and OBJ files 
 C++ does, and a meshes input is an array of the runtime's @tt{Mesh}es, which @tt{createMesh} makes
 from vertices @tt{encodeVertices} lays out as the module's vertex format descriptions (a constant
 per vertex format) say. What a program's own code gives the app goes through
-@tt{mainInputs} on the web too (@secref["main-inputs"]). WebGPU's samplers have no border colour, so
-compiling a sampler clamping to one for the web reports
-@secref["error-not-on-web"].
+@tt{mainInputs} on the web too (@secref["main-inputs"]), and so do samplers clamping to a border:
+WebGPU's samplers have no border colour, so they clamp to the edge and modules sample past it by
+hand (see the WGSL above).
 
 A @racket[cpu] node reading or writing imported buffers runs on the web too, though WebGPU's
 buffers can't be mapped while the GPU uses them: its cpu input is

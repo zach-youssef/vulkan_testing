@@ -44,7 +44,7 @@
 
 ;; Fraction of light reaching a point, filtered over 3x3 bilinear comparisons (PCF). The sampler
 ;; compares: sampling returns the fraction of texels closer to the light than the reference. Taps
-;; outside the map are lit (a white border would be, but WebGPU's samplers have no border colour).
+;; outside the map are lit, as a sampler clamping to a white border would light them.
 (define (shadowFactor [shadowMap : texture2D] [shadowSampler : sampler] [lightViewProjection : mat4]
                       [position : vec3] [normal : vec3] [toLight : vec3]) : float
   (let* ([texelSize (/ 1.0 (vec2 (texture-size shadowMap 0)))]
