@@ -82,6 +82,24 @@ This page has what the reference doesn't: the runtime's conventions and how to t
 - The web keeps Vulkan's clip space (the WGSL negates y), so web pixel expectations match native
   ones.
 
+## Writing runtime code and tests
+
+- Node's type stripping and `erasableSyntaxOnly` reject TypeScript parameter properties: assign
+  fields explicitly. `Uint8Array<ArrayBuffer>` and `<ArrayBufferLike>` are different types, which
+  bites `Blob` parts and `AssetLoader` returns; wrap a Node `Buffer` in `new Uint8Array(...)`
+  before `deepStrictEqual`.
+- A `ReadableStream` that may already have errored (e.g. an aborted fetch body wrapped by
+  `readableStream`) makes a later `cancel()` reject with the abort reason: cancel it with a
+  `.catch`.
+- Under Node, `runHeadless` makes command-line paths absolute, so a test server sees
+  `/abs/path/scene.bin`: match requests by suffix. In a page test, a `Blob` subclass overriding
+  `stream()` gives `runHeadless` a slow or unbounded source.
+- A program that has a window needs `--frames` to run headless, so adding a window to a test
+  program breaks callers that don't pass it.
+- WebGPU validation: a filtering `GPUSampler` in a non-filtering layout slot is a bind-group error
+  on Dawn and Chromium. `textureGather` on a `texture_depth_2d` works with a non-filtering sampler
+  everywhere (Dawn, SwiftShader, Firefox) and honours address modes.
+
 ## The image decoder
 
 `image-decode.ts`'s `ImageDecoder` decodes image files with stb_image built to WebAssembly, so the
