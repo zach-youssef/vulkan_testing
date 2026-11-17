@@ -252,7 +252,19 @@ STREAM_TEST_WEB = $(OUT)/web/streamer
 
 $(eval $(call zgal-web-program,$(TEST_DIR)/stream/streamer.zgal,$(STREAM_TEST_WEB)))
 
-test-main: $(MAIN_TEST_BIN) $(IMAGE_FILTER_DIFF)
+# Samplers clamping to a border (tests/border), whose capture make test-main and make test-web (under
+# Node and in test-pages' browsers) compare with border.approved.png, captured natively on MoltenVK.
+# To approve a new capture, run the native program with validation and copy its output over it.
+BORDER_TEST_OUT = $(TEST_OUT)/border
+BORDER_TEST_BIN = $(BORDER_TEST_OUT)/border
+BORDER_TEST_WEB = $(OUT)/web/border
+# Devices round filtering weights and depth comparisons differently: the channel difference allowed
+BORDER_TOLERANCE = 2
+
+$(eval $(call zgal-program,$(TEST_DIR)/border/border.zgal,$(BORDER_TEST_OUT),border,))
+$(eval $(call zgal-web-program,$(TEST_DIR)/border/border.zgal,$(BORDER_TEST_WEB)))
+
+test-main: $(MAIN_TEST_BIN) $(BORDER_TEST_BIN) $(IMAGE_FILTER_DIFF)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-main-steps
 
 test-main-steps:
@@ -267,6 +279,8 @@ test-main-steps:
 	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/out.png --marks-file $(MAIN_TEST_OUT)/missing.bin > /dev/null 2>&1; test $$? -eq 1
 	printf '\005\000\000\000\007\000\000\000' > $(MAIN_TEST_OUT)/marks.bin
 	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/marked.png --marks-file $(MAIN_TEST_OUT)/marks.bin --frames 10 --validation | grep -qx "marks 5 7"
+	./$(BORDER_TEST_BIN) $(BORDER_TEST_OUT)/out.png --validation
+	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/border/border.approved.png $(BORDER_TEST_OUT)/out.png $(BORDER_TOLERANCE)
 
 # The benchmark (tools/bench): ZGAL's library kernels and fallbacks at a size the command line gives.
 #   make bench                         - builds build/tools/bench/bench
@@ -340,6 +354,9 @@ test-web-steps:
 	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_WEB)/out.png --marks-file $(MAIN_TEST_WEB)/missing.bin > /dev/null 2>&1; test $$? -eq 1
 	printf '\005\000\000\000\007\000\000\000' > $(MAIN_TEST_WEB)/marks.bin
 	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_WEB)/marked.png --marks-file $(MAIN_TEST_WEB)/marks.bin --frames 10 | grep -qx "marks 5 7"
+	$(MAKE) $(BORDER_TEST_WEB)
+	$(NODE) $(BORDER_TEST_WEB)/border.zgal.main.js $(BORDER_TEST_WEB)/out.png
+	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/border/border.approved.png $(BORDER_TEST_WEB)/out.png $(BORDER_TOLERANCE)
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png 1
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/blur_edges.png --blur 2 --edges
@@ -360,7 +377,7 @@ test-decode-steps:
 	$(NODE) --test --test-reporter=spec $(TEST_ARGS) $(WEB_DIR)/decode/tests/decode.test.ts
 
 # The examples' pages (image_filter's, without a window, run from its query string, its capture
-# compared with the approved one), embedding programs (web/tests/mount.html), releasing held keys
+# compared with the approved one; tests/border's likewise), embedding programs (web/tests/mount.html), releasing held keys
 # and buttons when focus leaves (web/tests/held-keys.html), touch as the mouse (web/tests/touch.html,
 # in Chromium only, whose checker can touch), loading image files
 # (web/tests/image-file.html), the compute library (web/tests/kernels.html), indirect work
@@ -380,7 +397,7 @@ test-decode-steps:
 BROWSERS = chromium
 BROWSERS_REQUIRED = $(if $(filter command line environment override,$(origin BROWSERS)),1)
 TEST_PAGES = $(OUT)/web/tests
-test-pages: web $(STREAM_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE)
+test-pages: web $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-pages-steps
 
 test-pages-steps:
@@ -410,6 +427,9 @@ test-pages-steps:
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/blur_edges-$$browser.png \
 	    'image_filter/image_filter.zgal.html?arg=/tests/assets/input.png&arg=out.png&blur=2&edges' || exit 1; \
 	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/blur_edges-$$browser.png 2 || exit 1; \
+	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/border-$$browser.png \
+	    'border/border.zgal.html?arg=out.png' || exit 1; \
+	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/border/border.approved.png $(TEST_PAGES)/border-$$browser.png $(BORDER_TOLERANCE) || exit 1; \
 	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps streams stream-buffers stop-streams; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \

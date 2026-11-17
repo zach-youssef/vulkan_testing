@@ -55,11 +55,13 @@ jobs:
         run: vulkaninfo --summary
 
       # Everything the tests run, so the test steps compile nothing (serially, or as a smoke test
-      # failure)
+      # failure). This workflow runs on every commit of a stack, so programs newer than some of them
+      # are built only where they exist
       - name: Build
         id: build
         run: |
           make -j"$(nproc)" build/tests/gpu_tests examples build/tests/main/painter \
+            $(test -e tests/border/border.zgal && echo build/tests/border/border) \
             build/tools/bench/bench build/examples/image_filter/tests/image_diff
 
       # Step timeouts fail a hung test's step (well within the job's), so the upload still runs:
@@ -86,6 +88,7 @@ jobs:
             build/examples/*/smoke.png
             build/examples/image_filter/tests/*.png
             build/tests/main/*.png
+            build/tests/border/*.png
             build/logs
 
       - name: ccache statistics

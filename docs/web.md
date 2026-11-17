@@ -119,12 +119,15 @@ then:
    `build/web/<name>`) and runs them under Node, comparing image_filter's outputs with
    `web/tools/image-diff.ts` (which compares PNGs as `image_diff.cpp` does), and runs
    `tests/main/painter.zgal` as `make test-main` runs it natively (its TypeScript giving its
-   `MainInputs`), and `tests/stream/streamer.zgal` streaming a file (its opener in
+   `MainInputs`), `tests/border/border.zgal` (samplers clamping to a border, sampled by hand past
+   the edges) compared with `border.approved.png`, captured natively by `make test-main`, and
+   `tests/stream/streamer.zgal` streaming a file (its opener in
    `streamer.inputs.ts`) (`headless.test.ts` needs no GPU: the PNG encoders and
    `parseCommandLine`'s `where`);
 3. runs `make test-pages`: the particles and scene pages, image_filter's page (run from its query
    string, its capture saved with the checkers' `--save-capture` and compared with
-   `blur_edges.approved.png`), `web/tests/mount.html` (mounts two programs and stops one),
+   `blur_edges.approved.png`), the border program's page (its capture compared likewise with
+   `border.approved.png`), `web/tests/mount.html` (mounts two programs and stops one),
    `web/tests/held-keys.html` (held keys and mouse buttons released once each, also when focus
    leaves, chorded buttons, cancelled pointers and lost captures, and a finger ignored while the
    mouse is pressed), `web/tests/touch.html` (in Chromium only, touched by

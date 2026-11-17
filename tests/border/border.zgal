@@ -1,0 +1,88 @@
+;; Samplers clamping to a border, sampled past the edges of a colour image and of a depth image,
+;; natively and on the web (where WebGPU's samplers have no border colour, so the modules sample by
+;; hand outside the image): make test-main and make test-web compare the capture with
+;; border.approved.png, captured natively. Four quadrants, each sampling its image from a quarter of
+;; it before the edges to a quarter past them: at the top the colour image, filtered with the
+;; default border (opaque black, its alpha pinned by the capture) and nearest with a transparent
+;; black one; at the bottom the depth image compared (less) filtered with an opaque white border,
+;; and nearest (less or equal) with the default.
+
+;; A 4x4 picture, a different colour per texel, opaque
+(compute-material Pattern
+  (workgroup 4 4)
+  (bindings (picture (storage-image write)))
+  (compute
+   (let* ([at globalInvocationId.xy])
+     (store! picture (ivec2 at) (vec4 (/ (float at.x) 3.0) (/ (float at.y) 3.0) (if (= (bitand (+ at.x at.y) (uint 1)) (uint 0)) 1.0 0.25) 1.0)))))
+
+;; An 8x8 depth image: depth rising along x and, twice as fast, y
+(graphics-material Slope
+  (outputs)
+  (vertex
+   (let* ([at (vec2 (float (bitand (shl vertexIndex 1) 2)) (float (bitand vertexIndex 2)))])
+     (results #:position (vec4 (- (* at 2.0) 1.0) (* 0.25 (+ at.x (* 2.0 at.y))) 1.0))))
+  (fragment))
+
+;; The colour image in the top quadrants and the depth image in the bottom ones, by separate
+;; materials: on MoltenVK, a shader comparing with one bindless texture samples every other as a
+;; depth texture (red in every channel)
+(graphics-material ShowColor
+  (bindings (picture texture) (colorLinear sampler) (colorNearest sampler))
+  (varyings (uv vec2))
+  (outputs (color vec4))
+  (vertex
+   (let* ([at (vec2 (float (bitand (shl vertexIndex 1) 2)) (float (bitand vertexIndex 2)))])
+     (results #:position (vec4 (- (* at 2.0) 1.0) 0.5 1.0) #:uv at)))
+  ;; Both samplings in each fragment, then the quadrant's chosen, so neither is in non-uniform
+  ;; control flow; from -0.25 to 1.25 across each quadrant
+  (fragment
+   (let* ([local (- (* (fract (* uv 2.0)) 1.5) 0.25)]
+          [linear (sample picture colorLinear local)]
+          [nearest (sample picture colorNearest local)])
+     (if (>= uv.x 0.5) nearest linear))))
+
+(graphics-material ShowCompared
+  (bindings (shadow texture) (compareLinear sampler) (compareNearest sampler))
+  (varyings (uv vec2))
+  (outputs (color vec4))
+  ;; Over the bottom half (Vulkan's y points down), its uv as ShowColor's there
+  (vertex
+   (let* ([at (vec2 (float (bitand (shl vertexIndex 1) 2)) (float (bitand vertexIndex 2)))])
+     (results #:position (vec4 (- (* at.x 2.0) 1.0) at.y 0.5 1.0) #:uv (vec2 at.x (+ 0.5 (* at.y 0.5))))))
+  (fragment
+   (let* ([local (- (* (fract (* uv 2.0)) 1.5) 0.25)]
+          [linear (sample-compare shadow compareLinear local 0.5)]
+          [nearest (sample-compare shadow compareNearest local 0.5)]
+          [lit (if (>= uv.x 0.5) nearest linear)])
+     (vec4 lit lit lit 1.0))))
+
+(graph Bordered
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  (material pattern Pattern picture #:invocations (4 4))
+  (dispatch drawPattern pattern)
+  (image shadowMap d32 (fixed 8 8) #:frames shared)
+  (target slope (depth shadowMap #:clear 1 #:store store))
+  (material sloping Slope #:cull none)
+  (draw drawSlope slope sloping 3)
+  (sampler colorLinear #:address clamp-to-border)
+  (sampler colorNearest #:filter nearest #:address clamp-to-border #:border transparent-black)
+  (sampler compareLinear #:address clamp-to-border #:border opaque-white #:compare less)
+  (sampler compareNearest #:filter nearest #:address clamp-to-border #:compare less-or-equal)
+  (image result rgba8 (fixed 64 64) #:frames shared)
+  (target shown (color result #:clear (0 0 0 0)))
+  ;; Each draw into a target clears it first, so the second draws into one loading the first's
+  (target shownBelow (color result #:load load))
+  (material showingColor ShowColor picture colorLinear colorNearest #:cull none)
+  (material showingCompared ShowCompared (shadow shadowMap) compareLinear compareNearest #:cull none)
+  (draw showColor shown showingColor 3)
+  (draw showCompared shownBelow showingCompared 3)
+  (readback capture result))
+
+(app Borders
+  (parameter destination path)
+  (run Bordered))
+
+(main Borders
+  (about "Samples past the edges of images with samplers clamping to a border")
+  (positional destination "the PNG file to write")
+  (capture capture #:to destination))
