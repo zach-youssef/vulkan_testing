@@ -42,9 +42,13 @@ covers. This page holds only what isn't there.
   `subgroups`; the variant without (`program-fallbacks` in `dsl/private/ts.rkt`, the web
   description's `withoutSubgroups`) runs on WebGPU devices lacking subgroups, and
   `ContextOptions.withoutFeatures` forces it in `web/tests/kernels.test.ts`.
+- A test material drawing a full-screen triangle needs `#:cull none`: the default culls back faces,
+  and the triangle's winding isn't one to rely on.
 - `raco test` runs with the working directory set to the test file's directory, so golden files'
   `#line` paths read `../lib/...`.
 - After changing a struct in `dsl/private/ast.rkt`, stale `.zo` files fail with
   `instantiate-linklet: mismatch`: run `raco make dsl/tests/*.rkt`.
+- A graph's generated `build()` (`cpp-graph.rkt`) emits constants and stream buffers first, then
+  buffer files, so a conditional resource emitted after them can use constants in its condition.
 - Don't name a Racket local after a form (`when`, `values`, `match`): later uses of the form
   silently become function applications.

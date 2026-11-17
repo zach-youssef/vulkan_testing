@@ -24,8 +24,9 @@ The web runtime's image decoder is stb_image built to WebAssembly
 in `.github/actions/setup-zgal/wasi-sdk.sh` (setup-zgal installs the same in CI). `WASI_SDK_PATH`
 names an installed one; without it, `web/decode/decode.mk` downloads and checks the pinned release
 into `.cache/wasi-sdk-<version>` (git-ignored, about 600 MB unpacked, kept by `make clean`; each
-worktree has its own, so point `WASI_SDK_PATH` at one to share it). Nothing is installed
-system-wide.
+worktree has its own, so point `WASI_SDK_PATH` at another worktree's, e.g. the pre-push one's, to
+spare the download; never at a copy under `/private/tmp`, which macOS prunes, leaving a dangling
+`clang` symlink). Nothing is installed system-wide.
 
 ZGAL's web backend translates GLSL shaders to WGSL through `glslc` and naga (`naga-cli`, a Rust
 crate), whose version `.github/actions/setup-zgal/naga.sh` pins (setup-zgal builds the same in CI,
@@ -98,6 +99,8 @@ Gotchas:
   when it creates or recreates them), so a test reading elements nothing writes expects zeros
   without a `clear`. Device memory outside the graph (e.g. `Buffer::create`) still starts
   undefined: MoltenVK's happens to be zero, lavapipe's doesn't.
+- `ctx.setFramesInFlight(n)` takes effect at the next frame, so a test restoring the count must run
+  a frame afterwards, or the fixture fails it for leaving the count changed.
 - Several `vkCmdFillBuffer`s on one buffer inside one graph node trip synchronization validation
   (write-after-write): fill it once, or split the fills across nodes.
 
@@ -178,6 +181,8 @@ the Mac's comes from a local run (`make test-gpu`, then `make approve-screenshot
   status from its job's conclusion in the run's jobs API, matched by the name `<context> <sha>`
   (anything but success or failure is an error, so none stays pending). Those two check nothing
   out, and no checkout persists its credentials.
+- A gpu.yml (or web.yml, cpu.yml) step naming a make target that a stack's later commit adds must
+  tolerate the earlier commits lacking it: each commit's job runs the tip's workflow.
 - Ubuntu 24.04's AppArmor forbids the unprivileged user namespaces Chromium's sandbox needs: the
   web job runs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` first.
 - `cancelled()` and `failure()` work only in `if:`; in `env:` the workflow fails to parse. Use
@@ -252,7 +257,9 @@ including earlier `git rm`s: pass the paths, then check each rewritten commit's 
 
 When checking a commit by hand in a temporary copy (a detached worktree), never symlink
 `web/node_modules` into it: `make test-web` runs `npm ci`, which empties the symlink's target and
-so the original checkout's packages. Run `npm ci` in the copy instead.
+so the original checkout's packages. Run `npm ci` in the copy instead. A fresh worktree also needs
+`make web/node_modules/.package-lock.json` before web tests are run by hand (the make targets do
+it).
 
 ## Verifying ports
 

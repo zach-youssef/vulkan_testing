@@ -204,7 +204,8 @@ int main() { return exitStatus(runApp()); }            // prints the error
   over frames (ZGAL's `stream-buffer`), e.g. a scene shown while it loads. `source` is a
   `StreamSource` (`Result<size_t>(std::span<std::byte>)`, 0 meaning ended), such as a
   `zgal::Stream` (`zgal/Stream.h`: `fileStream(path)`, and `openStream<H>(opener, path)`, which
-  reads a std430 header H first and replays it, so the buffer holds the whole stream;
+  reads a std430 header H first and replays it (so a frame's first append is the header's bytes),
+  so the buffer holds the whole stream;
   `zgal/Assets.h`'s `assetStream(context)` is an opener finding files as assets are). The
   buffer is device local, shared by every frame, never recreated (it gets every buffer usage)
   and not zeroed. Each frame calls the source once, before beginning the frame and on the
@@ -219,7 +220,8 @@ int main() { return exitStatus(runApp()); }            // prints the error
   frame's bytes early, so the application can see that count before `execute()`, which then
   doesn't read again. A source that fails or throws (a contract violation is rethrown), gives
   more than `words * 4` bytes or ends before them makes that frame's `execute()`, and every
-  later one, fail with `ErrorCode::InvalidData`.
+  later one, fail with `ErrorCode::InvalidData`. `readStream` requests one byte more than the buffer's
+  size, to see the stream end there, and a stream that returns that byte is refused as over-long.
 - **Nodes** declare what they use. `RenderablesNode`, `DispatchNode` and `ReadbackNode` cover common
   cases. GPU-driven work reads commands shaders wrote: `DispatchNode(material, BufferOffset{buffer,
   offset})` dispatches indirectly, and `IndirectDrawNode` draws `VkDraw(Indexed)IndirectCommand`s
@@ -316,6 +318,9 @@ each. What it can't do shapes the wrapper and the shaders written for it:
   (`include/zgal/Material.h`) before creating modules.
 - MoltenVK can't alias a `readonly` buffer block with a writable one, or compile `.length()` on
   bindless buffers (see "Descriptors and materials" and "Shaders").
+- In a shader that also compares (`sampler2DShadow`), MoltenVK samples bindless colour textures as
+  depth (the red channel in all four), probably SPIRV-Cross, so a test of bindless colour sampling
+  can't share a shader with a comparison.
 
 ## Working on the wrapper
 
