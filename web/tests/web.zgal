@@ -379,8 +379,9 @@
 ;; one thing, so the sampler is bound as its variants): directly, through a function doing both,
 ;; and through one that only samples, given the depth image and a colour image in turn; with a
 ;; nearest sampler, a linear one (filtering the depth image by hand, as WebGPU samples depth
-;; textures only with non-filtering samplers; comparing filters the comparisons) and a nearest one
-;; with a linear mipmap filter, which filters nothing of a one-level image
+;; textures only with non-filtering samplers; comparing filters the comparisons), a nearest one
+;; with a linear mipmap filter, which filters nothing of a one-level image, and nearest and linear
+;; ones clamping to a border (WebGPU's samplers have none: the modules sample past it by hand)
 (graphics-material Slope
   (outputs)
   (vertex
@@ -445,7 +446,23 @@
   (material shadingMips Shade (shadow shadowMap) (shadowSampler nearestMips) (picture picture) (points pointBuffer)
             (samples mipSamples) (reds mipReds) #:invocations (count))
   (dispatch shadeMips shadingMips)
-  (readback readMipSamples mipSamples))
+  (readback readMipSamples mipSamples)
+  (sampler nearestBorder #:filter nearest #:address clamp-to-border #:compare greater)
+  (buffer nearestBorderSamples vec4 count #:frames shared)
+  (buffer nearestBorderReds vec2 count #:frames shared)
+  (material shadingNearestBorder Shade (shadow shadowMap) (shadowSampler nearestBorder) (picture picture) (points pointBuffer)
+            (samples nearestBorderSamples) (reds nearestBorderReds) #:invocations (count))
+  (dispatch shadeNearestBorder shadingNearestBorder)
+  (readback readNearestBorderSamples nearestBorderSamples)
+  (readback readNearestBorderReds nearestBorderReds)
+  (sampler linearBorder #:address clamp-to-border #:border opaque-white #:compare less-or-equal)
+  (buffer linearBorderSamples vec4 count #:frames shared)
+  (buffer linearBorderReds vec2 count #:frames shared)
+  (material shadingLinearBorder Shade (shadow shadowMap) (shadowSampler linearBorder) (picture picture) (points pointBuffer)
+            (samples linearBorderSamples) (reds linearBorderReds) #:invocations (count))
+  (dispatch shadeLinearBorder shadingLinearBorder)
+  (readback readLinearBorderSamples linearBorderSamples)
+  (readback readLinearBorderReds linearBorderReds))
 
 ;; What the runtime refuses: comparing with a sampler without #:compare, and sampling a depth
 ;; image, without comparing with it, with a linear sampler (the web samples such an image, a

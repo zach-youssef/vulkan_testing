@@ -1,7 +1,8 @@
 // web.zgal's Shadows on Dawn: a depth image both sampled and compared, with one ZGAL sampler doing
 // both, bound as the variants WebGPU needs (a non-filtering sampler for the depth texture, a
 // comparison sampler), directly and through functions; a linear sampler filters the depth image
-// by hand (WebGPU samples depth textures only with non-filtering samplers) as Vulkan's would. All in
+// by hand (WebGPU samples depth textures only with non-filtering samplers) as Vulkan's would, and
+// samplers clamping to a border sample and compare past the edges by hand. All in
 // compute shaders: the fragment stage's path (textureSample, comparisons in a function under the
 // uniformity analysis) is only compiled, by the golden Lit material and Dawn under make test-dsl
 import assert from 'node:assert/strict';
@@ -18,20 +19,40 @@ const nearest = (u: number, v: number) => depthAt(clamp(Math.floor(u * size)), c
 // The linear sampler repeats: the texel block around uv, each texel's value (or its comparison
 // with the reference) weighted by uv's position in the block
 const repeat = (x: number) => ((x % size) + size) % size;
-function bilinear(u: number, v: number, texel: (i: number, j: number) => number): number {
-  const x = u * size - 0.5;
-  const y = v * size - 0.5;
+function bilinear(u: number, v: number, texel: (i: number, j: number) => number, n = size, wrap = repeat): number {
+  const x = u * n - 0.5;
+  const y = v * n - 0.5;
   const i = Math.floor(x);
   const j = Math.floor(y);
   const fx = x - i;
   const fy = y - j;
-  const row = (jj: number) => texel(repeat(i), repeat(jj)) * (1 - fx) + texel(repeat(i + 1), repeat(jj)) * fx;
+  const row = (jj: number) => texel(wrap(i), wrap(jj)) * (1 - fx) + texel(wrap(i + 1), wrap(jj)) * fx;
   return row(j) * (1 - fy) + row(j + 1) * fy;
 }
+// A sampler clamping to a border: texels outside an n-texel square are the border colour's red
+const bordered = (n: number, texel: (i: number, j: number) => number, border: number) => (i: number, j: number) =>
+  i < 0 || j < 0 || i >= n || j >= n ? border : texel(i, j);
+const unwrapped = (x: number) => x;
 const linear = (u: number, v: number) => bilinear(u, v, depthAt);
 const compared = (u: number, v: number, reference: number) => bilinear(u, v, (i, j) => (reference < depthAt(i, j) ? 1 : 0));
 // The picture's constant red (0xFF4080C0 texels)
 const red = 0xc0 / 255;
+
+// A sampler's samples and reds against what it should give: each sample's depth and comparison
+// (directly and through lit), and the reds of the depth image and of the picture
+function checkSamples(samples: number[][], reds: number[][], expect: (u: number, v: number, reference: number) => [number, number, number], tolerance: { depth: number; compared: number }) {
+  for (const [k, [u, v, reference]] of points.entries()) {
+    const [depth, test, pictureRed] = expect(u, v, reference);
+    const [sampled, comparedTo, viaFunction, comparedViaFunction] = samples[k];
+    assert.ok(Math.abs(sampled - depth) < tolerance.depth, `point ${k}: sampled ${sampled}, expected ${depth}`);
+    assert.ok(Math.abs(comparedTo - test) < tolerance.compared, `point ${k}: compared ${comparedTo}, expected ${test}`);
+    assert.ok(Math.abs(viaFunction - depth) < tolerance.depth, `point ${k}: sampled through lit ${viaFunction}, expected ${depth}`);
+    assert.ok(Math.abs(comparedViaFunction - test) < tolerance.compared, `point ${k}: compared through lit ${comparedViaFunction}, expected ${test}`);
+    const [ofDepth, ofPicture] = reds[k];
+    assert.ok(Math.abs(ofDepth - depth) < tolerance.depth, `point ${k}: red of the depth image ${ofDepth}, expected ${depth}`);
+    assert.ok(Math.abs(ofPicture - pictureRed) < tolerance.depth, `point ${k}: red of the picture ${ofPicture}, expected ${pictureRed}`);
+  }
+}
 
 // uv and a reference depth: texel centres and not, beyond the edges (clamped) and references on
 // either side of the depth there
@@ -144,4 +165,29 @@ test('a linear sampler filters the depth image bilinearly, wrapping as it says, 
     assert.ok(Math.abs(ofDepth - depth) < 1e-5, `point ${k}: red of the depth image ${ofDepth}, expected ${depth}`);
     assert.ok(Math.abs(ofPicture - red) < 1e-6, `point ${k}: red of the picture ${ofPicture}, expected ${red}`);
   }
+});
+
+test('a nearest sampler clamping to the default border (opaque black) gives depth 0 past the edges, and compares with it', async () => {
+  // Shadows' nearestBorder: #:compare greater
+  const texel = bordered(size, depthAt, 0);
+  checkSamples(await shadows.readNearestBorderSamplesContents(graph), await shadows.readNearestBorderRedsContents(graph), (u, v, reference) => {
+    const depth = texel(Math.floor(u * size), Math.floor(v * size));
+    const pictureRed = bordered(2, () => red, 0)(Math.floor(u * 2), Math.floor(v * 2));
+    return [depth, reference > depth ? 1 : 0, pictureRed];
+  }, { depth: 1e-6, compared: 1e-6 });
+  // The point beyond the edges is the border's
+  const samples = await shadows.readNearestBorderSamplesContents(graph);
+  assert.deepEqual([samples[4][0], samples[4][1]], [0, 1]);
+});
+
+test('a linear sampler clamping to a white border filters it in with the texels by the edges, and compares each first', async () => {
+  // Shadows' linearBorder: #:border opaque-white #:compare less-or-equal; all by hand, so exact
+  const texel = bordered(size, depthAt, 1);
+  checkSamples(await shadows.readLinearBorderSamplesContents(graph), await shadows.readLinearBorderRedsContents(graph), (u, v, reference) => [
+    bilinear(u, v, texel, size, unwrapped),
+    bilinear(u, v, (i, j) => (reference <= texel(i, j) ? 1 : 0), size, unwrapped),
+    bilinear(u, v, bordered(2, () => red, 1), 2, unwrapped),
+  ], { depth: 1e-5, compared: 1e-5 });
+  const samples = await shadows.readLinearBorderSamplesContents(graph);
+  assert.ok(samples[9][0] > linear(0.96, 0.98), 'the white border raises the depth by the far corner');
 });
