@@ -1,9 +1,10 @@
 # Sets up an ubuntu-24.04 runner to build and test the wrapper and ZGAL (or a project using them,
 # such as ppu, with this repository as a submodule). The native toolchain has all of the below; the
 # web one only what ZGAL's compiler and its web backend need (lavapipe, which Dawn runs on, clang for
-# the image decoder's native test helper, wasi-sdk, Racket and Node), so a job that builds no
-# wrapper C++ neither downloads the SDK nor saves a ccache:
-#   - apt: lavapipe (Mesa's software Vulkan driver) and clang, and for native, GLFW, GLM and ccache;
+# the image decoder's native test helper, glslc for GLSL shaders, wasi-sdk, Racket and Node), so a
+# job that builds no wrapper C++ neither downloads the SDK nor saves a ccache:
+#   - apt: lavapipe (Mesa's software Vulkan driver) and clang, for native GLFW, GLM and ccache, and
+#     for web glslc (Ubuntu's; native's is the SDK's), which compiles GLSL shaders for naga;
 #   - wasi-sdk (clang for wasm32, which builds the web runtime's image decoder, web/decode, which
 #     every program built for the web carries), the release wasi-sdk.sh pins, with WASI_SDK_PATH
 #     exported;
@@ -19,7 +20,7 @@ name: setup-zgal
 description: Installs the toolchain the wrapper, ZGAL and its web backend build and test with.
 inputs:
   toolchain:
-    description: "native (the C++ toolchain, the SDK and ccache too) or web (lavapipe, clang, wasi-sdk, Racket and Node only)."
+    description: "native (the C++ toolchain, the SDK and ccache too) or web (lavapipe, clang, glslc, wasi-sdk, Racket and Node only)."
     required: true
   npm-lockfile:
     description: The web backend's package-lock.json, relative to the workspace (e.g. external/vulkan_test/web/package-lock.json in a project with this repository as a submodule).
@@ -42,18 +43,18 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install lavapipe and clang, and for native, GLFW, GLM and ccache
+    - name: Install lavapipe and clang, for native GLFW, GLM and ccache, and for web glslc
       shell: bash
       env:
         TOOLCHAIN: ${{ inputs.toolchain }}
       run: |
         case "$TOOLCHAIN" in
-          native) native="libglfw3-dev libglm-dev ccache" ;;
-          web) native= ;;
+          native) packages="libglfw3-dev libglm-dev ccache" ;;
+          web) packages=glslc ;;
           *) echo "::error::setup-zgal: toolchain is native or web, not '$TOOLCHAIN'"; exit 1 ;;
         esac
         sudo apt-get update -q
-        sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libvulkan1 clang $native
+        sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libvulkan1 clang $packages
 
     - name: Cache the Vulkan SDK
       if: inputs.toolchain == 'native'

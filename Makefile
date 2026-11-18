@@ -319,12 +319,13 @@ test-dsl-steps: docs
 
 # The web runtime's tests: web/tests/*.zgal (and image_filter's and streamer's mains, which
 # image-filter.test.ts and stop.test.ts run) compiled to TypeScript and WGSL beside a copy of the
-# runtime (as an application would have it), type checked, then run on Dawn
+# runtime (as an application would have it), type checked, then run on Dawn; glsl.zgal's GLSL bodies
+# are translated with glslc and naga
 WEB_TEST_OUT = $(OUT)/web-tests
 # The models web/tests/models.zgal draws, shared with the native tests
 MODEL_ASSETS = $(addprefix tests/gpu/assets/,halves.gltf broken.gltf quad.obj quad.mtl quadrants.png)
 
-test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
+test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES) $(ZGAL_NAGA)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-web-steps
 
 # The tools (image-diff.ts, the page checkers) decode images with the wasm this build makes, in OUT
@@ -333,7 +334,7 @@ test-web-steps:
 	$(MAKE) test-decode
 	rm -rf $(WEB_TEST_OUT)
 	@mkdir -p $(WEB_TEST_OUT)
-	for f in $(WEB_DIR)/tests/*.zgal $(IMAGE_FILTER_DIR)/image_filter.zgal $(TEST_DIR)/stream/streamer.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) $$f || exit 1; done
+	for f in $(WEB_DIR)/tests/*.zgal $(IMAGE_FILTER_DIR)/image_filter.zgal $(TEST_DIR)/stream/streamer.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) --naga $(ZGAL_NAGA) $$f || exit 1; done
 	cp -R $(WEB_DIR)/zgal $(WEB_DIR)/tests $(WEB_DIR)/tools $(WEB_DIR)/package.json $(WEB_DIR)/tsconfig.json $(TEST_DIR)/stream/streamer.inputs.ts $(WEB_TEST_OUT)/
 	cp $(MODEL_ASSETS) $(IMAGE_FILTER_TEST_DIR)/input.png $(SIMPLE_DIR)/textures/texture.jpg $(WEB_TEST_OUT)/tests/assets/
 	$(ZGAL_DECODE_NATIVE) $(WEB_TEST_OUT)/tests/assets/texture.jpg $(WEB_TEST_OUT)/tests/assets/texture.jpg.rgba
@@ -399,7 +400,7 @@ test-decode-steps:
 BROWSERS = chromium
 BROWSERS_REQUIRED = $(if $(filter command line environment override,$(origin BROWSERS)),1)
 TEST_PAGES = $(OUT)/web/tests
-test-pages: web $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE)
+test-pages: web $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE) $(ZGAL_NAGA)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-pages-steps
 
 test-pages-steps:
@@ -409,7 +410,7 @@ test-pages-steps:
 	cp $(WEB_DIR)/tests/assets/texels.png $(SIMPLE_DIR)/textures/texture.jpg $(MODEL_ASSETS) $(TEST_PAGES)/assets/
 	cp $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/assets/
 	for f in texels.png texture.jpg input.png; do $(ZGAL_DECODE_NATIVE) $(TEST_PAGES)/assets/$$f $(TEST_PAGES)/assets/$$f.rgba || exit 1; done
-	for f in $(WEB_DIR)/tests/*.zgal; do $(ZGAL) --web-out $(TEST_PAGES)/graphs/src $$f || exit 1; done
+	for f in $(WEB_DIR)/tests/*.zgal; do $(ZGAL) --web-out $(TEST_PAGES)/graphs/src --naga $(ZGAL_NAGA) $$f || exit 1; done
 	cp -R $(WEB_DIR)/zgal $(TEST_PAGES)/graphs/src/zgal
 	cp $(WEB_DIR)/program.tsconfig.json $(TEST_PAGES)/graphs/src/tsconfig.json
 	echo '{"type": "module"}' > $(TEST_PAGES)/graphs/src/package.json

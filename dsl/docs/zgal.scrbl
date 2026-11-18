@@ -135,7 +135,9 @@ example reloads edited bodies as before.
 @tt{zgal-web-program} builds a program for the web (@secref["web"]) into a directory: its page,
 its main built to JavaScript with the runtime (and the runtime's image decoder, stb_image built to
 WebAssembly with wasi-sdk, which @tt{zgal.mk} downloads unless @tt{WASI_SDK_PATH} names one), and
-its assets. The particles example's rule:
+its assets. A program with GLSL bodies (@secref["glsl"]) needs @tt{glslc} on @tt{PATH} and naga,
+which it builds first if the @tt{.zgal} file has a @racket[shaders] form (for bodies only in
+imported files, @tt{make naga} first). The particles example's rule:
 
 @(file-excerpt "Makefile" #:from #rx"^PARTICLES_WEB =" #:to #rx"zgal-web-program")
 
@@ -2161,7 +2163,8 @@ a depth texture and its sampler a comparison sampler, as the WGSL backend does; 
 declares every binding, used or not, so the bindings a stage uses are read from the SPIR-V.
 
 @tt{@literal{--web-out}} translates a material's GLSL bodies this way (with @tt{glslc} and
-@tt{naga} from @tt{PATH}, or @tt{@literal{--glslc}} and @tt{@literal{--naga}}), and its TypeScript describes the material from the translation:
+@tt{naga} from @tt{PATH}, or @tt{@literal{--glslc}} and @tt{@literal{--naga}}; @tt{zgal.mk}'s
+web programs pass its naga), and its TypeScript describes the material from the translation:
 one binding per binding of the material, as the GLSL declares it (a sampler the body compares
 with a @tt{comparison-sampler}, and the texture compared a depth texture), visible to the stages
 whose SPIR-V uses it, with the description's @tt{glsl} set. Bodies' @tt{#include}s are found in

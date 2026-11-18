@@ -7,8 +7,8 @@ Scribble, as in the main distribution) for ZGAL; Node 24 (which runs TypeScript)
 web backend, plus `curl` and `tar`, with which the build downloads the pinned
 [wasi-sdk](https://github.com/WebAssembly/wasi-sdk) the first time it builds the web runtime's image
 decoder (see below), and Rust's `cargo` (from [rustup](https://rustup.rs)), with which it builds the
-pinned [naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga-cli) the first time ZGAL's tests need
-it (below). Development happens on an Apple M4 with MoltenVK
+pinned [naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga-cli) the first time ZGAL's tests or
+a web program with GLSL bodies need it (below). Development happens on an Apple M4 with MoltenVK
 ([wrapper.md](wrapper.md#the-development-device) has what that means for code).
 
 `zgal.mk` finds the Vulkan headers and loader in `$VULKAN_SDK` when it's set (the SDK's
@@ -33,8 +33,9 @@ ZGAL's web backend translates GLSL shaders to WGSL through `glslc` and naga (`na
 crate), whose version `.github/actions/setup-zgal/naga.sh` pins (setup-zgal builds the same in CI,
 cached by version). `NAGA` names an installed binary (a path, or a name on `PATH`); without it,
 `zgal.mk` builds the pinned version with `cargo` into `.cache/naga-<version>/bin/naga` (about a
-minute, once per worktree, kept by `make clean`) the first time `make test-dsl` needs it, or `make
-naga` does.
+minute, once per worktree, kept by `make clean`) the first time `make test-dsl`, `make test-web`
+(and `test-pages`) or a web program with GLSL bodies needs it, or `make naga` does. `glslc` comes
+from `PATH` (the Vulkan SDK's locally), for the web tests too.
 
 ## Make targets
 
@@ -69,8 +70,8 @@ naga` does.
   (no GPU; [web.md](web.md#the-image-decoder)); `make test-web` runs it first. `make
   build/web-decode/stb_image.wasm` builds the decoder, and `make wasi-sdk` only installs its
   compiler.
-- `make naga`: builds naga ([Requirements](#requirements)) if it isn't installed; `make test-dsl`
-  does too.
+- `make naga`: builds naga ([Requirements](#requirements)) if it isn't installed; `make test-dsl`,
+  `make test-web` and `make test-pages` do too.
 - `make test-tools`: tests the pre-push hook and the GPU lock (`tests/tools/hook-test.sh`, no GPU
   needed; `make test` includes it).
 - `make run-bench`: times ZGAL's library kernels (`tools/bench`; see "Profiling").
@@ -126,8 +127,9 @@ a missing one fails the pages rather than skipping them; Firefox is skipped, as 
 Linux. Commits from before web.yml or gpu.yml existed get no `web` or `gpu` check (the commits job
 leaves them out). The toolchain (apt packages, the LunarG SDK, ccache, naga, Racket, Node) comes from
 `.github/actions/setup-zgal`, whose `toolchain` input is `native` or `web` (no SDK or ccache, but
-clang for the image decoder's native test helper); both install wasi-sdk, as `WASI_SDK_PATH`, since
-every program built for the web carries the image decoder.
+clang for the image decoder's native test helper, and Ubuntu's glslc for GLSL shaders where native
+uses the SDK's); both install wasi-sdk, as `WASI_SDK_PATH`, since every program built for the web
+carries the image decoder.
 
 lavapipe exposes one queue family with one queue, so CI never runs the multi-queue paths: async
 compute, cross-queue ownership transfers and timeline waits between queues (their tests skip, and

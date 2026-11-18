@@ -23,11 +23,13 @@ that build no C++, and `npm-lockfile: external/vulkan_test/web/package-lock.json
 `./external/vulkan_test/.github/actions/commits`. Both toolchains install wasi-sdk (exporting
 `WASI_SDK_PATH`), which builds the web runtime's image decoder (`build/web-decode/stb_image.wasm`,
 from `zgal.mk`), so any job running `make web` has it; the `web` toolchain also installs clang for
-the decoder's native test helper. Locally, a consumer's first `make web` downloads wasi-sdk into
+the decoder's native test helper, and Ubuntu's glslc (only there: the native toolchain's glslc is
+the SDK's). Locally, a consumer's first `make web` downloads wasi-sdk into
 `$(ZGAL_ROOT)/.cache` unless `WASI_SDK_PATH` names one
 ([building-and-testing.md](building-and-testing.md#requirements)).
 Both toolchains build naga with the runner's cargo (the version `setup-zgal/naga.sh` pins, cached;
-exported as `NAGA`), which ZGAL's web backend translates GLSL shaders with.
+exported as `NAGA`): ZGAL's web backend compiles GLSL shaders with glslc and translates them with
+naga, so building a web program with GLSL bodies (`zgal.mk`'s `zgal-web-program`) needs both.
 `toolchain` is required, but GitHub doesn't
 enforce that for composite actions: a job that omits it fails in setup-zgal's first step.
 

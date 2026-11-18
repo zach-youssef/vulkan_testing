@@ -139,13 +139,17 @@ include $(ZGAL_ROOT)/web/decode/decode.mk
 # with the runtime in <out>/zgal and its image decoder, zgal/stb_image.wasm (beside the TypeScript
 # runtime in <out>/src/zgal too, for running the sources). The
 # files under <dir>/assets are copied to <out>/assets, where it finds them. Serve <out> and open the page, or run it headless
-# under Node: node <out>/<name>.zgal.main.js --frames N.
+# under Node: node <out>/<name>.zgal.main.js --frames N. A program with GLSL bodies (shaders) needs
+# glslc (on PATH) and naga (ZGAL_NAGA) to translate them; naga is built first when the .zgal file
+# itself has a shaders form, so for GLSL bodies only in imported files, run make naga first.
 #   $(call zgal-web-program,<dir>/<name>.zgal,<out>)
+# (A variable, as an unbalanced parenthesis in a call's argument would end it)
+ZGAL_SHADERS_FORM := (shaders
 define zgal-web-program
-$(2)/src/$(notdir $(1)).stamp: $(1) $(wildcard $(dir $(1))*.ts) $(ZGAL_COMPILED) $(ZGAL_WEB_RUNTIME) $(ZGAL_WEB_DIR)/program.tsconfig.json
+$(2)/src/$(notdir $(1)).stamp: $(1) $(wildcard $(dir $(1))*.ts) $(ZGAL_COMPILED) $(ZGAL_WEB_RUNTIME) $(ZGAL_WEB_DIR)/program.tsconfig.json $(if $(shell grep -l '$(ZGAL_SHADERS_FORM)' $(1) 2>/dev/null),$(ZGAL_NAGA))
 	rm -rf $(2)/src
 	@mkdir -p $(2)/src
-	$(ZGAL) --web-out $(2)/src --depfile $(2)/src/$(notdir $(1)).d --dep-target $$@ $$<
+	$(ZGAL) --web-out $(2)/src --naga $(ZGAL_NAGA) --depfile $(2)/src/$(notdir $(1)).d --dep-target $$@ $$<
 	cp -R $(ZGAL_WEB_DIR)/zgal $(2)/src/zgal
 	$(if $(wildcard $(dir $(1))*.ts),cp $(wildcard $(dir $(1))*.ts) $(2)/src/)
 	cp $(ZGAL_WEB_DIR)/program.tsconfig.json $(2)/src/tsconfig.json
