@@ -283,6 +283,8 @@ export class MaterialInstance {
   // (zgalCompareOp_<sampler>, VkCompareOp's value). Fixed for an instance, as its samplers are
   private constants(stage: Stage): Record<string, number> {
     const constants: Record<string, number> = {};
+    // Modules translated from GLSL declare none (WebGPU refuses constants a module doesn't declare)
+    if (this.desc.glsl) return constants;
     for (const b of this.desc.bindings) {
       if ((b.kind !== 'sampler' && b.kind !== 'depth-sampler' && b.kind !== 'comparison-sampler') || !b.stages.includes(stage)) continue;
       const bound = this.bindings[b.resource];
@@ -442,6 +444,9 @@ export class MaterialBinder {
         if ('buffer' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.buffer) } };
         if ('uniform' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.uniform.resource) } };
         const { sampler } = bound;
+        if (desc.glsl && sampler.border) {
+          throw new Error(`${this.nodeName}: material ${desc.name}'s GLSL shaders sample with sampler ${sampler.name}, which clamps to a border colour: WebGPU's samplers have none (ZGAL bodies sample past the edge by hand), so clamp it to the edge or write the shaders in ZGAL`);
+        }
         if (b.kind === 'comparison-sampler') return { binding: i, resource: sampler.comparison(desc.name) };
         if (b.kind === 'depth-sampler') return { binding: i, resource: sampler.nonFiltering() };
         // Also for a sampler clamping to a border, though the modules then filter by hand: the

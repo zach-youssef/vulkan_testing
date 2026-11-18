@@ -2,7 +2,7 @@
 ;; The ZGAL compiler's command line. See dsl/docs (make docs) for the language.
 ;;
 ;;   racket dsl/zgal.rkt [--cpp-out DIR] [--glsl-out DIR] [--depfile FILE --dep-target TARGET] FILE.zgal
-;;   racket dsl/zgal.rkt --web-out DIR FILE.zgal
+;;   racket dsl/zgal.rkt --web-out DIR [--glslc PATH] [--naga PATH] FILE.zgal
 ;;   racket dsl/zgal.rkt --check FILE.zgal
 
 (require racket/cmdline
@@ -51,6 +51,8 @@
   (define depfile #f)
   (define dep-target #f)
   (define check-only? #f)
+  (define glslc "glslc")
+  (define naga "naga")
   (define source
     (command-line
      #:program "zgal"
@@ -58,6 +60,8 @@
      [("--cpp-out") dir "Write the C++ header to DIR/<file>.h (and a program's main to DIR/<file>.main.cpp)" (set! cpp-out dir)]
      [("--glsl-out") dir "Write each shader to DIR/<shader name>, removing others there" (set! glsl-out dir)]
      [("--web-out") dir "Write the TypeScript module (WebGPU) to DIR/<file>.ts (a program's main to DIR/<file>.main.ts, and its page to DIR/<file>.html) and each shader's WGSL to DIR/<shader name>.wgsl, removing other WGSL there" (set! web-out dir)]
+     [("--glslc") path "The glslc --web-out compiles GLSL bodies with (default: glslc, on PATH)" (set! glslc path)]
+     [("--naga") path "The naga --web-out translates GLSL bodies' SPIR-V to WGSL with (default: naga, on PATH)" (set! naga path)]
      [("--depfile") file "Write a Makefile rule listing the inputs to FILE" (set! depfile file)]
      [("--dep-target") target "The target of the --depfile rule (default: the header)" (set! dep-target target)]
      [("--check") "Only check the file" (set! check-only? #t)]
@@ -69,7 +73,7 @@
   (with-handlers ([exn:zgal? (λ (e)
                                 (eprintf "~a\n" (format-zgal-error e))
                                 (exit 1))])
-    ;; Only for the web, the native outputs aren't generated (so GLSL bodies needn't exist)
+    ;; Only for the web, the native outputs aren't generated
     (define native? (or cpp-out glsl-out depfile (not web-out)))
     (define-values (prog all-outputs)
       (compile-zgal source
@@ -77,6 +81,7 @@
                     #:shader-dir (or glsl-out ".")
                     #:native? native?
                     #:web-dir web-out
+                    #:web-toolchain (web-toolchain glslc naga '())
                     #:check-only? check-only?))
     (define-values (web outputs) (partition (λ (o) (regexp-match? #rx"[.](wgsl|ts|html)$" (output-path o))) all-outputs))
     (when (and web-out (not check-only?))

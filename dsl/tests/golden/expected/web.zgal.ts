@@ -51,6 +51,7 @@ export function shade(v: number[], n: number, m: number[][]): number[] {
 export const Repack: zgal.ComputeMaterialDesc = {
   kind: 'compute',
   name: 'Repack',
+  glsl: false,
   bindings: [
     { name: 'texels', resource: 'texels', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
     { name: 'packed', resource: 'packed', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
@@ -212,6 +213,7 @@ fn main(@builtin(global_invocation_id) zgalGlobalInvocationId: vec3u, @builtin(l
 export const Tally: zgal.ComputeMaterialDesc = {
   kind: 'compute',
   name: 'Tally',
+  glsl: false,
   bindings: [
     { name: 'counts', resource: 'counts', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
     { name: 'balances', resource: 'balances', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },
@@ -303,6 +305,7 @@ fn main(@builtin(global_invocation_id) zgalGlobalInvocationId: vec3u) {
 export const Lanes: zgal.ComputeMaterialDesc = {
   kind: 'compute',
   name: 'Lanes',
+  glsl: false,
   bindings: [
     { name: 'result', resource: 'result', kind: 'buffer-array', access: 'write', stages: ['compute'], depth: false },
   ],
@@ -392,6 +395,7 @@ fn main(@builtin(global_invocation_id) zgalGlobalInvocationId: vec3u, @builtin(s
 export const Lit: zgal.GraphicsMaterialDesc = {
   kind: 'graphics',
   name: 'Lit',
+  glsl: false,
   bindings: [
     { name: 'shadowMap', resource: 'shadowMap', kind: 'texture', access: null, stages: ['fragment'], depth: true },
     { name: 'zgalCompare_shadowSampler', resource: 'shadowSampler', kind: 'comparison-sampler', access: null, stages: ['fragment'], depth: true },

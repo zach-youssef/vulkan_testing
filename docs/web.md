@@ -79,6 +79,10 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   read a mirror laid out that way (`ZgalPushUniform`) and convert it to the std430 shape the body
   reads (`zgal_push()`; the ZGAL docs' web section). `web/tests/push.test.ts` checks every value
   arrives.
+- A material description's `glsl` marks a material whose GLSL bodies glslc and naga translated
+  (the ZGAL docs' GLSL bodies section): its bindings are one per ZGAL binding and its samplers
+  WebGPU's own, so `MaterialInstance` sets no overridable constants for it and `MaterialBinder`
+  refuses a sampler clamping to a border colour (WebGPU's have none).
 - `png-write.ts` writes PNGs in any environment (`encodePngStream`, with `CompressionStream`);
   `png.ts` (Node only) uses zlib. Reading PNGs is the image decoder's.
 - The web keeps Vulkan's clip space (the WGSL negates y), so web pixel expectations match native

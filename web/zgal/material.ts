@@ -57,6 +57,11 @@ export interface VertexInputDesc {
 
 interface MaterialDescBase {
   readonly name: string;
+  // Translated from GLSL bodies (glslc and naga): one binding per ZGAL binding, its samplers
+  // WebGPU's own (a comparison-sampler compares in the sampler, and there's no border colour), and
+  // no pipeline-overridable constants. A ZGAL body's module does what WebGPU's samplers can't by
+  // hand, from the constants the runtime sets (MaterialInstance's constants)
+  readonly glsl: boolean;
   readonly bindings: readonly BindingDesc[];
   readonly push: PushDesc | null;
 }

@@ -143,7 +143,7 @@ its assets. The particles example's rule:
 
 @verbatim{
 racket dsl/zgal.rkt [--cpp-out DIR] [--glsl-out DIR] [--depfile FILE [--dep-target TARGET]] FILE.zgal
-racket dsl/zgal.rkt --web-out DIR FILE.zgal
+racket dsl/zgal.rkt --web-out DIR [--glslc PATH] [--naga PATH] FILE.zgal
 racket dsl/zgal.rkt --check FILE.zgal
 }
 @itemlist[
@@ -160,6 +160,8 @@ racket dsl/zgal.rkt --check FILE.zgal
        @tt{DIR/<shader name>.wgsl} (the
        TypeScript holds them too; they're written for tools and reading), and removes other WGSL
        modules there. Given alone, it doesn't generate the C++ and GLSL.}
+ @item{@tt{@literal{--glslc} PATH} and @tt{@literal{--naga} PATH} name the tools that translate
+       GLSL bodies for the web (@secref["glsl"]); by default they're found on @tt{PATH}.}
  @item{@tt{@literal{--check}} only checks the file. Shader bodies aren't read, so a missing body isn't
        reported.}
 ]
@@ -2157,8 +2159,29 @@ which has no format; an instruction it lacks) at the shader's declaration, as
 bodies (@secref["web"]), and makes a texture the body compares depths with (@tt{sampler2DShadow})
 a depth texture and its sampler a comparison sampler, as the WGSL backend does; the module
 declares every binding, used or not, so the bindings a stage uses are read from the SPIR-V.
-@tt{@literal{--web-out}} doesn't use this yet: GLSL bodies still report
-@secref["error-not-on-web"] there.
+
+@tt{@literal{--web-out}} translates a material's GLSL bodies this way (with @tt{glslc} and
+@tt{naga} from @tt{PATH}, or @tt{@literal{--glslc}} and @tt{@literal{--naga}}), and its TypeScript describes the material from the translation:
+one binding per binding of the material, as the GLSL declares it (a sampler the body compares
+with a @tt{comparison-sampler}, and the texture compared a depth texture), visible to the stages
+whose SPIR-V uses it, with the description's @tt{glsl} set. Bodies' @tt{#include}s are found in
+the @tt{shaders} directory beside the @tt{.zgal} file, as natively. Its
+samplers are WebGPU's own, without the overridable constants a ZGAL body's module filters and
+compares by hand with, so on the web a GLSL body can't:
+@itemlist[
+ @item{use 8- or 16-bit integers (in its structs or its own code), which WGSL lacks;}
+ @item{@tt{#include "bindless.glsl"}, the native interface's descriptor indexing (read bindings
+       through their accessors);}
+ @item{use arrays of bindings, nor push constants that are structs or arrays (a uniform block
+       can't lay them out as a std430 one does);}
+ @item{sample with a sampler clamping to a border colour: the runtime refuses one when it binds
+       the material (WebGPU's samplers have none);}
+ @item{share its material with ZGAL bodies, whose samplers are bound as up to three variants;}
+ @item{compare depths with a texture in one of its material's shaders and sample it in another
+       (WebGPU binds it as a depth texture or as a float one; ZGAL bodies get a variant of each);}
+ @item{use what naga can't translate, such as a function taking an @tt{image2D}, reported at
+       the shader with naga's message.}
+]
 
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "cpp"]{The generated C++}
@@ -2284,9 +2307,10 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        they are copied into one when the graph is built, resized the same way.}
 ]
 
-GLSL bodies, @racket[extern-glsl] functions and other arrays of bindings (of buffers or storage
-images, or chosen with @racket[#:select] or from imports) have no WebGPU equivalent, so compiling
-them for the web reports @secref["error-not-on-web"]. The example's TypeScript follows in
+@racket[extern-glsl] functions and other arrays of bindings (of buffers or storage images, or
+chosen with @racket[#:select] or from imports) have no WebGPU equivalent, so compiling them for
+the web reports @secref["error-not-on-web"]. GLSL bodies are translated with glslc and naga
+(@secref["glsl"], which lists what they can't do on the web). The example's TypeScript follows in
 the next section.
 
 @zgal-example[#:web? #t #:show '("Copy.comp.wgsl")
@@ -2711,7 +2735,8 @@ This document is part of the language: change it in the same commit as the compi
        command line, the golden and examples' WGSL modules through Dawn, the golden
        TypeScript through @tt{tsc} (@tt{web/}, whose packages @tt{make test-dsl} installs with
        @tt{npm ci}), and the golden GLSL bodies through glslc and naga to WGSL that Dawn accepts,
-       with glslc's and naga's errors mapped to the sources.}
+       with glslc's and naga's errors mapped to the sources, and the bindings and refusals of
+       materials with GLSL bodies under @tt{@literal{--web-out}}.}
  @item{@tt{dsl/tests/web-test.rkt}: what compiling for the web reports that Vulkan allows,
        that functions with @tt{image2D} parameters reach WGSL inlined, how a sampler that samples
        and compares, and a texture compared in one stage, are declared, and the web interface of

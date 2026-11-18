@@ -169,6 +169,45 @@
       (with-check-info (['dawn text])
         (check-equal? status 0))))
 
+  (test-case "A readonly buffer is read in naga's WGSL though glslc decorated only its block's members NonWritable"
+    ;; Ubuntu 24.04's glslc (shaderc 2023.8) leaves out the variable's NonWritable that newer ones
+    ;; add: strip it from this glslc's module to get that one's
+    (with-temporary-directory (directory)
+      (define source (build-path directory "r.comp"))
+      (call-with-output-file source
+        (λ (out) (write-string "#version 460\nlayout(local_size_x = 1) in;\nlayout(std430, set = 0, binding = 0) readonly buffer In { float data[]; } values;\nlayout(std430, set = 0, binding = 1) buffer Out { float data[]; } results;\nvoid main() { results.data[0] = values.data[0]; }\n" out)))
+      (define spv (build-path directory "r.spv"))
+      (define-values (glslc-status glslc-output)
+        (run (getenv "ZGAL_GLSLC") "--target-env=vulkan1.3" "--target-spv=spv1.5" (path->string source) "-o" (path->string spv)))
+      (check-equal? glslc-status 0 glslc-output)
+      (define module (file->bytes spv))
+      (define stripped
+        (let loop ([i 20] [kept (list (subbytes module 0 20))])
+          (cond
+            [(>= i (bytes-length module)) (apply bytes-append (reverse kept))]
+            [else
+             (define (word k) (integer-bytes->integer module #f #f (+ i (* 4 k)) (+ i (* 4 k) 4)))
+             (define size (* 4 (arithmetic-shift (word 0) -16)))
+             (loop (+ i size)
+                   (if (and (= (word 0) (bitwise-ior (arithmetic-shift 3 16) 71)) (= (word 2) 24))
+                       kept
+                       (cons (subbytes module i (+ i size)) kept)))])))
+      (check-true (< (bytes-length stripped) (bytes-length module)) "glslc decorated no variable NonWritable")
+      (define (naga-wgsl bytes)
+        (define file (build-path directory "in.spv"))
+        (define wgsl (build-path directory "out.wgsl"))
+        (call-with-output-file file #:exists 'truncate/replace (λ (out) (void (write-bytes bytes out))))
+        (define-values (status output) (run (getenv "ZGAL_NAGA") (path->string file) (path->string wgsl)))
+        (check-equal? status 0 output)
+        (file->string wgsl))
+      ;; Without the variable's decoration naga declares it read_write; marked, read
+      (check-regexp-match #rx"var<storage, read_write> values" (naga-wgsl stripped))
+      (define marked (naga-wgsl (spirv-mark-readonly-buffers stripped)))
+      (check-regexp-match #rx"var<storage> values" marked)
+      (check-regexp-match #rx"var<storage, read_write> results" marked)
+      ;; A module glslc already marked is kept as it is
+      (check-equal? (spirv-mark-readonly-buffers module) module)))
+
   ;; The first material's first shader of text, compiled with body
   (define (translate text body)
     (define-values (prog _outputs) (compile-zgal "check/c.zgal" #:text text #:check-only? #t))
@@ -206,7 +245,104 @@
       (check-equal? (exn:zgal-id e) 'not-on-web)
       (check-equal? (exn:zgal-where e) (loc "check/c.zgal" 3 12))
       (check-regexp-match #rx"^naga can't translate small.comp to WGSL: .*[(]WGSL has no 8- and 16-bit integers[)]$" (exn-message e))
-      (check-false (string-contains? (exn-message e) "\n")))))
+      (check-false (string-contains? (exn-message e) "\n"))))
+
+  ;; text compiled for the web, the GLSL bodies from `bodies` (a path and its text each; paths are
+  ;; the file's, check/c.zgal, so shaders are under check/)
+  (define (compile-web text bodies #:toolchain [tools toolchain])
+    (define-values (_prog outputs)
+      (compile-zgal "check/c.zgal" #:text text #:native? #f #:web-dir "web" #:web-toolchain tools
+                    #:read-body (λ (path) (cond [(assoc (path->string (find-relative-path (path->complete-path "check") (path->complete-path path))) bodies) => cdr] [else #f]))))
+    outputs)
+  (define (web-compile-error text bodies)
+    (with-handlers ([exn:zgal? values]) (compile-web text bodies) #f))
+  (define (output-named outputs name)
+    (output-text (findf (λ (o) (string=? (path->string (file-name-from-path (output-path o))) name)) outputs)))
+
+  (test-case "A material with GLSL bodies is described for the web by its bindings as the GLSL declares them, one each"
+    (define outputs
+      (compile-web (string-append
+                    "(compute-material Shade (shaders \"shaders/shade.comp\") (workgroup 1)\n"
+                    "  (bindings (shadow texture) (shadowSampler sampler) (unused (buffer-array float read)) (stamps (storage-image write)) (results (buffer-array float write)))\n"
+                    "  (push (reference float)))\n"
+                    "(graphics-material Show (shaders \"shaders/show.vert\" \"shaders/show.frag\")\n"
+                    "  (bindings (offsets (buffer-array vec2 read)) (picture texture #:stages (fragment)) (pictureSampler sampler))\n"
+                    "  (varyings (uv vec2)) (outputs (color vec4)))")
+                   '(("shaders/shade.comp" . "void main() {\n    results()[0] = textureLod(sampler2DShadow(shadow(), shadowSampler()), vec3(0.5, 0.5, reference()), 0.0);\n    imageStore(stamps(), ivec2(0), vec4(1.0));\n}\n")
+                     ("shaders/show.vert" . "void main() {\n    uv = offsets()[gl_VertexIndex];\n    gl_Position = vec4(uv, 0.0, 1.0);\n}\n")
+                     ("shaders/show.frag" . "void main() {\n    color = texture(sampler2D(picture(), pictureSampler()), uv);\n}\n"))))
+    (define ts (output-named outputs "c.zgal.ts"))
+    (define (has line) (check-true (string-contains? ts (string-append line "\n")) line))
+    (with-check-info (['ts ts])
+      (has "  glsl: true,")
+      ;; Compared: a depth texture and a comparison sampler; declared but unused: no stages
+      (has "    { name: 'shadow', resource: 'shadow', kind: 'texture', access: null, stages: ['compute'], depth: true },")
+      (has "    { name: 'shadowSampler', resource: 'shadowSampler', kind: 'comparison-sampler', access: null, stages: ['compute'], depth: true },")
+      (has "    { name: 'unused', resource: 'unused', kind: 'buffer-array', access: 'read', stages: [], depth: false },")
+      (has "    { name: 'stamps', resource: 'stamps', kind: 'storage-image', access: 'write', stages: ['compute'], depth: false },")
+      ;; The push constants after the bindings, as the GLSL's uniform block
+      (has "  push: { binding: 5, size: 16, fields: {")
+      ;; Sampled: no variants; each binding visible to the stages using it
+      (has "    { name: 'offsets', resource: 'offsets', kind: 'buffer-array', access: 'read', stages: ['vertex'], depth: false },")
+      (has "    { name: 'pictureSampler', resource: 'pictureSampler', kind: 'sampler', access: null, stages: ['fragment'], depth: false },")
+      (check-false (string-contains? ts "zgalCompare_"))
+      (check-false (string-contains? ts "zgalDepth_"))
+      ;; The storage image's format is the bound image's
+      (check-regexp-match #rx"texture_storage_2d<\\${formats\\['stamps'\\]},write>" ts))
+    (check-regexp-match #rx"texture_storage_2d<rgba8unorm,write>" (output-named outputs "shade.comp.wgsl")))
+
+  (test-case "What the web can't bind of a material with GLSL bodies is refused at the material"
+    (define (check-refused text bodies where pattern)
+      (define e (web-compile-error text bodies))
+      (check-true (exn:zgal? e) text)
+      (when (exn:zgal? e)
+        (check-equal? (exn:zgal-id e) 'not-on-web)
+        (check-equal? (exn:zgal-where e) where)
+        (check-regexp-match pattern (exn-message e))))
+    ;; Mixed with a ZGAL body
+    (check-refused "(graphics-material G (shaders \"shaders/g.vert\") (outputs (color vec4))\n  (fragment (vec4 1.0)))"
+                   '(("shaders/g.vert" . "void main() { gl_Position = vec4(0.0); }\n"))
+                   (loc "check/c.zgal" 2 3) #rx"^G mixes GLSL and ZGAL bodies")
+    ;; A texture (and sampler) compared in one stage and sampled in another: the first binding is reported
+    (check-refused "(graphics-material G (shaders \"shaders/g.vert\" \"shaders/g.frag\")\n  (bindings (t texture) (s sampler)) (outputs (color vec4)))"
+                   '(("shaders/g.vert" . "void main() { gl_Position = vec4(textureLod(sampler2DShadow(t(), s()), vec3(0.5), 0.0)); }\n")
+                     ("shaders/g.frag" . "void main() { color = texture(sampler2D(t(), s()), vec2(0.5)); }\n"))
+                   (loc "check/c.zgal" 2 13) #rx"^t is compared with depths in one of G's shaders and sampled in another.*G's bodies are GLSL.*write the bodies in ZGAL")
+    ;; The native interface's descriptor indexing, at the body's line
+    (check-refused "(compute-material C (shaders \"shaders/c.comp\") (workgroup 1))"
+                   '(("shaders/c.comp" . "// The native interface\n#include \"bindless.glsl\"\nvoid main() {}\n"))
+                   (loc "check/shaders/c.comp" 2 1) #rx"^c.comp includes bindless.glsl"))
+
+  (test-case "Compiling GLSL bodies for the web without the tools is an error of the caller's"
+    (check-exn #rx"material C has GLSL bodies, which the web needs glslc and naga for"
+               (λ () (compile-web "(compute-material C (shaders \"shaders/c.comp\") (workgroup 1))"
+                                  '(("shaders/c.comp" . "void main() {}\n")) #:toolchain #f))))
+
+  (test-case "A tool path that isn't there is an error of the toolchain's, not of the program's"
+    (define body '(("shaders/c.comp" . "void main() {}\n")))
+    (for ([tools (list (web-toolchain "/nonexistent/glslc" (getenv "ZGAL_NAGA") '())
+                       (web-toolchain (getenv "ZGAL_GLSLC") "/nonexistent/naga" '()))])
+      (define e (with-handlers ([exn:fail? values])
+                  (compile-web "(compute-material C (shaders \"shaders/c.comp\") (workgroup 1))" body #:toolchain tools)))
+      (check-true (exn:fail? e))
+      (check-false (exn:zgal? e))
+      (check-regexp-match #rx"^web-glsl: /nonexistent/(glslc|naga) isn't installed" (exn-message e))))
+
+  (test-case "The command line translates GLSL bodies for the web with the naga it's given"
+    (with-temporary-directory (directory)
+      (make-directory (build-path directory "shaders"))
+      (define source (build-path directory "c.zgal"))
+      (call-with-output-file source (λ (out) (write-string "(compute-material C (shaders \"shaders/c.comp\") (workgroup 1) (bindings (sums (buffer-array float write))))\n" out)))
+      ;; Found beside the .zgal file, as natively
+      (call-with-output-file (build-path directory "shaders" "c.comp") (λ (out) (write-string "#include \"two.glsl\"\nvoid main() { sums()[0] = TWO; }\n" out)))
+      (call-with-output-file (build-path directory "shaders" "two.glsl") (λ (out) (write-string "#define TWO 2.0\n" out)))
+      (define-values (status text)
+        (parameterize ([current-directory directory])
+          (run (find-system-path 'exec-file) (path->string zgal.rkt) "--web-out" "web"
+               "--glslc" (getenv "ZGAL_GLSLC") "--naga" (getenv "ZGAL_NAGA") "c.zgal")))
+      (with-check-info (['output text])
+        (check-equal? status 0)
+        (check-regexp-match #rx"zgal_sums[.]data\\[0[iu]?\\] = 2(f|[.]0)?;" (file->string (build-path directory "web" "c.comp.wgsl")))))))
 
 (define (cxx-tests)
   (define (compile-cxx directory source)

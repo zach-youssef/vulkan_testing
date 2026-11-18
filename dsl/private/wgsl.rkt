@@ -338,9 +338,10 @@
 ;; them that are atomic words.
 (struct usage (bindings opaque functions raw atomic) #:transparent)
 
+;; A ZGAL body's checked body (materials with GLSL bodies are translated: web-glsl.rkt)
 (define (body-of s)
   (unless (zgal-shader? s)
-    (web-error (shader-loc s) "~a is a GLSL body, which WebGPU can't use: write the shader in ZGAL" (shader-path s)))
+    (error 'wgsl "internal error: ~a is a GLSL body, which web-glsl.rkt translates" (shader-path s)))
   (zgal-shader-body s))
 
 ;; The root variable of a place: the t-global it indexes or takes fields of, or #f

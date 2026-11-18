@@ -213,7 +213,7 @@
          (hash "fill.comp" "#version 450\nvoid main() {}\n"))
    (kind 'not-on-web
          "WebGPU can't do this"
-         "Compiled for the web, ZGAL generates WGSL and TypeScript for WebGPU, which lacks some of what Vulkan has: shaders written in GLSL (bodies in `shaders`, and `extern-glsl` functions), and arrays of bindings (descriptor indexing) other than arrays of textures (which are texture arrays). The message says which; write that part in ZGAL, or another way."
+         "Compiled for the web, ZGAL generates WGSL and TypeScript for WebGPU, which lacks some of what Vulkan has: arrays of bindings (descriptor indexing) other than arrays of textures (which are texture arrays), and `extern-glsl` functions. GLSL bodies (`shaders`), which glslc and naga translate, can't use what WGSL lacks either (8- and 16-bit integers, bindless.glsl, arrays of bindings, struct and array push constants), nor share a material with ZGAL bodies, nor compare depths with a texture another of the material's shaders samples. The message says which; write that part in ZGAL, or another way."
          "(compute-material Pick\n  (workgroup 1)\n  (bindings (sources (array (buffer-array uint))) (counts (buffer-array uint)))\n  (compute (write! (at counts 0) (array-length sources))))"
          #:web? #t)))
 

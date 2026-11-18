@@ -12,11 +12,13 @@
          "private/parse.rkt"
          "private/ts.rkt"
          "private/ts-main.rkt"
+         "private/web-glsl.rkt"
          "private/wgsl.rkt")
 
 (provide compile-zgal
          (struct-out output)
          (struct-out exn:zgal)
+         (struct-out web-toolchain)
          format-zgal-error
          header-file-name
          main-file-name)
@@ -47,7 +49,9 @@
 ;; (<file>.main.cpp, beside the header) for a program with one, then a shader per material shader.
 ;; With a web-dir, the outputs for the web follow: the TypeScript module (<file>.ts), for a program
 ;; its main (<file>.main.ts) and with a window its page (<file>.html), then a WGSL module per
-;; material shader (which the TypeScript also holds). Raises exn:zgal for errors in the program.
+;; material shader (which the TypeScript also holds). Materials with GLSL bodies are translated
+;; for the web with web-toolchain (a web-toolchain: glslc and naga), which only those need.
+;; Raises exn:zgal for errors in the program.
 (define (compile-zgal source
                       #:text [text #f]
                       #:read-body [read-body read-file-or-false]
@@ -55,21 +59,37 @@
                       #:shader-dir [shader-dir "."]
                       #:native? [native? #t]
                       #:web-dir [web-dir #f]
+                      #:web-toolchain [web-toolchain #f]
                       #:check-only? [check-only? #f])
   (define forms (read-forms source (open-input-string (or text (file->string source)))))
   (define prog (parse-program forms source))
+  ;; A GLSL body's text
+  (define (body-of s)
+    (or (read-body (shader-path s))
+        (zgal-error 'shader-not-found (shader-loc s) "shader body ~a doesn't exist" (shader-path s))))
   (define web
     (if (and web-dir (not check-only?))
-        (append
-         (list (output (join web-dir (typescript-file-name source)) (emit-typescript prog)))
-         (let ([m (program-main prog)])
-           (cond
-             [(not m) '()]
-             [else (list (output (join web-dir (ts-main-file-name source)) (emit-ts-main prog m))
-                         (output (join web-dir (ts-page-file-name source)) (emit-ts-page prog m)))]))
-         (for*/list ([m (in-list (program-materials prog))]
-                     [s (in-list (material-shaders m))])
-           (output (join web-dir (wgsl-shader-file-name s)) (emit-wgsl prog m s))))
+        (let ([glsl (for/hash ([m (in-list (program-materials prog))] #:when (glsl-material? m))
+                      (unless web-toolchain
+                        (error 'compile-zgal "material ~a has GLSL bodies, which the web needs glslc and naga for: give a #:web-toolchain"
+                               (material-name m)))
+                      (values (material-name m) (translate-web-material web-toolchain prog m body-of)))])
+          (append
+           (list (output (join web-dir (typescript-file-name source)) (emit-typescript prog #:glsl-materials glsl)))
+           (let ([m (program-main prog)])
+             (cond
+               [(not m) '()]
+               [else (list (output (join web-dir (ts-main-file-name source)) (emit-ts-main prog m))
+                           (output (join web-dir (ts-page-file-name source)) (emit-ts-page prog m)))]))
+           ;; A storage image's format is emit-wgsl's default here (rgba8unorm); the TypeScript's
+           ;; modules take the bound image's
+           (for*/list ([m (in-list (program-materials prog))]
+                       [s (in-list (material-shaders m))])
+             (define translated (hash-ref glsl (material-name m) #f))
+             (output (join web-dir (wgsl-shader-file-name s))
+                     (if translated
+                         (web-material-module translated (shader-stage s) #:storage-format (λ (b) "rgba8unorm"))
+                         (emit-wgsl prog m s))))))
         '()))
   (cond
     [check-only? (values prog '())]
@@ -90,10 +110,7 @@
        (for*/list ([m (in-list (program-materials prog))]
                    [s (in-list (material-shaders m))])
          ;; GLSL bodies are files; ZGAL ones are in the program
-         (define body
-           (and (shader-path s)
-                (or (read-body (shader-path s))
-                    (zgal-error 'shader-not-found (shader-loc s) "shader body ~a doesn't exist" (shader-path s)))))
+         (define body (and (shader-path s) (body-of s)))
          (define out-path (join shader-dir (shader-name s)))
          (output out-path (emit-shader prog m s body out-path #:interface 'bindless #:glsl-files glsl-files))))
      (define main
