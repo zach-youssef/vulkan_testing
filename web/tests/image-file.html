@@ -1,8 +1,10 @@
 <!doctype html>
-<!-- Loading graphs' image files (zgal.loadImageFile) in a browser: texels.png's texels arrive
-     exactly, not premultiplied (the runtime decodes PNGs, since Firefox's decoder premultiplies), as
-     web/tests/assets.test.ts checks under Node, and a JPEG loads at its size (the browser decodes it). Checked by make test-pages (web/tools/chromium.ts and
-     firefox.ts); the page's state is in <html data-zgal>. Served from build/web/tests, beside
+<!-- Loading graphs' image files (zgal.loadImageFile) in a browser, decoded by the runtime's
+     stb_image (particles/zgal/stb_image.wasm), not the browser: texels.png's texels arrive exactly,
+     not premultiplied, and texture.jpg's exactly as native stb_image decodes them (assets/
+     texture.jpg.rgba, which make test-pages dumps with web/decode/tests/stb_dump.cpp), as
+     web/tests/assets.test.ts checks under Node. Checked by make test-pages (web/tools/chromium.ts
+     and firefox.ts); the page's state is in <html data-zgal>. Served from build/web/tests, beside
      particles/ (whose runtime it uses) and assets/. -->
 <html lang="en">
 <head>
@@ -19,16 +21,18 @@ const log = (text) => { console.log(text); message.textContent += `${text}\n`; }
 const expected = [255, 0, 0, 255, 0, 255, 0, 128, 10, 20, 30, 0, 200, 100, 50, 255,
   1, 2, 3, 4, 128, 128, 128, 255, 255, 255, 255, 255, 0, 0, 0, 255];
 
-// A 4x2 RGBA8 texture's texels
+// An RGBA8 texture's texels, rows top to bottom
 async function texels(context, texture) {
   const device = context.device;
-  const buffer = device.createBuffer({ size: 256 * 2, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const row = Math.ceil(texture.width * 4 / 256) * 256;
+  const buffer = device.createBuffer({ size: row * texture.height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
   const encoder = device.createCommandEncoder();
-  encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow: 256 }, [4, 2]);
+  encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow: row }, [texture.width, texture.height]);
   device.queue.submit([encoder.finish()]);
   await buffer.mapAsync(GPUMapMode.READ);
   const bytes = new Uint8Array(buffer.getMappedRange());
-  const result = [...bytes.subarray(0, 16), ...bytes.subarray(256, 272)];
+  const result = new Uint8Array(texture.width * texture.height * 4);
+  for (let y = 0; y < texture.height; y++) result.set(bytes.subarray(y * row, y * row + texture.width * 4), y * texture.width * 4);
   buffer.destroy();
   return result;
 }
@@ -46,13 +50,22 @@ try {
     const graph = new zgal.RenderGraph(context);
     const image = await zgal.loadImageFile(context, graph, 'picture', 'texels.png', color);
     if (image.format !== format) throw new Error(`a ${color} image is ${image.format}, not ${format}`);
-    const got = await texels(context, image.texture);
+    const got = [...await texels(context, image.texture)];
     if (got.join() !== expected.join()) throw new Error(`${color} texels.png's texels are ${got.join(' ')}, not ${expected.join(' ')}`);
     graph.destroy();
   }
   const graph = new zgal.RenderGraph(context);
   const jpeg = await zgal.loadImageFile(context, graph, 'photo', 'texture.jpg', 'srgb');
-  if (jpeg.size.join('x') !== '512x512') throw new Error(`texture.jpg loaded at ${jpeg.size.join('x')}, not 512x512`);
+  const response = await fetch(new URL('assets/texture.jpg.rgba', import.meta.url));
+  if (!response.ok) throw new Error(`texture.jpg.rgba: ${response.status} ${response.statusText}`);
+  const dump = new Uint8Array(await response.arrayBuffer());
+  const header = new DataView(dump.buffer, 0, 8);
+  const size = [header.getUint32(0, true), header.getUint32(4, true)];
+  if (jpeg.size.join('x') !== size.join('x')) throw new Error(`texture.jpg loaded at ${jpeg.size.join('x')}, natively ${size.join('x')}`);
+  const native = dump.subarray(8);
+  const got = await texels(context, jpeg.texture);
+  const at = got.findIndex((value, i) => value !== native[i]);
+  if (got.length !== native.length || at !== -1) throw new Error(`texture.jpg's texels differ from native stb_image's (first at byte ${at})`);
   graph.destroy();
   let failed = false;
   try {

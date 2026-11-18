@@ -327,13 +327,17 @@ MODEL_ASSETS = $(addprefix tests/gpu/assets/,halves.gltf broken.gltf quad.obj qu
 test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-web-steps
 
+# The tools (image-diff.ts, the page checkers) decode images with the wasm this build makes, in OUT
+test-web-steps test-pages-steps: export ZGAL_DECODE_WASM := $(abspath $(ZGAL_DECODE_WASM))
 test-web-steps:
 	$(MAKE) test-decode
 	rm -rf $(WEB_TEST_OUT)
 	@mkdir -p $(WEB_TEST_OUT)
 	for f in $(WEB_DIR)/tests/*.zgal $(IMAGE_FILTER_DIR)/image_filter.zgal $(TEST_DIR)/stream/streamer.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) $$f || exit 1; done
 	cp -R $(WEB_DIR)/zgal $(WEB_DIR)/tests $(WEB_DIR)/tools $(WEB_DIR)/package.json $(WEB_DIR)/tsconfig.json $(TEST_DIR)/stream/streamer.inputs.ts $(WEB_TEST_OUT)/
-	cp $(MODEL_ASSETS) $(IMAGE_FILTER_TEST_DIR)/input.png $(WEB_TEST_OUT)/tests/assets/
+	cp $(MODEL_ASSETS) $(IMAGE_FILTER_TEST_DIR)/input.png $(SIMPLE_DIR)/textures/texture.jpg $(WEB_TEST_OUT)/tests/assets/
+	$(ZGAL_DECODE_NATIVE) $(WEB_TEST_OUT)/tests/assets/texture.jpg $(WEB_TEST_OUT)/tests/assets/texture.jpg.rgba
+	cp $(ZGAL_DECODE_WASM) $(WEB_TEST_OUT)/zgal/
 	ln -s $(CURDIR)/$(WEB_DIR)/node_modules $(WEB_TEST_OUT)/node_modules
 	cd $(WEB_TEST_OUT) && $(NODE) node_modules/typescript/bin/tsc -p . && $(NODE) --test --test-reporter=spec $(TEST_ARGS) 'tests/*.test.ts'
 	$(MAKE) web
@@ -355,6 +359,8 @@ test-web-steps:
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/border/border.approved.png $(BORDER_TEST_WEB)/out.png $(BORDER_TOLERANCE)
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png 1
+	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(SIMPLE_DIR)/textures/texture.jpg $(IMAGE_FILTER_WEB)/identity-jpeg.png
+	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(SIMPLE_DIR)/textures/texture.jpg $(IMAGE_FILTER_WEB)/identity-jpeg.png 1
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/blur_edges.png --blur 2 --edges
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(IMAGE_FILTER_WEB)/blur_edges.png 2
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/threshold.png --blur 2 --edges --threshold 0.15
@@ -402,7 +408,6 @@ test-pages-steps:
 	cp $(WEB_DIR)/tests/*.html $(TEST_PAGES)/
 	cp $(WEB_DIR)/tests/assets/texels.png $(SIMPLE_DIR)/textures/texture.jpg $(MODEL_ASSETS) $(TEST_PAGES)/assets/
 	cp $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/assets/
-	cp $(ZGAL_DECODE_WASM) $(TEST_PAGES)/assets/
 	for f in texels.png texture.jpg input.png; do $(ZGAL_DECODE_NATIVE) $(TEST_PAGES)/assets/$$f $(TEST_PAGES)/assets/$$f.rgba || exit 1; done
 	for f in $(WEB_DIR)/tests/*.zgal; do $(ZGAL) --web-out $(TEST_PAGES)/graphs/src $$f || exit 1; done
 	cp -R $(WEB_DIR)/zgal $(TEST_PAGES)/graphs/src/zgal
@@ -410,6 +415,7 @@ test-pages-steps:
 	echo '{"type": "module"}' > $(TEST_PAGES)/graphs/src/package.json
 	ln -sfn $(abspath $(WEB_DIR)/node_modules) $(TEST_PAGES)/graphs/src/node_modules
 	$(NODE) $(WEB_DIR)/node_modules/typescript/bin/tsc -p $(TEST_PAGES)/graphs/src --outDir $(TEST_PAGES)/graphs --rootDir $(TEST_PAGES)/graphs/src
+	cp $(ZGAL_DECODE_WASM) $(TEST_PAGES)/graphs/zgal/
 	for browser in $(BROWSERS); do \
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(PARTICLES_WEB) --keys ' 2' 'particles.zgal.html?frames=60'; \
 	  status=$$?; \

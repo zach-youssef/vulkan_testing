@@ -3,7 +3,7 @@
 import type { Context } from './context.ts';
 import type { FrameInfo, FrameSource, GraphBuffer, GraphImage, RenderGraph } from './graph.ts';
 import { stride, type Type } from './types.ts';
-import { isPng, pngPixels, readPng, type Png } from './png-pixels.ts';
+import { decodeImage, prepareImageDecoder, type DecodedImage } from './image-decode.ts';
 
 // Files' bytes, one after another, as elements of type t in a buffer (a memory dump, say): the
 // files must hold whole elements
@@ -27,55 +27,23 @@ export async function loadBufferFile(context: Context, graph: RenderGraph, name:
   return graph.importBuffer(name, t, buffer, true);
 }
 
-// An image decoded: its RGBA8 texels, or (decoded by the browser) a bitmap
-export type DecodedImage =
-  | { readonly width: number; readonly height: number; readonly rgba: Uint8Array; readonly bitmap?: undefined }
-  | { readonly width: number; readonly height: number; readonly bitmap: ImageBitmap; readonly rgba?: undefined };
-
-// An image file's bytes decoded. Browsers decode any image they show (PNG, JPEG, WebP, ...), without
-// colour management; under Node only PNGs (8-bit, not interlaced) are read.
-export async function decodeImage(bytes: Uint8Array): Promise<DecodedImage> {
-  // PNGs are read here, so transparent texels keep their colour (browsers' decoders may
-  // premultiply); other images (JPEGs, and 16-bit, palette or interlaced PNGs) by the browser
-  let png: Png | null = null;
-  if (isPng(bytes)) {
-    try {
-      png = readPng(bytes);
-    } catch (error) {
-      if (typeof createImageBitmap !== 'function') throw error;
-    }
-  } else if (typeof createImageBitmap !== 'function') {
-    throw new Error('only PNG files are read under Node');
-  }
-  if (png) {
-    const stream = new Blob([png.compressed]).stream().pipeThrough(new DecompressionStream('deflate'));
-    const image = pngPixels(png, new Uint8Array(await new Response(stream).arrayBuffer()));
-    return { width: image.width, height: image.height, rgba: image.rgba };
-  }
-  const bitmap = await createImageBitmap(new Blob([bytes as Uint8Array<ArrayBuffer>]), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-  return { width: bitmap.width, height: bitmap.height, bitmap };
-}
-
-// Writes a decoded image (closing its bitmap) into a texture's layer, which is its size. A bitmap
-// needs the texture to have RENDER_ATTACHMENT usage.
+// Writes a decoded image into a texture's layer, which is its size
 export function writeImage(device: GPUDevice, texture: GPUTexture, image: DecodedImage, layer = 0): void {
-  if (image.rgba) {
-    device.queue.writeTexture({ texture, origin: [0, 0, layer] }, image.rgba as Uint8Array<ArrayBuffer>, { bytesPerRow: image.width * 4 }, [image.width, image.height]);
-  } else {
-    device.queue.copyExternalImageToTexture({ source: image.bitmap }, { texture, origin: [0, 0, layer], premultipliedAlpha: false }, [image.width, image.height]);
-    image.bitmap.close();
-  }
+  device.queue.writeTexture({ texture, origin: [0, 0, layer] }, image.rgba, { bytesPerRow: image.width * 4 }, [image.width, image.height]);
 }
 
 // An image file's texels in an RGBA8 texture for sampling, sRGB-encoded (decoded when sampled) or
-// linear, as native graphs load theirs (see decodeImage for the formats read)
+// linear, as native graphs load theirs: decoded by stb_image, as natively (decodeImage), so any
+// file native reads but HDR gives the same texels
 export async function loadImageFile(context: Context, graph: RenderGraph, name: string, path: string, color: 'srgb' | 'linear'): Promise<GraphImage> {
   const format: GPUTextureFormat = color === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm';
-  // TEXTURE_BINDING | COPY_SRC | COPY_DST, and RENDER_ATTACHMENT for copying an ImageBitmap in
-  const usage = 0x04 | 0x01 | 0x02 | 0x10;
+  // TEXTURE_BINDING | COPY_SRC | COPY_DST
+  const usage = 0x04 | 0x01 | 0x02;
   let texture: GPUTexture;
   try {
-    const image = await decodeImage(await context.loadAsset(path));
+    // The decoder downloads while the file does
+    void prepareImageDecoder();
+    const image = await decodeImage(await context.loadAsset(path), context.signal);
     texture = context.device.createTexture({ label: name, size: [image.width, image.height], format, usage });
     writeImage(context.device, texture, image);
   } catch (error) {

@@ -1114,9 +1114,11 @@ shader-read-only: textures and arrays of them bind it, and its size is known whe
 (@racket[(width name)], @tt{(extent-of name)}). Shaders only sample it. The colour space is required,
 since it changes what shaders read: @tt{srgb} for colours (photos, albedo), which sampling decodes
 to linear, and @tt{linear} for data (normal maps, masks, lookup tables), read as stored. On the web,
-8-bit PNGs without interlacing are decoded by the runtime, so transparent texels keep their colour
-(browsers' decoders may premultiply alpha), and other images by the browser; under Node only those
-PNGs are read.
+in browsers and under Node, the runtime decodes images with the same stb_image built to WebAssembly
+(@tt{zgal/stb_image.wasm}, which @tt{zgal-web-program} copies beside each program's runtime), so
+they load the same texels as natively, transparent ones keeping their colour (browsers' decoders
+may premultiply alpha). HDR images fail on the web, where native converts them, and so do formats
+only browsers decode (WebP, AVIF), which they no longer decode themselves.
 
 @(zgal-example image-file-source)
 @(generated-file image-file-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto file_albedo" #:to #rx"result.images.mask")
@@ -2671,7 +2673,7 @@ under Node; next is what graphs on the web can't use yet.
   (list @tt{include/zgal/Main.h} "what the generated mains use: the command line, validation, captures, running headless")
   (list @tt{include/zgal/Window.h} "running an app in a VulkanApp's window, and windowed programs")
   (list @tt{dsl/docs/} "this document, and the helpers compiling its examples")
-  (list @tt{web/zgal/} "what the generated TypeScript uses at runtime: Context, RenderGraph, nodes, materials, types' layouts, apps' events and clocks, C++'s arithmetic (math.ts) and built-in functions (glsl.ts), mains (main.ts, main-node.ts, main-browser.ts), PNGs (png-pixels.ts, png-write.ts), streams (stream.ts), the image decoder (image-decode.ts, stb_image built to WebAssembly from web/decode); node.ts and png.ts for Node")
+  (list @tt{web/zgal/} "what the generated TypeScript uses at runtime: Context, RenderGraph, nodes, materials, types' layouts, apps' events and clocks, C++'s arithmetic (math.ts) and built-in functions (glsl.ts), mains (main.ts, main-node.ts, main-browser.ts), writing PNGs (png-write.ts), streams (stream.ts), the image decoder, which loads every image file (image-decode.ts, stb_image built to WebAssembly from web/decode, copied into each program's zgal/); node.ts and png.ts for Node")
   (list @tt{web/} "the web backend's packages (npm: TypeScript, and Dawn, WebGPU for Node), tools (tools/check-wgsl.ts compiles WGSL with Dawn; tools/firefox.ts and tools/chromium.ts check a page in Firefox or headless Chromium) and tests")
   (list @tt{dsl/tests/} "the compiler's tests (make test-dsl)"))]
 

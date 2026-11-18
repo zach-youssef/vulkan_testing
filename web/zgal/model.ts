@@ -6,7 +6,8 @@
 
 import type { Context } from './context.ts';
 import { createMesh, type Mesh, type RenderGraph } from './graph.ts';
-import { decodeImage, writeImage } from './assets.ts';
+import { writeImage } from './assets.ts';
+import { decodeImage, prepareImageDecoder } from './image-decode.ts';
 
 // Triangles with one material. Attributes are per vertex, flat (3, 3, 2, 4 and 4 numbers a vertex);
 // ones the file lacks are empty.
@@ -798,7 +799,8 @@ export async function uploadModel(context: Context, label: string, data: ModelDa
   const vertices = new Uint8Array(vertexBytes.reduce((n, b) => n + b.length, 0));
   vertexBytes.reduce((at, b) => (vertices.set(b, at), at + b.length), 0);
 
-  // Each image once, then the materials' layers
+  // Each image once, then the materials' layers. The decoder downloads while the images do
+  if (data.materials.some((material) => material.baseColorTexture)) void prepareImageDecoder();
   const textures = new Map<string, Promise<GPUTexture>>();
   const layers = await Promise.all(data.materials.map((material) => {
     const image = material.baseColorTexture;
@@ -808,9 +810,9 @@ export async function uploadModel(context: Context, label: string, data: ModelDa
     if (!texture) {
       texture = (async () => {
         try {
-          const decoded = await decodeImage(image.encoded ?? await context.loadAsset(image.path!));
-          // TEXTURE_BINDING | COPY_SRC | COPY_DST | RENDER_ATTACHMENT (for bitmaps)
-          const t = device.createTexture({ label: image.description, size: [decoded.width, decoded.height], format: 'rgba8unorm-srgb', usage: 0x04 | 0x01 | 0x02 | 0x10 });
+          const decoded = await decodeImage(image.encoded ?? await context.loadAsset(image.path!), context.signal);
+          // TEXTURE_BINDING | COPY_SRC | COPY_DST
+          const t = device.createTexture({ label: image.description, size: [decoded.width, decoded.height], format: 'rgba8unorm-srgb', usage: 0x04 | 0x01 | 0x02 });
           writeImage(device, t, decoded);
           return t;
         } catch (error) {

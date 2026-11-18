@@ -8,8 +8,10 @@ This page has what the reference doesn't: the runtime's conventions and how to t
 ## The runtime (`web/zgal`)
 
 - `model.ts` loads glTF and OBJ models with its own parsers, mirroring `include/resources/Model.h`.
-- `png-pixels.ts` reads PNGs in any environment: Firefox's `createImageBitmap` premultiplies alpha
-  whatever it's asked, so pixels can't come from it.
+- Image files (`image-file`, models' textures) are decoded by `image-decode.ts`'s `decodeImage`, in
+  every environment, never by the browser: Firefox's `createImageBitmap` premultiplies alpha
+  whatever it's asked, and browsers' decoders needn't give native's bytes
+  ([the image decoder](#the-image-decoder)).
 - `main-browser.ts`: `mountProgram` embeds a program in a page, and `runPage`, which a program's
   generated page calls, wraps it. A page's state is in `<html data-zgal="running|stopped|failed">`
   and errors appear in `#zgal-message` ([consumers.md](consumers.md) depends on both). For
@@ -78,7 +80,7 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   reads (`zgal_push()`; the ZGAL docs' web section). `web/tests/push.test.ts` checks every value
   arrives.
 - `png-write.ts` writes PNGs in any environment (`encodePngStream`, with `CompressionStream`);
-  `png.ts` (Node only) uses zlib.
+  `png.ts` (Node only) uses zlib. Reading PNGs is the image decoder's.
 - The web keeps Vulkan's clip space (the WGSL negates y), so web pixel expectations match native
   ones.
 
@@ -104,7 +106,7 @@ This page has what the reference doesn't: the runtime's conventions and how to t
 
 `image-decode.ts`'s `ImageDecoder` decodes image files with stb_image built to WebAssembly, so the
 web gets exactly the RGBA8 bytes native `stbi_load(..., 4)` gives (PNG, JPEG, BMP, TGA, GIF, PSD, PIC
-and PNM; HDR files fail, where native converts them). Image loading doesn't use it yet.
+and PNM; HDR files fail, where native converts them). The runtime loads every image file with it.
 
 - `web/decode/stb_image_wasm.c` builds the vendored `third_party/stb/stb_image.h` freestanding: no
   libc, a bump allocator reset after each decode, and the few functions stb_image calls, so the
@@ -114,14 +116,28 @@ and PNM; HDR files fail, where native converts them). Image loading doesn't use 
 - `ImageDecoder.load(url)` reads a `file:` URL under Node and fetches others; `ImageDecoder.create`
   takes the module's bytes or the compiled module. `decode(bytes)` throws stb_image's failure
   reason.
+- `decodeImage(bytes)`, which `assets.ts` and `model.ts` call, finds the module at
+  `zgal/stb_image.wasm` beside the runtime (`import.meta.url`), where `zgal.mk`'s
+  `zgal-web-program` copies it into every program's output (`<out>/zgal/`, and `<out>/src/zgal/`
+  for running the sources). It compiles the module once and instantiates it per decode, so a
+  decoded image's memory goes with its instance. A program built without the wasm fails its first
+  image load, naming the URL. Callers start `prepareImageDecoder()` before loading an image's
+  bytes, so the module downloads alongside them, and pass `context.signal`, so waiting for it
+  ends when the context's loads do.
+- The tools (`web/tools/image-diff.ts`, `pages.ts`) decode with it too (`web/tools/images.ts`),
+  from `ZGAL_DECODE_WASM` (which test-web and test-pages export as the build's) or
+  `build/web-decode/stb_image.wasm`.
 - Its compiler is wasi-sdk's clang, pinned and downloaded as
   [building-and-testing.md](building-and-testing.md#requirements) says.
 - `make test-decode` (Node, no GPU) decodes the repository's PNGs and JPEG, BMP and TGA files it
   makes, and damaged files, with the wasm and with `web/decode/tests/stb_dump.cpp` (native
   `stbi_load`), and requires the same bytes or the same failure. CI's runner is x86-64, so the
   native helper takes stb_image's SSE2 JPEG path, which CI checks too.
-- `make test-pages` loads it in browsers: `web/tests/image-decode.html` fetches the wasm and checks
-  the JPEG and two PNGs against native decodes `stb_dump` saves beside them.
+- `make test-web` checks the runtime with it under Node: `assets.test.ts` loads a JPEG's texels
+  and compares them with `stb_dump`'s, and image_filter runs on a JPEG.
+- `make test-pages` loads it in browsers: `web/tests/image-decode.html` decodes the JPEG and two
+  PNGs with the runtime's `decodeImage` and checks them against native decodes `stb_dump` saves
+  beside them, and `image-file.html` checks a JPEG's texels likewise.
 
 ## Tests
 
@@ -135,7 +151,8 @@ then:
    a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node;
 2. builds the particles, image_filter and scene examples for the web (`make web`, into
    `build/web/<name>`) and runs them under Node, comparing image_filter's outputs with
-   `web/tools/image-diff.ts` (which compares PNGs as `image_diff.cpp` does), and runs
+   `web/tools/image-diff.ts` (which compares images as `image_diff.cpp` does; image_filter also
+   copies a JPEG, compared with the JPEG), and runs
    `tests/main/painter.zgal` as `make test-main` runs it natively (its TypeScript giving its
    `MainInputs`), `tests/border/border.zgal` (samplers clamping to a border, sampled by hand past
    the edges) compared with `border.approved.png`, captured natively by `make test-main`, and

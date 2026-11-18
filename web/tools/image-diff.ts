@@ -4,21 +4,21 @@
 // Succeeds if they have the same size and no channel differs by more than tolerance (0-255), or,
 // with a fraction, if at most that fraction of pixels do.
 import { readFileSync } from 'node:fs';
-import { decodePng } from '../zgal/png.ts';
+import { decodeImageFile } from './images.ts';
 
 const args = process.argv.slice(2);
 if (args.length !== 3 && args.length !== 4) {
   console.error('usage: node web/tools/image-diff.ts <expected> <actual> <tolerance> [max differing fraction]');
   process.exit(2);
 }
-const [expected, actual] = args.slice(0, 2).map((path) => {
+const [expected, actual] = await Promise.all(args.slice(0, 2).map(async (path) => {
   try {
-    return decodePng(readFileSync(path));
+    return await decodeImageFile(readFileSync(path));
   } catch (error) {
     console.error(`image-diff: can't read '${path}': ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
-});
+}));
 const tolerance = Number(args[2]);
 const maxFraction = args.length === 4 ? Number(args[3]) : 0;
 if (expected.width !== actual.width || expected.height !== actual.height) {

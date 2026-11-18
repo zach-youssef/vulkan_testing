@@ -13,7 +13,8 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, extname, join, resolve, sep } from 'node:path';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
-import { decodePng, encodePng } from '../zgal/png.ts';
+import { encodePng } from '../zgal/png.ts';
+import { decodeImageFile } from './images.ts';
 
 // A page in a browser, driven by a checker
 export interface Browser {
@@ -240,13 +241,13 @@ export async function runChecker<O>(name: string, checker: Checker<O>): Promise<
 
     if (!failed && (options.screenshot || options.compare)) {
       const size = (await page.evaluate('[document.getElementById("zgal").width, document.getElementById("zgal").height]')) as [number, number];
-      const pixels = unscale(decodePng(await page.screenshot('zgal')), size[0], size[1]);
+      const pixels = unscale(await decodeImageFile(await page.screenshot('zgal')), size[0], size[1]);
       if (options.screenshot) {
         writeFileSync(options.screenshot, encodePng(pixels.width, pixels.height, pixels.rgba));
         console.log(`wrote ${options.screenshot} (${pixels.width}x${pixels.height})`);
       }
       if (options.compare) {
-        const approved = decodePng(readFileSync(options.compare));
+        const approved = await decodeImageFile(readFileSync(options.compare));
         if (approved.width !== pixels.width || approved.height !== pixels.height) {
           fail(`the canvas is ${pixels.width}x${pixels.height}, ${options.compare} ${approved.width}x${approved.height}`);
         } else {

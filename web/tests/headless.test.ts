@@ -5,19 +5,26 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as zgal from '../zgal/index.ts';
-import { decodePng, encodePng } from '../zgal/png.ts';
+import { encodePng } from '../zgal/png.ts';
 import { encodePngStream } from '../zgal/png-write.ts';
 import { program } from '../image_filter.zgal.main.ts';
 
 test('the page\'s PNG encoder writes what Node\'s does', async () => {
   const [width, height] = [5, 3];
   const rgba = new Uint8Array(width * height * 4).map((_, i) => (i * 37) % 256);
-  const page = decodePng(await encodePngStream(width, height, rgba));
-  const node = decodePng(encodePng(width, height, rgba));
+  const page = await zgal.decodeImage(await encodePngStream(width, height, rgba));
+  const node = await zgal.decodeImage(encodePng(width, height, rgba));
   assert.deepEqual([page.width, page.height], [width, height]);
   assert.deepEqual(page.rgba, rgba);
   assert.deepEqual(node.rgba, rgba);
   await assert.rejects(encodePngStream(width, height, rgba.subarray(4)), /5x3/);
+});
+
+test('decoding an image ends at once when its signal is aborted', async () => {
+  const png = encodePng(1, 1, new Uint8Array([1, 2, 3, 4]));
+  const reason = new Error('stopped');
+  await assert.rejects(zgal.decodeImage(png, AbortSignal.abort(reason)), (error) => error === reason);
+  assert.deepEqual((await zgal.decodeImage(png, new AbortController().signal)).rgba, new Uint8Array([1, 2, 3, 4]));
 });
 
 test('a program without a window runs headless in a page, not in a canvas', () => {

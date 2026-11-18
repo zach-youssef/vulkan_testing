@@ -1,7 +1,9 @@
 // Decoding image files with stb_image built to WebAssembly (web/decode, built to
 // build/web-decode/stb_image.wasm), so the web gets exactly the RGBA8 bytes native stbi_load(..., 4)
 // gives: the same PNG, JPEG, BMP, TGA, GIF, PSD, PIC and PNM decoding, in Node and browsers. HDR
-// files fail, where native converts them to 8 bits.
+// files fail, where native converts them to 8 bits. Image files (image-file, models' textures) are
+// decoded with decodeImage, which uses the module beside this file (zgal/stb_image.wasm in a built
+// program, which zgal-web-program copies there).
 
 export interface DecodedImage {
   width: number;
@@ -36,16 +38,29 @@ export class ImageDecoder {
     return new ImageDecoder(instance.exports as unknown as DecoderExports);
   }
 
-  // From stb_image.wasm at url: a file: URL is read under Node, others are fetched
+  // From stb_image.wasm at url (see compile)
   static async load(url: URL | string): Promise<ImageDecoder> {
+    return ImageDecoder.create(await ImageDecoder.compile(url));
+  }
+
+  // stb_image.wasm at url compiled, for creating decoders: a file: URL is read under Node, others
+  // are fetched
+  static async compile(url: URL | string): Promise<WebAssembly.Module> {
     const location = new URL(url, globalThis.location?.href);
+    let bytes: BufferSource;
     if (location.protocol === 'file:') {
       const { readFile } = await import('node:fs/promises');
-      return ImageDecoder.create(new Uint8Array(await readFile(location)));
+      try {
+        bytes = new Uint8Array(await readFile(location));
+      } catch (error) {
+        throw new Error(`loading the image decoder (${location.href}): ${(error as Error).message}`);
+      }
+    } else {
+      const response = await fetch(location);
+      if (!response.ok) throw new Error(`loading the image decoder (${location.href}): ${response.status} ${response.statusText}`);
+      bytes = await response.arrayBuffer();
     }
-    const response = await fetch(location);
-    if (!response.ok) throw new Error(`loading the image decoder (${location.href}): ${response.status} ${response.statusText}`);
-    return ImageDecoder.create(await response.arrayBuffer());
+    return WebAssembly.compile(bytes);
   }
 
   // An image file's pixels as RGBA8. Throws with stb_image's reason when the file can't be decoded.
@@ -65,6 +80,48 @@ export class ImageDecoder {
     } finally {
       wasm.zgal_reset();
     }
+  }
+}
+
+// The runtime's decoder module, stb_image.wasm beside this file, compiled once. A failed load isn't
+// kept, so a later decode tries again.
+let runtimeModule: Promise<WebAssembly.Module> | undefined;
+
+// Starts loading the runtime's decoder if it isn't loading or loaded, so that a caller about to load
+// an image file can fetch both at once rather than one after the other. Its failure is reported by
+// the decodes that need it.
+export function prepareImageDecoder(): Promise<WebAssembly.Module> {
+  if (!runtimeModule) {
+    const loading = ImageDecoder.compile(new URL('./stb_image.wasm', import.meta.url));
+    runtimeModule = loading;
+    loading.catch(() => {
+      if (runtimeModule === loading) runtimeModule = undefined;
+    });
+  }
+  return runtimeModule;
+}
+
+// An image file's pixels as RGBA8, as native stbi_load(..., 4) gives them, with the runtime's
+// decoder. Each decode has its own instance, so its memory (as large as the largest image it
+// decoded) is freed with it rather than kept for the page's life. Waiting for the decoder rejects as
+// soon as signal (e.g. a Context's) is aborted.
+export async function decodeImage(file: Uint8Array, signal?: AbortSignal): Promise<DecodedImage> {
+  const module = await untilAborted(prepareImageDecoder(), signal);
+  return (await ImageDecoder.create(module)).decode(file);
+}
+
+async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  let stop!: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    stop = () => reject(signal.reason);
+    signal.addEventListener('abort', stop, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    signal.removeEventListener('abort', stop);
   }
 }
 

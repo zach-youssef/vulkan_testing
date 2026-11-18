@@ -57,7 +57,10 @@ unpushed changes. That script relies on:
   same way): `image_filter.zgal.html`, its `*.js` files and `zgal/` (with `zgal/stb_image.wasm`);
 - `examples/image_filter/tests/input.png`, and running image_filter under Node on it with
   `--blur 2 --edges` (the generated main's positional input and output paths) for the page's
-  example output;
+  example output. A picture a visitor gives image_filter must be one stb_image reads (PNG, JPEG,
+  BMP, TGA, GIF, PSD, PIC or PNM): browsers no longer decode images for ZGAL, so WebP, AVIF or
+  HEIC fail with "can't decode the image: unknown image type" (narrowing the site's
+  `accept="image/*"` is its follow-up);
 - all of `build/docs` (`zgal.html` with its stylesheets and scripts, and `zgal.txt`), copied as the
   served docs.
 

@@ -22,18 +22,13 @@
 <pre id="zgal-message"></pre>
 <script type="module">
 import * as image_filter from '../image_filter/image_filter.zgal.main.js';
-import { readPng, pngPixels } from '../image_filter/zgal/png-pixels.js';
+import { decodeImage } from '../image_filter/zgal/image-decode.js';
 
 const message = document.getElementById('zgal-message');
 const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
 const check = (ok, text) => { if (!ok) throw new Error(text); };
 
 const bytes = async (blob) => new Uint8Array(await blob.arrayBuffer());
-async function decode(file) {
-  const png = readPng(file);
-  const stream = new Blob([png.compressed]).stream().pipeThrough(new DecompressionStream('deflate'));
-  return pngPixels(png, new Uint8Array(await new Response(stream).arrayBuffer()));
-}
 async function fetched(path) {
   const response = await fetch(new URL(path, import.meta.url));
   if (!response.ok) throw new Error(`${path}: ${response.status} ${response.statusText}`);
@@ -106,7 +101,7 @@ function checkProgress(what, progress, size) {
 
 try {
   const input = await fetched('assets/input.png');
-  const approved = await decode(await fetched('assets/blur_edges.approved.png'));
+  const approved = await decodeImage(await fetched('assets/blur_edges.approved.png'));
   const args = ['input.png', 'out.png', '--blur', '2', '--edges'];
 
   // Given as a Blob
@@ -122,7 +117,7 @@ try {
   check(off === 0, `${off} channels differ from blur_edges.approved.png by more than 2`);
   check(capture.png.type === 'image/png', `the capture's PNG is ${capture.png.type}`);
   const png = await bytes(capture.png);
-  const decoded = await decode(png);
+  const decoded = await decodeImage(png);
   check(decoded.width === capture.size[0] && differing(decoded.rgba, capture.rgba, 0) === 0, 'the PNG doesn\'t hold the capture\'s pixels');
 
   // Given as a URL (relative to the page)

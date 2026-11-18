@@ -8,6 +8,7 @@ export * from './main.ts';
 export * as math from './math.ts';
 export * as glsl from './glsl.ts';
 export * from './assets.ts';
+export * from './image-decode.ts';
 export * from './main-browser.ts';
 export * from './model.ts';
 export * from './stream.ts';
