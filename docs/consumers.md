@@ -20,8 +20,12 @@ PPU's submodule only after the wrapper change is pushed.
 Its CI can reuse this repository's actions from the submodule:
 `./external/vulkan_test/.github/actions/setup-zgal` (with `toolchain: native`, or `web` for jobs
 that build no C++, and `npm-lockfile: external/vulkan_test/web/package-lock.json`) and
-`./external/vulkan_test/.github/actions/commits`. The `web` toolchain also installs wasi-sdk
-(exporting `WASI_SDK_PATH`) and clang, which the web runtime's image decoder builds and tests with.
+`./external/vulkan_test/.github/actions/commits`. Both toolchains install wasi-sdk (exporting
+`WASI_SDK_PATH`), which builds the web runtime's image decoder (`build/web-decode/stb_image.wasm`,
+from `zgal.mk`), so any job running `make web` has it; the `web` toolchain also installs clang for
+the decoder's native test helper. Locally, a consumer's first `make web` downloads wasi-sdk into
+`$(ZGAL_ROOT)/.cache` unless `WASI_SDK_PATH` names one
+([building-and-testing.md](building-and-testing.md#requirements)).
 Both toolchains build naga with the runner's cargo (the version `setup-zgal/naga.sh` pins, cached;
 exported as `NAGA`), which ZGAL's web backend translates GLSL shaders with.
 `toolchain` is required, but GitHub doesn't
@@ -35,15 +39,25 @@ reference at `/zgal/docs/`, which the README links to. It has its own submodules
 Its `./build-zgal [checkout]` builds from `external/zgal` by default; pass this checkout to try
 unpushed changes. That script relies on:
 
-- `make web docs`;
+- `make web docs`. `make web` builds the image decoder with wasi-sdk, which the site's CI
+  (`.github/actions/setup-build`, not setup-zgal) doesn't install: without `WASI_SDK_PATH`, each
+  ZGAL checkout it builds in (`external/zgal`, and `external/vk_ppu/external/vulkan_test` for
+  PPU) downloads its own into its `.cache` (curl and tar; about 600 MB unpacked each). Setting
+  `WASI_SDK_PATH` there, and `build-zgal`'s header listing wasi-sdk among its requirements, are the
+  site's follow-ups;
 - the layout of `build/web/<name>/` for particles and scene: `<name>.zgal.html`, its `*.js` files,
-  the `zgal/` runtime directory, and `assets/` and `*.wasm` when present, which it copies;
+  the `zgal/` runtime directory, and `assets/` and `*.wasm` when present, which it copies; `zgal/`
+  includes the image decoder, `zgal/stb_image.wasm`, which every program needs to load images
+  (copying `zgal/` whole, as it does, keeps it);
 - `examples/particles/particles.zgal` and `examples/scene/scene.zgal`, which it copies for the page
   to show beside each program;
 - the generated main's `--frames`, `--size` and `--capture` options, run under Node for the
   screenshot shown to browsers without WebGPU;
 - for programs without a window (e.g. `build/web/image_filter/`, which `build-zgal` can copy the
-  same way): `image_filter.zgal.html`, its `*.js` files and `zgal/`;
+  same way): `image_filter.zgal.html`, its `*.js` files and `zgal/` (with `zgal/stb_image.wasm`);
+- `examples/image_filter/tests/input.png`, and running image_filter under Node on it with
+  `--blur 2 --edges` (the generated main's positional input and output paths) for the page's
+  example output;
 - all of `build/docs` (`zgal.html` with its stylesheets and scripts, and `zgal.txt`), copied as the
   served docs.
 

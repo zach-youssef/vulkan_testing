@@ -1,6 +1,6 @@
 # The web runtime's image decoder: stb_image built to WebAssembly (web/decode/stb_image_wasm.c), so
-# images decode to exactly the bytes they do natively. Included from the Makefile, which sets
-# ZGAL_ROOT and OUT.
+# images decode to exactly the bytes they do natively. Included from zgal.mk, so projects building
+# programs for the web build it too, into $(OUT)/web-decode (build/ without an OUT).
 #   make $(ZGAL_DECODE_WASM)  - builds build/web-decode/stb_image.wasm
 #   make wasi-sdk             - installs the pinned wasi-sdk (once; see below)
 #
@@ -22,7 +22,7 @@ endif
 ZGAL_WASI_CLANG = $(ZGAL_WASI_SDK)/bin/clang
 
 ZGAL_DECODE_DIR = $(ZGAL_ROOT)/web/decode
-ZGAL_DECODE_OUT = $(OUT)/web-decode
+ZGAL_DECODE_OUT = $(or $(OUT),build)/web-decode
 ZGAL_DECODE_WASM = $(ZGAL_DECODE_OUT)/stb_image.wasm
 
 # Freestanding: wasi-libc's headers only, no libc linked (the shim defines what stb_image calls),

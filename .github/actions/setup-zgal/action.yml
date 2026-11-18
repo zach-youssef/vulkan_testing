@@ -4,8 +4,9 @@
 # the image decoder's native test helper, wasi-sdk, Racket and Node), so a job that builds no
 # wrapper C++ neither downloads the SDK nor saves a ccache:
 #   - apt: lavapipe (Mesa's software Vulkan driver) and clang, and for native, GLFW, GLM and ccache;
-#   - web: wasi-sdk (clang for wasm32, which builds the web runtime's image decoder, web/decode), the
-#     release wasi-sdk.sh pins, with WASI_SDK_PATH exported;
+#   - wasi-sdk (clang for wasm32, which builds the web runtime's image decoder, web/decode, which
+#     every program built for the web carries), the release wasi-sdk.sh pins, with WASI_SDK_PATH
+#     exported;
 #   - native: the LunarG Vulkan SDK (headers, loader, glslc, validation layers), its tarball cached by
 #     version, with VULKAN_SDK, PATH, LD_LIBRARY_PATH and VK_ADD_LAYER_PATH exported;
 #   - native: clang++ through ccache as CXX, with the ccache directory cached per branch (falling back to
@@ -129,9 +130,9 @@ runs:
           ccache-${{ steps.ccache.outputs.branch }}-
           ccache-${{ steps.ccache.outputs.default }}-
 
-    # GitHub's releases download quickly, so the tarball isn't cached
+    # GitHub's releases download quickly, so the tarball isn't cached. Both toolchains: building any
+    # program for the web (zgal-web-program) builds the image decoder
     - name: Install wasi-sdk
-      if: inputs.toolchain == 'web'
       shell: bash
       run: |
         sh "$GITHUB_ACTION_PATH/wasi-sdk.sh" install "$HOME/wasi-sdk"

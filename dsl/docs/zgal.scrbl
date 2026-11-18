@@ -133,7 +133,9 @@ generated header. Rebuilding shaders (@tt{make shaders}) regenerates them first,
 example reloads edited bodies as before.
 
 @tt{zgal-web-program} builds a program for the web (@secref["web"]) into a directory: its page,
-its main built to JavaScript with the runtime, and its assets. The particles example's rule:
+its main built to JavaScript with the runtime (and the runtime's image decoder, stb_image built to
+WebAssembly with wasi-sdk, which @tt{zgal.mk} downloads unless @tt{WASI_SDK_PATH} names one), and
+its assets. The particles example's rule:
 
 @(file-excerpt "Makefile" #:from #rx"^PARTICLES_WEB =" #:to #rx"zgal-web-program")
 

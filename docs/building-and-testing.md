@@ -19,8 +19,9 @@ compiler is clang, the one tested (`c++` on macOS, with libc++; `clang++` on Lin
 libstdc++), unless `CXX` is given (`make CXX=g++`).
 
 The web runtime's image decoder is stb_image built to WebAssembly
-([web.md](web.md#the-image-decoder)), which needs a clang with a wasm32 target and `wasm-ld`
-(Apple's clang has none). The build uses wasi-sdk, whose version and tarballs' SHA-256 are pinned
+([web.md](web.md#the-image-decoder)), which every program built for the web carries (`make web`,
+and projects using `zgal.mk`'s `zgal-web-program`, build it), and which needs a clang with a wasm32
+target and `wasm-ld` (Apple's clang has none). The build uses wasi-sdk, whose version and tarballs' SHA-256 are pinned
 in `.github/actions/setup-zgal/wasi-sdk.sh` (setup-zgal installs the same in CI). `WASI_SDK_PATH`
 names an installed one; without it, `web/decode/decode.mk` downloads and checks the pinned release
 into `.cache/wasi-sdk-<version>` (git-ignored, about 600 MB unpacked, kept by `make clean`; each
@@ -125,7 +126,8 @@ a missing one fails the pages rather than skipping them; Firefox is skipped, as 
 Linux. Commits from before web.yml or gpu.yml existed get no `web` or `gpu` check (the commits job
 leaves them out). The toolchain (apt packages, the LunarG SDK, ccache, naga, Racket, Node) comes from
 `.github/actions/setup-zgal`, whose `toolchain` input is `native` or `web` (no SDK or ccache, but
-wasi-sdk, as `WASI_SDK_PATH`, for the image decoder, and clang for its native test helper).
+clang for the image decoder's native test helper); both install wasi-sdk, as `WASI_SDK_PATH`, since
+every program built for the web carries the image decoder.
 
 lavapipe exposes one queue family with one queue, so CI never runs the multi-queue paths: async
 compute, cross-queue ownership transfers and timeline waits between queues (their tests skip, and

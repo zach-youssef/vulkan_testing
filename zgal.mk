@@ -10,7 +10,9 @@
 # (with -lvulkan). ZGAL_CFLAGS adds the wrapper's include paths and the platform's (the Vulkan
 # headers, GLM, GLFW) to the rules' compilations, and ZGAL_LDFLAGS the platform's library paths to
 # their links; a Makefile can use both for its own targets too. ZGAL_ROOT is the wrapper's
-# directory, by default this file's.
+# directory, by default this file's. OUT, if the including Makefile uses it, must be set before
+# including this file: the web runtime's image decoder is built into $(OUT)/web-decode (build/
+# without an OUT).
 # ---------------------------------------------------------------------------
 ZGAL_ROOT ?= $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))
 
@@ -125,10 +127,17 @@ naga: $(ZGAL_NAGA)
 
 .PHONY: naga
 
+# The web runtime's image decoder, stb_image built to WebAssembly ($(ZGAL_DECODE_WASM), in the
+# including Makefile's OUT), which zgal-web-program copies beside each program's runtime, and the
+# wasi-sdk that builds it (WASI_SDK_PATH, else downloaded into $(ZGAL_ROOT)/.cache)
+include $(ZGAL_ROOT)/web/decode/decode.mk
+
 # A program for the web (a .zgal file with a main): generates its TypeScript into <out>/src beside a
 # copy of the runtime (web/zgal) and the program's own TypeScript, the .ts files beside the .zgal file
 # (<name>.inputs.ts defining its mainInputs, if it has MainInputs), and builds it to JavaScript in
-# <out>: <name>.zgal.main.js, the program, and for one with a window its page, <name>.zgal.html. The
+# <out>: <name>.zgal.main.js, the program, and for one with a window its page, <name>.zgal.html,
+# with the runtime in <out>/zgal and its image decoder, zgal/stb_image.wasm (beside the TypeScript
+# runtime in <out>/src/zgal too, for running the sources). The
 # files under <dir>/assets are copied to <out>/assets, where it finds them. Serve <out> and open the page, or run it headless
 # under Node: node <out>/<name>.zgal.main.js --frames N.
 #   $(call zgal-web-program,<dir>/<name>.zgal,<out>)
@@ -144,8 +153,10 @@ $(2)/src/$(notdir $(1)).stamp: $(1) $(wildcard $(dir $(1))*.ts) $(ZGAL_COMPILED)
 	ln -sfn $$(abspath $(ZGAL_WEB_DIR)/node_modules) $(2)/src/node_modules
 	@touch $$@
 -include $(2)/src/$(notdir $(1)).d
-$(2)/$(notdir $(1)).main.js: $(2)/src/$(notdir $(1)).stamp $(ZGAL_WEB_PACKAGES)
+$(2)/$(notdir $(1)).main.js: $(2)/src/$(notdir $(1)).stamp $(ZGAL_WEB_PACKAGES) $(ZGAL_DECODE_WASM)
 	$(NODE) $(ZGAL_WEB_DIR)/node_modules/typescript/bin/tsc -p $(2)/src --outDir $(2) --rootDir $(2)/src
+	cp $(ZGAL_DECODE_WASM) $(2)/src/zgal/stb_image.wasm
+	cp $(ZGAL_DECODE_WASM) $(2)/zgal/stb_image.wasm
 	for page in $(2)/src/*.html; do [ -e "$$$$page" ] && cp "$$$$page" $(2)/ || true; done
 	echo '{"type": "module"}' > $(2)/package.json
 	ln -sfn $$(abspath $(ZGAL_WEB_DIR)/node_modules) $(2)/node_modules
