@@ -82,7 +82,8 @@ This page has what the reference doesn't: the runtime's conventions and how to t
 - A material description's `glsl` marks a material whose GLSL bodies glslc and naga translated
   (the ZGAL docs' GLSL bodies section): its bindings are one per ZGAL binding and its samplers
   WebGPU's own, so `MaterialInstance` sets no overridable constants for it and `MaterialBinder`
-  refuses a sampler clamping to a border colour (WebGPU's have none).
+  refuses a sampler clamping to a border colour (WebGPU's have none). `web/tests/glsl.test.ts` runs
+  such materials on Dawn, and `web/tests/glsl.html` in browsers.
 - `png-write.ts` writes PNGs in any environment (`encodePngStream`, with `CompressionStream`);
   `png.ts` (Node only) uses zlib. Reading PNGs is the image decoder's.
 - The web keeps Vulkan's clip space (the WGSL negates y), so web pixel expectations match native
@@ -175,7 +176,8 @@ then:
    `web/tests/image-file.html`, `web/tests/image-decode.html`, the kernels, indirect and models
    pages, `web/tests/headless.html` (`runHeadless` and the form, through image_filter's main, and
    `onProgress` for an asset read whole),
-   `web/tests/stamps.html` (functions storing into the storage images they're given) and
+   `web/tests/stamps.html` (functions storing into the storage images they're given),
+   `web/tests/glsl.html` (`web/tests/glsl.zgal`'s GLSL bodies, as naga translated them) and
    `web/tests/streams.html` (assets streamed from fetch bodies, and Blobs' streams),
    `web/tests/stream-buffers.html` (`tests/stream/streamer.zgal`'s stream-buffer filled from a
    served file and from a `Blob` through `runHeadless`, its failures, runs stopped mid-stream

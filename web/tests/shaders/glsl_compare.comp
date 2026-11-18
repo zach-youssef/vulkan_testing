@@ -1,0 +1,6 @@
+// Compares a reference depth with the shadow map at uv, in the sampler (its #:compare)
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    vec4 p = points()[i];
+    compared()[i] = textureLod(sampler2DShadow(shadow(), shadowSampler()), p.xyz, 0.0);
+}

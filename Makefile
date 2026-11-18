@@ -386,6 +386,7 @@ test-decode-steps:
 # (web/tests/image-file.html), the compute library (web/tests/kernels.html), indirect work
 # (web/tests/indirect.html), models (web/tests/models.html), programs without a window
 # (web/tests/headless.html), functions storing into images they're given (web/tests/stamps.html),
+# GLSL bodies (web/tests/glsl.html),
 # streamed assets (web/tests/streams.html), stream-buffers (web/tests/stream-buffers.html, through
 # tests/stream/streamer.zgal's main), mounted programs' downloads ending when they stop or quit
 # (web/tests/stop-streams.html, streamer mounted)
@@ -433,7 +434,7 @@ test-pages-steps:
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/border-$$browser.png \
 	    'border/border.zgal.html?arg=out.png' || exit 1; \
 	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/border/border.approved.png $(TEST_PAGES)/border-$$browser.png $(BORDER_TOLERANCE) || exit 1; \
-	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps streams stream-buffers stop-streams; do \
+	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps glsl streams stream-buffers stop-streams; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \
 	  if [ $$browser = chromium ]; then \

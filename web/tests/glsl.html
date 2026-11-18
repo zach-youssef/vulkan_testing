@@ -1,0 +1,65 @@
+<!doctype html>
+<!-- GLSL bodies in a browser: web/tests/glsl.zgal's Glsl graph, whose WGSL naga translated from the
+     SPIR-V glslc compiled, gives what web/tests/glsl.test.ts checks on Dawn under Node. Browsers'
+     WGSL front ends (Firefox's naga, Chromium's Tint) check that WGSL too: a uniform block laid out
+     as std430, read_write storage images, depth textures with comparison samplers.
+     Checked by make test-pages (web/tools/chromium.ts and firefox.ts); the page's state is in
+     <html data-zgal>. Served from build/web/tests, with web/tests' graphs built into graphs/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZGAL GLSL test</title>
+</head>
+<body>
+<pre id="zgal-message"></pre>
+<script type="module">
+import * as zgal from './graphs/zgal/index.js';
+import { Glsl } from './graphs/glsl.zgal.js';
+
+const message = document.getElementById('zgal-message');
+const log = (text) => { console.log(text); message.textContent += `${text}\n`; };
+const check = (got, expected, what, tolerance = 0) => {
+  const g = [...got];
+  if (g.length !== expected.length || g.some((v, k) => Math.abs(v - expected[k]) > tolerance)) {
+    throw new Error(`${what}: got ${g.join(' ')}, expected ${expected.join(' ')}`);
+  }
+};
+
+// As in glsl.test.ts: the shadow map (8x8) Slope draws, depth rising along x and, twice as fast, y;
+// texel centres (uv) and a reference depth on either side of the depth there
+const depthAt = (i, j) => (i + 0.5) / 32 + (j + 0.5) / 16;
+const points = [
+  [0.0625, 0.0625, 0.04], [0.0625, 0.0625, 0.05],
+  [0.3125, 0.6875, 0.4], [0.3125, 0.6875, 0.45],
+  [0.9375, 0.1875, 0.3], [0.9375, 0.1875, 0.35],
+];
+const values = [1, 2, 3, 4, 5, 6];
+const texel = (x, y, green = 1) => [Math.round(x * 0.2 * 255), Math.round(y * 0.4 * 255 * green), 255, 255];
+const rows = (green) => [0, 1].flatMap((y) => [0, 1, 2, 3].flatMap((x) => texel(x, y, green)));
+
+let context;
+try {
+  context = await zgal.Context.create();
+  const graph = new zgal.RenderGraph(context);
+  const glsl = await Glsl.build(context, graph, { count: values.length, values, points: points.map((p) => [...p, 0]) });
+  await graph.execute();
+  check(await glsl.readScaledContents(graph), values.map((v) => v * 2.5), 'the scaled buffer');
+  check(await glsl.readStampsPixels(graph), rows(), 'the stored image');
+  check(await glsl.readCanvasPixels(graph), rows(0.5), 'the canvas (y as Vulkan has it)', 1);
+  check(await glsl.readComparedContents(graph), points.map(([u, v, reference]) =>
+    (reference < depthAt(Math.floor(u * 8), Math.floor(v * 8)) ? 1 : 0)), 'the comparisons');
+  await graph.finish();
+  graph.destroy();
+  await context.device.queue.onSubmittedWorkDone();
+  if (context.errors.length > 0) throw new Error(`WebGPU errors:\n${context.errors.join('\n')}`);
+  log('GLSL bodies ran');
+  document.documentElement.dataset.zgal = 'stopped';
+} catch (error) {
+  log(error instanceof Error ? error.message : String(error));
+  document.documentElement.dataset.zgal = 'failed';
+} finally {
+  context?.destroy();
+}
+</script>
+</body>
+</html>

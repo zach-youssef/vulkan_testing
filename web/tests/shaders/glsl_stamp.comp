@@ -1,0 +1,5 @@
+// Stores a texel's coordinates in its red and green (a fifth and two fifths per step)
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    imageStore(stamps(), p, vec4(float(p.x) * 0.2, float(p.y) * 0.4, 1.0, 1.0));
+}

@@ -1,0 +1,83 @@
+;; Materials with GLSL bodies on the web (web/tests/glsl.test.ts): glslc compiles each to SPIR-V and
+;; naga translates that to WGSL, its bindings one per ZGAL binding (see the reference's GLSL bodies).
+;; The shader files are prefixed: their .wgsl outputs share make test-web's directory with the other
+;; programs', on file systems that ignore case
+
+;; Buffers and push constants
+(compute-material Scale
+  (shaders "shaders/glsl_scale.comp")
+  (workgroup 4)
+  (bindings (values (buffer-array float read)) (scaled (buffer-array float write)))
+  (push (factor float) (count uint)))
+
+;; A storage image, its format the image's (rgba8 here)
+(compute-material Stamp
+  (shaders "shaders/glsl_stamp.comp")
+  (workgroup 1)
+  (bindings (stamps (storage-image write))))
+
+;; A texture sampled through a sampler, a varying, and push constants in the fragment stage
+(graphics-material Show
+  (shaders "shaders/glsl_show.vert" "shaders/glsl_show.frag")
+  (bindings (source texture #:stages (fragment)) (sourceSampler sampler))
+  (push (tint vec4))
+  (varyings (uv vec2))
+  (outputs (outColor vec4)))
+
+;; Depth alone
+(graphics-material Slope
+  (shaders "shaders/glsl_slope.vert" "shaders/glsl_slope.frag")
+  (outputs))
+
+;; A depth comparison in the sampler (a sampler2DShadow: a comparison sampler and a depth texture)
+(compute-material Compare
+  (shaders "shaders/glsl_compare.comp")
+  (workgroup 1)
+  (bindings
+   (shadow texture)
+   (shadowSampler sampler)
+   (points (buffer-array vec4 read))     ; uv and a reference depth
+   (compared (buffer-array float write))))
+
+(graph Glsl
+  (parameter count uint)
+  (input values (data float))
+  (input points (data vec4))
+  (upload valueBuffer values)
+  (buffer scaled float count #:frames shared)
+  (material scaling Scale (values valueBuffer) (scaled scaled) #:push ((factor 2.5) (count count)) #:invocations (count))
+  (dispatch scale scaling)
+  (readback readScaled scaled)
+  ;; Stamped, then sampled into the canvas
+  (image stamps rgba8 (fixed 4 2) #:frames shared)
+  (material stamping Stamp (stamps stamps) #:invocations (4 2))
+  (dispatch stamp stamping)
+  (readback readStamps stamps)
+  (sampler nearest #:filter nearest #:address clamp-to-edge)
+  (image canvas rgba8 (fixed 4 2) #:frames shared)
+  (target painted (color canvas #:clear (0 0 0 1)))
+  (material showing Show (source stamps) (sourceSampler nearest) #:push ((tint (vec4 1 0.5 1 1))))
+  (draw show painted showing 3)
+  (readback readCanvas canvas)
+  ;; A shadow map drawn, and compared with
+  (image shadowMap d32 (fixed 8 8) #:frames shared)
+  (target slope (depth shadowMap #:clear 1 #:store store))
+  (material sloping Slope)
+  (draw drawSlope slope sloping 3)
+  (upload pointBuffer points)
+  (sampler comparing #:filter nearest #:address clamp-to-edge #:compare less)
+  (buffer compared float count #:frames shared)
+  (material comparingPoints Compare (shadow shadowMap) (shadowSampler comparing) (points pointBuffer) (compared compared)
+            #:invocations (count))
+  (dispatch compare comparingPoints)
+  (readback readCompared compared))
+
+;; A sampler clamping to a border, which WebGPU's samplers can't (the runtime refuses it)
+(graph Bordered
+  (image picture rgba8 (fixed 2 2) #:frames shared)
+  (sampler border #:filter nearest #:address clamp-to-border)
+  (image canvas rgba8 (fixed 2 2) #:frames shared)
+  (target painted (color canvas))
+  (material showing Show (source picture) (sourceSampler border) #:push ((tint (vec4 1 1 1 1))))
+  (draw show painted showing 3)
+  (readback readCanvas canvas))
