@@ -1,0 +1,59 @@
+;; ZGAL bodies calling functions written in GLSL (extern-glsl) on the web
+;; (web/tests/extern_glsl.test.ts): their materials compile through GLSL as a whole, the GLSL
+;; backend's shaders with the functions' files, which glslc and naga translate to WGSL (see the
+;; reference's web section). The GLSL files are prefixed, as glsl.zgal's are.
+
+;; The reference's example: noise written in GLSL, called through a ZGAL function, the result stored
+(extern-glsl "shaders/extern_glsl_noise.glsl" ((noise [p : vec2]) : float))
+
+(define (grain [p : vec2]) : float
+  (* 0.5 (noise p)))
+
+(compute-material Grain
+  (workgroup 8 8)
+  (bindings (target (storage-image)))
+  (compute
+   (store! target (ivec2 globalInvocationId.xy) (vec4 (grain (vec2 globalInvocationId.xy))))))
+
+;; An integer function, exactly checked, with buffers, push constants and an integer atomic (naga
+;; declares what it acts on atomic)
+(extern-glsl "shaders/extern_glsl_weave.glsl" ((weave [a : uint] [b : uint]) : uint))
+
+(compute-material Weave
+  (workgroup 4)
+  (bindings (woven (buffer-array uint)) (total (buffer-array uint)))
+  (push (count uint) (salt uint))
+  (compute
+   (let* ([i globalInvocationId.x])
+     (when (< i count)
+       (let* ([w (weave i salt)])
+         (begin
+           (write! (at woven i) w)
+           (atomic-add! (at total 0) w)))))))
+
+;; A GLSL vertex body with a ZGAL fragment body, which share the material's bind group, so it too
+;; compiles through GLSL
+(graphics-material Tint
+  (shaders "shaders/extern_glsl_tint.vert")
+  (push (tint vec4))
+  (outputs (color vec4))
+  (fragment tint))
+
+(graph ExternGlsl
+  (parameter count uint)
+  (input zero (data uint))
+  (image grainImage rgba8 (fixed 8 8) #:frames shared)
+  (material graining Grain (target grainImage) #:invocations (8 8))
+  (dispatch makeGrain graining)
+  (readback readGrain grainImage)
+  (buffer woven uint count #:frames shared)
+  (upload total zero)
+  (material weaving Weave (woven woven) (total total) #:push ((count count) (salt 7)) #:invocations (count))
+  (dispatch weave weaving)
+  (readback readWoven woven)
+  (readback readTotal total)
+  (image canvas rgba8 (fixed 2 2) #:frames shared)
+  (target painted (color canvas #:clear (0 0 0 1)))
+  (material tinting Tint #:push ((tint (vec4 0.2 0.4 0.6 1))))
+  (draw tint painted tinting 3)
+  (readback readCanvas canvas))

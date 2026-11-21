@@ -320,7 +320,7 @@ test-dsl-steps: docs
 # The web runtime's tests: web/tests/*.zgal (and image_filter's and streamer's mains, which
 # image-filter.test.ts and stop.test.ts run) compiled to TypeScript and WGSL beside a copy of the
 # runtime (as an application would have it), type checked, then run on Dawn; glsl.zgal's GLSL bodies
-# are translated with glslc and naga
+# and extern_glsl.zgal's materials calling GLSL functions are translated with glslc and naga
 WEB_TEST_OUT = $(OUT)/web-tests
 # The models web/tests/models.zgal draws, shared with the native tests
 MODEL_ASSETS = $(addprefix tests/gpu/assets/,halves.gltf broken.gltf quad.obj quad.mtl quadrants.png)

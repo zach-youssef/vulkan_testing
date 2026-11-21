@@ -969,7 +969,7 @@ and sampled or fetched, in a shader (WebGPU binds each as one or the other, and 
 variants; bind two instead), nor what GLSL bodies can't (@secref["glsl"]: arrays of bindings,
 push constants that are structs or arrays, samplers clamping to a border colour). Each is reported
 where it's used, as @secref["error-not-on-web"]; integer atomics are naga's. Its other materials keep the
-WGSL backend's.
+WGSL backend's. @tt{web/tests/extern_glsl.zgal} runs this example on Dawn.
 
 @subsection[#:tag "inference"]{Inferred accesses}
 
@@ -2766,7 +2766,8 @@ This document is part of the language: change it in the same commit as the compi
        would (layouts of small integers, shared memory, emulated atomics and subgroup scans,
        expressions WGSL spells differently, draws with depth tests, functions storing into the
        images they're given, a depth image sampled and compared with one sampler; @tt{glsl.zgal}:
-       GLSL bodies translated by glslc and naga), and generated
+       GLSL bodies translated by glslc and naga; @tt{extern_glsl.zgal}: ZGAL bodies calling GLSL
+       functions, likewise), and generated
        graphs run as
        the C++ ones do (loops, conditions, enables and once nodes, per-frame inputs, uploads,
        copies, buffer files (also conditional ones), cpu nodes (also reading and writing imported
