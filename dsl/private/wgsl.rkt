@@ -31,7 +31,9 @@
          wgsl-push-layout
          wgsl-push-binding
          wgsl-name
-         wgsl-reserved-words)
+         wgsl-reserved-words
+         body-opaque-uses
+         opaque-name)
 
 ;; The file a shader's module is written to: its name plus .wgsl, e.g. Lit.frag.wgsl
 (define (wgsl-shader-file-name s) (string-append (shader-name s) ".wgsl"))
@@ -338,7 +340,8 @@
 ;; them that are atomic words.
 (struct usage (bindings opaque functions raw atomic) #:transparent)
 
-;; A ZGAL body's checked body (materials with GLSL bodies are translated: web-glsl.rkt)
+;; A ZGAL body's checked body (materials with GLSL bodies, or calling GLSL functions, are translated:
+;; web-glsl.rkt)
 (define (body-of s)
   (unless (zgal-shader? s)
     (error 'wgsl "internal error: ~a is a GLSL body, which web-glsl.rkt translates" (shader-path s)))
@@ -370,8 +373,9 @@
 
 ;; How body uses its textures and samplers (bindings, or a function's parameters), directly or
 ;; through the functions it calls: name -> a set of 'sample (a sampler sampling a texture), 'depth
-;; (a sampler sampling a depth texture) and 'compare (a texture compared with depths, or the sampler
-;; comparing). depth-texture?: whether a texture name is a depth texture here (one compared in the
+;; (a sampler sampling a depth texture), 'compare (a texture compared with depths, or the sampler
+;; comparing) and 'read (a texture sampled or fetched: web-glsl.rkt's, as the variants above are
+;; the samplers'). depth-texture?: whether a texture name is a depth texture here (one compared in the
 ;; material, or in the function). memo: the memo of function variants (function-uses)
 (define (opaque-uses body functions depth-texture? memo)
   (define uses (make-hash))
@@ -381,16 +385,25 @@
   (for ([e (in-list (subexpressions body))])
     (match e
       [(t-texture (or 'sample 'sample-lod) (list t s _ ...) _ _)
+       (use! t 'read)
        (use! s (if (depth-texture? (opaque-name t)) 'depth 'sample))]
+      [(t-texture 'fetch (list t _ _ ...) _ _) (use! t 'read)]
       [(t-texture 'sample-compare (list t s _ _) _ _) (use! t 'compare) (use! s 'compare)]
       [(t-user-call f args _ _)
        (define d (hash-ref functions f #f))
-       (when (function-decl? d)
+       ;; GLSL functions take values (no textures nor samplers)
+       (when (and (function-decl? d) (not (glsl-function-decl? d)))
          (define inner (function-uses d (call-signature d args depth-texture? functions memo) functions memo))
          (for ([p (in-list (function-decl-params d))] [a (in-list args)])
            (for ([v (in-set (hash-ref inner (car p) (set)))]) (use! a v))))]
       [_ (void)]))
   uses)
+
+;; opaque-uses of a body of prog's, with a memo of its own and no depth textures but those the
+;; functions it calls compare. web-glsl.rkt refuses, in ZGAL bodies it
+;; compiles through GLSL, the uses that need more than one variant of a binding
+(define (body-opaque-uses prog body)
+  (opaque-uses body (program-function-table prog) (λ (name) #f) (make-hash)))
 
 ;; The textures and samplers body compares depths with (not depending on which are depth textures)
 (define (compared-names body functions memo)
@@ -567,7 +580,7 @@
   (for ([name (in-list (zgal-shader-uses s))])
     (define d (hash-ref functions name))
     (when (glsl-function-decl? d)
-      (web-error (function-decl-loc d) "~a is written in GLSL (extern-glsl), which WebGPU can't use: write it in ZGAL" name)))
+      (error 'wgsl "internal error: ~a is written in GLSL, and materials calling it are translated by web-glsl.rkt" name)))
   (define depth-bindings
     (for/set ([wb (in-list layout)] #:when (and (eq? (wgsl-binding-kind wb) 'texture) (wgsl-binding-depth? wb))) (wgsl-binding-name wb)))
   (define st (make-state stage u m functions depth-bindings))

@@ -2,8 +2,9 @@
 ;; The TypeScript backend (the web, with WebGPU): a module per .zgal file, name.zgal.ts, with its
 ;; structs (an interface and their layout), materials (descriptions of their bindings (as WebGPU
 ;; binds them: wgsl.rkt's wgsl-binding) and push constants, and their WGSL) and graphs, using the
-;; runtime in web/zgal (imported as ./zgal/, which the build copies beside the module). Materials with
-;; GLSL bodies are described from their translation (web-glsl.rkt's translate-web-material).
+;; runtime in web/zgal (imported as ./zgal/, which the build copies beside the module). Materials
+;; compiled through GLSL (with GLSL bodies, or calling GLSL functions: web-glsl.rkt's glsl-material?)
+;; are described from their translation (web-glsl.rkt's translate-web-material).
 
 (require racket/list
          racket/match
@@ -27,7 +28,7 @@
   (define-values (_dir file _must-be-dir) (split-path source))
   (string-append (path->string file) ".ts"))
 
-;; glsl-materials: the translations of the materials with GLSL bodies, by name (web-material)
+;; glsl-materials: the translations of the materials compiled through GLSL, by name (web-material)
 (define (emit-typescript prog #:glsl-materials glsl-materials)
   (define out '())
   (define (line! fmt . args) (set! out (cons (apply format fmt args) out)))
@@ -93,7 +94,7 @@
   (string-append (string-join (reverse out) "\n") "\n"))
 
 ;; A TypeScript template literal of WGSL, with the storage images' formats from `formats`. glsl: m's
-;; translation, for a material with GLSL bodies, or #f
+;; translation, for a material compiled through GLSL, or #f
 (define (shader-template prog m s glsl)
   (define marker "\u0001")
   (define (storage-format b) (string-append marker (binding-name b) marker))
@@ -141,7 +142,7 @@
                           ", "))]
     [_ (ts-layout-type t)]))
 
-;; glsl: m's translation (a web-material), for a material with GLSL bodies, or #f
+;; glsl: m's translation (a web-material), for a material compiled through GLSL, or #f
 (define (emit-material prog m glsl)
   (define kind (material-kind m))
   (define bindings (if glsl (web-material-bindings glsl) (wgsl-bindings prog m)))

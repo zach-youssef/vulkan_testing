@@ -4,6 +4,7 @@
 
 (require racket/file
          racket/path
+         racket/promise
          "private/ast.rkt"
          "private/cpp.rkt"
          "private/cpp-main.rkt"
@@ -49,8 +50,9 @@
 ;; (<file>.main.cpp, beside the header) for a program with one, then a shader per material shader.
 ;; With a web-dir, the outputs for the web follow: the TypeScript module (<file>.ts), for a program
 ;; its main (<file>.main.ts) and with a window its page (<file>.html), then a WGSL module per
-;; material shader (which the TypeScript also holds). Materials with GLSL bodies are translated
-;; for the web with web-toolchain (a web-toolchain: glslc and naga), which only those need.
+;; material shader (which the TypeScript also holds). Materials with GLSL bodies, or calling GLSL
+;; functions (extern-glsl), are translated for the web through GLSL with web-toolchain (a
+;; web-toolchain: glslc and naga), which only those need.
 ;; Raises exn:zgal for errors in the program.
 (define (compile-zgal source
                       #:text [text #f]
@@ -67,13 +69,26 @@
   (define (body-of s)
     (or (read-body (shader-path s))
         (zgal-error 'shader-not-found (shader-loc s) "shader body ~a doesn't exist" (shader-path s))))
+  ;; The texts of the files of the GLSL functions it declares, by path (read once, when a shader
+  ;; needs them)
+  (define glsl-files
+    (delay
+      (for/hash ([path (in-list (program-glsl-files prog))])
+        (values path
+                (or (read-body path)
+                    (zgal-error 'shader-not-found
+                                (for/first ([d (in-list (program-functions prog))]
+                                            #:when (and (glsl-function-decl? d) (equal? (glsl-function-decl-path d) path)))
+                                  (function-decl-loc d))
+                                "GLSL file ~a doesn't exist" path))))))
   (define web
     (if (and web-dir (not check-only?))
-        (let ([glsl (for/hash ([m (in-list (program-materials prog))] #:when (glsl-material? m))
+        (let ([glsl (for/hash ([m (in-list (program-materials prog))] #:when (glsl-material? prog m))
                       (unless web-toolchain
-                        (error 'compile-zgal "material ~a has GLSL bodies, which the web needs glslc and naga for: give a #:web-toolchain"
+                        (error 'compile-zgal "material ~a has GLSL bodies or calls GLSL functions, which the web needs glslc and naga for: give a #:web-toolchain"
                                (material-name m)))
-                      (values (material-name m) (translate-web-material web-toolchain prog m body-of)))])
+                      (values (material-name m)
+                              (translate-web-material web-toolchain prog m body-of #:glsl-files (force glsl-files))))])
           (append
            (list (output (join web-dir (typescript-file-name source)) (emit-typescript prog #:glsl-materials glsl)))
            (let ([m (program-main prog)])
@@ -96,23 +111,13 @@
     [(not native?) (values prog web)]
     [else
      (define header-path (join header-dir (header-file-name source)))
-     ;; The files of the GLSL functions it declares
-     (define glsl-files
-       (for/hash ([path (in-list (program-glsl-files prog))])
-         (values path
-                 (or (read-body path)
-                     (zgal-error 'shader-not-found
-                                 (for/first ([d (in-list (program-functions prog))]
-                                             #:when (and (glsl-function-decl? d) (equal? (glsl-function-decl-path d) path)))
-                                   (function-decl-loc d))
-                                 "GLSL file ~a doesn't exist" path)))))
      (define shaders
        (for*/list ([m (in-list (program-materials prog))]
                    [s (in-list (material-shaders m))])
          ;; GLSL bodies are files; ZGAL ones are in the program
          (define body (and (shader-path s) (body-of s)))
          (define out-path (join shader-dir (shader-name s)))
-         (output out-path (emit-shader prog m s body out-path #:interface 'bindless #:glsl-files glsl-files))))
+         (output out-path (emit-shader prog m s body out-path #:interface 'bindless #:glsl-files (force glsl-files)))))
      (define main
        (if (program-main prog)
            (let ([path (join header-dir (main-file-name source))])

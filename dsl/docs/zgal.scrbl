@@ -135,9 +135,10 @@ example reloads edited bodies as before.
 @tt{zgal-web-program} builds a program for the web (@secref["web"]) into a directory: its page,
 its main built to JavaScript with the runtime (and the runtime's image decoder, stb_image built to
 WebAssembly with wasi-sdk, which @tt{zgal.mk} downloads unless @tt{WASI_SDK_PATH} names one), and
-its assets. A program with GLSL bodies (@secref["glsl"]) needs @tt{glslc} on @tt{PATH} and naga,
-which it builds first if the @tt{.zgal} file has a @racket[shaders] form (for bodies only in
-imported files, @tt{make naga} first). The particles example's rule:
+its assets. A program with GLSL bodies (@secref["glsl"]) or GLSL functions (@secref["extern-glsl"])
+needs @tt{glslc} on @tt{PATH} and naga, which it builds first if the @tt{.zgal} file has a
+@racket[shaders] or @racket[extern-glsl] form (for those only in imported files, @tt{make naga}
+first). The particles example's rule:
 
 @(file-excerpt "Makefile" #:from #rx"^PARTICLES_WEB =" #:to #rx"zgal-web-program")
 
@@ -163,7 +164,8 @@ racket dsl/zgal.rkt --check FILE.zgal
        TypeScript holds them too; they're written for tools and reading), and removes other WGSL
        modules there. Given alone, it doesn't generate the C++ and GLSL.}
  @item{@tt{@literal{--glslc} PATH} and @tt{@literal{--naga} PATH} name the tools that translate
-       GLSL bodies for the web (@secref["glsl"]); by default they're found on @tt{PATH}.}
+       materials with GLSL bodies or calling GLSL functions for the web (@secref["glsl"],
+       @secref["extern-glsl"]); by default they're found on @tt{PATH}.}
  @item{@tt{@literal{--check}} only checks the file. Shader bodies aren't read, so a missing body isn't
        reported.}
 ]
@@ -955,6 +957,19 @@ lines). Their parameters and results are values (no textures, images or effects)
 touch bindings and access inference stays sound. They have no C++ version, so apps can't call them,
 nor ZGAL functions calling them (@tt{grain} isn't in the header). Prefer ZGAL bodies: a GLSL
 function is opaque to the compiler, and to backends other than GLSL.
+
+On the web (@secref["web"]), a material whose ZGAL bodies call a GLSL function (directly or
+through ZGAL functions) is compiled through GLSL as a whole, as its shaders share one bind group:
+each shader is the one above, with the web interface of GLSL bodies, which glslc and naga
+translate to WGSL (@secref["glsl"]), and its errors are reported at the @tt{.zgal} file's lines or
+the GLSL file's. The WGSL backend's emulation of what WGSL lacks doesn't apply to it, so its
+shaders (and the functions they call) can't use 8- or 16-bit integers, float atomics, subgroup
+operations, nor one sampler both to compare depths and to sample, or one texture both compared
+and sampled or fetched, in a shader (WebGPU binds each as one or the other, and the WGSL backend binds
+variants; bind two instead), nor what GLSL bodies can't (@secref["glsl"]: arrays of bindings,
+push constants that are structs or arrays, samplers clamping to a border colour). Each is reported
+where it's used, as @secref["error-not-on-web"]; integer atomics are naga's. Its other materials keep the
+WGSL backend's.
 
 @subsection[#:tag "inference"]{Inferred accesses}
 
@@ -2162,7 +2177,9 @@ bodies (@secref["web"]), and makes a texture the body compares depths with (@tt{
 a depth texture and its sampler a comparison sampler, as the WGSL backend does; the module
 declares every binding, used or not, so the bindings a stage uses are read from the SPIR-V.
 
-@tt{@literal{--web-out}} translates a material's GLSL bodies this way (with @tt{glslc} and
+@tt{@literal{--web-out}} translates a material with GLSL bodies this way as a whole (its ZGAL
+bodies, if any, as the GLSL backend writes them, as for functions written in GLSL:
+@secref["extern-glsl"]) (with @tt{glslc} and
 @tt{naga} from @tt{PATH}, or @tt{@literal{--glslc}} and @tt{@literal{--naga}}; @tt{zgal.mk}'s
 web programs pass its naga), and its TypeScript describes the material from the translation:
 one binding per binding of the material, as the GLSL declares it (a sampler the body compares
@@ -2179,7 +2196,6 @@ compares by hand with, so on the web a GLSL body can't:
        can't lay them out as a std430 one does);}
  @item{sample with a sampler clamping to a border colour: the runtime refuses one when it binds
        the material (WebGPU's samplers have none);}
- @item{share its material with ZGAL bodies, whose samplers are bound as up to three variants;}
  @item{compare depths with a texture in one of its material's shaders and sample it in another
        (WebGPU binds it as a depth texture or as a float one; ZGAL bodies get a variant of each);}
  @item{use what naga can't translate, such as a function taking an @tt{image2D}, reported at
@@ -2310,10 +2326,11 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        they are copied into one when the graph is built, resized the same way.}
 ]
 
-@racket[extern-glsl] functions and other arrays of bindings (of buffers or storage images, or
-chosen with @racket[#:select] or from imports) have no WebGPU equivalent, so compiling them for
-the web reports @secref["error-not-on-web"]. GLSL bodies are translated with glslc and naga
-(@secref["glsl"], which lists what they can't do on the web). The example's TypeScript follows in
+Other arrays of bindings (of buffers or storage images, or chosen with @racket[#:select] or from
+imports) have no WebGPU equivalent, so compiling them for the web reports
+@secref["error-not-on-web"]. GLSL bodies, and materials calling GLSL functions
+(@racket[extern-glsl]), are translated with glslc and naga (@secref["glsl"] and
+@secref["extern-glsl"], which list what they can't do on the web). The example's TypeScript follows in
 the next section.
 
 @zgal-example[#:web? #t #:show '("Copy.comp.wgsl")
@@ -2739,7 +2756,7 @@ This document is part of the language: change it in the same commit as the compi
        TypeScript through @tt{tsc} (@tt{web/}, whose packages @tt{make test-dsl} installs with
        @tt{npm ci}), and the golden GLSL bodies through glslc and naga to WGSL that Dawn accepts,
        with glslc's and naga's errors mapped to the sources, and the bindings and refusals of
-       materials with GLSL bodies under @tt{@literal{--web-out}}.}
+       materials with GLSL bodies or calling GLSL functions under @tt{@literal{--web-out}}.}
  @item{@tt{dsl/tests/web-test.rkt}: what compiling for the web reports that Vulkan allows,
        that functions with @tt{image2D} parameters reach WGSL inlined, how a sampler that samples
        and compares, and a texture compared in one stage, are declared, and the web interface of

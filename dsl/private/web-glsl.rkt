@@ -1,23 +1,26 @@
 #lang racket/base
-;; GLSL shaders for the web: a material stage written in GLSL (a GLSL body in `shaders`) becomes
-;; WGSL through glslc (to SPIR-V) and naga (to WGSL). The shader is the GLSL backend's, with its web
-;; interface (glsl.rkt's web-interface): one descriptor per binding, set 0 and binding i for the
-;; material's i'th binding, and the push constants a uniform block at the binding after them, as
-;; the WGSL backend lays out a material's bind group (wgsl.rkt), so the TypeScript runtime binds the
-;; module as it binds a ZGAL body's.
+;; GLSL shaders for the web: a material whose shaders are written in GLSL (bodies in `shaders`), or
+;; whose ZGAL bodies call GLSL functions (extern-glsl), becomes WGSL through glslc (to SPIR-V) and
+;; naga (to WGSL). Each shader is the GLSL backend's (a GLSL body, or a ZGAL body with the functions
+;; it uses and the files of the GLSL ones, as natively), with its web interface (glsl.rkt's
+;; web-interface): one descriptor per binding, set 0 and binding i for the material's i'th binding,
+;; and the push constants a uniform block at the binding after them, as the WGSL backend lays out a
+;; material's bind group (wgsl.rkt), so the TypeScript runtime binds the module as it binds a ZGAL
+;; body's. A material goes through GLSL as a whole, as its shaders share one bind group.
 ;;
 ;; Errors keep pointing at the source: glslc reports its errors through the shader's #line
-;; directives, at the body's lines (or the .zgal file's, for the interface), which become the
-;; error's location; naga's SPIR-V reader reports no lines, so what it can't translate is reported at
-;; the shader's declaration. 8- and 16-bit integers and arrays of bindings, which naga and WebGPU
-;; lack, are refused before the tools run.
+;; directives, at the body's lines (or the .zgal file's, for the interface and ZGAL bodies, or the
+;; GLSL function's file), which become the error's location; naga's SPIR-V reader reports no lines,
+;; so what it can't translate is reported at the shader's declaration. What WGSL lacks and the WGSL
+;; backend emulates for ZGAL bodies (8- and 16-bit integers, float atomics, subgroup operations) and
+;; arrays of bindings, which naga and WebGPU lack, are refused before the tools run, where the
+;; program uses them.
 ;;
-;; --web-out translates each material with GLSL bodies once (translate-web-material), and its
-;; TypeScript describes the material from the result (web-material-bindings): one binding per ZGAL
-;; binding, as the GLSL interface declares them, without the sampler variants and overridable
-;; constants a ZGAL body's module has (wgsl.rkt). Its samplers are WebGPU's own, so a comparison
-;; compares in the sampler and a sampler clamping to a border has no border colour (the runtime
-;; refuses one).
+;; --web-out translates each such material once (translate-web-material), and its TypeScript
+;; describes the material from the result (web-material-bindings): one binding per ZGAL binding, as
+;; the GLSL interface declares them, without the sampler variants and overridable constants a ZGAL
+;; body's module has (wgsl.rkt). Its samplers are WebGPU's own, so a comparison compares in the
+;; sampler and a sampler clamping to a border has no border colour (the runtime refuses one).
 
 (require racket/file
          racket/list
@@ -27,10 +30,12 @@
          racket/string
          racket/system
          "ast.rkt"
+         "body.rkt"
+         "builtins.rkt"
          "errors.rkt"
          "glsl.rkt"
          "layout.rkt"
-         (only-in "wgsl.rkt" wgsl-binding wgsl-binding-source))
+         (only-in "wgsl.rkt" wgsl-binding wgsl-binding-source body-opaque-uses opaque-name))
 
 (provide (struct-out web-toolchain)
          (struct-out web-wgsl)
@@ -56,36 +61,148 @@
 (define (web-error where fmt . args)
   (apply zgal-error 'not-on-web where fmt args))
 
+;; The GLSL functions (extern-glsl) ZGAL shader s calls, directly or through ZGAL functions
+(define (glsl-functions-called prog s)
+  (define declarations
+    (for/hash ([d (in-list (program-functions prog))] #:when (function-decl? d)) (values (function-decl-name d) d)))
+  (for*/list ([name (in-list (zgal-shader-uses s))]
+              [d (in-value (hash-ref declarations name #f))]
+              #:when (glsl-function-decl? d))
+    d))
+
+;; Whether material m is compiled through GLSL on the web: it has GLSL bodies, or one of its ZGAL
+;; bodies calls a GLSL function
+(define (glsl-material? prog m)
+  (for/or ([s (in-list (material-shaders m))])
+    (or (and (shader-path s) #t)
+        (pair? (glsl-functions-called prog s)))))
+
+;; For messages about material m, compiled through GLSL: (values what is compiled from GLSL, the
+;; remedy)
+(define (glsl-subject prog m)
+  (define called
+    (remove-duplicates
+     (for*/list ([s (in-list (material-shaders m))] #:unless (shader-path s)
+                 [d (in-list (glsl-functions-called prog s))])
+       (function-decl-name d))))
+  (define callers
+    (for/list ([s (in-list (material-shaders m))]
+               #:when (and (not (shader-path s)) (pair? (glsl-functions-called prog s))))
+      (shader-name s)))
+  (define glsl-bodies? (ormap shader-path (material-shaders m)))
+  (cond
+    [(andmap shader-path (material-shaders m)) (values "a GLSL shader" "write the shader in ZGAL")]
+    [else
+     (define reasons
+       (append (if glsl-bodies? '("it has GLSL bodies") '())
+               (if (pair? called) (list (format "~a ~a ~a, written in GLSL" (string-join callers " and ") (if (= (length callers) 1) "calls" "call") (string-join called ", "))) '())))
+     (values (format "~a's shaders (compiled from GLSL on the web, as ~a)" (material-name m) (string-join reasons " and "))
+             (format "write ~a in ZGAL" (string-join (append (if glsl-bodies? '("its GLSL bodies") '()) called) ", ")))]))
+
 ;; The web-flavoured GLSL of shader s of material m: emit-shader's text with the web interface.
-;; body, out-path, glsl-files: as emit-shader's. storage-format: a storage image binding's GLSL
-;; format qualifier, e.g. "rgba8" (the WGSL declares the format: see wgsl.rkt's emit-wgsl).
-;; Refuses what the interface can't express on the web.
+;; body (a GLSL body's text, or #f for a ZGAL body), out-path, glsl-files: as emit-shader's.
+;; storage-format: a storage image binding's GLSL format qualifier, e.g. "rgba8" (the WGSL
+;; declares the format: see wgsl.rkt's emit-wgsl). Refuses what the interface can't express on the
+;; web, and what a ZGAL body (and the functions it calls) uses that WGSL lacks and only the WGSL
+;; backend emulates.
 (define (emit-web-shader prog m s body out-path #:storage-format storage-format #:glsl-files [glsl-files (hash)])
+  (define-values (subject remedy) (glsl-subject prog m))
   ;; The native interface's descriptor indexing, which the web interface replaces
-  (for ([line (in-list (string-split body "\n" #:trim? #f))] [number (in-naturals 1)])
-    (when (regexp-match? #px"^\\s*#\\s*include\\s*[\"<]bindless[.]glsl[\">]" line)
-      (web-error (loc (shader-path s) number 1) "~a includes bindless.glsl, the native interface's descriptor indexing, which WebGPU lacks: reach bindings through their accessors (name()), which the web interface defines"
-                 (shader-name s))))
+  (when body
+    (for ([line (in-list (string-split body "\n" #:trim? #f))] [number (in-naturals 1)])
+      (when (regexp-match? #px"^\\s*#\\s*include\\s*[\"<]bindless[.]glsl[\">]" line)
+        (web-error (loc (shader-path s) number 1) "~a includes bindless.glsl, the native interface's descriptor indexing, which WebGPU lacks: reach bindings through their accessors (name()), which the web interface defines"
+                   (shader-name s)))))
   (for ([b (in-list (material-bindings m))])
     (when (eq? (binding-kind b) 'array)
-      (web-error (binding-loc b) "~a is an array of bindings, which a GLSL shader can't index on the web (WebGPU has no descriptor indexing): write the shader in ZGAL"
-                 (binding-name b)))
+      (web-error (binding-loc b) "~a is an array of bindings, which ~a can't index on the web (WebGPU has no descriptor indexing): ~a"
+                 (binding-name b) subject remedy))
     (define t (binding-buffer-type b))
     (when (and t (pair? (small-integer-kinds-in t)))
-      (web-error (binding-loc b) "~a holds ~a, and WGSL has no 8- and 16-bit integers: a GLSL shader can't read them on the web (ZGAL bodies read them from 32-bit words), so use uint or int, or write the shader in ZGAL"
-                 (binding-name b) (type-name t))))
+      (web-error (binding-loc b) "~a holds ~a, and WGSL has no 8- and 16-bit integers: ~a can't read them on the web (the WGSL backend reads them from 32-bit words), so use uint or int, or ~a"
+                 (binding-name b) (type-name t) subject remedy)))
   (for ([f (in-list (material-shared m))])
     (when (pair? (small-integer-kinds-in (field-type f)))
-      (web-error (field-loc f) "shared variable ~a holds ~a, and WGSL has no 8- and 16-bit integers: a GLSL shader can't use them on the web, so use uint or int, or write the shader in ZGAL"
-                 (field-name f) (type-name (field-type f)))))
+      (web-error (field-loc f) "shared variable ~a holds ~a, and WGSL has no 8- and 16-bit integers: ~a can't use them on the web, so use uint or int, or ~a"
+                 (field-name f) (type-name (field-type f)) subject remedy)))
   ;; ZGAL bodies read structs and arrays from a uniform-layout mirror (wgsl.rkt's push-mirror?),
   ;; which the GLSL interface's std430 block doesn't follow
   (for ([f (in-list (material-push m))])
     (define t (field-type f))
     (when (or (array-t? t) (struct-t? t))
-      (web-error (field-loc f) "push constant ~a is ~a, but a GLSL shader's push constants on the web (a uniform block) are scalars, vectors and matrices: write the shader in ZGAL"
-                 (field-name f) (type-name t))))
+      (web-error (field-loc f) "push constant ~a is ~a, but the push constants of ~a on the web (a uniform block) are scalars, vectors and matrices: ~a"
+                 (field-name f) (type-name t) subject remedy)))
+  (unless body (check-zgal-body prog s subject remedy))
   (emit-shader prog m s body out-path #:interface (web-interface storage-format) #:glsl-files glsl-files))
+
+;; Refuses what ZGAL body s, and the functions it calls, use that WGSL lacks, which the WGSL backend
+;; emulates (wgsl.rkt) but a shader compiled from GLSL can't: 8- and 16-bit integers (also in the
+;; functions' signatures, GLSL ones' included), float atomics (WGSL's atomics are integers'),
+;; subgroup operations (which also need the variant without subgroups), and a sampler used both to
+;; compare with depths and to sample, or a texture both compared and sampled or fetched (WebGPU
+;; binds each as one or the other: check-comparisons). Integer atomics are naga's: it declares what
+;; they act on atomic.
+(define (check-zgal-body prog s subject remedy)
+  (define declarations
+    (for/hash ([d (in-list (program-functions prog))])
+      (values (if (function-decl? d) (function-decl-name d) (constant-decl-name d)) d)))
+  (define used (for/list ([name (in-list (zgal-shader-uses s))]) (hash-ref declarations name)))
+  (for ([d (in-list used)])
+    (define-values (name types where)
+      (match d
+        [(function-decl name params result _ _ _ l) (values name (cons result (map cdr params)) l)]
+        [(constant-decl name type _ _ _ l) (values name (list type) l)]))
+    (define t (for/first ([t (in-list types)] #:when (pair? (small-integer-kinds-in t))) t))
+    (when t
+      (web-error where "~a's type has ~a, and WGSL has no 8- and 16-bit integers: ~a can't use them on the web (the WGSL backend computes with them in 32 bits), so use uint or int, or ~a"
+                 name (type-name t) subject remedy)))
+  (define bodies
+    (cons (zgal-shader-body s)
+          (filter values (for/list ([d (in-list used)]) (if (function-decl? d) (function-decl-body d) (constant-decl-body d))))))
+  (for* ([body (in-list bodies)] [x (in-list (subexpressions body))])
+    (define t (texpr-type x))
+    (when (pair? (small-integer-kinds-in t))
+      (web-error (texpr-loc x) "this is ~a, and WGSL has no 8- and 16-bit integers: ~a can't compute with them on the web (the WGSL backend computes with them in 32 bits), so use uint or int, or ~a"
+                 (type-name t) subject remedy))
+    (match x
+      [(t-atomic op _ _ (scalar-t 'float) l)
+       (web-error l "this atomic ~a is on a float, and WGSL's atomics are integers': ~a can't do it on the web (the WGSL backend emulates it with a compare-and-exchange loop), so ~a"
+                  op subject remedy)]
+      [(or (t-call (? subgroup-category) _ _ l) (t-global 'stage (pregexp #px"^subgroup") _ _ l))
+       (web-error l "this is a subgroup operation, which ~a can't use on the web (the WGSL backend emulates what WGSL lacks of them, with a variant for devices without subgroups): ~a"
+                  subject remedy)]
+      [_ (void)]))
+  (check-comparisons s subject remedy (body-opaque-uses prog (zgal-shader-body s))))
+
+;; Refuses a sampler ZGAL body s both compares with and samples with, and a texture it both compares
+;; with depths and samples or fetches, through the functions it calls too: the WGSL backend binds a
+;; sampler as a variant for each use (and reads a compared texture, a depth texture, as one), but a
+;; shader compiled from GLSL has one binding for each, which WebGPU binds as one or the other.
+;; uses: the body's opaque-uses (body-opaque-uses). Reported at the body's last use of the binding
+;; (where it uses it, or passes it to a function).
+(define (check-comparisons s subject remedy uses)
+  (define body (zgal-shader-body s))
+  (define (last-use name)
+    (define locs
+      (for/list ([e (in-list (subexpressions body))]
+                 #:when (match e
+                          [(or (t-texture _ args _ _) (t-user-call _ args _ _))
+                           (for/or ([a (in-list args)]) (equal? (opaque-name a) name))]
+                          [_ #f]))
+        (texpr-loc e)))
+    (when (null? locs)
+      (error 'web-glsl "internal error: ~a's body doesn't use ~a" (shader-name s) name))
+    (argmax (λ (l) (+ (* (loc-line l) 100000) (loc-column l))) locs))
+  (for ([name (in-list (sort (hash-keys uses) string<?))])
+    (define variants (hash-ref uses name))
+    (when (set-member? variants 'compare)
+      ;; A sampler sampling a texture a function compares has the depth variant
+      (when (or (set-member? variants 'sample) (set-member? variants 'depth))
+        (web-error (last-use name) "sampler ~a both compares with depths and samples in ~a, and WebGPU binds a sampler as one or the other: ~a can't use it both ways on the web (the WGSL backend binds a variant of it for each), so bind two samplers, or ~a"
+                   name (shader-name s) subject remedy))
+      (when (set-member? variants 'read)
+        (web-error (last-use name) "texture ~a is both compared with depths and sampled or fetched in ~a, and WebGPU binds a texture as one or the other: ~a can't use it both ways on the web (the WGSL backend reads it as a depth texture), so bind it twice, or ~a"
+                   name (shader-name s) subject remedy)))))
 
 ;; Runs a program, returning its exit code and what it wrote to stdout and stderr (one port, so
 ;; a tool writing more errors than a pipe holds can't block while the other pipe is read). A tool
@@ -273,13 +390,8 @@
 ;; ---------------------------------------------------------------------------------------------
 ;; Materials
 
-;; Whether material m has GLSL bodies (a material mixing them with ZGAL bodies is refused on the
-;; web: translate-web-material)
-(define (glsl-material? m)
-  (for/or ([s (in-list (material-shaders m))]) (and (shader-path s) #t)))
-
-;; A material with GLSL bodies, translated. bindings: its bindings as WebGPU binds them
-;; (wgsl-binding), one per ZGAL binding, the binding's index its @binding: a sampler a shader
+;; A material compiled through GLSL (glsl-material?), translated. bindings: its bindings as WebGPU
+;; binds them (wgsl-binding), one per ZGAL binding, the binding's index its @binding: a sampler a shader
 ;; compares with (naga's sampler_comparison, from a sampler2DShadow) is a 'comparison-sampler, and
 ;; with a texture compared with depths (texture_depth_2d) has depth?; the stages are those whose
 ;; code uses it. modules: (list (cons stage WGSL) ...) in the material's order, the storage
@@ -288,14 +400,12 @@
 
 (define format-marker "\u0001")
 
-;; Translates material m's GLSL bodies to WGSL (web-shader->wgsl, with toolchain). read-body: a
-;; shader's body text. Bodies' #includes are found as natively (zgal.mk): in the shaders directory
-;; beside the .zgal file (as zgal.mk's native rules have them), then the toolchain's.
-(define (translate-web-material toolchain prog m read-body)
-  (define zgal-bodies (filter zgal-shader? (material-shaders m)))
-  (unless (null? zgal-bodies)
-    (web-error (shader-loc (first zgal-bodies)) "~a mixes GLSL and ZGAL bodies, whose bindings the web lays out differently (a GLSL body's sampler is one binding, a ZGAL body's up to three): write its shaders in one of them"
-               (material-name m)))
+;; Translates material m's shaders to WGSL through GLSL (web-shader->wgsl, with toolchain): its GLSL
+;; bodies, and its ZGAL bodies with the functions they call. read-body: a GLSL body's text;
+;; glsl-files: the texts of the program's GLSL functions' files, by path (emit-shader's). GLSL bodies'
+;; #includes are found as natively (zgal.mk): in the shaders directory beside the .zgal file (as
+;; zgal.mk's native rules have them), then the toolchain's.
+(define (translate-web-material toolchain prog m read-body #:glsl-files glsl-files)
   (define-values (source-dir _name _dir?) (split-path (path->complete-path (program-source prog))))
   (define include-dirs
     (remove-duplicates
@@ -306,7 +416,8 @@
   ;; Storage images as rgba8 (an image2D's), whose WGSL format is then replaced
   (define translated
     (for/list ([s (in-list (material-shaders m))])
-      (define glsl (emit-web-shader prog m s (read-body s) (shader-name s) #:storage-format (λ (b) "rgba8")))
+      (define glsl (emit-web-shader prog m s (and (shader-path s) (read-body s)) (shader-name s)
+                                    #:storage-format (λ (b) "rgba8") #:glsl-files glsl-files))
       (cons (shader-stage s) (web-shader->wgsl tools s glsl))))
   (define (declaration-pattern index)
     (pregexp (format "@group\\(0\\) @binding\\(~a\\)\\s*var(?:<[^>]*>)? [A-Za-z0-9_]+: ([^;]+);" index)))

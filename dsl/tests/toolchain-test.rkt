@@ -291,6 +291,110 @@
       (check-regexp-match #rx"texture_storage_2d<\\${formats\\['stamps'\\]},write>" ts))
     (check-regexp-match #rx"texture_storage_2d<rgba8unorm,write>" (output-named outputs "shade.comp.wgsl")))
 
+  (test-case "A material whose ZGAL bodies call GLSL functions compiles through GLSL, with their files"
+    (define noise "float noise(vec2 p) {\n    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);\n}\n")
+    (define outputs
+      (compile-web (string-append
+                    "(extern-glsl \"shaders/noise.glsl\" ((noise [p : vec2]) : float))\n"
+                    "(define (grain [p : vec2]) : float (* 0.5 (noise p)))\n"
+                    "(compute-material Grain (workgroup 8 8) (bindings (target (storage-image)) (counts (buffer-array uint)))\n"
+                    "  (compute (begin (store! target (ivec2 globalInvocationId.xy) (vec4 (grain (vec2 globalInvocationId.xy))))\n"
+                    "                  (atomic-add! (at counts 0) (uint 1)))))\n"
+                    ;; Not calling one: the WGSL backend's
+                    "(compute-material Plain (workgroup 1) (bindings (res (buffer-array float))) (compute (write! (at res 0) 1.0)))")
+                   (list (cons "shaders/noise.glsl" noise))))
+    (define ts (output-named outputs "c.zgal.ts"))
+    (define wgsl (output-named outputs "Grain.comp.wgsl"))
+    (with-check-info (['ts ts] ['wgsl wgsl])
+      (check-regexp-match #rx"name: 'Grain',\n  glsl: true," ts)
+      (check-regexp-match #rx"name: 'Plain',\n  glsl: false," ts)
+      ;; One binding each, the storage image's format the bound image's, and naga's atomic counter
+      (check-true (string-contains? ts "    { name: 'target', resource: 'target', kind: 'storage-image', access: 'write', stages: ['compute'], depth: false },\n"))
+      (check-true (string-contains? ts "    { name: 'counts', resource: 'counts', kind: 'buffer-array', access: 'read-write', stages: ['compute'], depth: false },\n"))
+      (check-regexp-match #rx"texture_storage_2d<rgba8unorm,write>" wgsl)
+      (check-regexp-match #rx"atomic<u32>" wgsl)
+      (check-regexp-match #rx"atomicAdd" wgsl)
+      (check-regexp-match #rx"43758[.]54" wgsl)
+      (check-regexp-match #rx"@workgroup_size\\(8, 8, 1\\)" wgsl)))
+
+  (test-case "A ZGAL body sharing a material with a GLSL body is refused what the WGSL backend emulates"
+    (define e (web-compile-error "(graphics-material G (shaders \"shaders/g.vert\") (outputs (color vec4))\n  (fragment (vec4 (float (uint8 3)))))"
+                                 '(("shaders/g.vert" . "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n"))))
+    (check-true (exn:zgal? e))
+    (when (exn:zgal? e)
+      (check-equal? (exn:zgal-id e) 'not-on-web)
+      (check-equal? (exn:zgal-where e) (loc "check/c.zgal" 2 33))
+      (check-regexp-match #rx"^this is uint8, .*: G's shaders [(]compiled from GLSL on the web, as it has GLSL bodies[)] can't .*, or write its GLSL bodies in ZGAL$"
+                          (exn-message e))))
+
+  (test-case "A material mixing GLSL and ZGAL bodies compiles through GLSL as a whole"
+    (define outputs
+      (compile-web "(graphics-material G (shaders \"shaders/g.vert\") (bindings (tint (buffer vec4 read))) (outputs (color vec4))\n  (fragment tint))"
+                   '(("shaders/g.vert" . "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n"))))
+    (define ts (output-named outputs "c.zgal.ts"))
+    (with-check-info (['ts ts])
+      (check-true (string-contains? ts "  glsl: true,\n"))
+      ;; Used by the ZGAL body only
+      (check-true (string-contains? ts "    { name: 'tint', resource: 'tint', kind: 'buffer', access: 'read', stages: ['fragment'], depth: false },\n")))
+    (check-regexp-match #rx"zgal_tint" (output-named outputs "G.frag.wgsl"))
+    (check-regexp-match #rx"@fragment" (output-named outputs "G.frag.wgsl")))
+
+  (test-case "What the WGSL backend emulates is refused in ZGAL bodies compiled through GLSL, where they use it"
+    (define extern "(extern-glsl \"shaders/f.glsl\" ((f [x : float]) : float))\n")
+    (define bodies '(("shaders/f.glsl" . "float f(float x) { return x; }\n")))
+    (define (check-refused text where pattern)
+      (define e (web-compile-error (string-append extern text) bodies))
+      (check-true (exn:zgal? e) text)
+      (when (exn:zgal? e)
+        (check-equal? (exn:zgal-id e) 'not-on-web)
+        (check-equal? (exn:zgal-where e) where)
+        (check-regexp-match pattern (exn-message e))))
+    (define calls "C's shaders [(]compiled from GLSL on the web, as C[.]comp calls f, written in GLSL[)]")
+    ;; 8- and 16-bit integers: in a body's expression, a function's signature, a buffer
+    (check-refused "(compute-material C (workgroup 1) (bindings (res (buffer-array float)))\n  (compute (write! (at res 0) (+ (f 1.0) (float (uint8 3))))))"
+                   (loc "check/c.zgal" 3 56)
+                   (pregexp (string-append "^this is uint8, and WGSL has no 8- and 16-bit integers: " calls " can't compute with them on the web .*, or write f in ZGAL$")))
+    (check-refused "(define (g [x : uint16]) : float (f (float x)))\n(compute-material C (workgroup 1) (bindings (res (buffer-array float)))\n  (compute (write! (at res 0) (g (uint16 1)))))"
+                   (loc "check/c.zgal" 2 1)
+                   #rx"^g's type has uint16, and WGSL has no 8- and 16-bit integers")
+    (check-refused "(compute-material C (workgroup 1) (bindings (res (buffer-array uint8)))\n  (compute (write! (at res 0) (uint8 (f 1.0)))))"
+                   (loc "check/c.zgal" 2 45)
+                   (pregexp (string-append "^res holds uint8, and WGSL has no 8- and 16-bit integers: " calls)))
+    ;; Float atomics
+    (check-refused "(compute-material C (workgroup 1) (bindings (res (buffer-array float)))\n  (compute (atomic-add! (at res 0) (f 1.0))))"
+                   (loc "check/c.zgal" 3 12)
+                   #rx"^this atomic add is on a float, and WGSL's atomics are integers'")
+    ;; Subgroup operations
+    (check-refused "(compute-material C (workgroup 64) (bindings (res (buffer-array float)))\n  (compute (write! (at res 0) (subgroupAdd (f 1.0)))))"
+                   (loc "check/c.zgal" 3 31)
+                   #rx"^this is a subgroup operation")
+    (check-refused "(compute-material C (workgroup 64) (bindings (res (buffer-array float)))\n  (compute (write! (at res 0) (f (float subgroupInvocationId)))))"
+                   (loc "check/c.zgal" 3 41)
+                   #rx"^this is a subgroup operation")
+    ;; A sampler comparing and sampling, a texture compared and sampled or fetched (the WGSL
+    ;; backend's sampler variants and depth textures), also through a function: reported at the last use
+    (define opaque "(compute-material C (workgroup 1) (bindings (c texture) (d texture) (s sampler) (z sampler) (res (buffer-array float)))\n")
+    (check-refused (string-append opaque "  (compute (write! (at res 0) (+ (f (sample-compare d s (vec2 0.5) 0.5)) (.x (sample-lod c s (vec2 0.5) 0.0))))))")
+                   (loc "check/c.zgal" 3 78)
+                   (pregexp (string-append "^sampler s both compares with depths and samples in C[.]comp, and WebGPU binds a sampler as one or the other: " calls " can't use it both ways on the web .*, so bind two samplers, or write f in ZGAL$")))
+    (check-refused (string-append "(define (shade [t : texture2D] [u : sampler]) : float (.x (sample-lod t u (vec2 0.5) 0.0)))\n" opaque
+                                  "  (compute (write! (at res 0) (+ (f (sample-compare d s (vec2 0.5) 0.5)) (shade d z)))))")
+                   (loc "check/c.zgal" 4 74)
+                   #rx"^texture d is both compared with depths and sampled or fetched in C[.]comp, and WebGPU binds a texture as one or the other: .*, so bind it twice, or write f in ZGAL$")
+    (check-refused (string-append opaque "  (compute (write! (at res 0) (+ (f (sample-compare d s (vec2 0.5) 0.5)) (.x (fetch d z (ivec2 0 0) 0))))))")
+                   (loc "check/c.zgal" 3 78)
+                   #rx"^texture d is both compared with depths and sampled or fetched in C[.]comp")
+    ;; A function comparing and sampling its parameter: the texture passed to it, not c (only compared)
+    (check-refused (string-append "(define (g [t : texture2D] [u : sampler]) : float (+ (sample-compare t u (vec2 0.5) 0.5) (.x (sample-lod t u (vec2 0.5) 0.0))))\n" opaque
+                                  "  (compute (write! (at res 0) (+ (f (sample-compare c s (vec2 0.5) 0.5)) (g d z)))))")
+                   (loc "check/c.zgal" 4 74)
+                   #rx"^texture d is both compared with depths and sampled or fetched in C[.]comp")
+    ;; Bound twice, they translate; a comparing sampler may fetch another texture
+    (for ([use (list "(.x (sample-lod c z (vec2 0.5) 0.0))" "(.x (fetch c s (ivec2 0 0) 0))")])
+      (check-regexp-match #rx"sampler_comparison"
+                          (output-named (compile-web (string-append extern opaque "  (compute (write! (at res 0) (+ (f (sample-compare d s (vec2 0.5) 0.5)) " use "))))") bodies)
+                                        "C.comp.wgsl"))))
+
   (test-case "What the web can't bind of a material with GLSL bodies is refused at the material"
     (define (check-refused text bodies where pattern)
       (define e (web-compile-error text bodies))
@@ -299,10 +403,6 @@
         (check-equal? (exn:zgal-id e) 'not-on-web)
         (check-equal? (exn:zgal-where e) where)
         (check-regexp-match pattern (exn-message e))))
-    ;; Mixed with a ZGAL body
-    (check-refused "(graphics-material G (shaders \"shaders/g.vert\") (outputs (color vec4))\n  (fragment (vec4 1.0)))"
-                   '(("shaders/g.vert" . "void main() { gl_Position = vec4(0.0); }\n"))
-                   (loc "check/c.zgal" 2 3) #rx"^G mixes GLSL and ZGAL bodies")
     ;; A texture (and sampler) compared in one stage and sampled in another: the first binding is reported
     (check-refused "(graphics-material G (shaders \"shaders/g.vert\" \"shaders/g.frag\")\n  (bindings (t texture) (s sampler)) (outputs (color vec4)))"
                    '(("shaders/g.vert" . "void main() { gl_Position = vec4(textureLod(sampler2DShadow(t(), s()), vec3(0.5), 0.0)); }\n")
@@ -314,7 +414,7 @@
                    (loc "check/shaders/c.comp" 2 1) #rx"^c.comp includes bindless.glsl"))
 
   (test-case "Compiling GLSL bodies for the web without the tools is an error of the caller's"
-    (check-exn #rx"material C has GLSL bodies, which the web needs glslc and naga for"
+    (check-exn #rx"material C has GLSL bodies or calls GLSL functions, which the web needs glslc and naga for"
                (λ () (compile-web "(compute-material C (shaders \"shaders/c.comp\") (workgroup 1))"
                                   '(("shaders/c.comp" . "void main() {}\n")) #:toolchain #f))))
 
