@@ -392,8 +392,8 @@ test-decode-steps:
 # (web/tests/stop-streams.html, streamer mounted)
 # and the image decoder (web/tests/image-decode.html, comparing with native decodes stb_dump saves
 # beside the images), with web/tests' graphs built into graphs/, in each of BROWSERS: by default
-# only headless Chromium on SwiftShader. Firefox opens windows (it has no WebGPU adapter headless,
-# nor any on Linux), so it runs only when asked:
+# only headless Chromium on SwiftShader. Firefox (headless too, but on the machine's GPU, and with
+# WebGPU untested on Linux) runs only when asked:
 # make test-pages BROWSERS="chromium firefox" (or test-web, or test), as the pre-push check of a
 # stack's top does. A browser found nowhere is skipped (the tools exit with 3) with a note in the
 # summary, unless BROWSERS was given on the command line (or with make -e): then it fails. One named

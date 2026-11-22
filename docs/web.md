@@ -187,9 +187,10 @@ then:
    `web/tests/stop-streams.html` (streamer mounted on a fetch that stalls part way: `stop()` while
    it starts or runs settles at once and aborts the fetch, and quitting with Escape ends the fetch
    before any `stop()`),
-   in each browser of `BROWSERS`: by default only headless Chromium. Firefox opens windows, so it
-   runs only when asked, `make test-web BROWSERS="chromium firefox"` (as before pushing a stack's
-   top), and has no WebGPU on Linux (CI skips it). A browser found nowhere is skipped (Chromium is
+   in each browser of `BROWSERS`: by default only headless Chromium. Firefox, also headless but on
+   the machine's GPU, runs only when asked, `make test-web BROWSERS="chromium firefox"` (as before
+   pushing a stack's top); its WebGPU is untested on Linux, so CI skips it. A browser found
+   nowhere is skipped (Chromium is
    Playwright's headless shell, Firefox the macOS application or `firefox` on `PATH`), with a
    `note:` under the summary, unless `make` was given `BROWSERS`: then it fails, as it does when the
    browser `CHROMIUM` or `FIREFOX` names is missing.
@@ -210,8 +211,12 @@ page ran (and matched), 1 when it failed (or the browser `--chromium`/`CHROMIUM`
 `--firefox`/`FIREFOX` names doesn't exist), 2 for a bad command line and 3 when they found no
 browser where they look by default.
 
-- **Firefox** needs a window: headless, it has no WebGPU adapter. Its startup can flake while the
-  user's own Firefox is launching; rerun before investigating.
+- **Firefox** runs headless (`--window` opens one) with `layers.gpu-process.allow-headless` set in
+  its profile: headless, Firefox otherwise blocks its GPU process, and on macOS and Windows WebGPU
+  is disabled without it (the gfx feature log says `FEATURE_WEBGPU_NO_GPU_PROCESS`), so
+  `requestAdapter()` finds nothing. `dom.webgpu.allow-in-parent` would also work, but runs WebGPU
+  in the parent process, unlike Firefox with a window. Its startup can flake while the user's own
+  Firefox is launching; rerun before investigating.
 - **Firefox** compiles WGSL with naga, not Tint, which differs from Dawn and Chromium both ways: it
   refuses storage textures as function parameters (why ZGAL inlines functions taking `image2D`s),
   but has no uniformity analysis and lets depth textures use filtering samplers. Passing in Firefox
@@ -228,4 +233,6 @@ browser where they look by default.
   `Input.dispatchTouchEvent`), which gives the page real touch pointer events; firefox.ts refuses
   it. A page checking touches records what its app gets and checks it itself, as `touch.html` does.
 - Check a page's outcome through `data-zgal` and `#zgal-message`, not only its pixels.
-- Test pages need fixed layouts (`flex: none`): Firefox's window is 1024 pixels wide.
+- Test pages need fixed layouts (`flex: none`): headless Firefox's window is 1024 pixels wide
+  (firefox.ts sets it through `MOZ_HEADLESS_WIDTH` and `MOZ_HEADLESS_HEIGHT`, as Firefox ignores
+  `--window-size` there). With `--window` it may ignore `--window-size` too (1280 wide on a Mac).

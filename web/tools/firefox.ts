@@ -17,18 +17,18 @@
 //   --screenshot FILE   writes the canvas's pixels (at its own resolution, not the page's scale)
 //   --compare FILE      compares the canvas with an approved PNG of the same size
 //   --save-capture FILE writes the first capture a headless program's page shows (its download)
-//   --headless          runs without a window (Firefox has no WebGPU adapter headless, so pages fail)
+//   --window            opens a window (to watch the page) rather than running headless
 //   --firefox PATH      the Firefox binary (default $FIREFOX, else the macOS application's, else
 //                       firefox on PATH, as on Linux)
 //
-// Firefox is driven with WebDriver BiDi in a fresh profile, deleted afterwards. chromium.ts checks
+// Firefox runs headless and is driven with WebDriver BiDi in a fresh profile, deleted afterwards. chromium.ts checks
 // pages the same way in headless Chromium; pages.ts has what they share.
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Browser, JsonSocket, findBrowser, jsonExpression, runChecker, startBrowser } from './pages.ts';
 
 interface Options {
-  headless: boolean;
+  window: boolean;
   firefox?: string;
 }
 
@@ -41,25 +41,35 @@ async function send(bidi: JsonSocket, method: string, params: object): Promise<a
 
 await runChecker<Options>('firefox', {
   options: {
-    headless: { type: 'boolean', default: false },
+    window: { type: 'boolean', default: false },
     firefox: { type: 'string', default: process.env.FIREFOX },
   },
-  usage: '[--headless] [--firefox PATH]',
+  usage: '[--window] [--firefox PATH]',
   touches: false,
   async launch(options, log): Promise<Browser> {
     const binary = findBrowser('Firefox', options.firefox, ['/Applications/Firefox.app/Contents/MacOS/firefox', 'firefox'],
       'install it, or set FIREFOX or --firefox');
     // Port 0: Firefox picks a free one and prints it. A fresh profile and instance, so a Firefox
     // already open isn't touched; the window is large enough to show a 256x240 canvas at 3x.
+    // Headless, Firefox blocks its GPU process, and on macOS and Windows
+    // WebGPU needs that process (gfxPlatform.cpp's InitGPUProcessPrefs and InitWebGPUConfig), so
+    // requestAdapter() finds nothing; layers.gpu-process.allow-headless lets the GPU process run
+    // headless, keeping WebGPU where it is with a window. It's read at startup, so it's in user.js.
+    // Headless, Firefox ignores --window-size and takes its window's size from these (inherited
+    // by the process startBrowser spawns). A MOZ_HEADLESS from the shell would keep --window
+    // headless.
+    if (options.window) delete process.env.MOZ_HEADLESS;
+    else Object.assign(process.env, { MOZ_HEADLESS_WIDTH: '1024', MOZ_HEADLESS_HEIGHT: '900' });
     const firefox = await startBrowser('Firefox', binary, (profile) => {
       writeFileSync(join(profile, 'user.js'), [
         'user_pref("dom.webgpu.enabled", true);',
+        'user_pref("layers.gpu-process.allow-headless", true);',
         'user_pref("browser.shell.checkDefaultBrowser", false);',
         'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
         'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);',
       ].join('\n'));
       return ['--remote-debugging-port', '0', '--profile', profile, '--no-remote', '--new-instance',
-        '--window-size', '1024,900', ...(options.headless ? ['--headless'] : [])];
+        '--window-size', '1024,900', ...(options.window ? [] : ['--headless'])];
     }, /WebDriver BiDi listening on (ws:\/\/\S+)/);
     let bidi: JsonSocket;
     let context: string;
