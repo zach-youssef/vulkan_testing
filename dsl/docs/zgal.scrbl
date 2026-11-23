@@ -2319,11 +2319,23 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        atomic) compiles but fails with a WebGPU validation error when the graph creates the
        material's bind group layout.}
  @item{Names WGSL reserves (e.g. @tt{target}, @tt{type}) are spelled with a @tt{zgal_} prefix.}
- @item{An array of textures is a @tt{texture_2d_array}, a layer per element, so its elements are
-       only used in texture operations (@racket[sample], @racket[sample-lod], @racket[fetch] and
-       @racket[texture-size]), and @racket[array-length] counts its layers. Bound to a model's base colours, it is their layers (a texture array the model's
-       images are resized into, the largest's size); bound to image files of one colour space,
-       they are copied into one when the graph is built, resized the same way.}
+ @item{An array of textures is a @tt{texture_2d_array} per distinct size and format of its
+       elements' images (the array's buckets, @tt{zgalBucket_a_0} on), plus a uniform table
+       (@tt{zgalTable_a}) giving each element its bucket, layer and size; images aren't resized,
+       and sRGB and linear images go in buckets of their own, so an array mixes them as natively.
+       Its elements are only used in texture operations (@racket[sample], @racket[sample-lod],
+       @racket[fetch] and @racket[texture-size]) and passed to functions (as their index:
+       @tt{zgalAt0_a_f} is @tt{f}'s variant given an element of @tt{a} for its first parameter);
+       an operation switches on the element's bucket, and an index past the end is the last
+       element. A fragment @racket[sample] takes its derivatives before the switch and samples
+       with them (@tt{textureSampleGrad}), as derivatives in non-uniform control flow are
+       undefined. @racket[texture-size] reads the table, and @racket[array-length] is the
+       elements' count (@tt{zgalCount_a}). Each bucket is a sampled texture the stage binds, so
+       an array of many distinct sizes can pass the device's
+       @tt{maxSampledTexturesPerShaderStage} (which the runtime requests as high as the adapter
+       allows): creating the material's layout then fails with an error naming the array and its
+       buckets' sizes. Image files' images and a model's base colours (@tt{#:base-colors}) can be
+       its elements; each distinct image is a layer once, copied in when the graph binds it.}
 ]
 
 Other arrays of bindings (of buffers or storage images, or chosen with @racket[#:select] or from

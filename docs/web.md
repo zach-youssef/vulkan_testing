@@ -8,6 +8,18 @@ This page has what the reference doesn't: the runtime's conventions and how to t
 ## The runtime (`web/zgal`)
 
 - `model.ts` loads glTF and OBJ models with its own parsers, mirroring `include/resources/Model.h`.
+  A model's base colours are a texture per material (`Model.baseColors`, sRGB, one 1x1 white shared
+  by materials without one), which `RenderGraph.importImages` imports as `GraphImage`s (a graph's
+  `result.images.<base-colors>` is their array), as native's are a vector of images.
+- An `(array texture)` binding is a `TextureArray` (`RenderGraph.textureArray(name, elements)`,
+  the same object for the same elements): when the graph binds it, it copies each distinct element
+  image once into a `texture_2d_array` per distinct size and format (a bucket), and writes a
+  uniform table of each element's bucket, layer and size, rebuilding both when an element's image
+  is recreated. The material description's WGSL carries `//zgal-array` and `//zgal-bucket` lines,
+  which `material.ts` expands for the bound array's element count and buckets, so the shader and
+  layout are made per bucket shape (the ZGAL docs' web section). `web/tests/models.test.ts` checks
+  the buckets and the error past `maxSampledTexturesPerShaderStage`, which `Context` requests as
+  high as the adapter allows.
 - Image files (`image-file`, models' textures) are decoded by `image-decode.ts`'s `decodeImage`, in
   every environment, never by the browser: Firefox's `createImageBitmap` premultiplies alpha
   whatever it's asked, and browsers' decoders needn't give native's bytes

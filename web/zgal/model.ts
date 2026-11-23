@@ -660,79 +660,6 @@ function primitiveVertices(format: VertexFormatDesc, primitive: ModelPrimitive):
 }
 
 // ---------------------------------------------------------------------------------------------
-// Texture arrays
-
-const blitShader = `
-@group(0) @binding(0) var source: texture_2d<f32>;
-@group(0) @binding(1) var pick: sampler;
-struct Out {
-    @builtin(position) position: vec4f,
-    @location(0) uv: vec2f,
-}
-@vertex fn vertexMain(@builtin(vertex_index) i: u32) -> Out {
-    let uv = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
-    return Out(vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0), uv);
-}
-@fragment fn fragmentMain(input: Out) -> @location(0) vec4f {
-    return textureSampleLevel(source, pick, input.uv, 0.0);
-}`;
-
-// Textures (null for white) as the layers of a texture array (what an array binding of textures is
-// on the web) of format, the size of the largest: smaller ones are resized, filtered bilinearly.
-// They need TEXTURE_BINDING and COPY_SRC usage; the caller destroys them.
-export function textureArray(device: GPUDevice, label: string, format: GPUTextureFormat, layers: readonly (GPUTexture | null)[]): GPUTexture {
-  if (layers.length > device.limits.maxTextureArrayLayers) {
-    throw new Error(`${label} has ${layers.length} images, but this WebGPU device's texture arrays have at most ${device.limits.maxTextureArrayLayers}`);
-  }
-  let white: GPUTexture | null = null;
-  const sources = layers.map((t) => {
-    if (t) return t;
-    if (!white) {
-      white = device.createTexture({ label: `${label} white`, size: [1, 1], format, usage: 0x04 | 0x01 | 0x02 });
-      device.queue.writeTexture({ texture: white }, new Uint8Array([255, 255, 255, 255]), { bytesPerRow: 4 }, [1, 1]);
-    }
-    return white;
-  });
-  const width = Math.max(1, ...sources.map((t) => t.width));
-  const height = Math.max(1, ...sources.map((t) => t.height));
-  // TEXTURE_BINDING | COPY_SRC | COPY_DST | RENDER_ATTACHMENT
-  const array = device.createTexture({ label, size: [width, height, Math.max(1, layers.length)], format, usage: 0x04 | 0x01 | 0x02 | 0x10 });
-  const encoder = device.createCommandEncoder({ label });
-  let pipeline: GPURenderPipeline | null = null;
-  let sampler: GPUSampler | null = null;
-  sources.forEach((source, layer) => {
-    if (source.width === width && source.height === height) {
-      encoder.copyTextureToTexture({ texture: source }, { texture: array, origin: [0, 0, layer] }, [width, height]);
-      return;
-    }
-    if (!pipeline) {
-      const module = device.createShaderModule({ label: `${label} resizing`, code: blitShader });
-      pipeline = device.createRenderPipeline({
-        label: `${label} resizing`,
-        layout: 'auto',
-        vertex: { module, entryPoint: 'vertexMain' },
-        fragment: { module, entryPoint: 'fragmentMain', targets: [{ format }] },
-      });
-      sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-    }
-    const pass = encoder.beginRenderPass({
-      label: `${label} layer ${layer}`,
-      colorAttachments: [{ view: array.createView({ dimension: '2d', baseArrayLayer: layer, arrayLayerCount: 1 }), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }],
-    });
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: source.createView() }, { binding: 1, resource: sampler! }],
-    }));
-    pass.draw(3);
-    pass.end();
-  });
-  device.queue.submit([encoder.finish()]);
-  (white as GPUTexture | null)?.destroy();
-  return array;
-}
-
-// ---------------------------------------------------------------------------------------------
 // Models on the device
 
 // A model's draws, as the commands of (import indirect)'s DrawIndexedCommand
@@ -746,14 +673,14 @@ export interface ModelDraw {
 
 // A model on the device, as resources/Model natively: every primitive's vertices and indices in one
 // mesh, a draw of each (its range of the mesh, one instance, and its material as firstInstance) with
-// a bounding sphere, and per material, its base colour factor and texture (a texture array's layer,
-// white without one)
+// a bounding sphere, and per material, its base colour factor and texture (a shared 1x1 white one
+// without any). An array binding of the textures binds them as a TextureArray
 export interface Model {
   readonly mesh: Mesh;
   readonly draws: ModelDraw[];
   readonly bounds: number[][];             // Per draw: a bounding sphere, centre (xyz) and radius (w)
   readonly baseColorFactors: number[][];   // Per material
-  readonly baseColors: GPUTexture;         // rgba8unorm-srgb, a layer per material
+  readonly baseColors: GPUTexture[];       // rgba8unorm-srgb, one per material (distinct images once)
 }
 
 // A sphere around positions: their bounding box's centre, and the distance to the farthest
@@ -799,10 +726,10 @@ export async function uploadModel(context: Context, label: string, data: ModelDa
   const vertices = new Uint8Array(vertexBytes.reduce((n, b) => n + b.length, 0));
   vertexBytes.reduce((at, b) => (vertices.set(b, at), at + b.length), 0);
 
-  // Each image once, then the materials' layers. The decoder downloads while the images do
+  // Each image once, then each material's. The decoder downloads while the images do
   if (data.materials.some((material) => material.baseColorTexture)) void prepareImageDecoder();
   const textures = new Map<string, Promise<GPUTexture>>();
-  const layers = await Promise.all(data.materials.map((material) => {
+  const layers: (GPUTexture | null)[] = await Promise.all(data.materials.map((material) => {
     const image = material.baseColorTexture;
     if (!image) return null;
     const key = image.path ?? image.description;
@@ -823,12 +750,17 @@ export async function uploadModel(context: Context, label: string, data: ModelDa
     }
     return texture;
   }));
-  let baseColors: GPUTexture;
-  try {
-    baseColors = textureArray(device, `${label} base colours`, 'rgba8unorm-srgb', layers);
-  } finally {
-    for (const t of new Set(layers)) t?.destroy();
-  }
+  // White (as natively) for materials without a texture
+  let white: GPUTexture | null = null;
+  const baseColors = layers.map((t) => {
+    if (t) return t;
+    if (!white) {
+      // TEXTURE_BINDING | COPY_SRC | COPY_DST
+      white = device.createTexture({ label: `${label} white`, size: [1, 1], format: 'rgba8unorm-srgb', usage: 0x04 | 0x01 | 0x02 });
+      device.queue.writeTexture({ texture: white }, new Uint8Array([255, 255, 255, 255]), { bytesPerRow: 4 }, [1, 1]);
+    }
+    return white;
+  });
   return {
     mesh: createMesh(device, vertices, small ? new Uint16Array(indices) : new Uint32Array(indices), 0, label),
     draws,
@@ -855,6 +787,6 @@ export async function loadModel(context: Context, graph: RenderGraph, label: str
   }
   graph.own(model.mesh.vertices);
   graph.own(model.mesh.indices);
-  graph.own(model.baseColors);
+  for (const t of new Set(model.baseColors)) graph.own(t);
   return model;
 }

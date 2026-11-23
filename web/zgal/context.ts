@@ -77,7 +77,10 @@ export class Context {
     if (!adapter) throw new Error('No WebGPU adapter');
     const wanted = [...zgalFeatures, ...(options.features ?? [])];
     const requiredFeatures = wanted.filter((f) => adapter.features.has(f) && !options.withoutFeatures?.includes(f));
-    const device = await adapter.requestDevice({ requiredFeatures });
+    // Arrays of textures bind a texture array per distinct size and format of their elements
+    // (graph.ts's TextureArray), so as many sampled textures as the adapter allows
+    const requiredLimits = { maxSampledTexturesPerShaderStage: adapter.limits.maxSampledTexturesPerShaderStage };
+    const device = await adapter.requestDevice({ requiredFeatures, requiredLimits });
     const fetchAsset = async (path: string, signal: AbortSignal) => {
       const response = await fetch(new URL(`assets/${path}`, globalThis.location?.href), { signal });
       if (!response.ok) throw new Error(`asset ${path}: ${response.status} ${response.statusText}`);

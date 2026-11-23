@@ -6,10 +6,12 @@
 import type { Context } from './context.ts';
 import {
   isDepthFormat,
+  firstBuckets,
   layoutEntries,
-  storageFormats,
+  shaderCode,
   workgroupsFor,
   writePush,
+  type ArrayShape,
   type BoundFormats,
   type ComputeMaterialDesc,
   type GraphicsMaterialDesc,
@@ -128,9 +130,41 @@ export class Uniform<T> {
   }
 }
 
+// An array binding of textures (ZGAL's (array texture)) as WebGPU binds one, having no arrays of
+// bindings: its elements are copied into buckets, a texture array per distinct size and format
+// among them (more where one would have more layers than the device allows), each distinct image a
+// layer of one, and a table gives each element's bucket, layer and size, which materials' modules
+// read (wgsl.rkt's "Arrays of textures"). Made by RenderGraph.textureArray, built when first bound:
+// the elements' texels are copied then, and again when one is recreated (its generation changes),
+// so they're images whose texels are set before (image files, models' textures).
+export class TextureArray {
+  readonly name: string;
+  readonly elements: readonly GraphImage[];
+  // Bumped when it's rebuilt, so bind groups follow
+  generation = 0;
+  built: BuiltArray | null = null;
+  constructor(name: string, elements: readonly GraphImage[]) {
+    if (elements.length === 0) throw new Error(`array of textures ${name} has no elements`);
+    this.name = name;
+    this.elements = elements;
+  }
+}
+
+export interface BuiltArray {
+  // The elements' generations it was built from
+  readonly generations: readonly number[];
+  readonly buckets: readonly GPUTexture[];
+  readonly views: readonly GPUTextureView[];
+  // Per bucket: its elements' size
+  readonly sizes: readonly (readonly [number, number])[];
+  readonly table: GPUBuffer;
+  readonly shape: ArrayShape;
+}
+
 // What a material binding is bound to
 export type Bound =
   | { readonly image: GraphImage }
+  | { readonly array: TextureArray }
   | { readonly buffer: GraphBuffer }
   | { readonly sampler: Sampler }
   | { readonly uniform: Uniform<any> };
@@ -228,6 +262,9 @@ export class MaterialInstance {
     this.options = options;
     for (const b of desc.bindings) {
       if (!(b.resource in bindings)) throw new Error(`material ${desc.name}'s binding ${b.resource} isn't given`);
+      if ((b.kind === 'texture-array') !== ('array' in bindings[b.resource])) {
+        throw new Error(`material ${desc.name}'s binding ${b.resource} ${b.kind === 'texture-array' ? 'is an array of textures, bound to a TextureArray' : 'isn\'t an array of textures, so it isn\'t bound to a TextureArray'}`);
+      }
     }
   }
 
@@ -240,9 +277,11 @@ export class MaterialInstance {
     let format: string | null = null;
     for (const b of this.desc.bindings) {
       const bound = this.bindings[b.resource];
-      if (!('image' in bound) || (b.kind !== 'texture' && b.kind !== 'texture-array') || b.depth) continue;
-      if (isDepthFormat(bound.image.format)) return `samples depth image ${bound.image.name} without comparing with it, which the web does only with a nearest sampler`;
-      if (!filterable && /32float|32uint|32sint/.test(bound.image.format)) format ??= `samples ${bound.image.name}, whose ${bound.image.format} this device can't filter (no float32-filterable)`;
+      const images = 'image' in bound && b.kind === 'texture' && !b.depth ? [bound.image] : 'array' in bound ? bound.array.elements : [];
+      for (const image of images) {
+        if (isDepthFormat(image.format)) return `samples depth image ${image.name} without comparing with it, which the web does only with a nearest sampler`;
+        if (!filterable && /32float|32uint|32sint/.test(image.format)) format ??= `samples ${image.name}, whose ${image.format} this device can't filter (no float32-filterable)`;
+      }
     }
     return format;
   }
@@ -251,23 +290,51 @@ export class MaterialInstance {
   // be filtered: unfilterable())
   formats(): BoundFormats {
     const textures: Record<string, GPUTextureFormat> = {};
+    const arrays: Record<string, ArrayShape> = {};
     const samplers: Record<string, 'filtering' | 'non-filtering'> = {};
     const unfilterable = this.unfilterable() !== null;
     for (const b of this.desc.bindings) {
       const bound = this.bindings[b.resource];
       if ('image' in bound) textures[b.name] = bound.image.format;
+      if ('array' in bound) arrays[b.name] = this.graph.arrayOf(bound.array).shape;
     }
     for (const b of this.desc.bindings) {
       const bound = this.bindings[b.resource];
       if (b.kind === 'sampler' && 'sampler' in bound) samplers[b.name] = unfilterable || !bound.sampler.filtering ? 'non-filtering' : 'filtering';
     }
-    return { textures, samplers };
+    return { textures, arrays, samplers };
+  }
+
+  // Throws where a stage would sample more textures than the device allows (arrays' buckets
+  // counting one each), naming the arrays and their distinct sizes
+  private checkSampledTextures(): void {
+    const limit = this.graph.context.device.limits.maxSampledTexturesPerShaderStage;
+    const stages: Stage[] = this.desc.kind === 'compute' ? ['compute'] : ['vertex', 'fragment'];
+    for (const stage of stages) {
+      let count = 0;
+      const arrays: string[] = [];
+      for (const b of this.desc.bindings) {
+        if (!b.stages.includes(stage)) continue;
+        const bound = this.bindings[b.resource];
+        if (b.kind === 'texture') count++;
+        if (!('array' in bound)) continue;
+        const built = this.graph.arrayOf(bound.array);
+        count += built.buckets.length;
+        const sizes = built.sizes.map(([w, h], i) => `${w}x${h} ${built.shape.buckets[i]}`);
+        arrays.push(`${b.resource} (${built.buckets.length} texture arrays, for its images' distinct sizes and formats: ${[...new Set(sizes)].join(', ')})`);
+      }
+      if (count > limit) {
+        throw new Error(`material ${this.desc.name}'s ${stage} stage samples ${count} textures, more than this WebGPU device allows (maxSampledTexturesPerShaderStage ${limit}): ` +
+          `arrays of textures are a texture array per distinct size and format on the web, and it binds ${arrays.join(' and ')}; give their images fewer distinct sizes`);
+      }
+    }
   }
 
   private layout(formats: BoundFormats) {
     const key = JSON.stringify(formats);
     let layout = this.layouts.get(key);
     if (!layout) {
+      this.checkSampledTextures();
       const device = this.graph.context.device;
       const group = device.createBindGroupLayout({ label: this.desc.name, entries: layoutEntries(device, this.desc, formats) });
       layout = { group, pipeline: device.createPipelineLayout({ label: this.desc.name, bindGroupLayouts: [group] }) };
@@ -306,7 +373,7 @@ export class MaterialInstance {
     if (!p) {
       const device = this.graph.context.device;
       const source = desc.withoutSubgroups && !this.graph.context.hasFeature('subgroups') ? desc.withoutSubgroups : desc.compute;
-      const module = device.createShaderModule({ label: `${desc.name}.comp`, code: source(storageFormats(desc, formats)) });
+      const module = device.createShaderModule({ label: `${desc.name}.comp`, code: shaderCode(desc, source, formats) });
       p = device.createComputePipeline({ label: desc.name, layout: this.layout(formats).pipeline, compute: { module, entryPoint: 'main', constants: this.constants('compute') } });
       this.pipelines.set(key, p);
     }
@@ -322,7 +389,6 @@ export class MaterialInstance {
     let p = this.pipelines.get(key) as GPURenderPipeline | undefined;
     if (!p) {
       const device = this.graph.context.device;
-      const storage = storageFormats(desc, formats);
       const o = this.options;
       const blend = blendState(o.blend ?? 'opaque');
       // WebGPU can't cull both faces: its triangles are kept, and a fragment stage discarding
@@ -333,12 +399,12 @@ export class MaterialInstance {
       const culledAll = o.cull === 'front-and-back' && topology.startsWith('triangle');
       // The material's own fragment module is made even when unused, so its WGSL errors still
       // show up, as they do on native
-      const fragmentModule = device.createShaderModule({ label: `${desc.name}.frag`, code: desc.fragment(storage) });
+      const fragmentModule = device.createShaderModule({ label: `${desc.name}.frag`, code: shaderCode(desc, desc.fragment, formats) });
       p = device.createRenderPipeline({
         label: desc.name,
         layout: this.layout(formats).pipeline,
         vertex: {
-          module: device.createShaderModule({ label: `${desc.name}.vert`, code: desc.vertex(storage) }),
+          module: device.createShaderModule({ label: `${desc.name}.vert`, code: shaderCode(desc, desc.vertex, formats) }),
           entryPoint: 'main',
           constants: this.constants('vertex'),
           buffers: desc.vertexInput
@@ -431,6 +497,8 @@ export class MaterialBinder {
       .map((b) => {
         const bound = instance.bindings[b.resource];
         if ('image' in bound) return `i${bound.image.generation}`;
+        // Building the array first, where an element was recreated
+        if ('array' in bound) return (graph.arrayOf(bound.array), `a${bound.array.generation}`);
         if ('buffer' in bound) return `b${bound.buffer.generation}`;
         if ('uniform' in bound) return `u${bound.uniform.resource.generation}`;
         return 's';
@@ -438,9 +506,16 @@ export class MaterialBinder {
       .join(',');
     if (!this.group || key !== this.key) {
       const formats = instance.formats();
+      const first = firstBuckets(desc, formats);
+      const buckets: GPUBindGroupEntry[] = [];
       const entries: GPUBindGroupEntry[] = desc.bindings.map((b, i) => {
         const bound = instance.bindings[b.resource];
-        if ('image' in bound) return { binding: i, resource: graph.viewOf(bound.image, b.kind === 'texture-array' ? '2d-array' : '2d') };
+        if ('image' in bound) return { binding: i, resource: graph.viewOf(bound.image) };
+        if ('array' in bound) {
+          const built = graph.arrayOf(bound.array);
+          built.views.forEach((view, bucket) => buckets.push({ binding: first[b.name] + bucket, resource: view }));
+          return { binding: i, resource: { buffer: built.table } };
+        }
         if ('buffer' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.buffer) } };
         if ('uniform' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.uniform.resource) } };
         const { sampler } = bound;
@@ -457,6 +532,7 @@ export class MaterialBinder {
         return { binding: i, resource: sampler.asDescribed() };
       });
       if (desc.push) entries.push({ binding: desc.push.binding, resource: { buffer: this.pushBuffer! } });
+      entries.push(...buckets);
       this.group = graph.context.device.createBindGroup({ label: this.nodeName, layout: instance.groupLayout(), entries });
       this.key = key;
     }
@@ -531,8 +607,62 @@ interface StreamRecord {
   error: Error | null;
 }
 
+function destroyBuilt(built: BuiltArray | null): void {
+  if (!built) return;
+  for (const t of built.buckets) t.destroy();
+  built.table.destroy();
+}
+
+// Copies an array's elements (textures: its elements' textures) into buckets, with its table
+function buildArray(device: GPUDevice, array: TextureArray, textures: readonly GPUTexture[]): BuiltArray {
+  const maxLayers = device.limits.maxTextureArrayLayers;
+  // Per bucket: its size, format and textures (its layers); and the open bucket of each size and format
+  const buckets: { width: number; height: number; format: GPUTextureFormat; layers: GPUTexture[] }[] = [];
+  const open = new Map<string, number>();
+  const placed = new Map<GPUTexture, [number, number]>();
+  const table = new Uint32Array(textures.length * 4);
+  textures.forEach((t, i) => {
+    let at = placed.get(t);
+    if (!at) {
+      const key = `${t.width}x${t.height} ${t.format}`;
+      let bucket = open.get(key);
+      if (bucket === undefined || buckets[bucket].layers.length === maxLayers) {
+        bucket = buckets.length;
+        buckets.push({ width: t.width, height: t.height, format: t.format, layers: [] });
+        open.set(key, bucket);
+      }
+      at = [bucket, buckets[bucket].layers.length];
+      buckets[bucket].layers.push(t);
+      placed.set(t, at);
+    }
+    table.set([at[0], at[1], t.width, t.height], i * 4);
+  });
+  const encoder = device.createCommandEncoder({ label: array.name });
+  const made = buckets.map((b, i) => {
+    // TEXTURE_BINDING | COPY_DST
+    const texture = device.createTexture({ label: `${array.name} ${i}`, size: [b.width, b.height, b.layers.length], format: b.format, usage: 0x04 | 0x02 });
+    b.layers.forEach((source, layer) => {
+      encoder.copyTextureToTexture({ texture: source }, { texture, origin: [0, 0, layer] }, [b.width, b.height, 1]);
+    });
+    return texture;
+  });
+  device.queue.submit([encoder.finish()]);
+  // UNIFORM | COPY_DST
+  const buffer = device.createBuffer({ label: `${array.name} table`, size: table.byteLength, usage: 0x40 | 0x08 });
+  device.queue.writeBuffer(buffer, 0, table);
+  return {
+    generations: array.elements.map((e) => e.generation),
+    buckets: made,
+    views: made.map((t) => t.createView({ dimension: '2d-array' })),
+    sizes: buckets.map((b) => [b.width, b.height] as const),
+    table: buffer,
+    shape: { count: textures.length, buckets: buckets.map((b) => b.format) },
+  };
+}
+
 export class RenderGraph {
   private images: GraphImage[] = [];
+  private arrays: TextureArray[] = [];
   private buffers: GraphBuffer[] = [];
   private nodes: NodeRecord[] = [];
   private frameNumber = 0;
@@ -541,7 +671,7 @@ export class RenderGraph {
   private surfaceTexture: GPUTexture | null = null;
   private surfaceView: GPUTextureView | null = null;
   private headlessExtent: [number, number] = [0, 0];
-  private views = new Map<GraphImage, { generation: number; '2d'?: GPUTextureView; '2d-array'?: GPUTextureView }>();
+  private views = new Map<GraphImage, { generation: number; view: GPUTextureView }>();
   private inFlight: Promise<undefined>[] = [];
   private owned: { destroy(): void }[] = [];
   private inFrame = false;
@@ -600,6 +730,41 @@ export class RenderGraph {
     this.images.push(image);
     if (owned) this.owned.push(texture);
     return image;
+  }
+
+  // Textures the application owns, each distinct one imported once (named name[i] after its first
+  // element i), as natively zgal::importImages
+  importImages(name: string, textures: readonly GPUTexture[]): GraphImage[] {
+    const imported = new Map<GPUTexture, GraphImage>();
+    return textures.map((t, i) => {
+      let image = imported.get(t);
+      if (!image) {
+        image = this.importImage(`${name}[${i}]`, t);
+        imported.set(t, image);
+      }
+      return image;
+    });
+  }
+
+  // An array binding's elements (see TextureArray), built when a material binding it is first
+  // bound. Arrays of the same elements are one, built once
+  textureArray(name: string, elements: readonly GraphImage[]): TextureArray {
+    const same = this.arrays.find((a) => a.elements.length === elements.length && a.elements.every((e, i) => e === elements[i]));
+    if (same) return same;
+    const array = new TextureArray(name, elements);
+    this.arrays.push(array);
+    return array;
+  }
+
+  // An array's buckets and table, (re)built where it's unbuilt or an element was recreated
+  arrayOf(array: TextureArray): BuiltArray {
+    const textures = array.elements.map((e) => this.textureOf(e));
+    const built = array.built;
+    if (built && array.elements.every((e, i) => e.generation === built.generations[i])) return built;
+    destroyBuilt(built);
+    array.built = buildArray(this.context.device, array, textures);
+    array.generation++;
+    return array.built;
   }
 
   // A buffer of `count` elements (a number, or computed each frame: the buffer is recreated, its
@@ -796,14 +961,13 @@ export class RenderGraph {
     return image.texture!;
   }
 
-  // A view of the image: of its first layer, or (for texture-array bindings) all its layers
-  viewOf(image: GraphImage, dimension: '2d' | '2d-array' = '2d'): GPUTextureView {
+  // A view of the image's first layer
+  viewOf(image: GraphImage): GPUTextureView {
     const texture = this.textureOf(image);
-    const views = this.views.get(image);
-    const cached = views?.[dimension];
-    if (views && cached && views.generation === image.generation) return cached;
-    const view = texture.createView({ dimension, ...(dimension === '2d' ? { arrayLayerCount: 1 } : {}) });
-    this.views.set(image, { ...(views && views.generation === image.generation ? views : {}), generation: image.generation, [dimension]: view });
+    const cached = this.views.get(image);
+    if (cached && cached.generation === image.generation) return cached.view;
+    const view = texture.createView({ dimension: '2d', arrayLayerCount: 1 });
+    this.views.set(image, { generation: image.generation, view });
     return view;
   }
 
@@ -973,6 +1137,7 @@ export class RenderGraph {
     for (const record of this.streams.values()) record.stream.cancel();
     for (const r of this.nodes) (r.node as { destroy?(): void }).destroy?.();
     for (const image of this.images) if (image.extent) image.texture?.destroy();
+    for (const array of this.arrays) destroyBuilt(array.built);
     for (const b of this.buffers) if (b.count !== null) b.buffer?.destroy();
     for (const o of this.owned) o.destroy();
   }

@@ -42,16 +42,21 @@
    "can't be an array of buffer-arrays"))
 
 
-(test-case "Graphs binding arrays of textures to what isn't copied into a texture array"
+(test-case "Graphs binding arrays of textures to what isn't copied into texture arrays"
   (define (graph . items)
     (string-append layered "(graph G\n  (buffer counts uint 1 #:frames shared)\n  " (string-join items "\n  ")
                    "\n  (dispatch d m #:invocations (1)))"))
   (check-not-on-web (graph "(image a rgba8 (fixed 4 4) #:frames shared)" "(image b rgba8 (fixed 4 4) #:frames shared)"
                            "(material m Layered (layers (a b)) counts)")
                     "only image files' (and models') images")
-  (check-not-on-web (graph "(image-file a \"a.png\" #:color srgb)" "(image-file b \"b.png\" #:color linear)"
-                           "(material m Layered (layers (a b)) counts)")
-                    "the same #:color")
+  ;; Image files of either colour space, as their elements' buckets are per format
+  (define-values (_prog outputs)
+    (compile-zgal "test.zgal" #:text (graph "(image-file a \"a.png\" #:color srgb)" "(image-file b \"b.png\" #:color linear)"
+                                            "(material m Layered (layers (a b a)) counts)")
+                  #:read-body (λ (path) #f) #:native? #f #:web-dir "out/web"))
+  (define ts (output-text (findf (λ (o) (string-suffix? (output-path o) ".zgal.ts")) outputs)))
+  (check-true (string-contains? ts "const array_m_layers = graph.textureArray('m\\'s layers', [image_a, image_b, image_a]);") ts)
+  (check-true (string-contains? ts "{ layers: { array: array_m_layers }, counts: { buffer: buffer_counts } }") ts)
   (check-not-on-web (graph "(import-images given #:resting shader-read-only)" "(material m Layered (layers given) counts)")
                     "can't be imported"))
 
@@ -325,9 +330,48 @@
         (fragment (vec4 1.0)))"
      "Edge.vert.wgsl"))
   (with-check-info (['wgsl vertex])
-    ;; An element of an array is a layer, clamped as WebGPU's sampling clamps it
+    ;; An element of an array is a layer of its bucket, clamped as WebGPU's sampling clamps it
     (check-true (string-contains? vertex "let l = clamp(layer, 0i, i32(textureNumLayers(t)) - 1i);"))
-    (check-true (string-contains? vertex "zgalSampleArrayLevel(layers, smp, vec2f(0.5f), i32(2i), 0.0f, zgalLinear_smp, zgalBorder_smp)"))))
+    (check-true (string-contains? vertex "zgalSampleLevel_layers(u32(2i), smp, vec2f(0.5f), 0.0f, zgalLinear_smp, zgalBorder_smp)"))
+    (check-true (string-contains? vertex "//zgal-bucket layers case {bucket}u: { return zgalSampleArrayLevel(zgalBucket_layers_{bucket}, s, uv, i32(entry.y), level, linear, border); }"))))
+
+(test-case "An array of textures is buckets the runtime declares, and a table of its elements: operations on an element switch on its bucket"
+  (define program
+    "(define (texel [t : texture2D] [s : sampler] [k : uint]) : vec4 (fetch t s (ivec2 (int k) 0) 0))
+     (graphics-material Show
+       (bindings (layers (array texture)) (smp sampler))
+       (push (i uint))
+       (outputs (color vec4))
+       (vertex (results #:position (vec4 0.0 0.0 0.0 1.0)))
+       (fragment (+ (sample (at layers i) smp (vec2 0.5))
+                    (texel (at layers (+ i (uint 1))) smp (uint (array-length layers)))
+                    (vec4 (vec2 (texture-size (at layers 0) 1)) 0.0 0.0))))")
+  (define wgsl (web-shader program "Show.frag.wgsl"))
+  (define (has text) (check-true (string-contains? wgsl text) text))
+  (with-check-info (['wgsl wgsl])
+    ;; The table at the array's binding, its count and buckets expanded by the runtime
+    (has "\n//zgal-array layers @group(0) @binding(0) var<uniform> zgalTable_layers: array<vec4u, {count}>;\n")
+    (has "\n//zgal-array layers const zgalCount_layers = {count}u;\n")
+    (has "\n//zgal-bucket layers @group(0) @binding({binding}) var zgalBucket_layers_{bucket}: texture_2d_array<f32>;\n")
+    ;; Sampling at the implicit level: the derivatives before the switch, whose control flow isn't
+    ;; uniform, then sampling with them
+    (has "    let entry = zgalTable_layers[min(e, zgalCount_layers - 1u)];\n    let ddx = dpdx(uv);\n    let ddy = dpdy(uv);\n    switch (entry.x) {\n")
+    (has "return textureSampleGrad(t, s, uv, layer, ddx, ddy);")
+    (has "zgalSample_layers(zgalPush.i, smp, vec2f(0.5f), zgalLinear_smp, zgalBorder_smp)")
+    ;; An element given to a function is its index: the variant switches where it uses it
+    (has "fn zgalAt0_layers_texel(t: u32, k: u32) -> vec4f {\n    return zgalFetch_layers(t, vec2i(i32(k), 0i), 0i);\n}")
+    (has "zgalAt0_layers_texel(zgalPush.i + 1u, u32(zgalCount_layers))")
+    (has "//zgal-bucket layers case {bucket}u: { return textureLoad(zgalBucket_layers_{bucket}, at, i32(entry.y), lod); }")
+    ;; Sizes from the table
+    (has "return vec2i(max(entry.zw >> vec2u(u32(lod)), vec2u(1u)));")
+    (has "zgalSize_layers(u32(0i), 1i)"))
+  ;; What can't be done to an element
+  (check-not-on-web
+   "(compute-material C
+      (workgroup 1)
+      (bindings (layers (array texture)) (cmp sampler) (counts (buffer-array float)))
+      (compute (write! (at counts 0) (sample-compare (at layers 0) cmp (vec2 0.5) 0.5))))"
+   "sample-compare can't be used on an element of an array on the web"))
 
 (test-case "A sampler clamping to a border clamps to the edge on the web, its border colour beside it"
   (define (sampler options)

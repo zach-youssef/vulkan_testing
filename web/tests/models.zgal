@@ -81,8 +81,8 @@
   (draw-meshes draw onCanvas shapes meshing)
   (readback canvasRead canvas))
 
-;; Image files of different sizes in one texture array: the top half samples texels.png's texels
-;; (4x2), the bottom half quadrants.png's (2x2, widened to 4x2); anything but 2 layers is magenta
+;; An array of image files of different sizes (a texture array each on the web): the top half samples
+;; texels.png's texels (4x2), the bottom half quadrants.png's (2x2); anything but 2 elements is magenta
 (graphics-material Layers
   (bindings (layers (array texture)) (pick sampler))
   (varyings (texCoord vec2))

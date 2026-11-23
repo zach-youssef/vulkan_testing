@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
-import { Corner, CulledModels, LayerGraph, Meshes, Models, ModelVertex } from '../models.zgal.ts';
+import { Corner, CulledModels, LayerGraph, Layers, Meshes, Models, ModelVertex } from '../models.zgal.ts';
 
 const assets = fileURLToPath(new URL('assets', import.meta.url));
 let context: zgal.Context;
@@ -115,7 +115,7 @@ test('graphs draw models with their materials\' base colours', async () => {
   const graph = new zgal.RenderGraph(context);
   const ids = await Models.build(context, graph, { file: 'halves.gltf' });
   // Two materials and the default one
-  assert.equal(graph.textureOf(ids.images.halfColors).depthOrArrayLayers, 3);
+  assert.equal(ids.images.halfColors.length, 3);
   await graph.execute();
   const pixels = await ids.canvasReadPixels(graph);
   // The left half samples quadrants.png (sRGB, decoded), the right half is the green factor
@@ -132,7 +132,7 @@ test('graphs draw models with their materials\' base colours', async () => {
   // OBJ files too: the quad's material, then the default one for the triangle without any
   const obj = new zgal.RenderGraph(context);
   const objIds = await Models.build(context, obj, { file: 'quad.obj' });
-  assert.equal(obj.textureOf(objIds.images.halfColors).depthOrArrayLayers, 2);
+  assert.equal(objIds.images.halfColors.length, 2);
   await obj.execute();
   obj.destroy();
 
@@ -155,7 +155,7 @@ test('models fill vertex formats\' attributes by name, or with their defaults', 
   assert.deepEqual(model.draws, [{ indexCount: 3, instanceCount: 1, firstIndex: 0, vertexOffset: 0, firstInstance: 0 }]);
   assert.deepEqual(model.bounds, [[0, 0, 0, 0]]);
   zgal.destroyMesh(model.mesh);
-  model.baseColors.destroy();
+  for (const t of new Set(model.baseColors)) t.destroy();
 
   // Packed as natively: a half-float uv (0.5 is 0x3800), snorm16 normal, unorm8 colour (white)
   const bytes = zgal.encodeVertices(ModelVertex, [{ position: [1, 2, 3], uv: [0.5, 0.5], normal: [0, 0, 1] }]);
@@ -201,29 +201,49 @@ test('graphs draw meshes they were given, each with its instance index', async (
   assert.deepEqual(context.errors, []);
 });
 
-test('arrays of image files are texture arrays, their images resized to the largest', async () => {
+test('arrays of image files are texture arrays, an image per layer, one per distinct size and format', async () => {
   const graph = new zgal.RenderGraph(context);
   const ids = await LayerGraph.build(context, graph, {});
   await graph.execute();
   const pixels = await ids.canvasReadPixels(graph);
-  // The top rows are texels.png's; the bottom rows quadrants.png's, widened, so only their ends
-  // are the original texels
+  // The top rows are texels.png's (4x2); the bottom rows quadrants.png's (2x2), each texel twice
   const texels = [[[255, 0, 0, 255], [0, 255, 0, 128], [10, 20, 30, 0], [200, 100, 50, 255]],
     [[1, 2, 3, 4], [128, 128, 128, 255], [255, 255, 255, 255], [0, 0, 0, 255]]];
-  for (let y = 0; y < 2; y++) {
-    for (let x = 0; x < 4; x++) assert.deepEqual(pixel(pixels, x, y), texels[y][x], `(${x}, ${y})`);
+  const quadrants = [[[255, 0, 0, 255], [0, 255, 0, 255]], [[0, 0, 255, 255], [128, 128, 128, 255]]];
+  for (let y = 0; y < 4; y++) {
+    for (let x = 0; x < 4; x++) assert.deepEqual(pixel(pixels, x, y), y < 2 ? texels[y][x] : quadrants[y - 2][x >> 1], `(${x}, ${y})`);
   }
-  assert.deepEqual([pixel(pixels, 0, 2), pixel(pixels, 3, 2)], [[255, 0, 0, 255], [0, 255, 0, 255]]);
-  assert.deepEqual([pixel(pixels, 0, 3), pixel(pixels, 3, 3)], [[0, 0, 255, 255], [128, 128, 128, 255]]);
   graph.destroy();
+  assert.deepEqual(context.errors, []);
+});
 
-  // Layers without an image are white
+test('texture arrays put each distinct image once in the bucket of its size and format', async () => {
   const device = context.device;
-  const texture = (format: GPUTextureFormat) => device.createTexture({ size: [1, 1], format, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC });
-  const layers = [texture('rgba8unorm'), null];
-  const array = zgal.textureArray(device, 'two', 'rgba8unorm', layers);
-  assert.equal(array.depthOrArrayLayers, 2);
-  array.destroy();
-  layers[0]!.destroy();
+  const graph = new zgal.RenderGraph(context);
+  // TEXTURE_BINDING | COPY_SRC
+  const texture = (width: number, height: number, format: GPUTextureFormat) =>
+    device.createTexture({ size: [width, height], format, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC });
+  const a = texture(4, 2, 'rgba8unorm');
+  const b = texture(2, 2, 'rgba8unorm-srgb');
+  const c = texture(4, 2, 'rgba8unorm');
+  const d = texture(4, 2, 'rgba8unorm-srgb');
+  const images = graph.importImages('mixed', [a, b, a, c, d]);
+  assert.equal(new Set(images).size, 4);
+  const array = graph.textureArray('mixed', images);
+  assert.equal(graph.textureArray('again', images), array);
+  const built = graph.arrayOf(array);
+  assert.deepEqual(built.shape, { count: 5, buckets: ['rgba8unorm', 'rgba8unorm-srgb', 'rgba8unorm-srgb'] });
+  assert.deepEqual(built.sizes, [[4, 2], [2, 2], [4, 2]]);
+  assert.deepEqual(built.buckets.map((t) => t.depthOrArrayLayers), [2, 1, 1]);
+  assert.equal(graph.arrayOf(array), built);
+
+  // Past the sampled textures a stage may use, the error names the array's sizes
+  const many = Array.from({ length: device.limits.maxSampledTexturesPerShaderStage + 1 }, (_, i) => texture(i + 1, 1, 'rgba8unorm'));
+  const pick = new zgal.Sampler(device, 'pick', {}, null);
+  const material = new zgal.MaterialInstance(graph, Layers, { layers: { array: graph.textureArray('many', graph.importImages('many', many)) }, pick: { sampler: pick } }, null, null);
+  assert.throws(() => material.groupLayout(),
+    new RegExp(`^Error: material Layers's fragment stage samples ${many.length} textures, more than this WebGPU device allows \\(maxSampledTexturesPerShaderStage ${many.length - 1}\\): .*it binds layers \\(${many.length} texture arrays, for its images' distinct sizes and formats: 1x1 rgba8unorm, 2x1 rgba8unorm, `));
+  graph.destroy();
+  for (const t of [a, b, c, d, ...many]) t.destroy();
   assert.deepEqual(context.errors, []);
 });

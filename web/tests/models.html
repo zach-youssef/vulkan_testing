@@ -39,7 +39,7 @@ try {
   // The left half samples quadrants.png (sRGB, decoded), the right half is the green factor
   let graph = new zgal.RenderGraph(context);
   const models = await Models.build(context, graph, { file: 'halves.gltf' });
-  check([graph.textureOf(models.images.halfColors).depthOrArrayLayers], [3], 'halves.gltf\'s materials');
+  check([models.images.halfColors.length], [3], 'halves.gltf\'s materials');
   await graph.execute();
   const halves = await models.canvasReadPixels(graph);
   check(pixel(halves, 0, 0), red, 'halves.gltf at (0, 0)');
@@ -51,7 +51,7 @@ try {
 
   graph = new zgal.RenderGraph(context);
   const obj = await Models.build(context, graph, { file: 'quad.obj' });
-  check([graph.textureOf(obj.images.halfColors).depthOrArrayLayers], [2], 'quad.obj\'s materials');
+  check([obj.images.halfColors.length], [2], 'quad.obj\'s materials');
   await graph.execute();
   graph.destroy();
 
@@ -80,15 +80,15 @@ try {
   graph.destroy();
   shapes.forEach(zgal.destroyMesh);
 
-  // texels.png's rows on top; quadrants.png's widened below, its ends the original texels
+  // texels.png's rows on top (4x2); quadrants.png's below (2x2), each texel twice
   graph = new zgal.RenderGraph(context);
   const layers = await LayerGraph.build(context, graph, {});
   await graph.execute();
   const layered = await layers.canvasReadPixels(graph);
   check(layered.subarray(0, 32), [255, 0, 0, 255, 0, 255, 0, 128, 10, 20, 30, 0, 200, 100, 50, 255,
-    1, 2, 3, 4, 128, 128, 128, 255, 255, 255, 255, 255, 0, 0, 0, 255], 'the texture array\'s first layer');
-  check([...pixel(layered, 0, 2), ...pixel(layered, 3, 2), ...pixel(layered, 0, 3), ...pixel(layered, 3, 3)],
-    [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 128, 128, 128, 255], 'the texture array\'s widened layer');
+    1, 2, 3, 4, 128, 128, 128, 255, 255, 255, 255, 255, 0, 0, 0, 255], 'the array\'s 4x2 element');
+  check(layered.subarray(32, 64), [255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
+    0, 0, 255, 255, 0, 0, 255, 255, 128, 128, 128, 255, 128, 128, 128, 255], 'the array\'s 2x2 element');
   graph.destroy();
 
   await context.device.queue.onSubmittedWorkDone();
