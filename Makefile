@@ -260,7 +260,17 @@ BORDER_TOLERANCE = 2
 $(eval $(call zgal-program,$(TEST_DIR)/border/border.zgal,$(BORDER_TEST_OUT),border,))
 $(eval $(call zgal-web-program,$(TEST_DIR)/border/border.zgal,$(BORDER_TEST_WEB)))
 
-test-main: $(MAIN_TEST_BIN) $(BORDER_TEST_BIN) $(IMAGE_FILTER_DIFF)
+# An array of textures of different sizes and colour spaces (tests/arrays), whose capture make test-main
+# and make test-web (under Node and in test-pages' browsers) compare with arrays.approved.png, captured
+# natively on MoltenVK, exactly: on the web it's a texture array per distinct size and format
+ARRAYS_TEST_OUT = $(TEST_OUT)/arrays
+ARRAYS_TEST_BIN = $(ARRAYS_TEST_OUT)/arrays
+ARRAYS_TEST_WEB = $(OUT)/web/arrays
+
+$(eval $(call zgal-program,$(TEST_DIR)/arrays/arrays.zgal,$(ARRAYS_TEST_OUT),arrays,))
+$(eval $(call zgal-web-program,$(TEST_DIR)/arrays/arrays.zgal,$(ARRAYS_TEST_WEB)))
+
+test-main: $(MAIN_TEST_BIN) $(BORDER_TEST_BIN) $(ARRAYS_TEST_BIN) $(IMAGE_FILTER_DIFF)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-main-steps
 
 test-main-steps:
@@ -277,6 +287,8 @@ test-main-steps:
 	./$(MAIN_TEST_BIN) $(TEST_DIR)/gpu/assets/quadrants.png $(MAIN_TEST_OUT)/marked.png --marks-file $(MAIN_TEST_OUT)/marks.bin --frames 10 --validation | grep -qx "marks 5 7"
 	./$(BORDER_TEST_BIN) $(BORDER_TEST_OUT)/out.png --validation
 	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/border/border.approved.png $(BORDER_TEST_OUT)/out.png $(BORDER_TOLERANCE)
+	./$(ARRAYS_TEST_BIN) $(ARRAYS_TEST_OUT)/out.png --validation
+	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/arrays/arrays.approved.png $(ARRAYS_TEST_OUT)/out.png 0
 
 # The benchmark (tools/bench): ZGAL's library kernels and fallbacks at a size the command line gives.
 #   make bench                         - builds build/tools/bench/bench
@@ -358,6 +370,9 @@ test-web-steps:
 	$(MAKE) $(BORDER_TEST_WEB)
 	$(NODE) $(BORDER_TEST_WEB)/border.zgal.main.js $(BORDER_TEST_WEB)/out.png
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/border/border.approved.png $(BORDER_TEST_WEB)/out.png $(BORDER_TOLERANCE)
+	$(MAKE) $(ARRAYS_TEST_WEB)
+	$(NODE) $(ARRAYS_TEST_WEB)/arrays.zgal.main.js $(ARRAYS_TEST_WEB)/out.png
+	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/arrays.approved.png $(ARRAYS_TEST_WEB)/out.png 0
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png 1
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(SIMPLE_DIR)/textures/texture.jpg $(IMAGE_FILTER_WEB)/identity-jpeg.png
@@ -401,7 +416,7 @@ test-decode-steps:
 BROWSERS = chromium
 BROWSERS_REQUIRED = $(if $(filter command line environment override,$(origin BROWSERS)),1)
 TEST_PAGES = $(OUT)/web/tests
-test-pages: web $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE) $(ZGAL_NAGA)
+test-pages: web $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) $(ARRAYS_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE) $(ZGAL_NAGA)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-pages-steps
 
 test-pages-steps:
@@ -434,6 +449,9 @@ test-pages-steps:
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/border-$$browser.png \
 	    'border/border.zgal.html?arg=out.png' || exit 1; \
 	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/border/border.approved.png $(TEST_PAGES)/border-$$browser.png $(BORDER_TOLERANCE) || exit 1; \
+	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/arrays-$$browser.png \
+	    'arrays/arrays.zgal.html?arg=out.png' || exit 1; \
+	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/arrays.approved.png $(TEST_PAGES)/arrays-$$browser.png 0 || exit 1; \
 	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps glsl streams stream-buffers stop-streams; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \

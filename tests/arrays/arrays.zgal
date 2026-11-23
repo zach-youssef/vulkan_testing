@@ -1,0 +1,57 @@
+;; An array of textures whose elements differ in size and colour space, natively and on the web
+;; (where it's a texture array per distinct size and format, and a table of its elements): make
+;; test-main and make test-web compare the capture with arrays.approved.png, captured natively,
+;; exactly. Its seven elements are texels.png (4x2) and quadrants.png (2x2) as linear images and as
+;; sRGB ones (decoded), a linear one given twice, and quadrants.png loaded again as linear (another
+;; layer of the same size and format).
+;; Each element is two rows of the capture: its texels fetched, then past its width its size, and
+;; whether its last column is sampled (nearest, at the texels' centres) and fetched through a
+;; function as it's fetched. assets/texels.png is web/tests/assets' with 105 for 100 in a green: every
+;; texel decodes from sRGB at least 0.19 from a rounding boundary (100 decodes to 32.497, which
+;; SwiftShader and MoltenVK round differently), so the comparison can be exact.
+
+;; Texel `at` of `picture`, through a function given the element
+(define (texelOf [picture : texture2D] [s : sampler] [at : ivec2]) : vec4
+  (fetch picture s at 0))
+
+(compute-material Show
+  (workgroup 4 4)
+  (bindings (elements (array texture)) (pick sampler) (shown (storage-image write)))
+  (compute
+   (let* ([at (ivec2 globalInvocationId.xy)]
+          [e (/ at.y 2)]
+          [texel (ivec2 at.x (remainder at.y 2))])
+     (when (< e (int (array-length elements)))
+       (let* ([size (texture-size (at elements e) 0)]
+              ;; Within the element: past its width, its last column
+              [inside (ivec2 (min texel.x (- size.x 1)) texel.y)]
+              [fetched (fetch (at elements e) pick inside 0)]
+              [sampled (sample-lod (at elements e) pick (/ (+ (vec2 inside) 0.5) (vec2 size)) 0.0)]
+              [passed (texelOf (at elements e) pick inside)]
+              [same (if (and (= fetched sampled) (= fetched passed)) 1.0 0.0)])
+         (store! shown at
+                 (if (< texel.x size.x)
+                     fetched
+                     (vec4 (/ (float size.x) 8.0) (/ (float size.y) 8.0) same 1.0))))))))
+
+(graph Arrayed
+  (image-file wide "texels.png" #:color linear)
+  (image-file small "quadrants.png" #:color linear)
+  (image-file wideColor "texels.png" #:color srgb)
+  (image-file smallColor "quadrants.png" #:color srgb)
+  (image-file smallAgain "quadrants.png" #:color linear)
+  (sampler pick #:filter nearest)
+  (image result rgba8 (fixed 8 14) #:frames shared)
+  (material showing Show (elements (wide smallColor small wideColor small smallAgain wide)) pick (shown result)
+            #:invocations (8 14))
+  (dispatch show showing)
+  (readback capture result))
+
+(app Arrays
+  (parameter destination path)
+  (run Arrayed))
+
+(main Arrays
+  (about "Fetches from an array of textures of different sizes and colour spaces")
+  (positional destination "the PNG file to write")
+  (capture capture #:to destination))

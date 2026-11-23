@@ -174,14 +174,17 @@ then:
    copies a JPEG, compared with the JPEG), and runs
    `tests/main/painter.zgal` as `make test-main` runs it natively (its TypeScript giving its
    `MainInputs`), `tests/border/border.zgal` (samplers clamping to a border, sampled by hand past
-   the edges) compared with `border.approved.png`, captured natively by `make test-main`, and
+   the edges) compared with `border.approved.png`, captured natively by `make test-main`,
+   `tests/arrays/arrays.zgal` (an array of textures of mixed sizes and colour spaces) compared
+   exactly with `arrays.approved.png`, likewise, and
    `tests/stream/streamer.zgal` streaming a file (its opener in
    `streamer.inputs.ts`) (`headless.test.ts` needs no GPU: the PNG encoders and
    `parseCommandLine`'s `where`);
 3. runs `make test-pages`: the particles and scene pages, image_filter's page (run from its query
    string, its capture saved with the checkers' `--save-capture` and compared with
    `blur_edges.approved.png`), the border program's page (its capture compared likewise with
-   `border.approved.png`), `web/tests/mount.html` (mounts two programs and stops one),
+   `border.approved.png`), the arrays program's page (compared exactly with `arrays.approved.png`),
+   `web/tests/mount.html` (mounts two programs and stops one),
    `web/tests/held-keys.html` (held keys and mouse buttons released once each, also when focus
    leaves, chorded buttons, cancelled pointers and lost captures, and a finger ignored while the
    mouse is pressed), `web/tests/touch.html` (in Chromium only, touched by
