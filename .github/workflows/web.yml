@@ -1,8 +1,8 @@
 # Runs the web backend's tests on each commit (make test-web): the runtime's tests and the web
 # examples under Node on Dawn, which runs on lavapipe, then the test pages in headless Chromium on
-# SwiftShader. Firefox is skipped: it has no WebGPU on Linux. Its token can't post statuses: ci.yml
-# posts each commit's "web" status from its job's conclusion, found by the job's name, and passes
-# only the commits that have this workflow, as older ones can't pass it.
+# SwiftShader and in headless Firefox on lavapipe (through wgpu's Vulkan backend). Its token can't
+# post statuses: ci.yml posts each commit's "web" status from its job's conclusion, found by the
+# job's name, and passes only the commits that have this workflow, as older ones can't pass it.
 name: web
 on:
   workflow_call:
@@ -22,6 +22,10 @@ defaults:
 env:
   # The Playwright release whose Chromium headless shell runs the pages
   PLAYWRIGHT_VERSION: 1.63.0
+  # The Firefox release whose tarball runs the pages, and the tarball's SHA-256 (from the release's
+  # SHA256SUMS on archive.mozilla.org), so the browser under test only changes with this file
+  FIREFOX_VERSION: 160.0.1
+  FIREFOX_SHA256: 844d8a77aa4672a08ded949b6206f84d91bb82f6637c090fd58c3126e9d44119
 
 jobs:
   web:
@@ -70,12 +74,24 @@ jobs:
           fi
           echo "CHROMIUM=${shells[0]}" >> "$GITHUB_ENV"
 
-      # A step timeout, under the job's, so a hang still uploads the logs
-      - name: Web tests (Firefox skipped, no WebGPU on Linux)
-        timeout-minutes: 12
+      # Mozilla's release tarball, not the runner's Firefox, which is whatever the image has. FIREFOX
+      # names it, so the pages fail rather than being skipped if it's missing. The libraries are
+      # the ones its GTK build loads.
+      - name: Install Firefox
         run: |
-          echo "::notice::Firefox skipped: it has no WebGPU on Linux"
-          make test-web BROWSERS=chromium
+          sudo apt-get install -y -q --no-install-recommends libgtk-3-0t64 libdbus-glib-1-2 libasound2t64 libx11-xcb1 libxtst6
+          mkdir -p "$RUNNER_TEMP/firefox"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/firefox.tar.xz" \
+            "https://archive.mozilla.org/pub/firefox/releases/$FIREFOX_VERSION/linux-x86_64/en-US/firefox-$FIREFOX_VERSION.tar.xz"
+          echo "$FIREFOX_SHA256  $RUNNER_TEMP/firefox.tar.xz" | sha256sum --check
+          tar -xf "$RUNNER_TEMP/firefox.tar.xz" -C "$RUNNER_TEMP/firefox"
+          echo "FIREFOX=$RUNNER_TEMP/firefox/firefox/firefox" >> "$GITHUB_ENV"
+          echo "::notice::Firefox under test: $("$RUNNER_TEMP/firefox/firefox/firefox" --version)"
+
+      # A step timeout, under the job's, so a hang still uploads the logs
+      - name: Web tests
+        timeout-minutes: 12
+        run: make test-web BROWSERS="chromium firefox"
 
       # The tests print summaries; their full output is in build/logs
       - name: Upload the test logs

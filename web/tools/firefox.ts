@@ -55,6 +55,9 @@ await runChecker<Options>('firefox', {
     // WebGPU needs that process (gfxPlatform.cpp's InitGPUProcessPrefs and InitWebGPUConfig), so
     // requestAdapter() finds nothing; layers.gpu-process.allow-headless lets the GPU process run
     // headless, keeping WebGPU where it is with a window. It's read at startup, so it's in user.js.
+    // On Linux, Firefox blocklists the CPU adapter lavapipe (no adapter without
+    // gfx.webgpu.ignore-blocklist, which then gives lavapipe through wgpu's Vulkan backend); the
+    // Mac's GPUs aren't blocklisted, so it changes nothing there.
     // Headless, Firefox ignores --window-size and takes its window's size from these (inherited
     // by the process startBrowser spawns). A MOZ_HEADLESS from the shell would keep --window
     // headless.
@@ -64,6 +67,7 @@ await runChecker<Options>('firefox', {
       writeFileSync(join(profile, 'user.js'), [
         'user_pref("dom.webgpu.enabled", true);',
         'user_pref("layers.gpu-process.allow-headless", true);',
+        'user_pref("gfx.webgpu.ignore-blocklist", true);',
         'user_pref("browser.shell.checkDefaultBrowser", false);',
         'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
         'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);',

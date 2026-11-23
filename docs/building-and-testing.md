@@ -64,7 +64,7 @@ from `PATH` (the Vulkan SDK's locally), for the web tests too.
   documentation: `build/docs/zgal.html`, and `build/docs/zgal.txt` to read in a terminal.
 - `make test-web` and `make test-pages`: the web backend's tests ([web.md](web.md#tests); `make
   test` includes them), with pages in headless Chromium only unless `BROWSERS="chromium firefox"`
-  (Firefox, headless too, uses the machine's GPU). A browser that isn't installed is skipped with a note under the
+  (Firefox, headless too, uses the machine's GPU, lavapipe on Linux). A browser that isn't installed is skipped with a note under the
   summary, or fails the run when `BROWSERS` names it. `make web` builds the web examples.
 - `make test-decode`: checks the web runtime's image decoder under Node against native stb_image
   (no GPU; [web.md](web.md#the-image-decoder)); `make test-web` runs it first. `make
@@ -118,14 +118,13 @@ commit; the hook blocks the push instead:
 | Check | Where | Runs | Device |
 |---|---|---|---|
 | `cpu` | [cpu.yml](../.github/workflows/cpu.yml) | builds the examples and both test programs; `make test-cpu`, `make test-dsl`, `make test-tools` | no Vulkan tests; Dawn on lavapipe checks ZGAL's WGSL (naga's too) |
-| `web` | [web.yml](../.github/workflows/web.yml) | `make test-web BROWSERS=chromium` | Dawn under Node on lavapipe; Chromium's headless shell on SwiftShader |
+| `web` | [web.yml](../.github/workflows/web.yml) | `make test-web BROWSERS="chromium firefox"` | Dawn under Node on lavapipe; Chromium's headless shell on SwiftShader; Firefox 160.0.1 (Mozilla's tarball, SHA-256 checked) on lavapipe |
 | `gpu` | [gpu.yml](../.github/workflows/gpu.yml) | `make test-gpu`, `make -k test-examples` | lavapipe, validation and synchronization validation required |
 | pre-push hook | [tools/git-hooks/pre-push](../tools/git-hooks/pre-push), on the Mac | builds, then `make -k test-gpu test-examples test-web BROWSERS="chromium firefox"` | MoltenVK; Dawn on Metal; Chromium and Firefox |
 
 The CI jobs run on Ubuntu 24.04 with clang++. In web.yml, `CHROMIUM` names the headless shell, so
-a missing one fails the pages rather than skipping them; Firefox is skipped, as it has no WebGPU on
-Linux. Commits from before web.yml or gpu.yml existed get no `web` or `gpu` check (the commits job
-leaves them out). The toolchain (apt packages, the LunarG SDK, ccache, naga, Racket, Node) comes from
+a missing one fails the pages rather than skipping them, as a missing `FIREFOX` does. Commits from
+before web.yml or gpu.yml existed get no `web` or `gpu` check (the commits job leaves them out). The toolchain (apt packages, the LunarG SDK, ccache, naga, Racket, Node) comes from
 `.github/actions/setup-zgal`, whose `toolchain` input is `native` or `web` (no SDK or ccache, but
 clang for the image decoder's native test helper, and Ubuntu's glslc for GLSL shaders where native
 uses the SDK's); both install wasi-sdk, as `WASI_SDK_PATH`, since every program built for the web
@@ -134,9 +133,8 @@ carries the image decoder.
 lavapipe exposes one queue family with one queue, so CI never runs the multi-queue paths: async
 compute, cross-queue ownership transfers and timeline waits between queues (their tests skip, and
 the render graph runs everything on the one queue, having no others to spread work over). Nor
-does it run the windowed tests (no display) or the web pages in Firefox. The pre-push hook runs
-all of those on the Mac for each pushed tip, so a branch is only fully tested once it has been
-pushed from there.
+does it run the windowed tests (no display). The pre-push hook runs all of those on the Mac for
+each pushed tip, so a branch is only fully tested once it has been pushed from there.
 
 ### Logs
 

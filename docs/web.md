@@ -188,9 +188,8 @@ then:
    it starts or runs settles at once and aborts the fetch, and quitting with Escape ends the fetch
    before any `stop()`),
    in each browser of `BROWSERS`: by default only headless Chromium. Firefox, also headless but on
-   the machine's GPU, runs only when asked, `make test-web BROWSERS="chromium firefox"` (as before
-   pushing a stack's top); its WebGPU is untested on Linux, so CI skips it. A browser found
-   nowhere is skipped (Chromium is
+   the machine's GPU (lavapipe on Linux), runs only when asked, `make test-web BROWSERS="chromium
+   firefox"` (as CI and the pre-push hook do). A browser found nowhere is skipped (Chromium is
    Playwright's headless shell, Firefox the macOS application or `firefox` on `PATH`), with a
    `note:` under the summary, unless `make` was given `BROWSERS`: then it fails, as it does when the
    browser `CHROMIUM` or `FIREFOX` names is missing.
@@ -211,12 +210,21 @@ page ran (and matched), 1 when it failed (or the browser `--chromium`/`CHROMIUM`
 `--firefox`/`FIREFOX` names doesn't exist), 2 for a bad command line and 3 when they found no
 browser where they look by default.
 
-- **Firefox** runs headless (`--window` opens one) with `layers.gpu-process.allow-headless` set in
-  its profile: headless, Firefox otherwise blocks its GPU process, and on macOS and Windows WebGPU
-  is disabled without it (the gfx feature log says `FEATURE_WEBGPU_NO_GPU_PROCESS`), so
-  `requestAdapter()` finds nothing. `dom.webgpu.allow-in-parent` would also work, but runs WebGPU
-  in the parent process, unlike Firefox with a window. Its startup can flake while the user's own
-  Firefox is launching; rerun before investigating.
+- **Firefox** runs headless (`--window` opens one) with `layers.gpu-process.allow-headless` and
+  `gfx.webgpu.ignore-blocklist` set in its profile. Headless, Firefox otherwise blocks its GPU
+  process, and on macOS and Windows WebGPU is disabled without `allow-headless` (the gfx feature
+  log says `FEATURE_WEBGPU_NO_GPU_PROCESS`), so `requestAdapter()` finds nothing; Linux doesn't
+  need it. `dom.webgpu.allow-in-parent` would also work on the Mac, but runs WebGPU in the parent
+  process, unlike Firefox with a window, and doesn't help on Linux. On Linux Firefox blocklists
+  the CPU adapter lavapipe, so without `ignore-blocklist` `requestAdapter()` finds nothing; with
+  it Firefox gets lavapipe through wgpu's Vulkan backend (`isFallbackAdapter` true, empty info
+  strings), and no adapter at all without a Vulkan driver. The Mac's GPUs aren't blocklisted, so
+  it changes nothing there. CI runs the pages in Mozilla's release tarball, version and SHA-256
+  pinned in web.yml. Its startup can flake while the user's
+  own Firefox is launching; rerun before investigating. `MOZ_LOG` for WebGPU writes empty files in
+  release Firefox, so adapter problems are diagnosed from `requestAdapter()` and the gfx feature
+  log. In web.yml, bash steps run with `-e -o pipefail`: a loop over pages that carries on past
+  failures needs `cmd || status=$?`.
 - **Firefox** compiles WGSL with naga, not Tint, which differs from Dawn and Chromium both ways: it
   refuses storage textures as function parameters (why ZGAL inlines functions taking `image2D`s),
   but has no uniformity analysis and lets depth textures use filtering samplers. Passing in Firefox
