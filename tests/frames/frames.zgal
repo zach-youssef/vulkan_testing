@@ -1,0 +1,74 @@
+;; Per-frame resources read before they're written, natively and on the web (where each is a copy
+;; per frame in flight too): make test-main and make test-web compare the capture with
+;; frames-<first>-<second>.approved.png, captured natively, exactly.
+;; Each frame first records what its copies of a per-frame buffer and a per-frame image hold, then
+;; writes the frame's number + 1 to both: so a frame reads what the last frame using its slot (frames
+;; in flight before it, once they're steady) wrote. The app sets the frames in flight to --first in
+;; frame 0 and to --second in frame 8, each applied at the end of the frame: the slots restart at 0,
+;; keeping the copies of the slots that remain (new buffers zeroed), as the reference describes.
+;; The capture (16x2, of the last of 16 frames) holds a frame's records per column, red = value * 15
+;; / 255: the buffer's in the top row, the image's below. A new image copy's texels are undefined,
+;; so the image's are 0 in frames that may read one (the first --first + 1, and the --second after
+;; frame 8).
+
+(compute-material Record
+  (workgroup 1)
+  (bindings (history (buffer-array uint)) (mark texture) (pick sampler) (records (buffer-array uint)))
+  (push (frame uint) (masked uint))
+  (compute
+   (let* ([texel (fetch mark pick (ivec2 0 0) 0)]
+          [marked (uint (round (* texel.x 255.0)))])
+     (write! (at records frame) (at history 0))
+     (write! (at records (+ frame 16)) (if (= masked 0) marked (uint 0))))))
+
+(compute-material Write
+  (workgroup 1)
+  (bindings (history (buffer-array uint)) (mark (storage-image write)))
+  (push (frame uint))
+  (compute
+   (write! (at history 0) (+ frame 1))
+   ;; A whole multiple of 1/255, which unorm8 stores exactly
+   (store! mark (ivec2 0 0) (vec4 (/ (float (+ frame 1)) 255.0) 0.0 0.0 1.0))))
+
+(compute-material Show
+  (workgroup 16 2)
+  (bindings (records (buffer-array uint)) (shown (storage-image write)))
+  (compute
+   (let* ([at globalInvocationId.xy]
+          [value (at records (+ at.x (* at.y 16)))])
+     (store! shown (ivec2 at) (vec4 (/ (float (* value 15)) 255.0) 0.0 0.0 1.0)))))
+
+(graph Rotating
+  (input frame (per-frame uint))
+  (input masked (per-frame uint))
+  (buffer history uint 1 #:frames per-frame)
+  (image mark rgba8 (fixed 1 1) #:frames per-frame)
+  (buffer records uint 32 #:frames shared)
+  (image result rgba8 (fixed 16 2) #:frames shared)
+  (sampler pick #:filter nearest)
+  (material recording Record (history history) (mark mark) pick (records records) #:push ((frame frame) (masked masked)) #:invocations (1))
+  (dispatch record recording)
+  (material writing Write (history history) (mark mark) #:push ((frame frame)) #:invocations (1))
+  (dispatch write writing)
+  (material showing Show (records records) (shown result) #:invocations (16 2))
+  (dispatch show showing)
+  (readback capture result))
+
+(app Frames
+  (parameter first uint)
+  (parameter second uint)
+  (parameter destination path)
+  (on (frame dt)
+    (when (= frameNumber 0) (set-frames-in-flight! first))
+    (when (= frameNumber 8) (set-frames-in-flight! second)))
+  (run Rotating
+       (frame frameNumber)
+       (masked (if (or (<= frameNumber first) (and (> frameNumber 8) (<= frameNumber (+ second 8)))) (uint 1) (uint 0)))))
+
+(main Frames
+  (about "Reads per-frame resources before writing them, as the frames in flight change")
+  (timestep #:max 0.1 #:fixed 0.1)
+  (option first "--first" "the frames in flight from frame 1" #:default 2 #:range (1 4))
+  (option second "--second" "the frames in flight from frame 9" #:default 3 #:range (1 4))
+  (positional destination "the PNG file to write")
+  (capture capture #:to destination))

@@ -42,16 +42,43 @@ export class Context {
   // WebGPU's validation errors and device loss, which the runtime treats as a validation layer's
   // messages: tests fail on any
   readonly errors: string[] = [];
-  // How many frames graphs submit before waiting for the oldest (frames share their resources on
-  // WebGPU, so this only bounds how far the CPU runs ahead)
-  framesInFlight = 2;
+  // How many frames graphs submit before waiting for the oldest, and how many copies resources
+  // with frames 'per-frame' have (see RenderGraph.createImage)
+  get framesInFlight(): number {
+    return this.inFlight;
+  }
+  // The frame slot graphs record into, in [0, framesInFlight): which copy of a per-frame resource
+  // a frame uses, as natively VulkanContext::currentFrame
+  get frameIndex(): number {
+    return this.slot;
+  }
+  private inFlight = 2;
+  private slot = 0;
+  private pendingFramesInFlight: number | null = null;
   private readonly assets: AssetLoader;
   private readonly assetStreams: AssetStreamLoader;
   private readonly loads = new AbortController();
 
+  // Requests a new number of frames in flight, applied at the next frame boundary (advanceFrame),
+  // as natively: framesInFlight keeps the current count until then
   setFramesInFlight(count: number): void {
-    if (count < 1) throw new Error(`frames in flight must be at least 1, not ${count}`);
-    this.framesInFlight = count;
+    if (!Number.isInteger(count) || count < 1) throw new Error(`frames in flight must be at least 1, not ${count}`);
+    this.pendingFramesInFlight = count;
+  }
+
+  // Ends a frame (a graph's execute() does, once it has submitted): moves on to the next slot, or
+  // applies a requested number of frames in flight, restarting at slot 0, as natively
+  // VulkanContext::advanceFrame. Graphs then give their per-frame resources as many copies, keeping
+  // the first ones (and their contents) and adding zeroed ones (PerFrame's resizing).
+  advanceFrame(): void {
+    const pending = this.pendingFramesInFlight;
+    this.pendingFramesInFlight = null;
+    if (pending !== null && pending !== this.inFlight) {
+      this.inFlight = pending;
+      this.slot = 0;
+    } else {
+      this.slot = (this.slot + 1) % this.inFlight;
+    }
   }
 
   private constructor(gpu: GPU, adapter: GPUAdapter, device: GPUDevice, assets: AssetLoader, assetStreams: AssetStreamLoader, signal: AbortSignal | undefined) {

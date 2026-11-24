@@ -1276,7 +1276,11 @@ surface-relative ones, when the surface resizes).
  @item{@racket[image]: created by the graph, which derives its usage. The extent is
        @tt{(fixed width height)}, @tt{(surface scale)} (a fraction of the surface, recreated when it
        resizes) or @tt{(extent-of imported-image)}. @tt{#:frames} is required: @tt{per-frame} images
-       let frames overlap, @tt{shared} ones save memory.}
+       let frames overlap, @tt{shared} ones save memory. A per-frame image is one per frame in
+       flight, each frame using its slot's, so a frame reading it before writing it sees what the
+       last frame using the slot wrote (frames in flight frames before). When
+       @racket[set-frames-in-flight!] changes their number, the slots restart at 0, keeping the
+       copies of the slots that remain, and new copies' texels are undefined until written.}
  @item{@racket[buffer]: @tt{count} elements of a type, for @tt{buffer} and @tt{buffer-array}
        bindings, in device-local memory. A count using per-frame inputs is computed at the start of
        every frame, and when it changes the graph recreates the buffer (discarding its contents) and
@@ -1285,7 +1289,10 @@ surface-relative ones, when the surface resizes).
        count of 0 is a buffer holding nothing. Give the count to the shaders too (a push
        constant), and dispatch as many invocations. It starts zeroed on every backend, and so
        does each recreated buffer, e.g. a scan's elements past its count read as 0 until something
-       writes them.}
+       writes them. @tt{#:frames} is as an image's: a per-frame buffer is one per frame in flight,
+       read before it's written as a per-frame image is, and the copies
+       @racket[set-frames-in-flight!] adds start zeroed too (@tt{tests/frames/frames.zgal} reads
+       both before writing them as the frames in flight change).}
  @item{@racket[upload]: a device-local buffer holding a data input's elements, created and
        uploaded when the graph is built. Of a per-frame data input, a buffer per frame in flight,
        sized to the elements each frame (recreated when the count changes, like a @racket[buffer]
@@ -2436,8 +2443,13 @@ The runtime follows the C++ graph's behaviour where WebGPU allows, with these di
 @itemlist[
  @item{WebGPU synchronizes between passes itself, so the runtime records every node into one command
        encoder in insertion order, without barriers, semaphores or other queues.}
- @item{WebGPU keeps resources a submitted frame uses alive, so every resource is shared between
-       frames (@racket[#:frames] is ignored) and two frames at most are in flight.}
+ @item{WebGPU's queue runs frames in order, so @racket[#:frames per-frame] doesn't let frames
+       overlap there, but per-frame images and buffers are still a copy per frame in flight, rotated
+       each frame (with a bind group per frame), so a frame reading one before writing it sees what
+       it sees natively. Uniforms, uploads of per-frame data and the surface's depth image, which
+       each frame writes before reading, are shared: the queue writes them between frames. Up to
+       @racket[set-frames-in-flight!]'s count of frames are submitted before the next waits for
+       the oldest.}
  @item{Push constants are a uniform buffer per node using the material, written before each frame.}
  @item{Buffers and images are created with every usage their format allows.}
  @item{A window's surface is drawn through an sRGB view of the canvas's format, so shaders output

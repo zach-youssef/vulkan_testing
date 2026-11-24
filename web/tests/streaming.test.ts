@@ -166,7 +166,7 @@ test('a frame failing after its writes keeps them; one failing before them write
       if (failRecord) throw new Error('recording failed');
     },
   });
-  graph.createBuffer('sized', zgal.uint, () => {
+  graph.createBuffer('sized', 'shared', zgal.uint, () => {
     if (failCount) throw new Error('sizing failed');
     return 1;
   });
@@ -245,7 +245,7 @@ test('stream buffers check their sizes, and only they stream', async () => {
     });
   }
   assert.throws(() => graph.createStreamBuffer('scene', stream, 1.5, 4), RangeError);
-  const plain = graph.createBuffer('plain', zgal.uint, 4);
+  const plain = graph.createBuffer('plain', 'shared', zgal.uint, 4);
   assert.throws(() => graph.streamArrived(plain), /buffer 'plain' isn't streamed/);
   assert.throws(() => graph.streamTotal(plain), /buffer 'plain' isn't streamed/);
   // More than the device's buffers hold fails the first frame

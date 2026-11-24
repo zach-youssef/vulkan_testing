@@ -290,7 +290,17 @@ STORAGE_TEST_WEB = $(OUT)/web/storage
 $(eval $(call zgal-program,$(TEST_DIR)/arrays/storage.zgal,$(STORAGE_TEST_OUT),storage,))
 $(eval $(call zgal-web-program,$(TEST_DIR)/arrays/storage.zgal,$(STORAGE_TEST_WEB)))
 
-test-main: $(MAIN_TEST_BIN) $(BORDER_TEST_BIN) $(ARRAYS_TEST_BIN) $(TARGETS_TEST_BIN) $(STORAGE_TEST_BIN) $(IMAGE_FILTER_DIFF)
+# Per-frame resources read before they're written as the frames in flight change (tests/frames), run
+# with 2 then 3 frames in flight and 3 then 2, compared likewise with frames-<first>-<second>.approved.png:
+# on the web they're a copy per frame in flight too
+FRAMES_TEST_OUT = $(TEST_OUT)/frames
+FRAMES_TEST_BIN = $(FRAMES_TEST_OUT)/frames
+FRAMES_TEST_WEB = $(OUT)/web/frames
+
+$(eval $(call zgal-program,$(TEST_DIR)/frames/frames.zgal,$(FRAMES_TEST_OUT),frames,))
+$(eval $(call zgal-web-program,$(TEST_DIR)/frames/frames.zgal,$(FRAMES_TEST_WEB)))
+
+test-main: $(MAIN_TEST_BIN) $(BORDER_TEST_BIN) $(ARRAYS_TEST_BIN) $(TARGETS_TEST_BIN) $(STORAGE_TEST_BIN) $(FRAMES_TEST_BIN) $(IMAGE_FILTER_DIFF)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-main-steps
 
 test-main-steps:
@@ -313,6 +323,10 @@ test-main-steps:
 	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/arrays/targets.approved.png $(TARGETS_TEST_OUT)/out.png 0
 	./$(STORAGE_TEST_BIN) $(STORAGE_TEST_OUT)/out.png --frames 3 --validation
 	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/arrays/storage.approved.png $(STORAGE_TEST_OUT)/out.png 0
+	for run in 2-3 3-2; do \
+	  ./$(FRAMES_TEST_BIN) $(FRAMES_TEST_OUT)/$$run.png --first $${run%-*} --second $${run#*-} --frames 16 --validation || exit 1; \
+	  ./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/frames/frames-$$run.approved.png $(FRAMES_TEST_OUT)/$$run.png 0 || exit 1; \
+	done
 
 # The benchmark (tools/bench): ZGAL's library kernels and fallbacks at a size the command line gives.
 #   make bench                         - builds build/tools/bench/bench
@@ -403,6 +417,11 @@ test-web-steps:
 	$(MAKE) $(STORAGE_TEST_WEB)
 	$(NODE) $(STORAGE_TEST_WEB)/storage.zgal.main.js $(STORAGE_TEST_WEB)/out.png --frames 3
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/storage.approved.png $(STORAGE_TEST_WEB)/out.png 0
+	$(MAKE) $(FRAMES_TEST_WEB)
+	for run in 2-3 3-2; do \
+	  $(NODE) $(FRAMES_TEST_WEB)/frames.zgal.main.js $(FRAMES_TEST_WEB)/$$run.png --first $${run%-*} --second $${run#*-} --frames 16 || exit 1; \
+	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/frames/frames-$$run.approved.png $(FRAMES_TEST_WEB)/$$run.png 0 || exit 1; \
+	done
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png 1
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(SIMPLE_DIR)/textures/texture.jpg $(IMAGE_FILTER_WEB)/identity-jpeg.png
@@ -446,7 +465,7 @@ test-decode-steps:
 BROWSERS = chromium
 BROWSERS_REQUIRED = $(if $(filter command line environment override,$(origin BROWSERS)),1)
 TEST_PAGES = $(OUT)/web/tests
-test-pages: web $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) $(ARRAYS_TEST_WEB) $(TARGETS_TEST_WEB) $(STORAGE_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE) $(ZGAL_NAGA)
+test-pages: web $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) $(ARRAYS_TEST_WEB) $(TARGETS_TEST_WEB) $(STORAGE_TEST_WEB) $(FRAMES_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE) $(ZGAL_NAGA)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-pages-steps
 
 test-pages-steps:
@@ -488,6 +507,11 @@ test-pages-steps:
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/storage-$$browser.png \
 	    'storage/storage.zgal.html?arg=out.png&frames=3' || exit 1; \
 	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/storage.approved.png $(TEST_PAGES)/storage-$$browser.png 0 || exit 1; \
+	  for run in 2-3 3-2; do \
+	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/frames-$$run-$$browser.png \
+	      "frames/frames.zgal.html?arg=out.png&first=$${run%-*}&second=$${run#*-}&frames=16" || exit 1; \
+	    $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/frames/frames-$$run.approved.png $(TEST_PAGES)/frames-$$run-$$browser.png 0 || exit 1; \
+	  done; \
 	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps glsl streams stream-buffers stop-streams; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \

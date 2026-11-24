@@ -23,7 +23,8 @@ import type { Stream } from './stream.ts';
 import { decode, encode, stride, uint, type Type } from './types.ts';
 
 export interface FrameInfo {
-  // Always 0: WebGPU's queue orders frames, so per-frame resources aren't duplicated
+  // The frame's slot, in [0, frames in flight): the copy of per-frame resources it uses (see
+  // Context.frameIndex)
   readonly frameIndex: number;
   // One more each frame
   readonly frameNumber: number;
@@ -42,37 +43,61 @@ export type Extent = { fixed: readonly [number, number] } | { surface: number };
 // the image itself (see TextureArray)
 export type Texels = 'fixed' | 'live';
 
+// Whether the graph's image or buffer is one resource every frame uses ('shared') or a copy per
+// frame in flight ('per-frame', each frame using its slot's: see Context.frameIndex), as natively
+// FrameMode. A required choice, as natively: per-frame resources let frames overlap where shared
+// ones make each wait for the last (natively; WebGPU's queue runs frames in order either way), and
+// a frame reading one before writing it sees what the frame frames-in-flight before it left.
+export type Frames = 'shared' | 'per-frame';
+
 export class GraphImage {
-  texture: GPUTexture | null = null;
-  // Bumped when the texture is recreated, so bind groups follow
+  // Its textures: one, or with frames 'per-frame' one per frame in flight (the frame's at its
+  // frameIndex: RenderGraph.textureOf), all of one size and format
+  textures: GPUTexture[] = [];
+  // Bumped when the textures are recreated (or per-frame ones added or removed, as the frames in
+  // flight change), so bind groups follow
   generation = 0;
   readonly name: string;
   readonly format: GPUTextureFormat;
   readonly extent: Extent | null;
   readonly texels: Texels;
-  constructor(name: string, format: GPUTextureFormat, extent: Extent | null, texels: Texels, imported: GPUTexture | null = null) {
+  readonly frames: Frames;
+  constructor(name: string, format: GPUTextureFormat, extent: Extent | null, texels: Texels, frames: Frames, imported: GPUTexture | null = null) {
     this.name = name;
     this.format = format;
     this.extent = extent;
     this.texels = texels;
-    this.texture = imported;
+    this.frames = frames;
+    if (imported) this.textures = [imported];
+  }
+  // Its first texture (its only one unless it's per-frame), or null before the graph creates it
+  get texture(): GPUTexture | null {
+    return this.textures[0] ?? null;
   }
   get size(): [number, number] {
-    return this.texture ? [this.texture.width, this.texture.height] : [0, 0];
+    const t = this.texture;
+    return t ? [t.width, t.height] : [0, 0];
   }
 }
 
 export class GraphBuffer {
-  buffer: GPUBuffer | null = null;
+  // Its buffers: one, or with frames 'per-frame' one per frame in flight (see GraphImage.textures)
+  buffers: GPUBuffer[] = [];
   generation = 0;
   readonly name: string;
   readonly element: Type<any>;
   readonly count: number | FrameSource<number> | null;
-  constructor(name: string, element: Type<any>, count: number | FrameSource<number> | null, imported: GPUBuffer | null = null) {
+  readonly frames: Frames;
+  constructor(name: string, element: Type<any>, count: number | FrameSource<number> | null, frames: Frames, imported: GPUBuffer | null = null) {
     this.name = name;
     this.element = element;
     this.count = count;
-    this.buffer = imported;
+    this.frames = frames;
+    if (imported) this.buffers = [imported];
+  }
+  // Its first buffer (its only one unless it's per-frame), or null before the graph creates it
+  get buffer(): GPUBuffer | null {
+    return this.buffers[0] ?? null;
   }
 }
 
@@ -127,7 +152,9 @@ export class Uniform<T> {
     this.graph = graph;
     this.type = type;
     this.source = source;
-    this.resource = graph.createBuffer(name, type, 1);
+    // Shared: WebGPU's queue writes it in order between frames (natively a buffer per frame in
+    // flight, which the CPU writes while earlier frames read theirs)
+    this.resource = graph.createBuffer(name, 'shared', type, 1);
   }
   update(frame: FrameInfo): void {
     if (this.lastFrame === frame.frameNumber) return;
@@ -149,6 +176,8 @@ export class Uniform<T> {
 // of its one layer, so what's written to it is what's sampled. Made by RenderGraph.textureArray;
 // when an element is recreated (its generation changes, e.g. a surface-relative image when the
 // surface resizes), the views and table are rebuilt and bind groups follow, keeping the copies.
+// Where elements are per-frame images, each frame slot views its own copies of them (each copy a
+// bucket at the same place, so the table is the same for every slot).
 export class TextureArray {
   readonly name: string;
   readonly elements: readonly GraphImage[];
@@ -165,11 +194,12 @@ export class TextureArray {
 export interface BuiltArray {
   // The elements' generations it was built from
   readonly generations: readonly number[];
-  // Per bucket: the texture it views, and whether that's the array's copy of fixed elements (or a
-  // live element's own texture)
+  // Per bucket: the texture it views (for live per-frame elements, slot 0's), and whether that's
+  // the array's copy of fixed elements (or a live element's own texture)
   readonly buckets: readonly GPUTexture[];
   readonly copied: readonly boolean[];
-  readonly views: readonly GPUTextureView[];
+  // Per frame slot (one, or the frames in flight where an element is per-frame): per bucket, its view
+  readonly views: readonly (readonly GPUTextureView[])[];
   // Per bucket: its elements' size
   readonly sizes: readonly (readonly [number, number])[];
   readonly table: GPUBuffer;
@@ -268,6 +298,9 @@ export class MaterialInstance {
   readonly push: PushSource | null;
   readonly invocations: FrameSource<number[]> | null;
   readonly options: PipelineOptions;
+  // Whether it binds a per-frame resource (an image, a buffer or an array element), so each frame
+  // slot has a bind group of its own, binding the slot's copies
+  readonly perFrame: boolean;
   constructor(graph: RenderGraph, desc: MaterialDesc, bindings: Readonly<Record<string, Bound>>, push: PushSource | null, invocations: FrameSource<number[]> | null, options: PipelineOptions = {}) {
     this.graph = graph;
     this.desc = desc;
@@ -275,6 +308,10 @@ export class MaterialInstance {
     this.push = push;
     this.invocations = invocations;
     this.options = options;
+    this.perFrame = Object.values(bindings).some((b) =>
+      ('image' in b && b.image.frames === 'per-frame') ||
+      ('buffer' in b && b.buffer.frames === 'per-frame') ||
+      ('array' in b && b.array.elements.some((e) => e.frames === 'per-frame')));
     for (const b of desc.bindings) {
       if (!(b.resource in bindings)) throw new Error(`material ${desc.name}'s binding ${b.resource} isn't given`);
       const bound = bindings[b.resource];
@@ -497,11 +534,13 @@ export class MaterialInstance {
   }
 }
 
-// One node's use of a material instance: the bind group (rebuilt when resources are recreated)
-// and its push constants
+// One node's use of a material instance: the bind group (rebuilt when resources are recreated; one
+// per frame slot where it binds per-frame resources, each binding the slot's copies) and its push
+// constants
 export class MaterialBinder {
-  private group: GPUBindGroup | null = null;
-  private key = '';
+  // Per frame slot (only the first unless it binds a per-frame resource): its group, and the
+  // generations of what it bound
+  private groups: ({ group: GPUBindGroup; key: string } | undefined)[] = [];
   private pushBuffer: GPUBuffer | null = null;
   private pushBytes: Uint8Array<ArrayBuffer> | null = null;
   private lastPush: Uint8Array | null = null;
@@ -541,10 +580,12 @@ export class MaterialBinder {
     instance.graph.context.device.queue.writeBuffer(this.pushBuffer, 0, this.pushBytes);
   }
 
+  // The bind group of the frame being recorded
   bindGroup(): GPUBindGroup {
     const { instance } = this;
     const graph = instance.graph;
     const desc = instance.desc;
+    const slot = instance.perFrame ? graph.context.frameIndex : 0;
     const key = desc.bindings
       .map((b) => {
         const bound = instance.bindings[b.resource];
@@ -556,39 +597,39 @@ export class MaterialBinder {
         return 's';
       })
       .join(',');
-    if (!this.group || key !== this.key) {
-      const formats = instance.formats();
-      const first = firstBuckets(desc, formats);
-      const buckets: GPUBindGroupEntry[] = [];
-      const entries: GPUBindGroupEntry[] = desc.bindings.map((b, i) => {
-        const bound = instance.bindings[b.resource];
-        if ('image' in bound) return { binding: i, resource: graph.viewOf(bound.image) };
-        if ('array' in bound) {
-          const built = graph.arrayOf(bound.array);
-          built.views.forEach((view, bucket) => buckets.push({ binding: first[b.name] + bucket, resource: view }));
-          return { binding: i, resource: { buffer: built.table } };
-        }
-        if ('buffer' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.buffer) } };
-        if ('uniform' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.uniform.resource) } };
-        const { sampler } = bound;
-        if (desc.glsl && sampler.border) {
-          throw new Error(`${this.nodeName}: material ${desc.name}'s GLSL shaders sample with sampler ${sampler.name}, which clamps to a border colour: WebGPU's samplers have none (ZGAL bodies sample past the edge by hand), so clamp it to the edge or write the shaders in ZGAL`);
-        }
-        if (b.kind === 'comparison-sampler') return { binding: i, resource: sampler.comparison(desc.name) };
-        if (b.kind === 'depth-sampler') return { binding: i, resource: sampler.nonFiltering() };
-        // Also for a sampler clamping to a border, though the modules then filter by hand: the
-        // layout can't tell which sampler samples which texture
-        if (formats.samplers[b.name] === 'non-filtering' && sampler.filtering) {
-          throw new Error(`${this.nodeName}: material ${desc.name} ${instance.unfilterable()}, and sampler ${sampler.name} filters: give it nearest filters (#:filter and #:mipmap)`);
-        }
-        return { binding: i, resource: sampler.asDescribed() };
-      });
-      if (desc.push) entries.push({ binding: desc.push.binding, resource: { buffer: this.pushBuffer! } });
-      entries.push(...buckets);
-      this.group = graph.context.device.createBindGroup({ label: this.nodeName, layout: instance.groupLayout(), entries });
-      this.key = key;
-    }
-    return this.group;
+    const cached = this.groups[slot];
+    if (cached && cached.key === key) return cached.group;
+    const formats = instance.formats();
+    const first = firstBuckets(desc, formats);
+    const buckets: GPUBindGroupEntry[] = [];
+    const entries: GPUBindGroupEntry[] = desc.bindings.map((b, i) => {
+      const bound = instance.bindings[b.resource];
+      if ('image' in bound) return { binding: i, resource: graph.viewOf(bound.image) };
+      if ('array' in bound) {
+        const built = graph.arrayOf(bound.array);
+        built.views[built.views.length > 1 ? slot : 0].forEach((view, bucket) => buckets.push({ binding: first[b.name] + bucket, resource: view }));
+        return { binding: i, resource: { buffer: built.table } };
+      }
+      if ('buffer' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.buffer) } };
+      if ('uniform' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.uniform.resource) } };
+      const { sampler } = bound;
+      if (desc.glsl && sampler.border) {
+        throw new Error(`${this.nodeName}: material ${desc.name}'s GLSL shaders sample with sampler ${sampler.name}, which clamps to a border colour: WebGPU's samplers have none (ZGAL bodies sample past the edge by hand), so clamp it to the edge or write the shaders in ZGAL`);
+      }
+      if (b.kind === 'comparison-sampler') return { binding: i, resource: sampler.comparison(desc.name) };
+      if (b.kind === 'depth-sampler') return { binding: i, resource: sampler.nonFiltering() };
+      // Also for a sampler clamping to a border, though the modules then filter by hand: the
+      // layout can't tell which sampler samples which texture
+      if (formats.samplers[b.name] === 'non-filtering' && sampler.filtering) {
+        throw new Error(`${this.nodeName}: material ${desc.name} ${instance.unfilterable()}, and sampler ${sampler.name} filters: give it nearest filters (#:filter and #:mipmap)`);
+      }
+      return { binding: i, resource: sampler.asDescribed() };
+    });
+    if (desc.push) entries.push({ binding: desc.push.binding, resource: { buffer: this.pushBuffer! } });
+    entries.push(...buckets);
+    const group = graph.context.device.createBindGroup({ label: slot > 0 ? `${this.nodeName} (frame ${slot})` : this.nodeName, layout: instance.groupLayout(), entries });
+    this.groups[slot] = { group, key };
+    return group;
   }
 
   destroy(): void {
@@ -665,10 +706,12 @@ function destroyBuilt(built: BuiltArray | null): void {
   built.table.destroy();
 }
 
-// An array's buckets and table (textures: its elements' textures). Rebuilding (previous: what it
+// An array's buckets and table (slots: per frame slot, its elements' textures; one slot unless an
+// element is per-frame, whose copies are in the same bucket in each). Rebuilding (previous: what it
 // was built from before) keeps the copies of fixed elements, which aren't recreated, and the table
 // buffer, rewriting it.
-function buildArray(device: GPUDevice, array: TextureArray, textures: readonly GPUTexture[], previous: BuiltArray | null): BuiltArray {
+function buildArray(device: GPUDevice, array: TextureArray, slots: readonly (readonly GPUTexture[])[], previous: BuiltArray | null): BuiltArray {
+  const textures = slots[0];
   const maxLayers = device.limits.maxTextureArrayLayers;
   // Per bucket: its size, format and textures (its layers, or a live element's own texture); and
   // the open bucket of each size and format of fixed elements. Buckets are in order of their first
@@ -676,12 +719,15 @@ function buildArray(device: GPUDevice, array: TextureArray, textures: readonly G
   const buckets: { width: number; height: number; format: GPUTextureFormat; layers: GPUTexture[]; copied: boolean }[] = [];
   const open = new Map<string, number>();
   const placed = new Map<GPUTexture, [number, number]>();
+  // Per live bucket: the element whose textures it views
+  const viewed = new Map<number, number>();
   const table = new Uint32Array(textures.length * 4);
   textures.forEach((t, i) => {
     let at = placed.get(t);
     if (!at) {
       if (array.elements[i].texels === 'live') {
         at = [buckets.length, 0];
+        viewed.set(buckets.length, i);
         buckets.push({ width: t.width, height: t.height, format: t.format, layers: [t], copied: false });
       } else {
         const key = `${t.width}x${t.height} ${t.format}`;
@@ -721,7 +767,11 @@ function buildArray(device: GPUDevice, array: TextureArray, textures: readonly G
     generations: array.elements.map((e) => e.generation),
     buckets: made,
     copied: buckets.map((b) => b.copied),
-    views: made.map((t, i) => t.createView({ dimension: '2d-array', baseArrayLayer: 0, arrayLayerCount: buckets[i].layers.length })),
+    views: slots.map((elements) => made.map((t, i) => {
+      const texture = buckets[i].copied ? t : elements[viewed.get(i)!];
+      // Labelled as its texture (a per-frame copy's names its slot)
+      return texture.createView({ label: texture.label, dimension: '2d-array', baseArrayLayer: 0, arrayLayerCount: buckets[i].layers.length });
+    })),
     sizes: buckets.map((b) => [b.width, b.height] as const),
     table: buffer,
     shape: { count: textures.length, buckets: buckets.map((b) => b.format) },
@@ -739,7 +789,8 @@ export class RenderGraph {
   private surfaceTexture: GPUTexture | null = null;
   private surfaceView: GPUTextureView | null = null;
   private headlessExtent: [number, number] = [0, 0];
-  private views = new Map<GraphImage, { generation: number; view: GPUTextureView }>();
+  // Per image: per copy, a view of its first layer
+  private views = new Map<GraphImage, { generation: number; views: GPUTextureView[] }>();
   private inFlight: Promise<undefined>[] = [];
   private owned: { destroy(): void }[] = [];
   private inFrame = false;
@@ -786,8 +837,10 @@ export class RenderGraph {
     return this.surface !== null;
   }
 
-  createImage(name: string, format: GPUTextureFormat, extent: Extent): GraphImage {
-    const image = new GraphImage(name, format, extent, 'live');
+  // An image the graph creates (and recreates as its extent changes), shared by the frames or one
+  // per frame in flight (see Frames)
+  createImage(name: string, frames: Frames, format: GPUTextureFormat, extent: Extent): GraphImage {
+    const image = new GraphImage(name, format, extent, 'live', frames);
     this.images.push(image);
     return image;
   }
@@ -796,7 +849,7 @@ export class RenderGraph {
   // fixed where they're set before the graph binds it and never change (e.g. an image file's),
   // which lets arrays of textures copy it (see Texels)
   importImage(name: string, texture: GPUTexture, texels: Texels, owned = false): GraphImage {
-    const image = new GraphImage(name, texture.format, null, texels, texture);
+    const image = new GraphImage(name, texture.format, null, texels, 'shared', texture);
     this.images.push(image);
     if (owned) this.owned.push(texture);
     return image;
@@ -826,20 +879,25 @@ export class RenderGraph {
     return array;
   }
 
-  // An array's buckets and table, (re)built where it's unbuilt or an element was recreated
+  // An array's buckets and table, (re)built where it's unbuilt or an element was recreated (or a
+  // per-frame one's copies follow a new number of frames in flight)
   arrayOf(array: TextureArray): BuiltArray {
-    const textures = array.elements.map((e) => this.textureOf(e));
+    array.elements.forEach((e) => this.textureOf(e));
     const built = array.built;
     if (built && array.elements.every((e, i) => e.generation === built.generations[i])) return built;
+    // A slot per frame in flight where an element is per-frame, each viewing its copies
+    const slots = Math.max(...array.elements.map((e) => e.textures.length));
+    const textures = Array.from({ length: slots }, (_, slot) => array.elements.map((e) => e.textures[e.frames === 'per-frame' ? slot : 0]));
     array.built = buildArray(this.context.device, array, textures, built);
     array.generation++;
     return array.built;
   }
 
   // A buffer of `count` elements (a number, or computed each frame: the buffer is recreated, its
-  // contents discarded, when it changes)
-  createBuffer(name: string, element: Type<any>, count: number | FrameSource<number>): GraphBuffer {
-    const buffer = new GraphBuffer(name, element, count);
+  // contents discarded, when it changes), shared by the frames or one per frame in flight (see
+  // Frames). It starts zeroed, as each copy added for more frames in flight does.
+  createBuffer(name: string, frames: Frames, element: Type<any>, count: number | FrameSource<number>): GraphBuffer {
+    const buffer = new GraphBuffer(name, element, count, frames);
     this.buffers.push(buffer);
     return buffer;
   }
@@ -861,7 +919,7 @@ export class RenderGraph {
       throw new RangeError(`streamed buffer '${name}' appends ${bytesPerFrame} bytes per frame, which isn't a positive multiple of 4`);
     }
     if (!Number.isInteger(words) || words < 0) throw new RangeError(`streamed buffer '${name}' holds ${words} words, which isn't a whole number`);
-    const buffer = new GraphBuffer(name, uint, words);
+    const buffer = new GraphBuffer(name, uint, words, 'shared');
     this.buffers.push(buffer);
     this.streams.set(buffer, {
       stream,
@@ -925,7 +983,7 @@ export class RenderGraph {
 
   // A buffer the application owns, or the graph if owned (destroyed with it)
   importBuffer(name: string, element: Type<any>, buffer: GPUBuffer, owned = false): GraphBuffer {
-    const b = new GraphBuffer(name, element, null, buffer);
+    const b = new GraphBuffer(name, element, null, 'shared', buffer);
     this.buffers.push(b);
     if (owned) this.owned.push(buffer);
     return b;
@@ -958,7 +1016,7 @@ export class RenderGraph {
     if (!this.surface) throw new Error('the graph has no surface (setSurface): a headless graph can\'t draw to one');
     return {
       colors: [{ image: 'surface', load: 'clear', store: 'store', clear }],
-      depth: depth ? { image: this.createImage('surface depth', depth, { surface: 1 }), load: 'clear', store: 'dont-care', clear: 1 } : null,
+      depth: depth ? { image: this.createImage('surface depth', 'shared', depth, { surface: 1 }), load: 'clear', store: 'dont-care', clear: 1 } : null,
     };
   }
 
@@ -1020,24 +1078,36 @@ export class RenderGraph {
     return image.size;
   }
 
+  // Which of a resource's copies the frame being recorded (or the next one) uses: its slot's where
+  // it's per-frame
+  private copyOf(frames: Frames): number {
+    return frames === 'per-frame' ? this.context.frameIndex : 0;
+  }
+
+  // The buffer the frame uses (its slot's copy where it's per-frame)
   bufferOf(b: GraphBuffer): GPUBuffer {
-    if (!b.buffer) this.ensureBuffer(b, this.frameInfo());
-    return b.buffer!;
+    const copy = this.copyOf(b.frames);
+    if (b.buffers.length <= copy) this.ensureBuffer(b, this.frameInfo());
+    return b.buffers[copy];
   }
 
+  // The texture the frame uses (its slot's copy where it's per-frame)
   textureOf(image: GraphImage): GPUTexture {
-    if (!image.texture) this.ensureImage(image, this.frameInfo());
-    return image.texture!;
+    const copy = this.copyOf(image.frames);
+    if (image.textures.length <= copy) this.ensureImage(image, this.frameInfo());
+    return image.textures[copy];
   }
 
-  // A view of the image's first layer
+  // A view of the first layer of the texture the frame uses
   viewOf(image: GraphImage): GPUTextureView {
     const texture = this.textureOf(image);
-    const cached = this.views.get(image);
-    if (cached && cached.generation === image.generation) return cached.view;
-    const view = texture.createView({ dimension: '2d', arrayLayerCount: 1 });
-    this.views.set(image, { generation: image.generation, view });
-    return view;
+    const copy = this.copyOf(image.frames);
+    let cached = this.views.get(image);
+    if (!cached || cached.generation !== image.generation) {
+      cached = { generation: image.generation, views: [] };
+      this.views.set(image, cached);
+    }
+    return (cached.views[copy] ??= texture.createView({ dimension: '2d', arrayLayerCount: 1 }));
   }
 
   attachmentView(image: GraphImage | 'surface'): GPUTextureView {
@@ -1057,7 +1127,7 @@ export class RenderGraph {
   }
 
   private frameInfo(): FrameInfo {
-    return { frameIndex: 0, frameNumber: this.frameNumber, surfaceExtent: this.surfaceExtent() };
+    return { frameIndex: this.context.frameIndex, frameNumber: this.frameNumber, surfaceExtent: this.surfaceExtent() };
   }
 
   private ensureImage(image: GraphImage, frame: FrameInfo): void {
@@ -1066,14 +1136,25 @@ export class RenderGraph {
       'fixed' in image.extent
         ? image.extent.fixed
         : [Math.max(1, Math.floor(frame.surfaceExtent[0] * image.extent.surface)), Math.max(1, Math.floor(frame.surfaceExtent[1] * image.extent.surface))];
-    if (image.texture && image.texture.width === w && image.texture.height === h) return;
-    image.texture?.destroy();
-    image.texture = this.context.device.createTexture({
-      label: image.name,
-      size: [w, h],
-      format: image.format,
-      usage: textureUsage(this.context, image.format),
-    });
+    const copies = image.frames === 'per-frame' ? this.context.framesInFlight : 1;
+    const first = image.texture;
+    const sized = first !== null && first.width === w && first.height === h;
+    if (sized && image.textures.length === copies) return;
+    if (!sized) {
+      for (const t of image.textures) t.destroy();
+      image.textures = [];
+    }
+    // As the frames in flight change, per-frame copies past them go and new ones are added, the
+    // others kept with their texels (natively PerFrame's resizing)
+    while (image.textures.length > copies) image.textures.pop()!.destroy();
+    while (image.textures.length < copies) {
+      image.textures.push(this.context.device.createTexture({
+        label: image.frames === 'per-frame' ? `${image.name} (frame ${image.textures.length})` : image.name,
+        size: [w, h],
+        format: image.format,
+        usage: textureUsage(this.context, image.format),
+      }));
+    }
     image.generation++;
   }
 
@@ -1081,12 +1162,22 @@ export class RenderGraph {
     if (b.count === null) return;
     const count = typeof b.count === 'number' ? b.count : b.count(frame);
     const size = Math.max(4, Math.ceil((count * stride(b.element)) / 4) * 4);
-    if (b.buffer && b.buffer.size === size) return;
+    const copies = b.frames === 'per-frame' ? this.context.framesInFlight : 1;
+    const sized = b.buffer !== null && b.buffer.size === size;
+    if (sized && b.buffers.length === copies) return;
     if (this.streams.has(b) && size > this.context.device.limits.maxBufferSize) {
       throw new Error(`streamed buffer '${b.name}' holds ${size} bytes, more than the device's buffers can (maxBufferSize ${this.context.device.limits.maxBufferSize})`);
     }
-    b.buffer?.destroy();
-    b.buffer = this.context.device.createBuffer({ label: b.name, size, usage: bufferUsage });
+    if (!sized) {
+      for (const buffer of b.buffers) buffer.destroy();
+      b.buffers = [];
+    }
+    // Per-frame copies follow the frames in flight as images' do (ensureImage); new ones are zeroed
+    while (b.buffers.length > copies) b.buffers.pop()!.destroy();
+    while (b.buffers.length < copies) {
+      const label = b.frames === 'per-frame' ? `${b.name} (frame ${b.buffers.length})` : b.name;
+      b.buffers.push(this.context.device.createBuffer({ label, size, usage: bufferUsage }));
+    }
     b.generation++;
   }
 
@@ -1179,6 +1270,7 @@ export class RenderGraph {
         }
         this.inFlight.push(device.queue.onSubmittedWorkDone());
         this.frameNumber++;
+        this.context.advanceFrame();
       }
       // The queue has the writes, whether or not the frame submitted
       for (const record of streamWrites) {
@@ -1205,9 +1297,9 @@ export class RenderGraph {
   destroy(): void {
     for (const record of this.streams.values()) record.stream.cancel();
     for (const r of this.nodes) (r.node as { destroy?(): void }).destroy?.();
-    for (const image of this.images) if (image.extent) image.texture?.destroy();
+    for (const image of this.images) if (image.extent) for (const t of image.textures) t.destroy();
     for (const array of this.arrays) destroyBuilt(array.built);
-    for (const b of this.buffers) if (b.count !== null) b.buffer?.destroy();
+    for (const b of this.buffers) if (b.count !== null) for (const buffer of b.buffers) buffer.destroy();
     for (const o of this.owned) o.destroy();
   }
 }

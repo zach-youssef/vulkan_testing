@@ -112,12 +112,15 @@ test('effects: quit!, resize!, set-frames-in-flight! and run-once!', async () =>
   app.handle({ kind: 'key-pressed', key: 'R' });
   assert.deepEqual(app.takeResize(), [32, 16]);
   assert.equal(app.takeResize(), null);
-  assert.equal(context.framesInFlight, 3);
-  context.setFramesInFlight(2);
+  // A new count applies at the next frame boundary, as natively
+  assert.equal(context.framesInFlight, 2);
 
   app.handle({ kind: 'key-released', key: 'S' });
   const shown = app.shownIds;
   await frame();
+  assert.equal(context.framesInFlight, 3);
+  assert.equal(context.frameIndex, 0);
+  context.setFramesInFlight(2);
   // The once node ran in the first frame of its graph
   assert.equal(app.renderGraph().isEnabled(shown.nodes.onceFilling), false);
   app.handle({ kind: 'key-pressed', key: 'O' });

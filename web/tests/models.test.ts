@@ -254,7 +254,7 @@ test('texture arrays view graph images and imported ones as buckets of their own
   const texture = (width: number, height: number) =>
     device.createTexture({ size: [width, height], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST });
   const fixed = graph.importImages('fixed', [texture(4, 2), texture(4, 2)], 'fixed');
-  const shown = graph.createImage('shown', 'rgba8unorm', { surface: 1 });
+  const shown = graph.createImage('shown', 'shared', 'rgba8unorm', { surface: 1 });
   const imported = graph.importImage('imported', texture(4, 2), 'live');
   graph.setSurfaceExtent([3, 2]);
   const array = graph.textureArray('mixed', [fixed[0], shown, fixed[1], imported, shown]);
@@ -280,6 +280,50 @@ test('texture arrays view graph images and imported ones as buckets of their own
   assert.equal(graph.arrayOf(array), rebuilt);
   graph.destroy();
   for (const t of [...fixed, imported]) t.texture!.destroy();
+  assert.deepEqual(context.errors, []);
+});
+
+test('texture arrays view each frame slot\'s copy of per-frame images, following the frames in flight', async () => {
+  const device = context.device;
+  const graph = new zgal.RenderGraph(context);
+  const fixed = graph.importImages('fixed', [device.createTexture({ size: [4, 2], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST })], 'fixed');
+  const rotating = graph.createImage('rotating', 'per-frame', 'rgba8unorm', { fixed: [2, 2] });
+  const shown = graph.createImage('shown', 'shared', 'rgba8unorm', { fixed: [3, 2] });
+  // rotating twice: a bucket at its first appearance, which the second shares
+  const array = graph.textureArray('rotated', [fixed[0], rotating, shown, rotating]);
+  const check = (built: zgal.BuiltArray) => {
+    assert.equal(rotating.textures.length, context.framesInFlight);
+    assert.equal(new Set(rotating.textures).size, context.framesInFlight);
+    assert.deepEqual(built.shape, { count: 4, buckets: ['rgba8unorm', 'rgba8unorm', 'rgba8unorm'] });
+    assert.deepEqual(built.copied, [true, false, false]);
+    assert.equal(built.buckets[1], rotating.textures[0]);
+    // A slot per frame in flight, each viewing its copy of rotating, and the shared image and copy
+    assert.equal(built.views.length, context.framesInFlight);
+    built.views.forEach((views, slot) => {
+      assert.equal(views.length, 3);
+      assert.equal(views[0].label, built.buckets[0].label);
+      assert.equal(views[1].label, `rotating (frame ${slot})`);
+      assert.equal(views[2].label, 'shown');
+    });
+  };
+  const built = graph.arrayOf(array);
+  check(built);
+  // A new count, applied at the frame boundary: the frame's start adds rotating's copy, and the
+  // array is rebuilt with a slot more, keeping its copy of the fixed image and its table
+  const before = context.framesInFlight;
+  context.setFramesInFlight(before + 1);
+  context.advanceFrame();
+  graph.imageExtent(rotating);
+  const rebuilt = graph.arrayOf(array);
+  assert.notEqual(rebuilt, built);
+  assert.equal(context.framesInFlight, before + 1);
+  check(rebuilt);
+  assert.equal(rebuilt.buckets[0], built.buckets[0]);
+  assert.equal(rebuilt.table, built.table);
+  context.setFramesInFlight(before);
+  context.advanceFrame();
+  graph.destroy();
+  fixed[0].texture!.destroy();
   assert.deepEqual(context.errors, []);
 });
 

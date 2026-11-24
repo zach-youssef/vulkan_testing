@@ -815,11 +815,11 @@ export class Tallying {
       return x;
     };
     void need;
-    const buffer_counts = graph.createBuffer('counts', zgal.uint, inputs.size);
+    const buffer_counts = graph.createBuffer('counts', 'shared', zgal.uint, inputs.size);
     result.buffers.counts = buffer_counts;
-    const buffer_balances = graph.createBuffer('balances', zgal.int, inputs.size);
+    const buffer_balances = graph.createBuffer('balances', 'shared', zgal.int, inputs.size);
     result.buffers.balances = buffer_balances;
-    const buffer_weights = graph.createBuffer('weights', zgal.float, 1);
+    const buffer_weights = graph.createBuffer('weights', 'per-frame', zgal.float, 1);
     result.buffers.weights = buffer_weights;
     const material_tallying = new zgal.MaterialInstance(graph, Tally, { counts: { buffer: buffer_counts }, balances: { buffer: buffer_balances }, weights: { buffer: buffer_weights } }, null, (frame) => [(zgal.math.mul('uint', inputs.rounds(frame), 64) as number)], {});
     {
@@ -944,7 +944,7 @@ export class Streaming {
     const buffer_scene = graph.createStreamBuffer('scene', stream_scene.stream, header_scene.target, 4096);
     result.buffers.scene = buffer_scene;
     const constant_halves = (zgal.math.div('uint', header_scene.target, 2) as number);
-    const buffer_firstHalf = graph.createBuffer('firstHalf', zgal.uint, constant_halves);
+    const buffer_firstHalf = graph.createBuffer('firstHalf', 'shared', zgal.uint, constant_halves);
     result.buffers.firstHalf = buffer_firstHalf;
     {
       const node = graph.add(new zgal.CopyNode('copyHalf', graph, buffer_scene, buffer_firstHalf, (frame) => 0, (frame) => 0, (frame) => constant_halves));

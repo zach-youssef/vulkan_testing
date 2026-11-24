@@ -162,7 +162,7 @@
   (input rounds (per-frame uint))
   (buffer counts uint size #:frames shared)
   (buffer balances int size #:frames shared)
-  (buffer weights float 1 #:frames shared)
+  (buffer weights float 1 #:frames per-frame)
   (clear zero counts #:value 0)
   (material tallying Tally (counts counts) (balances balances) (weights weights) #:invocations ((* rounds 64)))
   (dispatch tally tallying)

@@ -177,6 +177,19 @@ and PNM; HDR files fail, where native converts them). The runtime loads every im
   PNGs with the runtime's `decodeImage` and checks them against native decodes `stb_dump` saves
   beside them, and `image-file.html` checks a JPEG's texels likewise.
 
+- Frames: `Context` holds the frames in flight (`framesInFlight`; `setFramesInFlight` applies at
+  the next frame boundary, `Context.advanceFrame`, which a graph's `execute()` calls once it has
+  submitted) and the frame slot (`frameIndex`), as natively `VulkanContext`: a count change
+  restarts the slots at 0. `GraphImage`s and `GraphBuffer`s are `shared` or `per-frame` (`Frames`,
+  which `createImage` and `createBuffer` require): per-frame ones hold a copy per frame in flight
+  (`textures`, `buffers`; `textureOf`, `bufferOf` and `viewOf` give the frame slot's), keeping,
+  dropping and adding copies as the count changes (new buffers zeroed), as native `PerFrame`
+  does. A `MaterialBinder` keeps a bind group per slot when its material binds a per-frame
+  resource, and a `BuiltArray` its bucket views per slot when an element is per-frame (the
+  buckets and table are the same for every slot). WebGPU's queue runs frames in order anyway, so
+  the copies only give a frame reading one before writing it what it reads natively; uniforms,
+  uploads of per-frame data, streams and the surface's depth image stay shared.
+
 ## Tests
 
 `make test-web` (`TEST_ARGS` go to each `node --test` run, test-decode's included, so a name pattern
@@ -200,15 +213,19 @@ then:
    `resize!` in the frame handler, run for 3 frames) compared exactly with `targets.approved.png`,
    `tests/arrays/storage.zgal` (arrays of storage images of mixed sizes and formats, one
    surface-relative, a dispatch stores to and the next loads from, run for 3 frames) compared
-   exactly with `storage.approved.png`, and
+   exactly with `storage.approved.png`,
+   `tests/frames/frames.zgal` (a per-frame buffer and image read before they're written, as
+   `set-frames-in-flight!` changes 2 to 3 frames in flight and 3 to 2) compared exactly with
+   `frames-2-3.approved.png` and `frames-3-2.approved.png`, and
    `tests/stream/streamer.zgal` streaming a file (its opener in
    `streamer.inputs.ts`) (`headless.test.ts` needs no GPU: the PNG encoders and
    `parseCommandLine`'s `where`);
 3. runs `make test-pages`: the particles and scene pages, image_filter's page (run from its query
    string, its capture saved with the checkers' `--save-capture` and compared with
    `blur_edges.approved.png`), the border program's page (its capture compared likewise with
-   `border.approved.png`), the arrays, targets and storage programs' pages (compared exactly with
-   `arrays.approved.png`, `targets.approved.png` and `storage.approved.png`),
+   `border.approved.png`), the arrays, targets, storage and frames programs' pages (compared
+   exactly with `arrays.approved.png`, `targets.approved.png`, `storage.approved.png` and both
+   frames captures),
    `web/tests/mount.html` (mounts two programs and stops one),
    `web/tests/held-keys.html` (held keys and mouse buttons released once each, also when focus
    leaves, chorded buttons, cancelled pointers and lost captures, and a finger ignored while the

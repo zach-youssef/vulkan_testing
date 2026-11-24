@@ -289,7 +289,9 @@
       [(g-upload n source t _)
        (cond
          [(eq? (entry-kind (hash-ref env source)) 'per-frame-data)
-          (line! "    const buffer_~a = graph.createBuffer(~a, ~a, (frame) => data_~a(frame).length);" n (ts-string n) (ts-layout-type t) source)
+          ;; Shared, where native has one per frame in flight for the CPU to write while earlier frames
+          ;; read theirs: WebGPU's queue writes it between frames, and each frame writes it first
+          (line! "    const buffer_~a = graph.createBuffer(~a, 'shared', ~a, (frame) => data_~a(frame).length);" n (ts-string n) (ts-layout-type t) source)
           (line! "    graph.add(new zgal.DataUploadNode(~a, graph, buffer_~a, data_~a));" (ts-string (format "upload ~a" n)) n source)]
          [else
           (line! "    const buffer_~a = graph.upload(~a, ~a, inputs.~a);" n (ts-string n) (ts-layout-type t) source)])
@@ -334,9 +336,9 @@
               (if border (format "'~a'" border) "null"))]
       [(g-uniform n t source _)
        (line! "    const uniform_~a = graph.uniform(~a, ~a, inputs.~a);" n (ts-string n) (ts-layout-type t) source)]
-      [(g-image n f extent _ when _)
+      [(g-image n f extent frames when _)
        (define create
-         (format "graph.createImage(~a, '~a', ~a)" (ts-string n) (webgpu-format f)
+         (format "graph.createImage(~a, '~a', '~a', ~a)" (ts-string n) frames (webgpu-format f)
                  (match extent
                    [(list 'fixed w h) (format "{ fixed: [~a, ~a] }" (uint-expr w) (uint-expr h))]
                    [(list 'surface scale) (format "{ surface: ~a }" (number-text scale (scalar-t 'float)))]
@@ -345,9 +347,9 @@
            (line! "    const image_~a = ~a ? ~a : undefined;" n (bool-expr when) create)
            (line! "    const image_~a = ~a;" n create))
        (unless (internal? n) (line! "    result.images.~a = image_~a;" n n))]
-      [(g-buffer n t count _ when _)
+      [(g-buffer n t count frames when _)
        (define create
-         (format "graph.createBuffer(~a, ~a, ~a)" (ts-string n) (ts-layout-type t)
+         (format "graph.createBuffer(~a, '~a', ~a, ~a)" (ts-string n) frames (ts-layout-type t)
                  (if (per-frame-expression? count env)
                      (format "(frame) => ~a" (uint-expr count))
                      (uint-expr count))))
