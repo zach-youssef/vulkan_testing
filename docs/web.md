@@ -170,8 +170,8 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   everywhere (Dawn, SwiftShader, Firefox) and honours address modes.
 - The naga CLI isn't on `PATH` (`make naga` builds it, see
   [building-and-testing.md](building-and-testing.md)). Dawn validates generated WGSL with Tint,
-  not with naga's validator, which Firefox's front end is, so running naga on a generated `.wgsl`
-  file is a cheap Firefox check.
+  while Firefox validates it with naga, so running naga on a generated `.wgsl` file is a cheap
+  check of what Firefox accepts.
 - `tsc -p web` in the source tree fails on tests importing generated modules, which exist only
   beside the runtime's copy in `build/web-tests`: type check through `make test-web`'s layout.
 - Generated WGSL: naga (Firefox, and `--naga`) rejects a function with a return type whose body
