@@ -1462,7 +1462,11 @@ indirect counts, so a draw of several commands is a draw call each, and a counte
 draws the commands a dispatch copied, those past the count with no instances (as Vulkan devices
 without @tt{drawIndirectCount} do). Commands' first instances other than 0 need WebGPU's
 @tt{indirect-first-instance}, which the runtime requests when the adapter has it. An imported
-buffer of commands needs @tt{GPUBufferUsage.INDIRECT}, which the node checks when it runs.
+buffer of commands needs @tt{GPUBufferUsage.INDIRECT}, which the node checks when it runs. WebGPU
+forbids a dispatch or draw writing the buffer holding its commands, so a node whose material
+writes it (or an import of the same GPU buffer) fails to build on the web: write the commands in an
+earlier node. Each web draw node is its own render pass, so one node's draws never conflict with
+another's.
 @(define indirect-source #<<ZGAL
 (import indirect)
 

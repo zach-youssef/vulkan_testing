@@ -71,6 +71,18 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   written array alias. Both bindings of a per-frame resource bind the frame slot's copy, so they
   alias in every slot; an array of textures' fixed elements are the array's copies, which alias
   nothing. `web/tests/models.test.ts` checks the cases.
+- Usage scopes beyond one bind group: each draw node (`DrawNode`, `MeshDrawNode`,
+  `IndirectDrawNode`) begins its own render pass with one material and bind group, so draws of
+  different nodes never share a pass, and one node's draws share its bind group, which the check
+  above covers. Among buffers, what's left is a node's indirect buffer, which WebGPU puts in the
+  dispatch's, or the render pass's, scope beside the bind group: `checkIndirect` refuses a node whose material
+  writes the buffer it reads its commands from (or one aliasing it, compared as above), naming the
+  node, the material, the binding and the buffers, where Dawn reports it only at the pass's end. A
+  counted draw reads the copy its limiting dispatch made, which nothing writes in its pass.
+  `web/tests/indirect.test.ts` checks it. Known gap, unchecked: a draw whose material samples or
+  stores to an image that is also its own target's attachment is a usage-scope conflict
+  (`RENDER_ATTACHMENT` with `TEXTURE_BINDING` or `STORAGE_BINDING`); the graph builds, and Dawn
+  reports it at the first submit.
 - `web/tools/check-wgsl.ts` expands arrays' directive lines for two elements in two `rgba8unorm`
   buckets, so the golden modules with arrays compile.
 - Image files (`image-file`, models' textures) are decoded by `image-decode.ts`'s `decodeImage`, in

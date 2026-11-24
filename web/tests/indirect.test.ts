@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
-import { GivenCommands, IndirectGraph, LoopDraws, OverrideGraph } from '../indirect.zgal.ts';
+import { GivenCommands, IndirectGraph, LoopDraws, OwnDispatch, OwnDraw, OwnImportedDispatch, OverrideGraph } from '../indirect.zgal.ts';
 
 let context: zgal.Context;
 
@@ -94,5 +94,31 @@ test('counted draws in loops use each iteration\'s command and count', async () 
     assert.deepEqual(pixel(pixels, 0, y), [shade, shade, shade, 255], `row ${y}`);
   }
   graph.destroy();
+  assert.deepEqual(context.errors, []);
+});
+
+test('nodes refuse materials writing the buffer they read their commands from', async () => {
+  // WebGPU would report it only when the pass ends: a dispatch, or a draw's render pass, is one
+  // usage scope with its bind group
+  const refuses = async (build: (graph: zgal.RenderGraph) => Promise<unknown>, message: RegExp) => {
+    const graph = new zgal.RenderGraph(context);
+    await assert.rejects(build(graph), message);
+    graph.destroy();
+  };
+  await refuses((g) => OwnDispatch.build(context, g, {}),
+    /run: material OwnCommands's binding commands writes commands, which the node reads its indirect commands from/);
+  await refuses((g) => OwnDraw.build(context, g, {}),
+    /paint: material MarkDraws's binding marks writes marks, which the node reads its indirect commands from/);
+  // Imports of one GPU buffer are one buffer
+  const shared = context.device.createBuffer({ size: 12, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT });
+  await refuses((g) => OwnImportedDispatch.build(context, g, { written: shared, read: shared }),
+    /run: material OwnCommands's binding commands writes written, one buffer with read, which/);
+  // Distinct ones aren't
+  const other = context.device.createBuffer({ size: 12, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT });
+  const graph = new zgal.RenderGraph(context);
+  await OwnImportedDispatch.build(context, graph, { written: shared, read: other });
+  graph.destroy();
+  shared.destroy();
+  other.destroy();
   assert.deepEqual(context.errors, []);
 });

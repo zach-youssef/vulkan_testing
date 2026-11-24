@@ -133,3 +133,35 @@
     (draw band canvas banding #:indirect (at draws r) #:draws 1 #:count (at drawCounts r)
           #:push ((row r) (rows 4) (shade (vec4 1.0 1.0 1.0 1.0)))))
   (readback readPicture picture))
+
+;; Nodes whose materials write their own commands, which WebGPU forbids (the graph refuses them
+;; when it builds them)
+(compute-material OwnCommands
+  (workgroup 1)
+  (bindings (commands (buffer-array DispatchCommand)))
+  (compute (write! (at commands 0) (DispatchCommand 1 1 1))))
+
+(graphics-material MarkDraws
+  (bindings (marks (buffer-array DrawCommand)))
+  (outputs (color vec4))
+  (vertex (results #:position (vec4 0.0 0.0 0.0 1.0)))
+  (fragment (begin (write! (at marks 0) (DrawCommand 3 1 0 0)) (vec4 1.0 1.0 1.0 1.0))))
+
+(graph OwnDispatch
+  (buffer commands DispatchCommand 1 #:frames shared)
+  (material writing OwnCommands commands)
+  (dispatch run writing #:indirect (at commands 0)))
+
+;; Two imports, which C++ may give one GPU buffer
+(graph OwnImportedDispatch
+  (import-buffer written DispatchCommand)
+  (import-buffer read DispatchCommand)
+  (material writing OwnCommands (commands written))
+  (dispatch run writing #:indirect (at read 0)))
+
+(graph OwnDraw
+  (buffer marks DrawCommand 1 #:frames per-frame)
+  (image picture rgba8 (fixed 4 4) #:frames shared)
+  (target canvas (color picture))
+  (material marking MarkDraws marks)
+  (draw paint canvas marking #:indirect (at marks 0)))

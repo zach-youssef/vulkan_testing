@@ -324,6 +324,13 @@ export type PushValues = Record<string, unknown>;
 export type PushSource = (frame: FrameInfo, push: PushValues) => void;
 
 // A material bound to resources, with its push constants and dispatch size computed each frame
+// What identifies a resource: itself and the GPU objects it has (every slot's copy where it's
+// per-frame), so an import of a graph resource's buffer or texture (which bufferOf or textureOf
+// creates) aliases it, as two imports of one GPU object do
+function resourceKeys(r: GraphImage | GraphBuffer): object[] {
+  return [r, ...(r instanceof GraphImage ? r.textures : r.buffers)];
+}
+
 export class MaterialInstance {
   private pipelines = new Map<string, GPUComputePipeline | GPURenderPipeline>();
   private layouts = new Map<string, { group: GPUBindGroupLayout; pipeline: GPUPipelineLayout }>();
@@ -372,10 +379,7 @@ export class MaterialInstance {
   // two buckets, which alias), an array of images' distinct texture. Both bindings of a per-frame
   // resource bind the frame slot's copy, so they alias in every slot
   private checkAliasing(): void {
-    // What identifies a resource: itself and the GPU objects it has (every slot's copy where it's
-    // per-frame), so an import of a graph resource's buffer or texture (which bufferOf or textureOf
-    // creates) aliases it, as two imports of one GPU object do
-    const keys = (r: GraphImage | GraphBuffer): object[] => [r, ...(r instanceof GraphImage ? r.textures : r.buffers)];
+    const keys = resourceKeys;
     type Use = { readonly binding: BindingDesc; readonly name: string; readonly writes: boolean };
     const uses = new Map<object, Use[]>();
     const describe = (u: Use) => `${isArrayKind(u.binding.kind) ? 'an element of ' : ''}${u.binding.resource} (${u.writes ? 'written' : 'read'})`;
@@ -409,6 +413,21 @@ export class MaterialInstance {
         ids.forEach((k) => uses.set(k, [...(uses.get(k) ?? []), use]));
       }
     }
+  }
+
+  // The binding that writes buffer (or a buffer aliasing it, as checkAliasing compares them), or
+  // null: a node reading its indirect commands from it can't, as WebGPU's dispatch, and render
+  // pass, is one usage scope with its bind group (see checkIndirect)
+  writerOf(buffer: GraphBuffer): { readonly binding: string; readonly buffer: GraphBuffer } | null {
+    const ids = new Set(resourceKeys(buffer));
+    for (const b of this.desc.bindings) {
+      if (b.access === 'read') continue;
+      const bound = this.bindings[b.resource];
+      const buffers = 'buffer' in bound ? [bound.buffer] : 'buffers' in bound ? bound.buffers.buckets : [];
+      const written = buffers.find((r) => resourceKeys(r).some((k) => ids.has(k)));
+      if (written) return { binding: b.resource, buffer: written };
+    }
+    return null;
   }
 
   // Why a plain sampler of this material can't filter, or null: it samples a depth image without
@@ -1504,6 +1523,21 @@ export interface IndirectCommand {
   readonly index: FrameSource<number>;
 }
 
+// Throws where a node's material writes the buffer it reads its indirect commands from: a
+// dispatch's usage scope, and a render pass's (each draw node's own pass, all its draws), holds
+// the indirect buffer with the bind group, and WebGPU forbids a buffer written there being used
+// any other way in it (Dawn reports it at the pass's end or submit, "writable usage ... in the same
+// synchronization scope"). A buffer the graph's limiting dispatch copied the commands into is the
+// copy, which nothing writes in the pass
+function checkIndirect(node: string, material: MaterialInstance, command: IndirectCommand): void {
+  const writer = material.writerOf(command.buffer);
+  if (writer) {
+    const what = writer.buffer === command.buffer ? command.buffer.name : `${writer.buffer.name}, one buffer with ${command.buffer.name}`;
+    throw new Error(`${node}: material ${material.desc.name}'s binding ${writer.binding} writes ${what}, which the node reads its indirect commands from: ` +
+      'WebGPU forbids a draw or dispatch writing the buffer holding its commands; write them in an earlier node, or bind a copy');
+  }
+}
+
 // Where an indirect command is: its buffer, which must allow indirect use (the graph's own and
 // uploaded buffers do; imported ones are checked), and the command's byte offset in it
 function commandPlace(graph: RenderGraph, node: string, command: IndirectCommand, frame: FrameInfo): [GPUBuffer, number] {
@@ -1528,6 +1562,7 @@ export class DispatchNode implements Node {
     this.override = override;
     this.invocations = invocations;
     this.indirect = indirect;
+    if (indirect) checkIndirect(name, material, indirect);
     this.binder = material.binder(name);
   }
   private workgroups: [number, number, number] = [0, 0, 0];
@@ -1778,6 +1813,7 @@ export class IndirectDrawNode implements Node {
     this.draws = draws;
     this.override = override;
     this.mesh = mesh;
+    checkIndirect(name, material, command);
     this.binder = material.binder(name);
   }
   prepare(frame: FrameInfo): void {
