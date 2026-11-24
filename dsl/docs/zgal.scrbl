@@ -979,10 +979,11 @@ and written where they @racket[write!] or @racket[store!] it, giving its access 
 @tt{write} or @tt{read-write}). Querying an image's size (@tt{image-size}), or an array's number
 of elements (@racket[array-length]), touches no texels, so an image or array a shader only sizes
 and stores to is written, not read and written (which WebGPU devices without
-@tt{texture-formats-tier2} can't bind for most formats), and one it only sizes is read. A graphics material's binding is used by the stages naming it.
-A declared access or @racket[#:stages] must say the same. A storage binding no shader uses has no
-access to infer, so it's an error unless declared. The accesses go into the generated C++ like
-declared ones, so the render graph synchronizes exactly what the shaders do.
+@tt{texture-formats-tier2} can't bind for most formats), and one it only sizes is read. A graphics
+material's binding is used by the stages naming it. A declared access or @racket[#:stages] must
+say the same. A storage binding no shader uses has no access to infer, so it's an error unless
+declared. The accesses go into the generated C++ like declared ones, so the render graph
+synchronizes exactly what the shaders do.
 
 @subsection{What's generated}
 
@@ -2714,10 +2715,13 @@ Apps handle events only: they can't ask whether a key is held or where the curso
 handlers (track it in the state from press and release events), read files, or create resources.
 
 ZGAL has grown in stages: interfaces, graphs, shader bodies (with functions shared by the GLSL and
-C++ backends, and bindings' accesses inferred), then apps. The compiler's checked program (@tt{dsl/private/ast.rkt}) describes interfaces
-without assuming a backend, so other backends only add emitters. The web backend (@secref["web"])
-writes WGSL and TypeScript for materials, graphs, apps and programs, which run in browsers and
-under Node; next is what graphs on the web can't use yet.
+C++ backends, and bindings' accesses inferred), then apps. The compiler's checked program
+(@tt{dsl/private/ast.rkt}) describes interfaces without assuming a backend, so other backends only
+add emitters. The web backend (@secref["web"]) writes WGSL and TypeScript for materials, graphs,
+apps and programs, which run in browsers and under Node. What's still missing there is arrays of
+bindings chosen each frame with @racket[#:select], which have no WebGPU equivalent
+(@secref["error-not-on-web"]), some uses of arrays' elements (@secref["web"]), and what GLSL
+bodies can't do on the web (@secref["glsl"], @secref["extern-glsl"]).
 
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "maintaining"]{Working on ZGAL}

@@ -151,6 +151,12 @@ This page has what the reference doesn't: the runtime's conventions and how to t
 - WebGPU validation: a filtering `GPUSampler` in a non-filtering layout slot is a bind-group error
   on Dawn and Chromium. `textureGather` on a `texture_depth_2d` works with a non-filtering sampler
   everywhere (Dawn, SwiftShader, Firefox) and honours address modes.
+- The naga CLI isn't on `PATH` (`make naga` builds it, see
+  [building-and-testing.md](building-and-testing.md)). Dawn validates generated WGSL with Tint,
+  not with naga's validator, which Firefox's front end is, so running naga on a generated `.wgsl`
+  file is a cheap Firefox check.
+- `tsc -p web` in the source tree fails on tests importing generated modules, which exist only
+  beside the runtime's copy in `build/web-tests`: type check through `make test-web`'s layout.
 - Generated WGSL: naga (Firefox, and `--naga`) rejects a function with a return type whose body
   ends in a `loop` (it sees the end of the function reachable), so helpers `break` out of the loop
   and return after it.
@@ -282,6 +288,12 @@ texel decodes to a fraction of 255 that, near x.5, rounds differently on differe
 decodes to 32.497, which SwiftShader and MoltenVK round apart), so the arrays tests' sRGB texels
 avoid such values, and their written texels are whole multiples of 1/255, which unorm8 stores
 exactly.
+
+A texture array's bucket views carry their texture's label, so unit tests can check which
+texture or bucket a view is of (`viewOf`'s views have none). `bufferOf` adds missing copies only
+when a slot is past the end, while `executeFrame` adds every copy at the start of a frame, so a
+unit test calling `bindGroup` outside `execute` should check copy counts after visiting every
+slot.
 
 Not every device has WebGPU's optional features: Dawn on lavapipe and Chromium's SwiftShader lack
 `texture-formats-tier2`, so programs that should run everywhere (the examples) don't bind

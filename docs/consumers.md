@@ -63,6 +63,9 @@ unpushed changes. That script relies on:
   BMP, TGA, GIF, PSD, PIC or PNM): browsers no longer decode images for ZGAL, so WebP, AVIF or
   HEIC fail with "can't decode the image: unknown image type" (narrowing the site's
   `accept="image/*"` is its follow-up);
+- for hand-written TypeScript using the runtime's graph API: `createImage` and `createBuffer` take
+  their `Frames` (`'shared'` or `'per-frame'`) after the name since ded9f46, where they took the
+  format or element type;
 - all of `build/docs` (`zgal.html` with its stylesheets and scripts, and `zgal.txt`), copied as the
   served docs.
 
