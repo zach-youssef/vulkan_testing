@@ -12,6 +12,7 @@
          "writer.rkt")
 
 (provide spell-type
+         nonuniform-texture-parameters
          print-expression
          emit-statements!
          emit-function!
@@ -58,6 +59,27 @@
     [(t-swizzle _ c _ _) #t]
     [_ #f]))
 
+;; Whether e is an element of an array binding, (at binding i)
+(define (array-element? e)
+  (match e
+    [(t-index (t-global 'binding _ _ (binding-array-t _) _) _ _ _) #t]
+    [_ #f]))
+
+;; Whether a function's texture parameter may hold an array's element: the native (bindless)
+;; interface, where callers pass elements; the web GLSL interface has no arrays (nor the
+;; GL_EXT_nonuniform_qualifier that bindless.glsl enables)
+(define nonuniform-texture-parameters (make-parameter #f))
+
+;; Whether texture expression e is a function's texture parameter (texture locals are only those;
+;; let* substitutes) that a caller may have given an array's element
+(define (nonuniform-parameter? e)
+  (and (nonuniform-texture-parameters) (t-local? e) (equal? (texpr-type e) (opaque-t 'texture2D))))
+
+;; Whether combining texture expression e with a sampler needs nonuniformEXT: an array's element,
+;; or such a parameter
+(define (maybe-nonuniform-texture? e)
+  (or (array-element? e) (nonuniform-parameter? e)))
+
 (define (print-expression e dialect)
   (define (p e) (print-expression e dialect))
   (define (operand e) (if (atomic? e) (p e) (format "(~a)" (p e))))
@@ -75,13 +97,32 @@
     [(t-call f as _ _) (format "~a~a(~a)" (if (eq? dialect 'cpp) "glm::" "") f (args as))]
     [(t-user-call f as _ _) (format "~a(~a)" f (args as))]
     [(t-texture op as _ _)
+     ;; A texture combined with a sampler to sample or fetch. An array's element is nonuniformEXT
+     ;; again: the qualifier on its index reaches the texture, but not the combined sampler built
+     ;; from it, nor the image texelFetch takes back out of that, so implementations that don't see
+     ;; it may use one invocation's element for all (lavapipe's fetches did). So is a function's
+     ;; texture parameter, which a caller may have given an element: the qualifier doesn't cross
+     ;; calls either (on a uniform texture it costs little)
+     (define (combined type t s)
+       (define c (format "~a(~a, ~a)" type (p t) (p s)))
+       (if (maybe-nonuniform-texture? t) (format "nonuniformEXT(~a)" c) c))
      (match* (op as)
-       [('sample (list t s uv)) (format "texture(sampler2D(~a, ~a), ~a)" (p t) (p s) (p uv))]
-       [('sample-lod (list t s uv lod)) (format "textureLod(sampler2D(~a, ~a), ~a, ~a)" (p t) (p s) (p uv) (p lod))]
-       [('fetch (list t s texel lod)) (format "texelFetch(sampler2D(~a, ~a), ~a, ~a)" (p t) (p s) (p texel) (p lod))]
-       [('sample-compare (list t s uv ref)) (format "texture(sampler2DShadow(~a, ~a), vec3(~a, ~a))" (p t) (p s) (p uv) (p ref))]
+       [('sample (list t s uv)) (format "texture(~a, ~a)" (combined "sampler2D" t s) (p uv))]
+       [('sample-lod (list t s uv lod)) (format "textureLod(~a, ~a, ~a)" (combined "sampler2D" t s) (p uv) (p lod))]
+       [('fetch (list t s texel lod)) (format "texelFetch(~a, ~a, ~a)" (combined "sampler2D" t s) (p texel) (p lod))]
+       ;; Not a comparison's: SPIRV-Cross (MoltenVK) only finds the depth texture a comparison samples
+       ;; through an unqualified combined sampler of the loaded texture (a NonUniform copy of either
+       ;; makes it declare texture2d, which can't sample_compare). Mesa (lavapipe) makes a sample
+       ;; nonuniform when either of OpSampledImage's operands is NonUniform: an element's load is,
+       ;; and a parameter's sampler is qualified for it
+       [('sample-compare (list t s uv ref))
+        (format "texture(sampler2DShadow(~a, ~a), vec3(~a, ~a))"
+                (p t) (if (nonuniform-parameter? t) (format "nonuniformEXT(~a)" (p s)) (p s)) (p uv) (p ref))]
        ;; Samplerless (GL_EXT_samplerless_texture_functions), so it works with any sampler
-       [('texture-size (list t lod)) (format "textureSize(~a, ~a)" (p t) (p lod))]
+       ;; A parameter's size query is nonuniformEXT too, as the qualifier doesn't cross the call (an
+       ;; element's queries the element's load, which its index qualifies)
+       [('texture-size (list t lod))
+        (format "textureSize(~a, ~a)" (if (nonuniform-parameter? t) (format "nonuniformEXT(~a)" (p t)) (p t)) (p lod))]
        [('image-load (list i texel)) (format "imageLoad(~a, ~a)" (p i) (p texel))]
        [('image-size (list i)) (format "imageSize(~a)" (p i))])]
     [(t-op 'negate (list a) _ _) (format "-~a" (operand a))]

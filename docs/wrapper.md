@@ -154,7 +154,16 @@ int main() { return exitStatus(runApp()); }            // prints the error
   For a set of entries a shader chooses between (e.g. textures), `DescriptorArray::create(ctx,
   {entry, ...})` keeps their indices in a small buffer per frame (the count, then the indices) and
   `MaterialBinding::array(array, access)` pushes its index; shaders index the universal arrays with
-  `nonuniformEXT`, and a node using the material uses every element. `array->setElements(...)`
+  `nonuniformEXT`, and qualify again a combined sampler built from an element
+  (`nonuniformEXT(sampler2D(bindlessTextures[nonuniformEXT(i)], s))`): glslang doesn't carry the
+  qualifier through the constructor (nor through a call: qualify one built from a function's
+  texture parameter too, and the parameter in `textureSize(nonuniformEXT(t), lod)`), so
+  implementations may use one invocation's element for all (lavapipe's texelFetch did).
+  Comparisons are the exception: SPIRV-Cross (MoltenVK) then declares the texture `texture2d`,
+  which can't `sample_compare`, so leave `sampler2DShadow(element, s)` unqualified (Mesa makes
+  a sample nonuniform when the constructor's image or sampler is) and qualify the sampler for a
+  function's texture parameter (`sampler2DShadow(t, nonuniformEXT(s))`).
+  A node using the material uses every element. `array->setElements(...)`
   changes them (any number; buffers grow, and graphs declare the new uses before their next frame),
   and `graph.setElementSource(array, fn)` chooses them each frame.
   Give every `BINDLESS_BUFFER` in a shader the same qualifiers: MoltenVK can't alias a `readonly`

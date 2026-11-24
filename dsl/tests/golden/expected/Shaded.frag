@@ -112,7 +112,7 @@ vec3 polish(vec3 x, int n) {
 }
 #line 74 "dsl/tests/golden/features.zgal"
 vec4 sampled(texture2D t, sampler s, vec2 uv) {
-    return (((texture(sampler2D(t, s), uv) + textureLod(sampler2D(t, s), uv, 0.0)) + texelFetch(sampler2D(t, s), ivec2(0), 0)) + vec4(texture(sampler2DShadow(t, s), vec3(uv, 0.5)))) + vec4(vec2(textureSize(t, 0)), 0.0, 0.0);
+    return (((texture(nonuniformEXT(sampler2D(t, s)), uv) + textureLod(nonuniformEXT(sampler2D(t, s)), uv, 0.0)) + texelFetch(nonuniformEXT(sampler2D(t, s)), ivec2(0), 0)) + vec4(texture(sampler2DShadow(t, nonuniformEXT(s)), vec3(uv, 0.5)))) + vec4(vec2(textureSize(nonuniformEXT(t), 0)), 0.0, 0.0);
 #line 74 "dsl/tests/golden/features.zgal"
 }
 #line 104 "dsl/tests/golden/features.zgal"

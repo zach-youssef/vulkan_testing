@@ -243,6 +243,18 @@
     (check-false (string-contains? glsl "zgalIndices"))
     (check-true (string-contains? glsl "\nlayout(std430, set = 0, binding = 0) buffer ZgalBlock_sums { float data[]; } zgal_sums;\n"))))
 
+(test-case "A function's texture parameter isn't nonuniformEXT for the web, which has no arrays of bindings nor the extension"
+  (define glsl
+    (web-glsl
+     "(define (texel [t : texture2D] [s : sampler] [k : int]) : vec4 (fetch t s (ivec2 k 0) 0))
+      (compute-material C (workgroup 1)
+        (bindings (picture texture) (smp sampler) (dest (buffer-array vec4)))
+        (compute (write! (at dest 0) (texel picture smp 1))))"
+     #f))
+  (with-check-info (['glsl glsl])
+    (check-true (string-contains? glsl "texelFetch(sampler2D(t, s), ivec2(k, 0), 0)"))
+    (check-false (string-contains? glsl "nonuniformEXT"))))
+
 (test-case "What a GLSL body's web interface can't express is refused before the tools run"
   (define (check-refused text fragment)
     (define e (with-handlers ([exn:zgal? values]) (web-glsl text "void main() {}\n") #f))

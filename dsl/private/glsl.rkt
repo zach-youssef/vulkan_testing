@@ -240,7 +240,9 @@
             (for ([line (in-list (string-split (string-trim text "\n" #:left? #f #:repeat? #t) "\n" #:trim? #f))]
                   [number (in-naturals 1)])
               (emit! w line #:at (loc path number 1))))]
-         [(function-decl? d) (emit-function! w d 'glsl)]
+         [(function-decl? d)
+          (parameterize ([nonuniform-texture-parameters (not web)])
+            (emit-function! w d 'glsl))]
          [else (emit-constant! w d 'glsl)]))
      (emit-main! w s)])
   (writer-text w))

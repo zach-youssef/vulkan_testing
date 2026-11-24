@@ -42,6 +42,27 @@
   (check-true (string-contains? (named (compile-text written) ".zgal.h")
                                 "MaterialBinding::array(std::move(bindings.sources), Access::StorageBufferReadWrite, 0),")))
 
+(test-case "An array's texture element combined with a sampler stays nonuniform, also through functions"
+  ;; The qualifier on the index doesn't reach the combined sampler, nor the image texelFetch takes
+  ;; out of it: lavapipe fetched one invocation's element for all of them
+  (define shader
+    (named (compile-text
+            (string-append
+             "(define (texel [t : texture2D] [s : sampler] [k : int]) : vec4 (fetch t s (ivec2 (min k (.x (texture-size t 0))) 0) 0))\n"
+             "(compute-material Pick (workgroup 64)\n"
+             "  (bindings (layers (array texture)) (single texture) (s sampler) (dest (buffer-array vec4)))\n"
+             "  (compute (let* ([i globalInvocationId.x] [layer (at layers i)])\n"
+             "    (write! (at dest i) (+ (fetch layer s (ivec2 0) 0) (sample-lod layer s (vec2 0.5) 0.0)\n"
+             "                          (fetch single s (ivec2 0) 0) (texel layer s 1))))))\n"))
+           "Pick.comp"))
+  (check-true (string-contains? shader "texelFetch(nonuniformEXT(sampler2D(layers(i), s())), ivec2(0), 0)"))
+  (check-true (string-contains? shader "textureLod(nonuniformEXT(sampler2D(layers(i), s())), vec2(0.5), 0.0)"))
+  ;; A single texture is uniform already
+  (check-true (string-contains? shader "texelFetch(sampler2D(single(), s()), ivec2(0), 0)"))
+  ;; Nor does the qualifier cross a call: a function's texture parameter may hold an element
+  (check-true (string-contains? shader "texel(layers(i), s(), 1)"))
+  (check-true (string-contains? shader "texelFetch(nonuniformEXT(sampler2D(t, s)), ivec2(min(k, textureSize(nonuniformEXT(t), 0).x), 0), 0)")))
+
 (test-case "Graphs give array bindings lists of resources, or imported images"
   (define graph
     (string-append

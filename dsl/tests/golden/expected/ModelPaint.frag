@@ -73,6 +73,6 @@ layout(location = 0) out vec4 paint;
 #line 386 "dsl/tests/golden/features.zgal"
 void main() {
 #line 386 "dsl/tests/golden/features.zgal"
-    paint = factors()[m] * texture(sampler2D(colors(m), s()), uv);
+    paint = factors()[m] * texture(nonuniformEXT(sampler2D(colors(m), s())), uv);
 #line 386 "dsl/tests/golden/features.zgal"
 }
