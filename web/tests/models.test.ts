@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
-import { Corner, CulledModels, ImportedLayers, ImportedStores, LayerGraph, Layers, Meshes, Models, ModelVertex, Scale, Spread, Spreads, Stamps } from '../models.zgal.ts';
+import { Corner, Cull, CulledModels, ImportedLayers, ImportedStores, LayerGraph, Layers, Meshes, Models, ModelVertex, Scale, Spread, Spreads, Stamps } from '../models.zgal.ts';
 
 const assets = fileURLToPath(new URL('assets', import.meta.url));
 let context: zgal.Context;
@@ -575,5 +575,72 @@ test('arrays of buffers are checked against the storage buffers a stage may bind
   assert.throws(() => new zgal.MaterialInstance(graph, Spread, { scales: { buffer: buffers[0] }, halves: { buffers: halves }, counts: { buffers: scales } }, null, null),
     /^Error: material Spread's binding scales is an array, bound to a BufferArray/);
   graph.destroy();
+  assert.deepEqual(context.errors, []);
+});
+
+test('a buffer or image bound twice in a material, either binding writing it, is refused', async () => {
+  const device = context.device;
+  const graph = new zgal.RenderGraph(context);
+  const buffer = (name: string, frames: zgal.Frames = 'shared') => graph.createBuffer(name, frames, zgal.uint, 16);
+  const [draws, bounds, kept, keptCount] = ['draws', 'bounds', 'kept', 'keptCount'].map((n) => buffer(n));
+  const cull = (bindings: Partial<Record<'draws' | 'bounds' | 'kept' | 'keptCount', zgal.GraphBuffer>>) =>
+    new zgal.MaterialInstance(graph, Cull, Object.fromEntries(Object.entries({ draws, bounds, kept, keptCount, ...bindings }).map(([k, b]) => [k, { buffer: b }])), null, null);
+  // Two plain bindings: both written, or one read and one written
+  assert.throws(() => cull({ keptCount: kept }), /^Error: material Cull binds kept to both kept \(written\) and keptCount \(written\): WebGPU forbids/);
+  assert.throws(() => cull({ kept: draws }), /^Error: material Cull binds draws to both draws \(read\) and kept \(written\)/);
+  // A per-frame buffer: both bindings bind the frame slot's copy
+  const rotating = buffer('rotating', 'per-frame');
+  assert.throws(() => cull({ kept: rotating, keptCount: rotating }), /^Error: material Cull binds rotating to both kept \(written\) and keptCount \(written\)/);
+  // Two imports of one buffer are one buffer
+  const given = device.createBuffer({ size: 64, usage: GPUBufferUsage.STORAGE });
+  assert.throws(() => cull({ kept: graph.importBuffer('first', zgal.uint, given), keptCount: graph.importBuffer('second', zgal.uint, given) }),
+    /^Error: material Cull binds first and second \(one resource\) to both kept \(written\) and keptCount \(written\)/);
+  // An import of a graph buffer's GPU buffer is that buffer, per-frame ones' slot copies too
+  assert.throws(() => cull({ keptCount: graph.importBuffer('view', zgal.uint, graph.bufferOf(kept)) }),
+    /^Error: material Cull binds kept and view \(one resource\) to both kept \(written\) and keptCount \(written\)/);
+  assert.throws(() => cull({ kept: rotating, keptCount: graph.importBuffer('slot', zgal.uint, graph.bufferOf(rotating)) }),
+    /^Error: material Cull binds rotating and slot \(one resource\) to both kept \(written\) and keptCount \(written\)/);
+  // Read by both: allowed, and WebGPU runs it
+  const reading = cull({ bounds: draws });
+  graph.add(new zgal.DispatchNode('reading', reading, (_, push) => {
+    push.total = 2;
+    push.side = 1;
+  }, () => [2]));
+  await graph.execute();
+
+  // Arrays: the same buffer in two (one written), or an element and another binding. Within one
+  // array, a repeated element is one bucket (the tests above), but two imports of one GPU buffer
+  // are two buckets, which alias where the array is written
+  const [scale, even, odd, evenCount] = ['scale', 'even', 'odd', 'evenCount'].map((n) => buffer(n));
+  const spread = (scales: zgal.GraphBuffer[], halves: zgal.GraphBuffer[], counts: zgal.GraphBuffer[], desc: zgal.MaterialDesc = Spread, more: Record<string, zgal.Bound> = {}) =>
+    new zgal.MaterialInstance(graph, desc, {
+      scales: { buffers: graph.bufferArray('scales', scales) }, halves: { buffers: graph.bufferArray('halves', halves) }, counts: { buffers: graph.bufferArray('counts', counts) }, ...more,
+    }, null, null);
+  spread([scale], [even, odd, even], [evenCount, evenCount]);
+  const [halfA, halfB] = ['halfA', 'halfB'].map((n) => graph.importBuffer(n, zgal.uint, given));
+  assert.throws(() => spread([scale], [halfA, halfB], [evenCount]), /^Error: material Spread binds halfA and halfB \(one resource\) as two buffers of halves \(written\): WebGPU forbids/);
+  spread([halfA, halfB], [even, odd], [evenCount]);
+  assert.throws(() => spread([scale], [even, odd], [evenCount, odd]), /^Error: material Spread binds odd to both an element of halves \(written\) and an element of counts \(written\)/);
+  assert.throws(() => spread([scale, even], [even, odd], [evenCount]), /^Error: material Spread binds even to both an element of scales \(read\) and an element of halves \(written\)/);
+  const extra: zgal.BindingDesc = { name: 'extra', resource: 'extra', kind: 'buffer-array', access: 'read', stages: ['compute'], depth: false };
+  const withExtra = { ...Spread, bindings: [...Spread.bindings, extra] };
+  assert.throws(() => spread([scale], [even, odd], [evenCount], withExtra, { extra: { buffer: odd } }),
+    /^Error: material Spread binds odd to both an element of halves \(written\) and extra \(read\)/);
+  spread([scale], [even, odd], [evenCount], withExtra, { extra: { buffer: scale } });
+
+  // Images: a storage image written, and sampled or stored to by another binding. Read by both
+  // (a read-only storage image and a sampled texture) is allowed
+  const image = (name: string) => graph.createImage(name, 'shared', 'rgba8unorm', { fixed: [2, 2] });
+  const [target, other] = [image('target'), image('other')];
+  const stamps = (binding: zgal.BindingDesc, bound: zgal.Bound, desc: zgal.MaterialDesc = Stamps) =>
+    new zgal.MaterialInstance(graph, { ...desc, bindings: [...desc.bindings, binding] }, { targets: { array: graph.textureArray('targets', [target, other]) }, more: bound }, null, null);
+  const sampled: zgal.BindingDesc = { name: 'more', resource: 'more', kind: 'texture', access: null, stages: ['compute'], depth: false };
+  const stored: zgal.BindingDesc = { ...sampled, kind: 'storage-image', access: 'write' };
+  assert.throws(() => stamps(sampled, { image: target }), /^Error: material Stamps binds target to both an element of targets \(written\) and more \(read\)/);
+  assert.throws(() => stamps(stored, { image: other }), /^Error: material Stamps binds other to both an element of targets \(written\) and more \(written\)/);
+  stamps(sampled, { image: target }, { ...Stamps, bindings: Stamps.bindings.map((b) => ({ ...b, access: 'read' as const })) });
+  stamps(sampled, { image: image('apart') });
+  graph.destroy();
+  given.destroy();
   assert.deepEqual(context.errors, []);
 });

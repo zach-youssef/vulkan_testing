@@ -2462,6 +2462,14 @@ The runtime follows the C++ graph's behaviour where WebGPU allows, with these di
        each frame writes before reading, are shared: the queue writes them between frames. Up to
        @racket[set-frames-in-flight!]'s count of frames are submitted before the next waits for
        the oldest.}
+ @item{A material can't bind a buffer or image twice (with two bindings, an array's element and
+       another binding, or an element of two arrays) where either binding writes it: WebGPU
+       forbids a writable storage buffer or storage image aliasing another binding, so the runtime
+       refuses the material, naming the resource and both bindings, where natively it's allowed.
+       The same buffer or image twice in one array is one bucket, so that's allowed, as is a
+       resource every binding only reads; two imports of one GPU buffer are two buckets, so a
+       written array can't hold both. Imports alias what they import. Per-frame copies don't
+       help: both bindings bind the frame's copy.}
  @item{Push constants are a uniform buffer per node using the material, written before each frame.}
  @item{Buffers and images are created with every usage their format allows.}
  @item{A window's surface is drawn through an sRGB view of the canvas's format, so shaders output

@@ -49,6 +49,20 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   bucket. The buckets count against `maxStorageBuffersPerShaderStage` with the material's other
   buffers (requested as high as the adapter allows), checked with the error naming the arrays;
   `web/tests/models.test.ts` checks both. Arrays chosen with `#:select` stay refused.
+- `MaterialInstance` refuses a buffer or image that two of a material's bindings bind (two plain
+  bindings, an array's element and another binding, or an element of two arrays) where either
+  writes it (a buffer or storage image not bound read-only), naming the material, the resource and
+  both bindings. WebGPU forbids a writable storage buffer or storage texture aliasing another
+  binding of a bind group, which Dawn reports only at the dispatch or draw ("Writable storage
+  buffer binding aliasing", or a writable usage beside another "in the same synchronization
+  scope"); natively the bindless heap allows it. An element repeated in one array is one bucket,
+  so it's allowed, as is a resource every binding only reads. Resources compare by their GPU
+  objects too, so two imports of one buffer or texture alias, as does an import of a graph
+  resource's buffer or texture (each slot's copy of a per-frame one) beside that resource; an
+  array of buffers' buckets are its distinct graph buffers, so two imports of one GPU buffer in a
+  written array alias. Both bindings of a per-frame resource bind the frame slot's copy, so they
+  alias in every slot; an array of textures' fixed elements are the array's copies, which alias
+  nothing. `web/tests/models.test.ts` checks the cases.
 - `web/tools/check-wgsl.ts` expands arrays' directive lines for two elements in two `rgba8unorm`
   buckets, so the golden modules with arrays compile.
 - Image files (`image-file`, models' textures) are decoded by `image-decode.ts`'s `decodeImage`, in

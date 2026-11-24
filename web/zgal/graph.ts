@@ -13,6 +13,7 @@ import {
   workgroupsFor,
   writePush,
   type ArrayShape,
+  type BindingDesc,
   type BoundFormats,
   type ComputeMaterialDesc,
   type GraphicsMaterialDesc,
@@ -358,6 +359,53 @@ export class MaterialInstance {
       const fixed = b.kind === 'storage-image-array' && 'array' in bound && bound.array.elements.find((e) => e.texels === 'fixed');
       if (fixed) {
         throw new Error(`material ${desc.name}'s binding ${b.resource} is an array of storage images, but its element ${fixed.name} is an image file's or a model's image, which shaders only sample`);
+      }
+    }
+    this.checkAliasing();
+  }
+
+  // Throws where two bindings bind one buffer or image and either writes it: WebGPU forbids a
+  // writable storage buffer or storage texture aliasing another binding of the bind group (natively
+  // the bindless heap allows it). Within one binding, what the layout binds once doesn't alias: an
+  // array of buffers' bucket (one per distinct graph buffer, so two imports of one GPU buffer are
+  // two buckets, which alias), an array of images' distinct texture. Both bindings of a per-frame
+  // resource bind the frame slot's copy, so they alias in every slot
+  private checkAliasing(): void {
+    // What identifies a resource: itself and the GPU objects it has (every slot's copy where it's
+    // per-frame), so an import of a graph resource's buffer or texture (which bufferOf or textureOf
+    // creates) aliases it, as two imports of one GPU object do
+    const keys = (r: GraphImage | GraphBuffer): object[] => [r, ...(r instanceof GraphImage ? r.textures : r.buffers)];
+    type Use = { readonly binding: BindingDesc; readonly name: string; readonly writes: boolean };
+    const uses = new Map<object, Use[]>();
+    const describe = (u: Use) => `${isArrayKind(u.binding.kind) ? 'an element of ' : ''}${u.binding.resource} (${u.writes ? 'written' : 'read'})`;
+    for (const b of this.desc.bindings) {
+      const bound = this.bindings[b.resource];
+      const resources: (GraphImage | GraphBuffer)[] = [];
+      if ('buffer' in bound) resources.push(bound.buffer);
+      if ('uniform' in bound) resources.push(bound.uniform.resource);
+      if ('buffers' in bound) resources.push(...bound.buffers.buckets);
+      if ('image' in bound) resources.push(bound.image);
+      // Fixed images are copied into the array's own textures; live ones are viewed
+      if ('array' in bound) resources.push(...bound.array.elements.filter((e) => b.kind === 'storage-image-array' || e.texels === 'live'));
+      // Sampled textures are only read; buffers and storage images are written unless read-only
+      const writes = b.access !== 'read' && b.kind !== 'texture' && b.kind !== 'texture-array';
+      // What this binding binds once: an array of buffers its buckets (distinct graph buffers),
+      // an array of images its distinct textures
+      const mine = new Set<object>();
+      for (const resource of resources) {
+        const ids = keys(resource);
+        if ('buffers' in bound ? mine.has(resource) : ids.some((k) => mine.has(k))) continue;
+        ids.forEach((k) => mine.add(k));
+        const use: Use = { binding: b, name: resource.name, writes };
+        const others = [...new Set(ids.flatMap((k) => uses.get(k) ?? []))];
+        const other = others.find((u) => u.writes || writes);
+        if (other) {
+          const names = other.name === use.name ? use.name : `${other.name} and ${use.name} (one resource)`;
+          const where = other.binding === b ? `as two buffers of ${b.resource} (written)` : `to both ${describe(other)} and ${describe(use)}`;
+          throw new Error(`material ${this.desc.name} binds ${names} ${where}: ` +
+            `WebGPU forbids binding a buffer or image twice in a material where either binding writes it; bind it once, or bind a copy`);
+        }
+        ids.forEach((k) => uses.set(k, [...(uses.get(k) ?? []), use]));
       }
     }
   }
