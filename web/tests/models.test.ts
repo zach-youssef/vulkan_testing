@@ -499,6 +499,64 @@ test('arrays of buffers read and write their elements, a bucket per distinct buf
   assert.deepEqual(context.errors, []);
 });
 
+test('arrays of buffers bind each frame slot\'s copy of per-frame buffers, following the frames in flight', async () => {
+  const device = context.device;
+  const graph = new zgal.RenderGraph(context);
+  const rotating = graph.createBuffer('rotating', 'per-frame', zgal.uint, 1);
+  const shared = graph.createBuffer('shared', 'shared', zgal.uint, 1);
+  const scales = graph.bufferArray('scales', [graph.createBuffer('scale', 'shared', Scale, 1)]);
+  const halves = graph.bufferArray('halves', [graph.createBuffer('half', 'shared', zgal.uint16, 16)]);
+  // rotating twice: a bucket at its first appearance, which the second shares
+  const counts = graph.bufferArray('counts', [rotating, shared, rotating]);
+  assert.deepEqual(counts.buckets, [rotating, shared]);
+  const material = new zgal.MaterialInstance(graph, Spread, { scales: { buffers: scales }, halves: { buffers: halves }, counts: { buffers: counts } }, null, null);
+  assert.equal(material.perFrame, true);
+  const binder = material.binder('spread');
+  // The buffers each bind group binds, recorded as it's created
+  const bound = new Map<GPUBindGroup, GPUBuffer[]>();
+  const create = device.createBindGroup.bind(device);
+  device.createBindGroup = (d: GPUBindGroupDescriptor) => {
+    const group = create(d);
+    bound.set(group, [...d.entries].map((e) => (e.resource as GPUBufferBinding).buffer));
+    return group;
+  };
+  // Each slot's group binds the slot's copy of rotating, the shared buffer, and the one table
+  const check = () => {
+    const groups = Array.from({ length: context.framesInFlight }, () => {
+      const slot = context.frameIndex;
+      const group = binder.bindGroup();
+      assert.equal(binder.bindGroup(), group);
+      const buffers = bound.get(group)!;
+      assert.ok(buffers.includes(rotating.buffers[slot]));
+      for (const [i, copy] of rotating.buffers.entries()) if (i !== slot) assert.ok(!buffers.includes(copy));
+      assert.ok(buffers.includes(graph.bufferOf(shared)));
+      assert.ok(buffers.includes(counts.table));
+      context.advanceFrame();
+      return group;
+    });
+    // (A frame's start gives rotating its copies; here the slot that lacks one does)
+    assert.equal(rotating.buffers.length, context.framesInFlight);
+    assert.equal(new Set(groups).size, context.framesInFlight);
+    return groups;
+  };
+  try {
+    const groups = check();
+    // Back at slot 0, its group is the cached one
+    assert.equal(binder.bindGroup(), groups[0]);
+    // A new count, applied at the frame boundary: rotating gains a copy, and so a slot its group
+    const before = context.framesInFlight;
+    context.setFramesInFlight(before + 1);
+    context.advanceFrame();
+    check();
+    context.setFramesInFlight(before);
+    context.advanceFrame();
+  } finally {
+    device.createBindGroup = create;
+  }
+  graph.destroy();
+  assert.deepEqual(context.errors, []);
+});
+
 test('arrays of buffers are checked against the storage buffers a stage may bind', async () => {
   const device = context.device;
   const graph = new zgal.RenderGraph(context);

@@ -331,8 +331,8 @@ export class MaterialInstance {
   readonly push: PushSource | null;
   readonly invocations: FrameSource<number[]> | null;
   readonly options: PipelineOptions;
-  // Whether it binds a per-frame resource (an image, a buffer or an array element), so each frame
-  // slot has a bind group of its own, binding the slot's copies
+  // Whether it binds a per-frame resource (an image, a buffer or an element of an array of images
+  // or buffers), so each frame slot has a bind group of its own, binding the slot's copies
   readonly perFrame: boolean;
   constructor(graph: RenderGraph, desc: MaterialDesc, bindings: Readonly<Record<string, Bound>>, push: PushSource | null, invocations: FrameSource<number[]> | null, options: PipelineOptions = {}) {
     this.graph = graph;
@@ -344,7 +344,8 @@ export class MaterialInstance {
     this.perFrame = Object.values(bindings).some((b) =>
       ('image' in b && b.image.frames === 'per-frame') ||
       ('buffer' in b && b.buffer.frames === 'per-frame') ||
-      ('array' in b && b.array.elements.some((e) => e.frames === 'per-frame')));
+      ('array' in b && b.array.elements.some((e) => e.frames === 'per-frame')) ||
+      ('buffers' in b && b.buffers.buckets.some((e) => e.frames === 'per-frame')));
     for (const b of desc.bindings) {
       if (!(b.resource in bindings)) throw new Error(`material ${desc.name}'s binding ${b.resource} isn't given`);
       const bound = bindings[b.resource];
@@ -654,7 +655,8 @@ export class MaterialBinder {
         if ('image' in bound) return `i${bound.image.generation}`;
         // Building the array first, where an element was recreated
         if ('array' in bound) return (graph.arrayOf(bound.array), `a${bound.array.generation}`);
-        if ('buffers' in bound) return `B${bound.buffers.buckets.map((b) => b.generation).join('.')}`;
+        // Giving the slot its copies first, where a bucket is per-frame and they're missing
+        if ('buffers' in bound) return `B${bound.buffers.buckets.map((b) => (graph.bufferOf(b), b.generation)).join('.')}`;
         if ('buffer' in bound) return `b${bound.buffer.generation}`;
         if ('uniform' in bound) return `u${bound.uniform.resource.generation}`;
         return 's';
@@ -674,6 +676,7 @@ export class MaterialBinder {
         return { binding: i, resource: { buffer: built.table } };
       }
       if ('buffers' in bound) {
+        // Each bucket the slot's copy where it's per-frame (bufferOf): the table is every slot's
         bound.buffers.buckets.forEach((buffer, bucket) => buckets.push({ binding: first[b.name] + bucket, resource: { buffer: graph.bufferOf(buffer) } }));
         return { binding: i, resource: { buffer: bound.buffers.table } };
       }

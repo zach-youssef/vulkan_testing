@@ -207,7 +207,9 @@ and PNM; HDR files fail, where native converts them). The runtime loads every im
   dropping and adding copies as the count changes (new buffers zeroed), as native `PerFrame`
   does. A `MaterialBinder` keeps a bind group per slot when its material binds a per-frame
   resource, and a `BuiltArray` its bucket views per slot when an element is per-frame (the
-  buckets and table are the same for every slot). WebGPU's queue runs frames in order anyway, so
+  buckets and table are the same for every slot); a `BufferArray`'s buckets are its distinct
+  `GraphBuffer`s, each slot's bind group binding the slot's copy of the per-frame ones, under the
+  one table. WebGPU's queue runs frames in order anyway, so
   the copies only give a frame reading one before writing it what it reads natively; uniforms,
   uploads of per-frame data, streams and the surface's depth image stay shared.
 
