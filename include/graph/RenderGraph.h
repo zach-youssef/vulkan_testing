@@ -283,13 +283,11 @@ public: // Resources
     }
 
     // An image owned by the graph. Its usage is derived from the declared accesses (plus
-    // extraUsage). Whether it has a copy per frame in flight is a required choice.
+    // extraUsage). Whether it has a copy per frame in flight is a required choice. A surface
+    // relative image needs a surface, or headless an extent set (setSurfaceExtent) by the time
+    // the graph runs or its extent is asked for, e.g. by an app's resize! in its first frame.
     ImageId createImage(std::string name, FrameMode mode, VkFormat format, ImageExtent extent,
                         VkImageUsageFlags extraUsage = 0) {
-        if (std::holds_alternative<SurfaceRelative>(extent) && !swapchain_ && !headlessSurfaceExtent_) {
-            contractViolation("Image '" + name + "' is surface relative, but the graph has no surface (headless graphs "
-                              "can set one's extent with setSurfaceExtent)");
-        }
         ImageRecord record;
         record.name = std::move(name);
         record.kind = ImageKind::Created;
@@ -493,7 +491,7 @@ public: // Resources
         auto& record = imageRecord(id);
         switch (record.kind) {
             case ImageKind::Surface: return swapchain_->getExtent();
-            case ImageKind::Created: return resolveExtent(record.extent);
+            case ImageKind::Created: return resolveExtent(record);
             case ImageKind::Imported: {
                 auto handle = image(id, frameIndex);
                 return {handle->getWidth(), handle->getHeight()};
@@ -1116,11 +1114,15 @@ private:
         return record.frameStates ? (*record.frameStates)[frame] : record.sharedState;
     }
 
-    VkExtent2D resolveExtent(const ImageExtent& extent) {
-        if (auto* fixed = std::get_if<FixedExtent>(&extent)) {
+    VkExtent2D resolveExtent(const ImageRecord& record) {
+        if (auto* fixed = std::get_if<FixedExtent>(&record.extent)) {
             return fixed->extent;
         }
-        const float scale = std::get<SurfaceRelative>(extent).scale;
+        if (!swapchain_ && !headlessSurfaceExtent_) {
+            contractViolation("Image '" + record.name + "' is surface relative, but the graph has no surface (headless "
+                              "graphs can set one's extent with setSurfaceExtent)");
+        }
+        const float scale = std::get<SurfaceRelative>(record.extent).scale;
         const VkExtent2D surface = surfaceExtent();
         return {std::max(1u, static_cast<uint32_t>(surface.width * scale)),
                 std::max(1u, static_cast<uint32_t>(surface.height * scale))};
@@ -1242,7 +1244,7 @@ private:
                 continue;
             }
             const VkImageUsageFlags usage = imageUsage[i] | record.extraUsage;
-            const VkExtent2D extent = resolveExtent(record.extent);
+            const VkExtent2D extent = resolveExtent(record);
             const bool exists = record.perFrame ? record.perFrameImages != nullptr : static_cast<bool>(record.shared);
             if (exists && usage == record.usage && extent.width == record.realizedExtent.width
                 && extent.height == record.realizedExtent.height) {

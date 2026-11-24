@@ -314,9 +314,14 @@ TEST_CASE_FIXTURE(GpuTest, "RenderGraph reports invalid graphs when compiling") 
     }
     SUBCASE("surface relative images need a surface, or a headless surface extent") {
         RenderGraph graph(ctx);
-        CHECK_THROWS_WITH_AS(graph.createImage("image", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, SurfaceRelative{}),
-                             doctest::Contains("setSurfaceExtent"), ContractViolation);
+        // Headless, the extent can come after the image, until the graph runs or it's asked for
+        ImageId image = graph.createImage("image", FrameMode::Shared, VK_FORMAT_R8G8B8A8_UNORM, SurfaceRelative{});
+        CHECK_THROWS_WITH_AS(graph.imageExtent(image, 0), doctest::Contains("setSurfaceExtent"), ContractViolation);
+        graph.addCompute("write", [&](NodeBuilder& b) { b.write(image, Access::StorageWrite); }, nullptr);
+        CHECK_THROWS_WITH_AS(graph.execute(), doctest::Contains("setSurfaceExtent"), ContractViolation);
         CHECK_THROWS_AS(graph.setSurfaceExtent({0, 4}), ContractViolation);
+        graph.setSurfaceExtent({4, 2});
+        CHECK(graph.imageExtent(image, 0).width == 4);
     }
 }
 

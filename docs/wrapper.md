@@ -247,7 +247,9 @@ int main() { return exitStatus(runApp()); }            // prints the error
   surface use is headless.
 - Headless graphs can still have `SurfaceRelative` images: `graph.setSurfaceExtent(extent)` gives
   them (and materials' `update()`) an extent, and changing it recreates them like a window resize,
-  so resize handling can be tested without a window.
+  so resize handling can be tested without a window. It can come after the images are created
+  (e.g. from an app's `resize!` in its first frame), as long as it's before the graph runs or an
+  image's extent is asked for.
 - `setEnabled(node, bool)` toggles nodes; `runOnce(node)` runs one in the next frame only. Plans
   are cached per set of enabled nodes. CPU nodes replace per-frame callbacks. `enableWith(follower,
   leader)` makes a node that only prepares another's input follow its enabled state.
