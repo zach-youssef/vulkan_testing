@@ -107,11 +107,13 @@ export class Context {
     // Arrays of textures bind a texture array per distinct size and format of their elements,
     // arrays of storage images a storage texture per distinct image (graph.ts's TextureArray) and
     // arrays of buffers a storage buffer per distinct buffer (BufferArray), so as many sampled and
-    // storage textures and storage buffers as the adapter allows
+    // storage textures and storage buffers as the adapter allows, and each array's table is a uniform
+    // buffer, so as many of those too
     const requiredLimits = {
       maxSampledTexturesPerShaderStage: adapter.limits.maxSampledTexturesPerShaderStage,
       maxStorageTexturesPerShaderStage: adapter.limits.maxStorageTexturesPerShaderStage,
       maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
+      maxUniformBuffersPerShaderStage: adapter.limits.maxUniformBuffersPerShaderStage,
     };
     const device = await adapter.requestDevice({ requiredFeatures, requiredLimits });
     const fetchAsset = async (path: string, signal: AbortSignal) => {

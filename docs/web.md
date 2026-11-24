@@ -49,6 +49,9 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   bucket. The buckets count against `maxStorageBuffersPerShaderStage` with the material's other
   buffers (requested as high as the adapter allows), checked with the error naming the arrays;
   `web/tests/models.test.ts` checks both. Arrays chosen with `#:select` stay refused.
+- Every array binding's table, and a material's push constants, is a uniform buffer, counted
+  against `maxUniformBuffersPerShaderStage` (requested as high as the adapter allows, 12 by
+  default), checked with the error naming the arrays; `web/tests/models.test.ts` checks it.
 - `MaterialInstance` refuses a buffer or image that two of a material's bindings bind (two plain
   bindings, an array's element and another binding, or an element of two arrays) where either
   writes it (a buffer or storage image not bound read-only), naming the material, the resource and

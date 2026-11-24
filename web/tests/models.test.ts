@@ -644,3 +644,28 @@ test('a buffer or image bound twice in a material, either binding writing it, is
   given.destroy();
   assert.deepEqual(context.errors, []);
 });
+
+test('arrays of bindings are checked against the uniform buffers a stage may bind: a table each, and the push constants', async () => {
+  const device = context.device;
+  const graph = new zgal.RenderGraph(context);
+  const limit = device.limits.maxUniformBuffersPerShaderStage;
+  // limit arrays' tables and the push constants: arrays of textures as far as the stage may sample
+  // textures (a bucket each), then arrays of buffers
+  const textures = Math.min(limit, device.limits.maxSampledTexturesPerShaderStage);
+  assert.ok(limit - textures <= device.limits.maxStorageBuffersPerShaderStage);
+  const array = (i: number, kind: 'texture-array' | 'storage-buffer-array'): zgal.BindingDesc =>
+    ({ name: `a${i}`, resource: `a${i}`, kind, access: kind === 'texture-array' ? null : 'read', stages: ['compute'], depth: false });
+  const bindings = Array.from({ length: limit }, (_, i) => array(i, i < textures ? 'texture-array' : 'storage-buffer-array'));
+  const texture = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
+  const images = graph.textureArray('images', [graph.importImage('image', texture, 'live')]);
+  const buffers = graph.bufferArray('buffers', [graph.createBuffer('buffer', 'shared', zgal.uint, 1)]);
+  const material = (count: number) => new zgal.MaterialInstance(graph, { ...Cull, name: 'Tables', bindings: bindings.slice(0, count), push: { ...Cull.push!, binding: count } },
+    Object.fromEntries(bindings.slice(0, count).map((b) => [b.resource, b.kind === 'texture-array' ? { array: images } : { buffers }])), null, null);
+  assert.throws(() => material(limit).groupLayout(),
+    new RegExp(`^Error: material Tables's compute stage binds ${limit + 1} uniform buffers, more than this WebGPU device allows \\(maxUniformBuffersPerShaderStage ${limit}\\): .*, and the push constants a uniform buffer, and it binds ${limit} arrays \\(a0, a1, `));
+  // Within it, it binds
+  material(limit - 1).groupLayout();
+  graph.destroy();
+  texture.destroy();
+  assert.deepEqual(context.errors, []);
+});

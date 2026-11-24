@@ -2371,6 +2371,10 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        other buffers (requested as high as the adapter allows; past it, creating the layout fails
        with an error naming the arrays and their distinct buffers). The elements are bound when
        the graph is built. As natively, an element's length isn't known to shaders.}
+ @item{Each array's table, and the push constants, is a uniform buffer the stage binds, so a
+       stage binding many arrays can pass the device's @tt{maxUniformBuffersPerShaderStage}
+       (requested as high as the adapter allows, 12 by default): creating the material's layout
+       then fails with an error naming the arrays.}
 ]
 
 Arrays of bindings chosen each frame with @racket[#:select] have no WebGPU equivalent, so compiling them for the web reports

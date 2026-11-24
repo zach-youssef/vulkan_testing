@@ -448,13 +448,14 @@ export class MaterialInstance {
     return { textures, arrays, samplers };
   }
 
-  // Throws where a stage would sample more textures, or bind more storage images or buffers, than
-  // the device allows (arrays' buckets counting one each), naming the arrays and their distinct
-  // sizes
+  // Throws where a stage would sample more textures, or bind more storage images, storage buffers
+  // or uniform buffers, than the device allows (arrays' buckets counting one each, and their tables
+  // a uniform buffer each), naming the arrays and their distinct sizes
   private checkBindingCounts(): void {
     this.checkSampledTextures();
     this.checkStorageTextures();
     this.checkStorageBuffers();
+    this.checkUniformBuffers();
   }
 
   private checkSampledTextures(): void {
@@ -525,6 +526,22 @@ export class MaterialInstance {
       if (count > limit) {
         throw new Error(`material ${this.desc.name}'s ${stage} stage binds ${count} storage buffers, more than this WebGPU device allows (maxStorageBuffersPerShaderStage ${limit}): ` +
           `arrays of buffers are a storage buffer per distinct buffer on the web, and it binds ${arrays.length > 0 ? arrays.join(' and ') : 'no arrays of them'}; give it fewer distinct buffers`);
+      }
+    }
+  }
+
+  // Arrays of textures, storage images and buffers each bind a uniform table, and push constants
+  // are a uniform buffer, which count against maxUniformBuffersPerShaderStage
+  private checkUniformBuffers(): void {
+    const limit = this.graph.context.device.limits.maxUniformBuffersPerShaderStage;
+    const stages: Stage[] = this.desc.kind === 'compute' ? ['compute'] : ['vertex', 'fragment'];
+    for (const stage of stages) {
+      const arrays = this.desc.bindings.filter((b) => b.stages.includes(stage) && isArrayKind(b.kind)).map((b) => b.resource);
+      // The push constants' buffer is visible to every stage (material.ts's layoutEntries)
+      const count = arrays.length + (this.desc.push ? 1 : 0);
+      if (count > limit) {
+        throw new Error(`material ${this.desc.name}'s ${stage} stage binds ${count} uniform buffers, more than this WebGPU device allows (maxUniformBuffersPerShaderStage ${limit}): ` +
+          `each array of bindings is a uniform table of its elements on the web${this.desc.push ? ', and the push constants a uniform buffer,' : ''} and it binds ${arrays.length} arrays (${arrays.join(', ')}); bind fewer arrays to the stage`);
       }
     }
   }
