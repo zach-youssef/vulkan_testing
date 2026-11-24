@@ -2340,9 +2340,21 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        application write, are each a bucket of their own, viewing the image, so an array of many
        of them binds as many textures. When one is recreated (a surface-relative image after a
        resize), the graph binds the array again.}
+ @item{An array of storage images is likewise a table and buckets, each a
+       @tt{texture_storage_2d_array} of the array's access and of its images' format (which the
+       runtime fills in, so its elements may mix formats as natively). Its elements are graph
+       images and imported ones, so each distinct image is a bucket of its own, viewing the image:
+       @racket[store!] and @racket[image-load] on an element switch on its bucket and reach the
+       image, and @racket[image-size] reads the table. The buckets count against the device's
+       @tt{maxStorageTexturesPerShaderStage} with the material's other storage images (requested
+       as high as the adapter allows; past it, creating the layout fails with an error naming the
+       array). As for a single storage image, an array both read and written needs the
+       @tt{texture-formats-tier2} feature for formats other than @tt{r32float}, @tt{r32uint} and
+       @tt{r32sint}; @racket[array-length] and @racket[image-size] read no texels, so they don't
+       make an array read-write.}
 ]
 
-Other arrays of bindings (of buffers or storage images, or chosen with @racket[#:select]) have no WebGPU equivalent, so compiling them for the web reports
+Other arrays of bindings (of buffers, or chosen with @racket[#:select]) have no WebGPU equivalent, so compiling them for the web reports
 @secref["error-not-on-web"]. GLSL bodies, and materials calling GLSL functions
 (@racket[extern-glsl]), are translated with glslc and naga (@secref["glsl"] and
 @secref["extern-glsl"], which list what they can't do on the web). The example's TypeScript follows in

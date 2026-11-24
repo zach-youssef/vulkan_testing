@@ -280,7 +280,17 @@ TARGETS_TEST_WEB = $(OUT)/web/targets
 $(eval $(call zgal-program,$(TEST_DIR)/arrays/targets.zgal,$(TARGETS_TEST_OUT),targets,))
 $(eval $(call zgal-web-program,$(TEST_DIR)/arrays/targets.zgal,$(TARGETS_TEST_WEB)))
 
-test-main: $(MAIN_TEST_BIN) $(BORDER_TEST_BIN) $(ARRAYS_TEST_BIN) $(TARGETS_TEST_BIN) $(IMAGE_FILTER_DIFF)
+# Arrays of storage images a dispatch stores to and the next one loads from, one recreated as the
+# surface resizes (tests/arrays/storage.zgal), compared likewise with storage.approved.png: on the
+# web each distinct image is a bucket of its own, viewing it
+STORAGE_TEST_OUT = $(TEST_OUT)/storage
+STORAGE_TEST_BIN = $(STORAGE_TEST_OUT)/storage
+STORAGE_TEST_WEB = $(OUT)/web/storage
+
+$(eval $(call zgal-program,$(TEST_DIR)/arrays/storage.zgal,$(STORAGE_TEST_OUT),storage,))
+$(eval $(call zgal-web-program,$(TEST_DIR)/arrays/storage.zgal,$(STORAGE_TEST_WEB)))
+
+test-main: $(MAIN_TEST_BIN) $(BORDER_TEST_BIN) $(ARRAYS_TEST_BIN) $(TARGETS_TEST_BIN) $(STORAGE_TEST_BIN) $(IMAGE_FILTER_DIFF)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-main-steps
 
 test-main-steps:
@@ -301,6 +311,8 @@ test-main-steps:
 	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/arrays/arrays.approved.png $(ARRAYS_TEST_OUT)/out.png 0
 	./$(TARGETS_TEST_BIN) $(TARGETS_TEST_OUT)/out.png --frames 3 --validation
 	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/arrays/targets.approved.png $(TARGETS_TEST_OUT)/out.png 0
+	./$(STORAGE_TEST_BIN) $(STORAGE_TEST_OUT)/out.png --frames 3 --validation
+	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/arrays/storage.approved.png $(STORAGE_TEST_OUT)/out.png 0
 
 # The benchmark (tools/bench): ZGAL's library kernels and fallbacks at a size the command line gives.
 #   make bench                         - builds build/tools/bench/bench
@@ -388,6 +400,9 @@ test-web-steps:
 	$(MAKE) $(TARGETS_TEST_WEB)
 	$(NODE) $(TARGETS_TEST_WEB)/targets.zgal.main.js $(TARGETS_TEST_WEB)/out.png --frames 3
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/targets.approved.png $(TARGETS_TEST_WEB)/out.png 0
+	$(MAKE) $(STORAGE_TEST_WEB)
+	$(NODE) $(STORAGE_TEST_WEB)/storage.zgal.main.js $(STORAGE_TEST_WEB)/out.png --frames 3
+	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/storage.approved.png $(STORAGE_TEST_WEB)/out.png 0
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png 1
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(SIMPLE_DIR)/textures/texture.jpg $(IMAGE_FILTER_WEB)/identity-jpeg.png
@@ -431,7 +446,7 @@ test-decode-steps:
 BROWSERS = chromium
 BROWSERS_REQUIRED = $(if $(filter command line environment override,$(origin BROWSERS)),1)
 TEST_PAGES = $(OUT)/web/tests
-test-pages: web $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) $(ARRAYS_TEST_WEB) $(TARGETS_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE) $(ZGAL_NAGA)
+test-pages: web $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) $(ARRAYS_TEST_WEB) $(TARGETS_TEST_WEB) $(STORAGE_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE) $(ZGAL_NAGA)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-pages-steps
 
 test-pages-steps:
@@ -470,6 +485,9 @@ test-pages-steps:
 	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/targets-$$browser.png \
 	    'targets/targets.zgal.html?arg=out.png&frames=3' || exit 1; \
 	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/targets.approved.png $(TEST_PAGES)/targets-$$browser.png 0 || exit 1; \
+	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/storage-$$browser.png \
+	    'storage/storage.zgal.html?arg=out.png&frames=3' || exit 1; \
+	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/storage.approved.png $(TEST_PAGES)/storage-$$browser.png 0 || exit 1; \
 	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps glsl streams stream-buffers stop-streams; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \

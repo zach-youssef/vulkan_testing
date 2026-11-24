@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
-import { Corner, CulledModels, ImportedLayers, LayerGraph, Layers, Meshes, Models, ModelVertex } from '../models.zgal.ts';
+import { Corner, CulledModels, ImportedLayers, ImportedStores, LayerGraph, Layers, Meshes, Models, ModelVertex, Stamps } from '../models.zgal.ts';
 
 const assets = fileURLToPath(new URL('assets', import.meta.url));
 let context: zgal.Context;
@@ -314,5 +314,85 @@ test('arrays of imported images sample what the application last wrote to them',
   graph.destroy();
   wide.destroy();
   small.destroy();
+  assert.deepEqual(context.errors, []);
+});
+
+// The texels of a 2D rgba8unorm or r32float texture (COPY_SRC), row by row: rgba8unorm's bytes, and
+// r32float's red times 255
+async function readTexels(device: GPUDevice, t: GPUTexture): Promise<number[][]> {
+  const bytesPerRow = 256;
+  const buffer = device.createBuffer({ size: bytesPerRow * t.height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const encoder = device.createCommandEncoder();
+  encoder.copyTextureToBuffer({ texture: t }, { buffer, bytesPerRow }, [t.width, t.height]);
+  device.queue.submit([encoder.finish()]);
+  await buffer.mapAsync(GPUMapMode.READ);
+  const bytes = new Uint8Array(buffer.getMappedRange());
+  const floats = new Float32Array(bytes.buffer);
+  const texels: number[][] = [];
+  for (let y = 0; y < t.height; y++) {
+    for (let x = 0; x < t.width; x++) {
+      const at = y * bytesPerRow + x * 4;
+      texels.push(t.format === 'r32float' ? [Math.round(floats[at / 4] * 255)] : [...bytes.subarray(at, at + 4)]);
+    }
+  }
+  buffer.destroy();
+  return texels;
+}
+
+test('arrays of storage images store to the images themselves, a bucket each', async () => {
+  const device = context.device;
+  const graph = new zgal.RenderGraph(context);
+  const texture = (width: number, height: number, format: GPUTextureFormat) =>
+    device.createTexture({ size: [width, height], format, usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC });
+  const wide = texture(4, 2, 'rgba8unorm');
+  const tall = texture(2, 3, 'rgba8unorm');
+  const red = texture(3, 1, 'r32float');
+  const given = [wide, tall, red];
+  const ids = await ImportedStores.build(context, graph, { given });
+  await graph.execute();
+  for (const [e, t] of given.entries()) {
+    const expected: number[][] = [];
+    for (let y = 0; y < t.height; y++) {
+      for (let x = 0; x < t.width; x++) {
+        const texel = [e * 50 + 10, x * 40 + 20, y * 60 + 30, 255];
+        expected.push(t.format === 'r32float' ? [texel[0]] : texel);
+      }
+    }
+    assert.deepEqual(await readTexels(device, t), expected, `element ${e}`);
+  }
+  // Each image its own bucket, of its format, bound write-only
+  const built = graph.arrayOf(graph.textureArray('again', ids.images.given));
+  assert.deepEqual(built.shape, { count: given.length, buckets: given.map((t) => t.format) });
+  assert.deepEqual(built.buckets, given);
+  const entries = zgal.layoutEntries(device, Stamps, { textures: {}, arrays: { targets: built.shape }, samplers: {} });
+  assert.deepEqual(entries.map((e) => [e.binding, e.storageTexture ?? e.buffer]),
+    [[0, { type: 'uniform' }], ...given.map((t, i) => [2 + i, { access: 'write-only', format: t.format, viewDimension: '2d-array' }])]);
+  graph.destroy();
+  for (const t of given) t.destroy();
+  assert.deepEqual(context.errors, []);
+});
+
+test('arrays of storage images are checked against the storage textures a stage may bind, and read-write formats', async () => {
+  const device = context.device;
+  const graph = new zgal.RenderGraph(context);
+  const texture = (width: number) =>
+    device.createTexture({ size: [width, 1], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING });
+  // Past the storage textures a stage may bind, a bucket per distinct image
+  const many = Array.from({ length: device.limits.maxStorageTexturesPerShaderStage + 1 }, (_, i) => texture(i + 1));
+  const material = new zgal.MaterialInstance(graph, Stamps, { targets: { array: graph.textureArray('many', graph.importImages('many', many, 'live')) } }, null, null);
+  assert.throws(() => material.groupLayout(),
+    new RegExp(`^Error: material Stamps's compute stage binds ${many.length} storage images, more than this WebGPU device allows \\(maxStorageTexturesPerShaderStage ${many.length - 1}\\): .*it binds targets \\(${many.length} distinct images\\)`));
+  // Image files and models' images are copied into buckets, which shaders can't store to
+  const fixed = graph.importImages('fixed', [many[0]], 'fixed');
+  assert.throws(() => new zgal.MaterialInstance(graph, Stamps, { targets: { array: graph.textureArray('fixed', fixed) } }, null, null),
+    /^Error: material Stamps's binding targets is an array of storage images, but its element fixed\[0\] is an image file's or a model's image/);
+  // Read-write needs texture-formats-tier2 for rgba8unorm
+  const without = await createNodeContext([assets], { withoutFeatures: ['texture-formats-tier2' as GPUFeatureName] });
+  const readWrite = { ...Stamps, bindings: Stamps.bindings.map((b) => ({ ...b, access: 'read-write' as const })) };
+  assert.throws(() => zgal.layoutEntries(without.device, readWrite, { textures: {}, arrays: { targets: { count: 1, buckets: ['rgba8unorm'] } }, samplers: {} }),
+    /^Error: material Stamps: storage image array targets is read-write, which this WebGPU device only allows for r32float, r32uint and r32sint images \(not rgba8unorm\)/);
+  without.destroy();
+  graph.destroy();
+  for (const t of many) t.destroy();
   assert.deepEqual(context.errors, []);
 });

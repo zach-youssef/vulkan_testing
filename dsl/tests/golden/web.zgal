@@ -85,6 +85,24 @@
                     (+ (subgroupBallotExclusiveBitCount ballot) (subgroupBallotBitCount ballot))
                     (+ subgroupId (if (subgroupAllEqual subgroupSize) 1 0)))))))
 
+;; Arrays of textures and of storage images: tables of their elements, and buckets the runtime
+;; declares (texture_2d_arrays, and texture_storage_2d_arrays of the array's access, of formats it
+;; fills in), which operations on an element switch on
+(compute-material Splat
+  (workgroup 8 8)
+  (bindings
+   (decals (array texture))
+   (pick sampler)
+   (sources (array (storage-image)))
+   (targets (array (storage-image))))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)]
+          [which (remainder globalInvocationId.z (array-length targets))])
+     (store! (at targets which) texel
+             (+ (image-load (at sources which) texel)
+                (sample-lod (at decals which) pick (/ (vec2 texel) (vec2 (image-size (at sources 0)))) 0.0)
+                (vec4 (vec2 (texture-size (at decals 0) 0)) 0.0 0.0))))))
+
 ;; Expressions WGSL spells differently: vector comparisons, mixed scalars and vectors, conversions,
 ;; negated uints, shifts by ints, matrix inverses, mod, bitcasts of constants (kept out of WGSL's
 ;; constant evaluation), the smallest int, and ifs of structs (statements, as select can't give one)

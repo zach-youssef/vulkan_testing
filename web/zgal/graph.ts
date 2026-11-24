@@ -5,6 +5,7 @@
 
 import type { Context } from './context.ts';
 import {
+  isArrayKind,
   isDepthFormat,
   firstBuckets,
   layoutEntries,
@@ -276,8 +277,15 @@ export class MaterialInstance {
     this.options = options;
     for (const b of desc.bindings) {
       if (!(b.resource in bindings)) throw new Error(`material ${desc.name}'s binding ${b.resource} isn't given`);
-      if ((b.kind === 'texture-array') !== ('array' in bindings[b.resource])) {
-        throw new Error(`material ${desc.name}'s binding ${b.resource} ${b.kind === 'texture-array' ? 'is an array of textures, bound to a TextureArray' : 'isn\'t an array of textures, so it isn\'t bound to a TextureArray'}`);
+      const bound = bindings[b.resource];
+      if (isArrayKind(b.kind) !== ('array' in bound)) {
+        throw new Error(`material ${desc.name}'s binding ${b.resource} ${isArrayKind(b.kind) ? 'is an array, bound to a TextureArray' : 'isn\'t an array, so it isn\'t bound to a TextureArray'}`);
+      }
+      // Shaders store to and load from the images themselves, which only live ones (the graph's
+      // and imported images) are bound as
+      const fixed = b.kind === 'storage-image-array' && 'array' in bound && bound.array.elements.find((e) => e.texels === 'fixed');
+      if (fixed) {
+        throw new Error(`material ${desc.name}'s binding ${b.resource} is an array of storage images, but its element ${fixed.name} is an image file's or a model's image, which shaders only sample`);
       }
     }
   }
@@ -291,7 +299,7 @@ export class MaterialInstance {
     let format: string | null = null;
     for (const b of this.desc.bindings) {
       const bound = this.bindings[b.resource];
-      const images = 'image' in bound && b.kind === 'texture' && !b.depth ? [bound.image] : 'array' in bound ? bound.array.elements : [];
+      const images = 'image' in bound && b.kind === 'texture' && !b.depth ? [bound.image] : 'array' in bound && b.kind === 'texture-array' ? bound.array.elements : [];
       for (const image of images) {
         if (isDepthFormat(image.format)) return `samples depth image ${image.name} without comparing with it, which the web does only with a nearest sampler`;
         if (!filterable && /32float|32uint|32sint/.test(image.format)) format ??= `samples ${image.name}, whose ${image.format} this device can't filter (no float32-filterable)`;
@@ -319,8 +327,13 @@ export class MaterialInstance {
     return { textures, arrays, samplers };
   }
 
-  // Throws where a stage would sample more textures than the device allows (arrays' buckets
-  // counting one each), naming the arrays and their distinct sizes
+  // Throws where a stage would sample more textures, or bind more storage images, than the device
+  // allows (arrays' buckets counting one each), naming the arrays and their distinct sizes
+  private checkTextureCounts(): void {
+    this.checkSampledTextures();
+    this.checkStorageTextures();
+  }
+
   private checkSampledTextures(): void {
     const limit = this.graph.context.device.limits.maxSampledTexturesPerShaderStage;
     const stages: Stage[] = this.desc.kind === 'compute' ? ['compute'] : ['vertex', 'fragment'];
@@ -331,7 +344,7 @@ export class MaterialInstance {
         if (!b.stages.includes(stage)) continue;
         const bound = this.bindings[b.resource];
         if (b.kind === 'texture') count++;
-        if (!('array' in bound)) continue;
+        if (b.kind !== 'texture-array' || !('array' in bound)) continue;
         const built = this.graph.arrayOf(bound.array);
         count += built.buckets.length;
         const sizes = built.sizes.map(([w, h], i) => `${w}x${h} ${built.shape.buckets[i]}`);
@@ -345,11 +358,35 @@ export class MaterialInstance {
     }
   }
 
+  // An array of storage images binds a storage texture per distinct image (each a bucket of its
+  // own), which count against maxStorageTexturesPerShaderStage with the material's storage images
+  private checkStorageTextures(): void {
+    const limit = this.graph.context.device.limits.maxStorageTexturesPerShaderStage;
+    const stages: Stage[] = this.desc.kind === 'compute' ? ['compute'] : ['vertex', 'fragment'];
+    for (const stage of stages) {
+      let count = 0;
+      const arrays: string[] = [];
+      for (const b of this.desc.bindings) {
+        if (!b.stages.includes(stage)) continue;
+        const bound = this.bindings[b.resource];
+        if (b.kind === 'storage-image') count++;
+        if (b.kind !== 'storage-image-array' || !('array' in bound)) continue;
+        const built = this.graph.arrayOf(bound.array);
+        count += built.buckets.length;
+        arrays.push(`${b.resource} (${built.buckets.length} distinct images)`);
+      }
+      if (count > limit) {
+        throw new Error(`material ${this.desc.name}'s ${stage} stage binds ${count} storage images, more than this WebGPU device allows (maxStorageTexturesPerShaderStage ${limit}): ` +
+          `arrays of storage images are a storage texture per distinct image on the web, and it binds ${arrays.length > 0 ? arrays.join(' and ') : 'no arrays of them'}; give it fewer distinct images`);
+      }
+    }
+  }
+
   private layout(formats: BoundFormats) {
     const key = JSON.stringify(formats);
     let layout = this.layouts.get(key);
     if (!layout) {
-      this.checkSampledTextures();
+      this.checkTextureCounts();
       const device = this.graph.context.device;
       const group = device.createBindGroupLayout({ label: this.desc.name, entries: layoutEntries(device, this.desc, formats) });
       layout = { group, pipeline: device.createPipelineLayout({ label: this.desc.name, bindGroupLayouts: [group] }) };

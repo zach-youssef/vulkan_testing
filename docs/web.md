@@ -28,6 +28,17 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   layout are made per bucket shape (the ZGAL docs' web section). `web/tests/models.test.ts` checks
   the buckets and the error past `maxSampledTexturesPerShaderStage`, which `Context` requests as
   high as the adapter allows.
+- An `(array (storage-image))` binding is a `TextureArray` too, its buckets
+  `texture_storage_2d_array<{format}, access>`s (the array's access; `{format}` each bucket's,
+  which `expandArrays` fills in), and `store!`, `image-load` and `image-size` on an element switch
+  on its bucket as sampling does. Its elements can only be graph images and imports (live: the
+  compiler refuses image files, and `MaterialInstance` fixed elements), so each distinct image is a
+  bucket of its own, viewing it, and stores reach the image. The buckets count against
+  `maxStorageTexturesPerShaderStage` (requested as high as the adapter allows), checked with the
+  error naming the array; read-write ones need `texture-formats-tier2` for most formats, as a
+  single storage image does. `array-length` touches no element, so it doesn't make a written array
+  read-write. `web/tools/check-wgsl.ts` expands arrays' directive lines for two elements in two
+  `rgba8unorm` buckets, so the golden modules with arrays compile.
 - Image files (`image-file`, models' textures) are decoded by `image-decode.ts`'s `decodeImage`, in
   every environment, never by the browser: Firefox's `createImageBitmap` premultiplies alpha
   whatever it's asked, and browsers' decoders needn't give native's bytes
@@ -187,15 +198,17 @@ then:
    exactly with `arrays.approved.png`, likewise, `tests/arrays/targets.zgal` (an array of two
    surface-relative images one pass writes and the next fetches and samples, recreated by
    `resize!` in the frame handler, run for 3 frames) compared exactly with `targets.approved.png`,
-   and
+   `tests/arrays/storage.zgal` (arrays of storage images of mixed sizes and formats, one
+   surface-relative, a dispatch stores to and the next loads from, run for 3 frames) compared
+   exactly with `storage.approved.png`, and
    `tests/stream/streamer.zgal` streaming a file (its opener in
    `streamer.inputs.ts`) (`headless.test.ts` needs no GPU: the PNG encoders and
    `parseCommandLine`'s `where`);
 3. runs `make test-pages`: the particles and scene pages, image_filter's page (run from its query
    string, its capture saved with the checkers' `--save-capture` and compared with
    `blur_edges.approved.png`), the border program's page (its capture compared likewise with
-   `border.approved.png`), the arrays and targets programs' pages (compared exactly with
-   `arrays.approved.png` and `targets.approved.png`),
+   `border.approved.png`), the arrays, targets and storage programs' pages (compared exactly with
+   `arrays.approved.png`, `targets.approved.png` and `storage.approved.png`),
    `web/tests/mount.html` (mounts two programs and stops one),
    `web/tests/held-keys.html` (held keys and mouse buttons released once each, also when focus
    leaves, chorded buttons, cancelled pointers and lost captures, and a finger ignored while the

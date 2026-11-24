@@ -118,3 +118,24 @@
   (material layering Layers (layers given) pick #:cull none)
   (draw paint onCanvas layering 3)
   (readback canvasRead canvas))
+
+;; An array of storage images the application imports, of different sizes and formats: each texel of
+;; each element is a value of the element's index and the texel's position. On the web each image is
+;; a bucket of its own, a texture_storage_2d_array viewing it, so the stores reach the images.
+(compute-material Stamps
+  (workgroup 4 4)
+  (bindings (targets (array (storage-image write))))
+  (compute
+   (let* ([texel (ivec2 globalInvocationId.xy)]
+          [e globalInvocationId.z])
+     (when (< e (array-length targets))
+       (when (all (lessThan texel (image-size (at targets e))))
+         ;; Whole multiples of 1/255, which unorm8 stores exactly
+         (store! (at targets e) texel
+                 (vec4 (/ (+ (* (float e) 50.0) 10.0) 255.0) (/ (+ (* (float texel.x) 40.0) 20.0) 255.0)
+                       (/ (+ (* (float texel.y) 60.0) 30.0) 255.0) 1.0)))))))
+
+(graph ImportedStores
+  (import-images given #:resting general)
+  (material stamping Stamps (targets given) #:invocations (4 4 4))
+  (dispatch stamp stamping))

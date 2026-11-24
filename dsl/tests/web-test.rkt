@@ -392,6 +392,31 @@
       (compute (write! (at counts 0) (sample-compare (at layers 0) cmp (vec2 0.5) 0.5))))"
    "sample-compare can't be used on an element of an array on the web"))
 
+(test-case "An array of storage images is storage buckets of its access the runtime declares, of their formats: stores and loads switch on the bucket"
+  (define program
+    "(compute-material Copy
+       (workgroup 1)
+       (bindings (sources (array (storage-image))) (targets (array (storage-image))))
+       (compute
+        (let* ([at (ivec2 globalInvocationId.xy)]
+               [e (remainder globalInvocationId.z (array-length targets))])
+          (store! (at targets e) at (+ (image-load (at sources e) at) (vec4 (vec2 (image-size (at sources 0))) 0.0 0.0))))))")
+  (define wgsl (web-shader program "Copy.comp.wgsl"))
+  (define (has text) (check-true (string-contains? wgsl text) text))
+  (with-check-info (['wgsl wgsl])
+    ;; Each bucket's format filled in by the runtime, its access the array's (array-length touches
+    ;; no element, so targets is write-only)
+    (has "\n//zgal-bucket sources @group(0) @binding({binding}) var zgalBucket_sources_{bucket}: texture_storage_2d_array<{format}, read>;\n")
+    (has "\n//zgal-bucket targets @group(0) @binding({binding}) var zgalBucket_targets_{bucket}: texture_storage_2d_array<{format}, write>;\n")
+    (has "//zgal-bucket sources case {bucket}u: { return textureLoad(zgalBucket_sources_{bucket}, at, i32(entry.y)); }")
+    (has "//zgal-bucket targets case {bucket}u: { textureStore(zgalBucket_targets_{bucket}, at, i32(entry.y), value); }")
+    ;; A store returns nothing: the switch's default does nothing
+    (has "        default: {}\n")
+    (has "zgalStore_targets(e, at, zgalLoad_sources(e, at) + vec4f(vec2f(zgalSize_sources(u32(0i), 0i)), 0.0f, 0.0f));"))
+  (define ts (web-shader program "test.zgal.ts"))
+  (check-true (string-contains? ts "{ name: 'sources', resource: 'sources', kind: 'storage-image-array', access: 'read'") ts)
+  (check-true (string-contains? ts "{ name: 'targets', resource: 'targets', kind: 'storage-image-array', access: 'write'") ts))
+
 (test-case "A sampler clamping to a border clamps to the edge on the web, its border colour beside it"
   (define (sampler options)
     (define ts

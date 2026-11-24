@@ -115,9 +115,10 @@
 ;; A binding as WebGPU binds it. name: its name in the material's description and (spelled by
 ;; wgsl-name for a binding's own name) in modules. source: the ZGAL binding it binds. index: its
 ;; @binding. kind: 'texture 'texture-array 'sampler 'depth-sampler 'comparison-sampler
-;; 'storage-image 'buffer 'buffer-array ('texture-array: an array binding of textures, which WebGPU
-;; has no arrays of bindings for: its index is its element table's, and its texture_2d_array
-;; buckets bind after the push constants; see Arrays of textures). access:
+;; 'storage-image 'storage-image-array 'buffer 'buffer-array ('texture-array and
+;; 'storage-image-array: an array binding of textures or storage images, which WebGPU has no arrays
+;; of bindings for: its index is its element table's, and its buckets, texture_2d_arrays or
+;; texture_storage_2d_arrays, bind after the push constants; see Arrays of textures). access:
 ;; 'read 'write 'read-write (buffers, storage images) or #f. stages: the stages using it ('vertex
 ;; 'fragment 'compute). depth?: a texture compared with depths (texture_depth_2d) or a comparison
 ;; sampler.
@@ -173,8 +174,8 @@
   (append*
    (for/list ([b (in-list (material-bindings m))])
      (define name (binding-name b))
-     (when (and (eq? (binding-kind b) 'array) (not (eq? (binding-resource-kind b) 'texture)))
-       (web-error (binding-loc b) "WebGPU has no arrays of bindings (descriptor indexing), so ~a can't be an array of ~as (the web binds arrays of textures only, as texture arrays)"
+     (when (and (eq? (binding-kind b) 'array) (not (memq (binding-resource-kind b) '(texture storage-image))))
+       (web-error (binding-loc b) "WebGPU has no arrays of bindings (descriptor indexing), so ~a can't be an array of ~as (the web binds arrays of textures and storage images only, as texture arrays)"
                   name (binding-resource-kind b)))
      (define (uses? u v) (set-member? (hash-ref (usage-opaque u) name (set)) v))
      (define (compared?) (for/or ([u (in-hash-values usages)]) (uses? u 'compare)))
@@ -186,9 +187,21 @@
           (wgsl-binding (if (eq? v 'sample) name (variant-name name v)) b (next!) (variant-kind v) #f
                         (stages-where (λ (u) (uses? u v))) (eq? v 'compare)))]
        [else
-        (list (wgsl-binding name b (next!) (if (eq? (binding-kind b) 'array) 'texture-array (binding-kind b)) (binding-access b)
+        (list (wgsl-binding name b (next!) (array-kind b) (binding-access b)
                             (stages-where (λ (u) (set-member? (usage-bindings u) name)))
                             (compared?)))]))))
+
+;; The kind of wgsl-binding binding b is, for kinds other than samplers
+(define (array-kind b)
+  (cond [(not (eq? (binding-kind b) 'array)) (binding-kind b)]
+        [(eq? (binding-resource-kind b) 'texture) 'texture-array]
+        [else 'storage-image-array]))
+
+(define (array-binding-kind? k) (and (memq k '(texture-array storage-image-array)) #t))
+
+;; A storage image binding's access, as WGSL spells it
+(define (storage-access b)
+  (case (binding-access b) [(read) "read"] [(write) "write"] [else "read_write"]))
 
 ;; The binding index of the push constants' uniform buffer, after the bindings of layout
 (define (wgsl-push-binding layout) (length layout))
@@ -639,9 +652,12 @@
 
   ;; Bindings this stage uses, then the push constants
   (line! "")
-  (for ([wb (in-list layout)] #:when (and (memq stage (wgsl-binding-stages wb)) (eq? (wgsl-binding-kind wb) 'texture-array)))
-    (for ([l (in-list (array-declaration-lines (wgsl-binding-name wb) (wgsl-binding-index wb)))]) (line! "~a" l)))
-  (for ([wb (in-list layout)] #:when (and (memq stage (wgsl-binding-stages wb)) (not (eq? (wgsl-binding-kind wb) 'texture-array))))
+  (for ([wb (in-list layout)] #:when (and (memq stage (wgsl-binding-stages wb)) (array-binding-kind? (wgsl-binding-kind wb))))
+    (for ([l (in-list (array-declaration-lines (wgsl-binding-name wb) (wgsl-binding-index wb)
+                                               (and (eq? (wgsl-binding-kind wb) 'storage-image-array)
+                                                    (storage-access (wgsl-binding-source wb)))))])
+      (line! "~a" l)))
+  (for ([wb (in-list layout)] #:when (and (memq stage (wgsl-binding-stages wb)) (not (array-binding-kind? (wgsl-binding-kind wb)))))
     (define b (wgsl-binding-source wb))
     (line! "@group(0) @binding(~a) var~a ~a: ~a;" (wgsl-binding-index wb)
            (if (memq (binding-kind b) '(buffer buffer-array))
@@ -652,8 +668,7 @@
              ['texture (if (wgsl-binding-depth? wb) "texture_depth_2d" "texture_2d<f32>")]
              [(or 'sampler 'depth-sampler) "sampler"]
              ['comparison-sampler "sampler_comparison"]
-             ['storage-image (format "texture_storage_2d<~a, ~a>" (storage-format b)
-                                     (case (binding-access b) [(read) "read"] [(write) "write"] [else "read_write"]))]
+             ['storage-image (format "texture_storage_2d<~a, ~a>" (storage-format b) (storage-access b))]
              [(or 'buffer 'buffer-array)
               (if (set-member? (usage-raw u) (binding-name b))
                   (raw-declaration-type st (binding-name b) #f)
@@ -954,10 +969,10 @@
           [else (format "-~a" text)])]
        [(t-op 'not (list a) _ _) (format "!~a" (operand a))]
        [(t-op 'bitnot (list a) _ _) (format "~~~a" (operand a))]
-       ;; Only arrays of textures reach here
+       ;; Only arrays of textures and storage images reach here
        [(t-op 'array-length (list (t-global _ name _ _ _)) _ _) (count-name name)]
        [(t-index (and b (t-global 'binding name _ (binding-array-t _) _)) _ _ l)
-        (web-error l "~a's elements are layers of texture arrays on the web, so they can only be used directly in texture operations (sample, sample-lod, fetch and texture-size) and given to functions" name)]
+        (web-error l "~a's elements are layers of texture arrays on the web, so they can only be used directly in texture and image operations (sample, sample-lod, fetch, texture-size, image-load, image-size and store!) and given to functions" name)]
        [(t-op (and op (or 'shl 'shr)) (list a b) _ _)
         (format "~a ~a ~a" (operand a) (if (eq? op 'shl) "<<" ">>")
                 (match (texpr-type b)
@@ -977,7 +992,10 @@
        [(t-swizzle b comps _ _) (format "~a.~a" (operand b) comps)]
        [(t-index b i _ _) (format "~a[~a]" (operand b) (p i))]
        [(t-if c a b _ _) (format "select(~a, ~a, ~a)" (p b) (p a) (p c))]
-       [(t-store i texel v _) (format "textureStore(~a, ~a, ~a)" (p i) (p texel) (p v))]
+       [(t-store i texel v _)
+        (match (array-element st i)
+          [(cons name index) (format "~a(~a, ~a, ~a)" (array-helper st name 'store) index (p texel) (p v))]
+          [#f (format "textureStore(~a, ~a, ~a)" (p i) (p texel) (p v))])]
        [(t-barrier _ _) "workgroupBarrier()"]
        [(t-exit op _) (symbol->string op)]
        [(t-atomic op place as t l) (print-atomic st op place as t l)])]))
@@ -1306,41 +1324,53 @@
 ;; size and format, which only the runtime knows. So an array binding is bound as buckets, a
 ;; texture_2d_array per distinct size and format among its elements (an element is a layer of one),
 ;; and a uniform table giving each element's bucket, layer and size (a vec4u), bound at the array's
-;; own binding index. The module declares them, and the switches choosing an element's bucket, in
-;; directive lines the runtime expands when it makes the pipeline (material.ts's expandArrays):
+;; own binding index. An array of storage images is bound likewise, its buckets
+;; texture_storage_2d_arrays of the array's access (the runtime makes each distinct image a bucket
+;; of its own, viewing it, so stores reach the image). The module declares them, and the switches
+;; choosing an element's bucket, in directive lines the runtime expands when it makes the pipeline
+;; (material.ts's expandArrays):
 ;;   //zgal-array <name> <text>: text once, {count} being the number of elements;
-;;   //zgal-bucket <name> <text>: text once per bucket, {bucket} being its number and {binding} its
-;;     binding index (the buckets bind after the push constants, in the bindings' order).
+;;   //zgal-bucket <name> <text>: text once per bucket, {bucket} being its number, {binding} its
+;;     binding index (the buckets bind after the push constants, in the bindings' order) and
+;;     {format} its texel format.
 ;; An operation on an element calls a helper of the array's (array-helper) with its index, as a
-;; u32; an element passed to a function is passed as its index too (call-signature).
+;; u32; an element of an array of textures passed to a function is passed as its index too
+;; (call-signature), and functions given storage images are inlined.
 
 (define (table-name name) (string-append "zgalTable_" name))
 (define (count-name name) (string-append "zgalCount_" name))
 (define (bucket-name name) (string-append "zgalBucket_" name "_{bucket}"))
 
-;; The declarations of array binding `name`, at binding index `index`
-(define (array-declaration-lines name index)
+;; The declarations of array binding `name`, at binding index `index`: of textures, or for
+;; storage-access (WGSL's spelling, storage-access), of storage images
+(define (array-declaration-lines name index storage-access)
   (list (format "//zgal-array ~a @group(0) @binding(~a) var<uniform> ~a: array<vec4u, {count}>;" name index (table-name name))
         (format "//zgal-array ~a const ~a = {count}u;" name (count-name name))
-        (format "//zgal-bucket ~a @group(0) @binding({binding}) var ~a: texture_2d_array<f32>;" name (bucket-name name))))
+        (format "//zgal-bucket ~a @group(0) @binding({binding}) var ~a: ~a;" name (bucket-name name)
+                (if storage-access (format "texture_storage_2d_array<{format}, ~a>" storage-access) "texture_2d_array<f32>"))))
 
-;; The helper doing op on element e of array binding `name`: 'implicit (sampling at the implicit
-;; level, in fragment shaders: with the derivatives taken before the switch, whose control flow
-;; isn't uniform), 'level (sampling at the level given), 'fetch or 'size (texture-size, from the
+;; The helper doing op on element e of array binding `name`: of textures, 'implicit (sampling at
+;; the implicit level, in fragment shaders: with the derivatives taken before the switch, whose
+;; control flow isn't uniform), 'level (sampling at the level given) or 'fetch; of storage images,
+;; 'load (image-load) or 'store (store!); of either, 'size (texture-size and image-size, from the
 ;; table). An index past the last element is the last (Vulkan leaves it undefined)
 (define (array-helper st name op)
   (define (switch params result call [before ""])
     (string-append
-     (format "fn ~a(e: u32~a) -> ~a {\n" helper-name params result)
+     (format "fn ~a(e: u32~a)~a {\n" helper-name params (if result (format " -> ~a" result) ""))
      (format "    let entry = ~a[min(e, ~a - 1u)];\n" (table-name name) (count-name name))
      before
      "    switch (entry.x) {\n"
-     (format "        //zgal-bucket ~a case {bucket}u: { return ~a; }\n" name call)
-     (format "        default: { return ~a(); }\n" result)
+     (if result
+         (format "        //zgal-bucket ~a case {bucket}u: { return ~a; }\n" name call)
+         (format "        //zgal-bucket ~a case {bucket}u: { ~a; }\n" name call))
+     (if result (format "        default: { return ~a(); }\n" result) "        default: {}\n")
      "    }\n"
      "}"))
   (define helper-name
-    (format "zgal~a_~a" (case op [(implicit) "Sample"] [(level) "SampleLevel"] [(fetch) "Fetch"] [(size) "Size"]) name))
+    (format "zgal~a_~a" (case op [(implicit) "Sample"] [(level) "SampleLevel"] [(fetch) "Fetch"] [(size) "Size"]
+                          [(load) "Load"] [(store) "Store"])
+            name))
   (define bucket (bucket-name name))
   (case op
     [(implicit level)
@@ -1354,6 +1384,12 @@
     [(fetch)
      (helper! st helper-name
        (λ () (switch ", at: vec2i, lod: i32" "vec4f" (format "textureLoad(~a, at, i32(entry.y), lod)" bucket))))]
+    [(load)
+     (helper! st helper-name
+       (λ () (switch ", at: vec2i" "vec4f" (format "textureLoad(~a, at, i32(entry.y))" bucket))))]
+    [(store)
+     (helper! st helper-name
+       (λ () (switch ", at: vec2i, value: vec4f" #f (format "textureStore(~a, at, i32(entry.y), value)" bucket))))]
     [(size)
      (helper! st helper-name
        (λ ()
@@ -1431,9 +1467,15 @@
   ;; An element of an array of textures: (array name . its index as a u32 expression)
   (define element (array-element st (first as)))
   (match* (op as)
-    [((or 'image-load 'image-size 'sample-compare) _)
+    [('sample-compare _)
      #:when element
      (web-error where "~a can't be used on an element of an array on the web" op)]
+    [('image-load (list _ texel))
+     #:when element
+     (format "~a(~a, ~a)" (array-helper st (car element) 'load) (cdr element) (p texel))]
+    [('image-size _)
+     #:when element
+     (format "~a(~a, 0i)" (array-helper st (car element) 'size) (cdr element))]
     [('fetch (list _ _ texel lod))
      #:when element
      (format "~a(~a, ~a, ~a)" (array-helper st (car element) 'fetch) (cdr element) (p texel) (p lod))]

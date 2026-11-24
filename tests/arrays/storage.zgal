@@ -1,0 +1,68 @@
+;; Arrays of storage images, natively and on the web (where each distinct image is a bucket of its
+;; own, a texture_storage_2d_array viewing it): make test-main and make test-web compare the capture
+;; with storage.approved.png, captured natively, exactly.
+;; A dispatch stores to every texel of three images of different sizes and formats through an array
+;; of them (first given twice, which stores the same values), each texel a value of its position and
+;; its image's size; the dispatch after it loads them through another array of them. third is
+;; surface-relative: the frame handler resizes the surface, to 3x2 in the first frame and 5x3 in the
+;; second, so it's recreated after the arrays were first bound: the capture, of the last frame
+;; (--frames 3), is the 5x3 image's.
+;; Each element is three rows of the capture: its texels loaded, then past its width its size, and
+;; below its height black.
+
+(compute-material Stamp
+  (workgroup 4 4)
+  (bindings (targets (array (storage-image write))))
+  (compute
+   (let* ([at (ivec2 globalInvocationId.xy)]
+          [e (/ at.y 3)]
+          [texel (ivec2 at.x (remainder at.y 3))])
+     (when (< e (int (array-length targets)))
+       (let* ([size (image-size (at targets e))])
+         (when (and (< texel.x size.x) (< texel.y size.y))
+           ;; Whole multiples of 1/255, which unorm8 stores exactly (and rgba16f closely enough
+           ;; that they round back to them)
+           (store! (at targets e) texel
+                   (vec4 (/ (+ (* (float texel.x) 40.0) 20.0) 255.0)
+                         (/ (+ (* (float texel.y) 60.0) 30.0) 255.0)
+                         (/ (* (float size.x) 30.0) 255.0)
+                         (/ (+ (* (float size.y) 50.0) 100.0) 255.0)))))))))
+
+(compute-material Show
+  (workgroup 4 4)
+  (bindings (sources (array (storage-image read))) (shown (storage-image write)))
+  (compute
+   (let* ([at (ivec2 globalInvocationId.xy)]
+          [e (/ at.y 3)]
+          [texel (ivec2 at.x (remainder at.y 3))])
+     (when (< e (int (array-length sources)))
+       (let* ([size (image-size (at sources e))])
+         (store! shown at
+                 (cond
+                   [(>= texel.y size.y) (vec4 0.0 0.0 0.0 1.0)]
+                   [(< texel.x size.x) (image-load (at sources e) texel)]
+                   [else (vec4 (/ (float size.x) 8.0) (/ (float size.y) 8.0) 0.0 1.0)])))))))
+
+(graph Stored
+  (image first rgba8 (fixed 4 2) #:frames shared)
+  (image second rgba16f (fixed 3 3) #:frames shared)
+  (image third rgba8 (surface 1.0) #:frames shared)
+  (image result rgba8 (fixed 8 12) #:frames shared)
+  (material stamping Stamp (targets (first second third first)) #:invocations (8 12))
+  (dispatch stamp stamping)
+  (material showing Show (sources (first second third first)) (shown result) #:invocations (8 12))
+  (dispatch show showing)
+  (readback capture result))
+
+(app Storage
+  (parameter destination path)
+  (on (frame dt)
+    (when (= frameNumber 0) (resize! 3 2))
+    (when (= frameNumber 1) (resize! 5 3)))
+  (run Stored))
+
+(main Storage
+  (about "Stores to and loads from arrays of storage images, one recreated as the surface resizes")
+  (timestep #:max 0.1 #:fixed 0.1)
+  (positional destination "the PNG file to write")
+  (capture capture #:to destination))

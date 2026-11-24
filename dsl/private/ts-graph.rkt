@@ -378,9 +378,9 @@
            (line! "    const target_~a: zgal.Target = ~a;" n (spec-text spec)))]
       [(g-material n m bindings push options invocations when l)
        (define (option k) (cond [(assq k options) => cdr] [else #f]))
-       ;; Arrays of textures are bound as TextureArrays (buckets of texture arrays: image files' and
-       ;; models' images are copied in when first bound, and graph images and imported ones are
-       ;; buckets of their own)
+       ;; Arrays of textures and of storage images are bound as TextureArrays (buckets of texture
+       ;; arrays: image files' and models' images are copied in when first bound, and graph images
+       ;; and imported ones, the only storage images, are buckets of their own)
        (for ([pair (in-list bindings)] #:when (eq? (binding-kind (car pair)) 'array))
          (match-define (cons b resource) pair)
          (define label (ts-string (format "~a's ~a" n (binding-name b))))
