@@ -184,14 +184,18 @@ then:
    `MainInputs`), `tests/border/border.zgal` (samplers clamping to a border, sampled by hand past
    the edges) compared with `border.approved.png`, captured natively by `make test-main`,
    `tests/arrays/arrays.zgal` (an array of textures of mixed sizes and colour spaces) compared
-   exactly with `arrays.approved.png`, likewise, and
+   exactly with `arrays.approved.png`, likewise, `tests/arrays/targets.zgal` (an array of two
+   surface-relative images one pass writes and the next fetches and samples, recreated by
+   `resize!` in the frame handler, run for 3 frames) compared exactly with `targets.approved.png`,
+   and
    `tests/stream/streamer.zgal` streaming a file (its opener in
    `streamer.inputs.ts`) (`headless.test.ts` needs no GPU: the PNG encoders and
    `parseCommandLine`'s `where`);
 3. runs `make test-pages`: the particles and scene pages, image_filter's page (run from its query
    string, its capture saved with the checkers' `--save-capture` and compared with
    `blur_edges.approved.png`), the border program's page (its capture compared likewise with
-   `border.approved.png`), the arrays program's page (compared exactly with `arrays.approved.png`),
+   `border.approved.png`), the arrays and targets programs' pages (compared exactly with
+   `arrays.approved.png` and `targets.approved.png`),
    `web/tests/mount.html` (mounts two programs and stops one),
    `web/tests/held-keys.html` (held keys and mouse buttons released once each, also when focus
    leaves, chorded buttons, cancelled pointers and lost captures, and a finger ignored while the
@@ -216,6 +220,12 @@ then:
    Playwright's headless shell, Firefox the macOS application or `firefox` on `PATH`), with a
    `note:` under the summary, unless `make` was given `BROWSERS`: then it fails, as it does when the
    browser `CHROMIUM` or `FIREFOX` names is missing.
+
+Captures compared exactly across GPUs need texels whose values every GPU rounds alike: an sRGB
+texel decodes to a fraction of 255 that, near x.5, rounds differently on different GPUs (sRGB 100
+decodes to 32.497, which SwiftShader and MoltenVK round apart), so the arrays tests' sRGB texels
+avoid such values, and their written texels are whole multiples of 1/255, which unorm8 stores
+exactly.
 
 Not every device has WebGPU's optional features: Dawn on lavapipe and Chromium's SwiftShader lack
 `texture-formats-tier2`, so programs that should run everywhere (the examples) don't bind

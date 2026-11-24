@@ -1,0 +1,76 @@
+;; An array of textures whose elements are graph images, written by the pass before, natively and on
+;; the web (where each graph image is a bucket of its own, a view of the image): make test-main and
+;; make test-web compare the capture with targets.approved.png, captured natively, exactly.
+;; A draw writes two surface-relative images, each texel a value of its position (first and second
+;; differ), which the dispatch after it fetches through an array of them and an image file
+;; (texels.png, 4x2), with first given twice. The frame handler resizes the surface, to 3x2 in the
+;; first frame and 5x3 in the second, so the images are recreated after the array was first bound:
+;; the capture, of the last frame (--frames 3), is the 5x3 images'.
+;; Each element is three rows of the capture: its texels fetched, then past its width its size, and
+;; whether its last column is sampled (nearest, at the texels' centres) and fetched through a
+;; function as it's fetched. The element changes between rows 2 and 3 and between rows 8 and 9,
+;; which one 8-wide SIMD vector of a 4x4 workgroup holds together, so its invocations fetch different
+;; elements: lavapipe fetched one invocation's element for all of them when the combined sampler,
+;; or a function's texture parameter, wasn't nonuniformEXT.
+
+;; Texel `at` of `picture`, through a function given the element
+(define (texelOf [picture : texture2D] [s : sampler] [at : ivec2]) : vec4
+  (fetch picture s at 0))
+
+(graphics-material Mark
+  (outputs (first vec4) (second vec4))
+  (vertex
+   (let* ([corner (vec2 (float (bitand vertexIndex 2)) (float (bitand (shl vertexIndex 1) 2)))])
+     (results #:position (vec4 (- (* corner 2.0) 1.0) 0.0 1.0))))
+  (fragment
+   ;; Whole multiples of 1/255, which unorm8 stores exactly
+   (let* ([p (floor fragCoord.xy)])
+     (results #:first (vec4 (/ (+ (* p.x 40.0) 20.0) 255.0) (/ (+ (* p.y 60.0) 30.0) 255.0) (/ 7.0 255.0) 1.0)
+              #:second (vec4 (/ (- 200.0 (* p.x 30.0)) 255.0) (/ (+ (* p.y 50.0) 100.0) 255.0) (/ 77.0 255.0) 1.0)))))
+
+(compute-material Show
+  (workgroup 4 4)
+  (bindings (elements (array texture)) (pick sampler) (shown (storage-image write)))
+  (compute
+   (let* ([at (ivec2 globalInvocationId.xy)]
+          [e (/ at.y 3)]
+          [texel (ivec2 at.x (remainder at.y 3))])
+     (when (< e (int (array-length elements)))
+       (let* ([size (texture-size (at elements e) 0)]
+              ;; Within the element: past its width, its last column, and below its height, black
+              [inside (ivec2 (min texel.x (- size.x 1)) (min texel.y (- size.y 1)))]
+              [fetched (fetch (at elements e) pick inside 0)]
+              [sampled (sample-lod (at elements e) pick (/ (+ (vec2 inside) 0.5) (vec2 size)) 0.0)]
+              [passed (texelOf (at elements e) pick inside)]
+              [same (if (and (= fetched sampled) (= fetched passed)) 1.0 0.0)])
+         (store! shown at
+                 (cond
+                   [(>= texel.y size.y) (vec4 0.0 0.0 0.0 1.0)]
+                   [(< texel.x size.x) fetched]
+                   [else (vec4 (/ (float size.x) 8.0) (/ (float size.y) 8.0) same 1.0)])))))))
+
+(graph Targeted
+  (image first rgba8 (surface 1.0) #:frames shared)
+  (image second rgba8 (surface 1.0) #:frames shared)
+  (image-file picture "texels.png" #:color linear)
+  (sampler pick #:filter nearest)
+  (image result rgba8 (fixed 8 12) #:frames shared)
+  (target marks (color first) (color second))
+  (material marking Mark #:cull none)
+  (draw mark marks marking 3)
+  (material showing Show (elements (first picture second first)) pick (shown result) #:invocations (8 12))
+  (dispatch show showing)
+  (readback capture result))
+
+(app Targets
+  (parameter destination path)
+  (on (frame dt)
+    (when (= frameNumber 0) (resize! 3 2))
+    (when (= frameNumber 1) (resize! 5 3)))
+  (run Targeted))
+
+(main Targets
+  (about "Fetches from an array of graph images written by the pass before, recreated as the surface resizes")
+  (timestep #:max 0.1 #:fixed 0.1)
+  (positional destination "the PNG file to write")
+  (capture capture #:to destination))
