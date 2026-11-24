@@ -107,3 +107,14 @@
   (material layering Layers (layers (wide small)) pick #:cull none)
   (draw paint onCanvas layering 3)
   (readback canvasRead canvas))
+
+;; The same with images the application imports, which it may write between frames: on the web
+;; they're buckets of their own, viewing the images, not copies
+(graph ImportedLayers
+  (import-images given #:resting shader-read-only)
+  (sampler pick #:filter nearest)
+  (image canvas rgba8 (fixed 4 4) #:frames shared)
+  (target onCanvas (color canvas #:clear (0 0 0 1)))
+  (material layering Layers (layers given) pick #:cull none)
+  (draw paint onCanvas layering 3)
+  (readback canvasRead canvas))

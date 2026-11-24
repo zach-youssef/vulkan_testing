@@ -2334,12 +2334,15 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        an array of many distinct sizes can pass the device's
        @tt{maxSampledTexturesPerShaderStage} (which the runtime requests as high as the adapter
        allows): creating the material's layout then fails with an error naming the array and its
-       buckets' sizes. Image files' images and a model's base colours (@tt{#:base-colors}) can be
-       its elements; each distinct image is a layer once, copied in when the graph binds it.}
+       buckets' sizes. Image files' images and a model's base colours (@tt{#:base-colors}) are
+       copied in when the graph binds the array, each distinct image a layer once; graph images
+       and imported ones (@racket[import-image], @racket[import-images]), which passes or the
+       application write, are each a bucket of their own, viewing the image, so an array of many
+       of them binds as many textures. When one is recreated (a surface-relative image after a
+       resize), the graph binds the array again.}
 ]
 
-Other arrays of bindings (of buffers or storage images, or chosen with @racket[#:select] or from
-imports) have no WebGPU equivalent, so compiling them for the web reports
+Other arrays of bindings (of buffers or storage images, or chosen with @racket[#:select]) have no WebGPU equivalent, so compiling them for the web reports
 @secref["error-not-on-web"]. GLSL bodies, and materials calling GLSL functions
 (@racket[extern-glsl]), are translated with glslc and naga (@secref["glsl"] and
 @secref["extern-glsl"], which list what they can't do on the web). The example's TypeScript follows in

@@ -35,6 +35,12 @@ export type FrameSource<T> = (frame: FrameInfo) => T;
 
 export type Extent = { fixed: readonly [number, number] } | { surface: number };
 
+// Whether an image's texels are set before a graph binds it and never change (image files, models'
+// base colours): arrays of textures copy those into their buckets, and bind the others (the graph's
+// images, which nodes write, and images the application imports) as buckets of their own, viewing
+// the image itself (see TextureArray)
+export type Texels = 'fixed' | 'live';
+
 export class GraphImage {
   texture: GPUTexture | null = null;
   // Bumped when the texture is recreated, so bind groups follow
@@ -42,10 +48,12 @@ export class GraphImage {
   readonly name: string;
   readonly format: GPUTextureFormat;
   readonly extent: Extent | null;
-  constructor(name: string, format: GPUTextureFormat, extent: Extent | null, imported: GPUTexture | null = null) {
+  readonly texels: Texels;
+  constructor(name: string, format: GPUTextureFormat, extent: Extent | null, texels: Texels, imported: GPUTexture | null = null) {
     this.name = name;
     this.format = format;
     this.extent = extent;
+    this.texels = texels;
     this.texture = imported;
   }
   get size(): [number, number] {
@@ -131,12 +139,15 @@ export class Uniform<T> {
 }
 
 // An array binding of textures (ZGAL's (array texture)) as WebGPU binds one, having no arrays of
-// bindings: its elements are copied into buckets, a texture array per distinct size and format
-// among them (more where one would have more layers than the device allows), each distinct image a
-// layer of one, and a table gives each element's bucket, layer and size, which materials' modules
-// read (wgsl.rkt's "Arrays of textures"). Made by RenderGraph.textureArray, built when first bound:
-// the elements' texels are copied then, and again when one is recreated (its generation changes),
-// so they're images whose texels are set before (image files, models' textures).
+// bindings: its elements are in buckets, texture arrays, and a table gives each element's bucket,
+// layer and size, which materials' modules read (wgsl.rkt's "Arrays of textures"). Elements whose
+// texels are fixed (image files, models' textures) are copied into a texture array per distinct
+// size and format among them (more where one would have more layers than the device allows), each
+// distinct image a layer of one, when the array is first bound. Each other distinct image (live:
+// the graph's images, which nodes write, and imported ones) is a bucket of its own, a 2d-array view
+// of its one layer, so what's written to it is what's sampled. Made by RenderGraph.textureArray;
+// when an element is recreated (its generation changes, e.g. a surface-relative image when the
+// surface resizes), the views and table are rebuilt and bind groups follow, keeping the copies.
 export class TextureArray {
   readonly name: string;
   readonly elements: readonly GraphImage[];
@@ -153,7 +164,10 @@ export class TextureArray {
 export interface BuiltArray {
   // The elements' generations it was built from
   readonly generations: readonly number[];
+  // Per bucket: the texture it views, and whether that's the array's copy of fixed elements (or a
+  // live element's own texture)
   readonly buckets: readonly GPUTexture[];
+  readonly copied: readonly boolean[];
   readonly views: readonly GPUTextureView[];
   // Per bucket: its elements' size
   readonly sizes: readonly (readonly [number, number])[];
@@ -325,7 +339,8 @@ export class MaterialInstance {
       }
       if (count > limit) {
         throw new Error(`material ${this.desc.name}'s ${stage} stage samples ${count} textures, more than this WebGPU device allows (maxSampledTexturesPerShaderStage ${limit}): ` +
-          `arrays of textures are a texture array per distinct size and format on the web, and it binds ${arrays.join(' and ')}; give their images fewer distinct sizes`);
+          `arrays of textures are a texture array per distinct size and format of their image files' and models' images on the web, and one per graph or imported image, ` +
+          `and it binds ${arrays.join(' and ')}; give their images fewer distinct sizes, or fewer graph or imported images`);
       }
     }
   }
@@ -609,51 +624,67 @@ interface StreamRecord {
 
 function destroyBuilt(built: BuiltArray | null): void {
   if (!built) return;
-  for (const t of built.buckets) t.destroy();
+  built.buckets.forEach((t, i) => built.copied[i] && t.destroy());
   built.table.destroy();
 }
 
-// Copies an array's elements (textures: its elements' textures) into buckets, with its table
-function buildArray(device: GPUDevice, array: TextureArray, textures: readonly GPUTexture[]): BuiltArray {
+// An array's buckets and table (textures: its elements' textures). Rebuilding (previous: what it
+// was built from before) keeps the copies of fixed elements, which aren't recreated, and the table
+// buffer, rewriting it.
+function buildArray(device: GPUDevice, array: TextureArray, textures: readonly GPUTexture[], previous: BuiltArray | null): BuiltArray {
   const maxLayers = device.limits.maxTextureArrayLayers;
-  // Per bucket: its size, format and textures (its layers); and the open bucket of each size and format
-  const buckets: { width: number; height: number; format: GPUTextureFormat; layers: GPUTexture[] }[] = [];
+  // Per bucket: its size, format and textures (its layers, or a live element's own texture); and
+  // the open bucket of each size and format of fixed elements. Buckets are in order of their first
+  // element, so where only live elements were recreated, each bucket is where it was.
+  const buckets: { width: number; height: number; format: GPUTextureFormat; layers: GPUTexture[]; copied: boolean }[] = [];
   const open = new Map<string, number>();
   const placed = new Map<GPUTexture, [number, number]>();
   const table = new Uint32Array(textures.length * 4);
   textures.forEach((t, i) => {
     let at = placed.get(t);
     if (!at) {
-      const key = `${t.width}x${t.height} ${t.format}`;
-      let bucket = open.get(key);
-      if (bucket === undefined || buckets[bucket].layers.length === maxLayers) {
-        bucket = buckets.length;
-        buckets.push({ width: t.width, height: t.height, format: t.format, layers: [] });
-        open.set(key, bucket);
+      if (array.elements[i].texels === 'live') {
+        at = [buckets.length, 0];
+        buckets.push({ width: t.width, height: t.height, format: t.format, layers: [t], copied: false });
+      } else {
+        const key = `${t.width}x${t.height} ${t.format}`;
+        let bucket = open.get(key);
+        if (bucket === undefined || buckets[bucket].layers.length === maxLayers) {
+          bucket = buckets.length;
+          buckets.push({ width: t.width, height: t.height, format: t.format, layers: [], copied: true });
+          open.set(key, bucket);
+        }
+        at = [bucket, buckets[bucket].layers.length];
+        buckets[bucket].layers.push(t);
       }
-      at = [bucket, buckets[bucket].layers.length];
-      buckets[bucket].layers.push(t);
       placed.set(t, at);
     }
     table.set([at[0], at[1], t.width, t.height], i * 4);
   });
-  const encoder = device.createCommandEncoder({ label: array.name });
+  // The copies are kept where every fixed element is as it was
+  const keep = previous !== null && array.elements.every((e, i) => e.texels === 'live' || e.generation === previous.generations[i]);
+  if (previous && !keep) previous.buckets.forEach((t, i) => previous.copied[i] && t.destroy());
+  let encoder: GPUCommandEncoder | null = null;
   const made = buckets.map((b, i) => {
+    if (!b.copied) return b.layers[0];
+    if (keep) return previous!.buckets[i];
+    encoder ??= device.createCommandEncoder({ label: array.name });
     // TEXTURE_BINDING | COPY_DST
     const texture = device.createTexture({ label: `${array.name} ${i}`, size: [b.width, b.height, b.layers.length], format: b.format, usage: 0x04 | 0x02 });
     b.layers.forEach((source, layer) => {
-      encoder.copyTextureToTexture({ texture: source }, { texture, origin: [0, 0, layer] }, [b.width, b.height, 1]);
+      encoder!.copyTextureToTexture({ texture: source }, { texture, origin: [0, 0, layer] }, [b.width, b.height, 1]);
     });
     return texture;
   });
-  device.queue.submit([encoder.finish()]);
+  if (encoder) device.queue.submit([(encoder as GPUCommandEncoder).finish()]);
   // UNIFORM | COPY_DST
-  const buffer = device.createBuffer({ label: `${array.name} table`, size: table.byteLength, usage: 0x40 | 0x08 });
+  const buffer = previous?.table ?? device.createBuffer({ label: `${array.name} table`, size: table.byteLength, usage: 0x40 | 0x08 });
   device.queue.writeBuffer(buffer, 0, table);
   return {
     generations: array.elements.map((e) => e.generation),
     buckets: made,
-    views: made.map((t) => t.createView({ dimension: '2d-array' })),
+    copied: buckets.map((b) => b.copied),
+    views: made.map((t, i) => t.createView({ dimension: '2d-array', baseArrayLayer: 0, arrayLayerCount: buckets[i].layers.length })),
     sizes: buckets.map((b) => [b.width, b.height] as const),
     table: buffer,
     shape: { count: textures.length, buckets: buckets.map((b) => b.format) },
@@ -719,14 +750,16 @@ export class RenderGraph {
   }
 
   createImage(name: string, format: GPUTextureFormat, extent: Extent): GraphImage {
-    const image = new GraphImage(name, format, extent);
+    const image = new GraphImage(name, format, extent, 'live');
     this.images.push(image);
     return image;
   }
 
-  // A texture the application owns, or the graph if owned (destroyed with it)
-  importImage(name: string, texture: GPUTexture, owned = false): GraphImage {
-    const image = new GraphImage(name, texture.format, null, texture);
+  // A texture the application owns, or the graph if owned (destroyed with it). Its texels are
+  // fixed where they're set before the graph binds it and never change (e.g. an image file's),
+  // which lets arrays of textures copy it (see Texels)
+  importImage(name: string, texture: GPUTexture, texels: Texels, owned = false): GraphImage {
+    const image = new GraphImage(name, texture.format, null, texels, texture);
     this.images.push(image);
     if (owned) this.owned.push(texture);
     return image;
@@ -734,12 +767,12 @@ export class RenderGraph {
 
   // Textures the application owns, each distinct one imported once (named name[i] after its first
   // element i), as natively zgal::importImages
-  importImages(name: string, textures: readonly GPUTexture[]): GraphImage[] {
+  importImages(name: string, textures: readonly GPUTexture[], texels: Texels): GraphImage[] {
     const imported = new Map<GPUTexture, GraphImage>();
     return textures.map((t, i) => {
       let image = imported.get(t);
       if (!image) {
-        image = this.importImage(`${name}[${i}]`, t);
+        image = this.importImage(`${name}[${i}]`, t, texels);
         imported.set(t, image);
       }
       return image;
@@ -761,8 +794,7 @@ export class RenderGraph {
     const textures = array.elements.map((e) => this.textureOf(e));
     const built = array.built;
     if (built && array.elements.every((e, i) => e.generation === built.generations[i])) return built;
-    destroyBuilt(built);
-    array.built = buildArray(this.context.device, array, textures);
+    array.built = buildArray(this.context.device, array, textures, built);
     array.generation++;
     return array.built;
   }

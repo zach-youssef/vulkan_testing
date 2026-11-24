@@ -49,7 +49,7 @@ export async function loadImageFile(context: Context, graph: RenderGraph, name: 
   } catch (error) {
     throw new Error(`image-file ${name} (${path}): ${error instanceof Error ? error.message : String(error)}`);
   }
-  return graph.importImage(name, texture, true);
+  return graph.importImage(name, texture, 'fixed', true);
 }
 
 // A per-frame value computed once a frame, however many use it

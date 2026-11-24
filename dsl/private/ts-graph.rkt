@@ -130,12 +130,6 @@
   (define (internal? n) (string-prefix? n "zgal_"))
   (define (looped? n) (pair? (g-node-loops n)))
 
-  ;; What the web can't do yet
-  (for ([item (in-list items)])
-    (match item
-      [(g-import-images n _ l) (web-error l "WebGPU has no arrays of bindings, so ~a's images can't be imported for one" n)]
-      [_ (void)]))
-
   (define parameters (of-type g-parameter?))
   (define inputs (of-type g-input?))
   (define images (of-type g-image?))
@@ -174,6 +168,7 @@
                 ['stream "zgal.StreamOpener"]
                 ['meshes "readonly zgal.Mesh[]"]))]
       [(g-import n _ _) (line! "  ~a: GPUTexture;" n)]
+      [(g-import-images n _ _) (line! "  ~a: readonly GPUTexture[];" n)]
       [(g-import-buffer n _ _) (line! "  ~a: GPUBuffer;" n)]
       [_ (void)]))
   (line! "}")
@@ -183,7 +178,7 @@
       (format "~a: zgal.~a~a" (name-of i) kind (if (conditional? i) " | undefined" ""))))
   (define image-members
     (append (members "GraphImage" (λ (i) (or (g-import? i) (g-image-file? i))) graph-item-name (λ (_) #f))
-            (members "GraphImage[]" g-model-textures? graph-item-name (λ (_) #f))
+            (members "GraphImage[]" (λ (i) (or (g-model-textures? i) (g-import-images? i))) graph-item-name (λ (_) #f))
             (members "GraphImage" g-image? graph-item-name g-image-when)))
   (define buffer-members
     (append (members "GraphBuffer" (λ (i) (or (g-import-buffer? i) (g-upload? i) (g-buffer-file? i) (g-model-factors? i) (g-model-draws? i) (g-model-bounds? i) (g-stream-buffer? i)))
@@ -244,7 +239,7 @@
       (match (entry-item e)
         [(g-image _ _ _ _ when _) (values (format "image_~a" n) when)]
         [(or (g-import _ _ _) (g-image-file _ _ _ _)) (values (format "image_~a" n) #f)]
-        [(g-model-textures _ _ _) (values (format "images_~a" n) #f)]
+        [(or (g-model-textures _ _ _) (g-import-images _ _ _)) (values (format "images_~a" n) #f)]
         [(g-buffer _ _ _ _ when _) (values (format "buffer_~a" n) when)]
         [(g-buffer-file _ _ _ when _) (values (format "buffer_~a" n) when)]
         [_ (values (format "buffer_~a" n) #f)]))
@@ -260,8 +255,12 @@
   (for ([item (in-list items)])
     (match item
       [(g-import n _ _)
-       (line! "    const image_~a = graph.importImage(~a, inputs.~a);" n (ts-string n) n)
+       (line! "    const image_~a = graph.importImage(~a, inputs.~a, 'live');" n (ts-string n) n)
        (line! "    result.images.~a = image_~a;" n n)]
+      [(g-import-images n _ _)
+       ;; Each distinct texture imported once, as natively; the application may write them
+       (line! "    const images_~a = graph.importImages(~a, inputs.~a, 'live');" n (ts-string n) n)
+       (line! "    result.images.~a = images_~a;" n n)]
       [(g-image-file n source color _)
        (line! "    const image_~a = await zgal.loadImageFile(context, graph, ~a, ~a, '~a');" n (ts-string n)
               (if (asset-source-path source) (ts-string (asset-source-path source)) (format "inputs.~a" (asset-source-input source)))
@@ -273,7 +272,7 @@
               (vertex-format-name f) (ts-string (format "~a's model ~a" name n)))]
       [(g-model-textures n model _)
        ;; An image per material, as natively (each distinct texture imported once)
-       (line! "    const images_~a = graph.importImages(~a, model_~a.baseColors);" n (ts-string n) model)
+       (line! "    const images_~a = graph.importImages(~a, model_~a.baseColors, 'fixed');" n (ts-string n) model)
        (line! "    result.images.~a = images_~a;" n n)]
       [(g-model-factors n model _)
        (line! "    const buffer_~a = graph.upload(~a, ~a, model_~a.baseColorFactors);" n (ts-string n) (ts-layout-type (vector-t 'float 4)) model)
@@ -379,8 +378,9 @@
            (line! "    const target_~a: zgal.Target = ~a;" n (spec-text spec)))]
       [(g-material n m bindings push options invocations when l)
        (define (option k) (cond [(assq k options) => cdr] [else #f]))
-       ;; Arrays of textures are bound as TextureArrays (buckets of texture arrays, which their
-       ;; elements' texels are copied into when first bound): a model's base colours, or image files
+       ;; Arrays of textures are bound as TextureArrays (buckets of texture arrays: image files' and
+       ;; models' images are copied in when first bound, and graph images and imported ones are
+       ;; buckets of their own)
        (for ([pair (in-list bindings)] #:when (eq? (binding-kind (car pair)) 'array))
          (match-define (cons b resource) pair)
          (define label (ts-string (format "~a's ~a" n (binding-name b))))
@@ -388,13 +388,8 @@
            [(g-selection _ _)
             (web-error l "WebGPU has no arrays of bindings, so material ~a's binding ~a can't #:select its elements" n (binding-name b))]
            [(list rs ...)
-            (for ([r (in-list rs)])
-              (match (entry-item (hash-ref env r))
-                [(g-image-file _ _ _ _) (void)]
-                [_ (web-error l "WebGPU has no arrays of bindings, so material ~a's binding ~a is bound as texture arrays, which only image files' (and models') images are copied into, not ~a's"
-                              n (binding-name b) r)]))
             (line! "    const array_~a_~a = graph.textureArray(~a, [~a]);" n (binding-name b) label
-                   (string-join (for/list ([r (in-list rs)]) (format "image_~a" r)) ", "))]
+                   (string-join (map resource-ref rs) ", "))]
            [_ (line! "    const array_~a_~a = graph.textureArray(~a, ~a);" n (binding-name b) label (resource-ref resource))]))
        (define bound
          (for/list ([pair (in-list bindings)])

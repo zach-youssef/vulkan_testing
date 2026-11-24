@@ -42,23 +42,30 @@
    "can't be an array of buffer-arrays"))
 
 
-(test-case "Graphs binding arrays of textures to what isn't copied into texture arrays"
+(test-case "Graphs binding arrays of textures: copied image files, and graph and imported images"
   (define (graph . items)
     (string-append layered "(graph G\n  (buffer counts uint 1 #:frames shared)\n  " (string-join items "\n  ")
                    "\n  (dispatch d m #:invocations (1)))"))
-  (check-not-on-web (graph "(image a rgba8 (fixed 4 4) #:frames shared)" "(image b rgba8 (fixed 4 4) #:frames shared)"
-                           "(material m Layered (layers (a b)) counts)")
-                    "only image files' (and models') images")
+  (define (web-ts text)
+    (define-values (_prog outputs)
+      (compile-zgal "test.zgal" #:text text #:read-body (λ (path) #f) #:native? #f #:web-dir "out/web"))
+    (output-text (findf (λ (o) (string-suffix? (output-path o) ".zgal.ts")) outputs)))
   ;; Image files of either colour space, as their elements' buckets are per format
-  (define-values (_prog outputs)
-    (compile-zgal "test.zgal" #:text (graph "(image-file a \"a.png\" #:color srgb)" "(image-file b \"b.png\" #:color linear)"
-                                            "(material m Layered (layers (a b a)) counts)")
-                  #:read-body (λ (path) #f) #:native? #f #:web-dir "out/web"))
-  (define ts (output-text (findf (λ (o) (string-suffix? (output-path o) ".zgal.ts")) outputs)))
-  (check-true (string-contains? ts "const array_m_layers = graph.textureArray('m\\'s layers', [image_a, image_b, image_a]);") ts)
-  (check-true (string-contains? ts "{ layers: { array: array_m_layers }, counts: { buffer: buffer_counts } }") ts)
-  (check-not-on-web (graph "(import-images given #:resting shader-read-only)" "(material m Layered (layers given) counts)")
-                    "can't be imported"))
+  (define files (web-ts (graph "(image-file a \"a.png\" #:color srgb)" "(image-file b \"b.png\" #:color linear)"
+                               "(material m Layered (layers (a b a)) counts)")))
+  (check-true (string-contains? files "const array_m_layers = graph.textureArray('m\\'s layers', [image_a, image_b, image_a]);") files)
+  (check-true (string-contains? files "{ layers: { array: array_m_layers }, counts: { buffer: buffer_counts } }") files)
+  ;; Graph images (one only some frames), mixed with an image file: buckets of their own
+  (define images (web-ts (graph "(parameter withB bool)" "(image a rgba8 (fixed 4 4) #:frames shared)"
+                                "(image b rgba8 (surface 0.5) #:frames shared #:when withB)" "(image-file c \"c.png\" #:color linear)"
+                                "(material m Layered (layers (a c b)) counts)")))
+  (check-true (string-contains? images "const array_m_layers = graph.textureArray('m\\'s layers', [image_a, image_c, need(image_b, 'b')]);") images)
+  ;; Imported images, which the application gives
+  (define imported (web-ts (graph "(import-images given #:resting shader-read-only)" "(material m Layered (layers given) counts)")))
+  (check-true (string-contains? imported "  given: readonly GPUTexture[];") imported)
+  (check-true (string-contains? imported "const images_given = graph.importImages('given', inputs.given, 'live');") imported)
+  (check-true (string-contains? imported "result.images.given = images_given;") imported)
+  (check-true (string-contains? imported "const array_m_layers = graph.textureArray('m\\'s layers', images_given);") imported))
 
 ;; The WGSL compiling text for the web gives for shader `name` (e.g. "Stamp.comp.wgsl")
 (define (web-shader text name)
