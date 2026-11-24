@@ -2324,6 +2324,14 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        the branch folds away. A function's sampler parameter is likewise the variants the function
        uses, then those constants, and a function given a depth texture for a parameter it only
        samples is specialized for it (@tt{zgalDepth_0_f} for its first parameter).}
+ @item{A device without WebGPU's @tt{float32-filterable} feature samples 32-bit float images
+       (@tt{r32float}, @tt{rgba32float}) only with non-filtering samplers, and a material sampling
+       one binds all its plain samplers as non-filtering: each needs nearest filters
+       (@racket[#:filter] and @racket[#:mipmap]), which the runtime says if one doesn't. WebGPU
+       pairs every texture a function samples with every sampler it samples it with, over all the
+       function's calls, and the module samples through shared helpers, so telling which samplers
+       meet the image would need those helpers, and the functions between, specialized per
+       texture and sampler.}
  @item{A storage image's texel format is part of its WGSL type: modules are written with
        @tt{rgba8unorm}.}
  @item{WebGPU's vertex stage can't see a buffer or storage image that's written: a graphics

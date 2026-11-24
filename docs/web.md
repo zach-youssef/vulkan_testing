@@ -185,6 +185,12 @@ This page has what the reference doesn't: the runtime's conventions and how to t
 - WebGPU validation: a filtering `GPUSampler` in a non-filtering layout slot is a bind-group error
   on Dawn and Chromium. `textureGather` on a `texture_depth_2d` works with a non-filtering sampler
   everywhere (Dawn, SwiftShader, Firefox) and honours address modes.
+- WebGPU checks samplers against textures per pair of a texture and a sampler one call samples
+  it with, and a WGSL function's parameters pair every argument with every other over all its
+  calls. The generated modules sample through shared helpers (`zgalSampleLevel`), so a material
+  sampling an unfilterable 32-bit float image makes all its plain samplers non-filtering
+  (`MaterialInstance.unfilterable`): narrowing that per sampler needs the helpers, and the user
+  functions calling them, specialized per texture and sampler, as depth parameters are.
 - The naga CLI isn't on `PATH` (`make naga` builds it, see
   [building-and-testing.md](building-and-testing.md)). Dawn validates generated WGSL with Tint,
   while Firefox validates it with naga, so running naga on a generated `.wgsl` file is a cheap

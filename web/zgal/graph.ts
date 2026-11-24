@@ -432,8 +432,9 @@ export class MaterialInstance {
 
   // Why a plain sampler of this material can't filter, or null: it samples a depth image without
   // comparing with it (a texture_2d<f32>, which WebGPU samples only with non-filtering samplers; a
-  // depth texture is filtered by hand) or a 32-bit format the device can't filter. Which sampler
-  // samples which texture isn't described, so every plain sampler is non-filtering then
+  // depth texture is filtered by hand) or a 32-bit format the device can't filter. Every plain
+  // sampler is non-filtering then: modules sample through shared helpers, whose parameters WebGPU
+  // pairs over all their calls, so each sampler meets every texture (docs/web.md)
   unfilterable(): string | null {
     const filterable = this.graph.context.hasFeature('float32-filterable');
     let format: string | null = null;
