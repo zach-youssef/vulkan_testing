@@ -549,3 +549,33 @@
   (with-check-info (['wgsl wgsl])
     (check-regexp-match #rx"vec2i\\(firstLeadingBit\\(vec2u\\(" wgsl)
     (check-regexp-match #rx"[^<(]firstLeadingBit\\(i32\\(" wgsl)))
+
+(test-case "A graphics material's writable bindings mustn't be visible to its vertex stage"
+  (define (material bindings vertex fragment)
+    (format "(graphics-material Paint
+       (outputs (color vec4))
+       (bindings ~a)
+       (vertex ~a)
+       (fragment ~a))" bindings vertex fragment))
+  (define position "(results #:position (vec4 0.0 0.0 0.0 1.0))")
+  (define (then effect) (format "(begin ~a ~a)" effect position))
+  (define reading "(results #:position (vec4 (float (at counts 0)) 0.0 0.0 1.0))")
+  (define color "(vec4 1.0)")
+  ;; Written by the vertex shader
+  (check-not-on-web (material "(counts (buffer-array uint))" (then "(write! (at counts 0) 1)") color)
+                    "binding counts is write and its vertex shader uses it")
+  (check-not-on-web (material "(counts (buffer-array uint))" (then "(atomic-add! (at counts 0) 1)") color)
+                    "binding counts is read-write and its vertex shader uses it")
+  (check-not-on-web (material "(marks (storage-image))" (then "(store! marks (ivec2 0 0) (vec4 1.0))") color)
+                    "binding marks is write and its vertex shader uses it")
+  ;; Read by the vertex shader, written by the fragment shader: one binding, read-write
+  (check-not-on-web (material "(counts (buffer-array uint))" reading "(begin (write! (at counts 1) 2) (vec4 1.0))")
+                    "binding counts is read-write and its vertex shader uses it")
+  ;; Used by no shader, so visible to every stage
+  (check-not-on-web (material "(counts (buffer-array uint write))" position color)
+                    "binding counts is write, but no shader uses it")
+  ;; Written by the fragment shader only, read by the vertex shader only, or unused and read: fine
+  (for ([ok (list (material "(counts (buffer-array uint))" position "(begin (write! (at counts 0) 1) (vec4 1.0))")
+                  (material "(counts (buffer-array uint))" reading color)
+                  (material "(counts (buffer-array uint read))" position color))])
+    (check-false (zgal-error-of ok #:web? #t) ok)))

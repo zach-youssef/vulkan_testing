@@ -2322,10 +2322,12 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        samples is specialized for it (@tt{zgalDepth_0_f} for its first parameter).}
  @item{A storage image's texel format is part of its WGSL type: modules are written with
        @tt{rgba8unorm}.}
- @item{WebGPU's vertex shaders can't write: buffers and storage images a vertex shader uses must be
-       read-only there, so a vertex shader that writes one (@racket[write!], @racket[store!] or an
-       atomic) compiles but fails with a WebGPU validation error when the graph creates the
-       material's bind group layout.}
+ @item{WebGPU's vertex stage can't see a buffer or storage image that's written: a graphics
+       material's binding with access @racket[write] or @racket[read-write] (inferred or declared)
+       that its vertex shader uses (writing it with @racket[write!], @racket[store!] or an atomic,
+       or reading what the fragment shader writes), or that no shader uses (which the runtime makes
+       visible to every stage), is refused when compiling for the web
+       (@secref["error-not-on-web"]).}
  @item{Names WGSL reserves (e.g. @tt{target}, @tt{type}) are spelled with a @tt{zgal_} prefix.}
  @item{An array of textures is a @tt{texture_2d_array} per distinct size and format of its
        elements' images (the array's buckets, @tt{zgalBucket_a_0} on), plus a uniform table
@@ -2376,7 +2378,7 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        (requested as high as the adapter allows, 12 by default): creating the material's layout
        then fails with an error naming the arrays.}
  @item{A binding no shader stage uses still counts against every stage's limits above, as its
-       layout entry is visible to them all.}
+       layout entry is visible to them all (so it can't be written, see above).}
 ]
 
 Arrays of bindings chosen each frame with @racket[#:select] have no WebGPU equivalent, so compiling them for the web reports

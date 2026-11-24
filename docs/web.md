@@ -54,7 +54,9 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   default), checked with the error naming the arrays; `web/tests/models.test.ts` checks it.
 - A binding no shader stage uses is visible to every stage of its material (`bindingStages`, as
   WebGPU needs some visibility), so the per-stage checks above count it in each stage, as WebGPU
-  does; `web/tests/models.test.ts` checks it.
+  does; `web/tests/models.test.ts` checks it. The vertex stage can't see writable storage, so the
+  compiler refuses a graphics material's writable binding its vertex shader or no shader uses
+  (`check-vertex-writes` in `dsl/private/ts.rkt`).
 - `MaterialInstance` refuses a buffer or image that two of a material's bindings bind (two plain
   bindings, an array's element and another binding, or an element of two arrays) where either
   writes it (a buffer or storage image not bound read-only), naming the material, the resource and

@@ -142,10 +142,30 @@
                           ", "))]
     [_ (ts-layout-type t)]))
 
+;; WebGPU's vertex stage can't see a writable storage buffer or storage texture (one bound
+;; read-write or write-only), so graphics material m's bindings (wgsl-bindings) that write mustn't
+;; be visible to its vertex shader: neither used by it, nor used by no stage, which the runtime makes
+;; visible to every stage (material.ts's bindingStages) as WebGPU needs some visibility
+(define (check-vertex-writes m bindings)
+  (for ([b (in-list bindings)]
+        #:when (memq (wgsl-binding-access b) '(write read-write)))
+    (define source (wgsl-binding-source b))
+    (define stages (wgsl-binding-stages b))
+    (cond
+      [(memq 'vertex stages)
+       (zgal-error 'not-on-web (binding-loc source)
+                   "material ~a's binding ~a is ~a and its vertex shader uses it, but WebGPU's vertex stage can't see a buffer or storage image that's written: only write it from the fragment shader or a compute pass"
+                   (material-name m) (binding-name source) (wgsl-binding-access b))]
+      [(null? stages)
+       (zgal-error 'not-on-web (binding-loc source)
+                   "material ~a's binding ~a is ~a, but no shader uses it, so WebGPU would make it visible to the vertex stage, which can't see a buffer or storage image that's written: remove it, or declare it read"
+                   (material-name m) (binding-name source) (wgsl-binding-access b))])))
+
 ;; glsl: m's translation (a web-material), for a material compiled through GLSL, or #f
 (define (emit-material prog m glsl)
   (define kind (material-kind m))
   (define bindings (if glsl (web-material-bindings glsl) (wgsl-bindings prog m)))
+  (when (eq? kind 'graphics) (check-vertex-writes m bindings))
   (define push (wgsl-push-layout m))
   (define (stages-text b) (format "[~a]" (string-join (map (λ (s) (ts-string (symbol->string s))) (wgsl-binding-stages b)) ", ")))
   (append
