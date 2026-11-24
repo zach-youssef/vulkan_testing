@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
+import { restoreFrames } from './frames.ts';
 import { Evaluating, Picturing, Probe, collatz, evaluate, exact, triangle } from '../apps.zgal.ts';
 
 let context: zgal.Context;
@@ -106,28 +107,32 @@ test('handlers compute the next state from events, the clock and externs', async
 
 test('effects: quit!, resize!, set-frames-in-flight! and run-once!', async () => {
   const { app, frame, destroy } = await probe();
-  assert.equal(app.quitRequested(), false);
-  app.handle({ kind: 'key-pressed', key: 'Escape' });
-  assert.equal(app.quitRequested(), true);
-  app.handle({ kind: 'key-pressed', key: 'R' });
-  assert.deepEqual(app.takeResize(), [32, 16]);
-  assert.equal(app.takeResize(), null);
-  // A new count applies at the next frame boundary, as natively
-  assert.equal(context.framesInFlight, 2);
+  const before = context.framesInFlight;
+  try {
+    assert.equal(app.quitRequested(), false);
+    app.handle({ kind: 'key-pressed', key: 'Escape' });
+    assert.equal(app.quitRequested(), true);
+    app.handle({ kind: 'key-pressed', key: 'R' });
+    assert.deepEqual(app.takeResize(), [32, 16]);
+    assert.equal(app.takeResize(), null);
+    // A new count applies at the next frame boundary, as natively
+    assert.equal(context.framesInFlight, 2);
 
-  app.handle({ kind: 'key-released', key: 'S' });
-  const shown = app.shownIds;
-  await frame();
-  assert.equal(context.framesInFlight, 3);
-  assert.equal(context.frameIndex, 0);
-  context.setFramesInFlight(2);
-  // The once node ran in the first frame of its graph
-  assert.equal(app.renderGraph().isEnabled(shown.nodes.onceFilling), false);
-  app.handle({ kind: 'key-pressed', key: 'O' });
-  assert.equal(app.renderGraph().isPendingOnce(shown.nodes.onceFilling), true);
-  await frame();
-  assert.equal(app.renderGraph().isPendingOnce(shown.nodes.onceFilling), false);
-  destroy();
+    app.handle({ kind: 'key-released', key: 'S' });
+    const shown = app.shownIds;
+    await frame();
+    assert.equal(context.framesInFlight, 3);
+    assert.equal(context.frameIndex, 0);
+    // The once node ran in the first frame of its graph
+    assert.equal(app.renderGraph().isEnabled(shown.nodes.onceFilling), false);
+    app.handle({ kind: 'key-pressed', key: 'O' });
+    assert.equal(app.renderGraph().isPendingOnce(shown.nodes.onceFilling), true);
+    await frame();
+    assert.equal(app.renderGraph().isPendingOnce(shown.nodes.onceFilling), false);
+  } finally {
+    restoreFrames(context, before);
+    destroy();
+  }
 });
 
 test('phases: the first graph whose condition holds runs, with inputs and enables from the state', async () => {

@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
+import { restoreFrames } from './frames.ts';
 import { Corner, Cull, CulledModels, ImportedLayers, ImportedStores, LayerGraph, Layers, Meshes, Models, ModelVertex, Scale, Spread, Spreads, Stamps } from '../models.zgal.ts';
 
 const assets = fileURLToPath(new URL('assets', import.meta.url));
@@ -306,22 +307,24 @@ test('texture arrays view each frame slot\'s copy of per-frame images, following
       assert.equal(views[2].label, 'shown');
     });
   };
-  const built = graph.arrayOf(array);
-  check(built);
-  // A new count, applied at the frame boundary: the frame's start adds rotating's copy, and the
-  // array is rebuilt with a slot more, keeping its copy of the fixed image and its table
   const before = context.framesInFlight;
-  context.setFramesInFlight(before + 1);
-  context.advanceFrame();
-  graph.imageExtent(rotating);
-  const rebuilt = graph.arrayOf(array);
-  assert.notEqual(rebuilt, built);
-  assert.equal(context.framesInFlight, before + 1);
-  check(rebuilt);
-  assert.equal(rebuilt.buckets[0], built.buckets[0]);
-  assert.equal(rebuilt.table, built.table);
-  context.setFramesInFlight(before);
-  context.advanceFrame();
+  try {
+    const built = graph.arrayOf(array);
+    check(built);
+    // A new count, applied at the frame boundary: the frame's start adds rotating's copy, and the
+    // array is rebuilt with a slot more, keeping its copy of the fixed image and its table
+    context.setFramesInFlight(before + 1);
+    context.advanceFrame();
+    graph.imageExtent(rotating);
+    const rebuilt = graph.arrayOf(array);
+    assert.notEqual(rebuilt, built);
+    assert.equal(context.framesInFlight, before + 1);
+    check(rebuilt);
+    assert.equal(rebuilt.buckets[0], built.buckets[0]);
+    assert.equal(rebuilt.table, built.table);
+  } finally {
+    restoreFrames(context, before);
+  }
   graph.destroy();
   fixed[0].texture!.destroy();
   assert.deepEqual(context.errors, []);
@@ -539,19 +542,18 @@ test('arrays of buffers bind each frame slot\'s copy of per-frame buffers, follo
     assert.equal(new Set(groups).size, context.framesInFlight);
     return groups;
   };
+  const before = context.framesInFlight;
   try {
     const groups = check();
     // Back at slot 0, its group is the cached one
     assert.equal(binder.bindGroup(), groups[0]);
     // A new count, applied at the frame boundary: rotating gains a copy, and so a slot its group
-    const before = context.framesInFlight;
     context.setFramesInFlight(before + 1);
     context.advanceFrame();
     check();
-    context.setFramesInFlight(before);
-    context.advanceFrame();
   } finally {
     device.createBindGroup = create;
+    restoreFrames(context, before);
   }
   graph.destroy();
   assert.deepEqual(context.errors, []);
