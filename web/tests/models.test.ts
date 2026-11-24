@@ -671,3 +671,39 @@ test('arrays of bindings are checked against the uniform buffers a stage may bin
   texture.destroy();
   assert.deepEqual(context.errors, []);
 });
+
+test('a binding no stage uses counts against every stage\'s limits, as WebGPU makes it visible to them all', async () => {
+  const device = context.device;
+  const graph = new zgal.RenderGraph(context);
+  const buffer = graph.createBuffer('buffer', 'shared', zgal.uint, 1);
+  const texture = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
+  const image = graph.importImage('image', texture, 'live');
+  const bound: Record<string, zgal.Bound> = {
+    'buffer': { buffer }, 'texture': { image },
+    'texture-array': { array: graph.textureArray('images', [image]) }, 'storage-buffer-array': { buffers: graph.bufferArray('buffers', [buffer]) },
+  };
+  // A binding of each kind given, the last used by no stage (stages: [])
+  const material = (kinds: readonly zgal.BindingDesc['kind'][]) => {
+    const bindings = kinds.map((kind, i): zgal.BindingDesc =>
+      ({ name: `b${i}`, resource: `b${i}`, kind, access: kind.startsWith('texture') ? null : 'read', stages: i === kinds.length - 1 ? [] : ['compute'], depth: false }));
+    return new zgal.MaterialInstance(graph, { ...Cull, name: 'Unused', bindings, push: { ...Cull.push!, binding: bindings.length } },
+      Object.fromEntries(bindings.map((b) => [b.resource, bound[b.kind]])), null, null);
+  };
+  const many = (kind: zgal.BindingDesc['kind'], count: number) => Array.from({ length: count }, () => kind);
+  const storage = device.limits.maxStorageBuffersPerShaderStage;
+  assert.throws(() => material(many('buffer', storage + 1)).groupLayout(), new RegExp(`^Error: material Unused's compute stage binds ${storage + 1} storage buffers, more than`));
+  material(many('buffer', storage)).groupLayout();
+  const sampled = device.limits.maxSampledTexturesPerShaderStage;
+  assert.throws(() => material(many('texture', sampled + 1)).groupLayout(), new RegExp(`^Error: material Unused's compute stage samples ${sampled + 1} textures, more than`));
+  material(many('texture', sampled)).groupLayout();
+  // Arrays' tables and the push constants: arrays of textures as far as the stage may sample
+  // textures (a bucket each), then arrays of buffers
+  const uniform = device.limits.maxUniformBuffersPerShaderStage;
+  const textures = Math.min(uniform, sampled);
+  const arrays = (count: number) => [...many('texture-array', Math.min(count, textures)), ...many('storage-buffer-array', count - Math.min(count, textures))];
+  assert.throws(() => material(arrays(uniform)).groupLayout(), new RegExp(`^Error: material Unused's compute stage binds ${uniform + 1} uniform buffers, more than`));
+  material(arrays(uniform - 1)).groupLayout();
+  graph.destroy();
+  texture.destroy();
+  assert.deepEqual(context.errors, []);
+});

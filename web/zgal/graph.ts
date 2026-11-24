@@ -5,6 +5,7 @@
 
 import type { Context } from './context.ts';
 import {
+  bindingStages,
   isArrayKind,
   isDepthFormat,
   firstBuckets,
@@ -465,7 +466,7 @@ export class MaterialInstance {
       let count = 0;
       const arrays: string[] = [];
       for (const b of this.desc.bindings) {
-        if (!b.stages.includes(stage)) continue;
+        if (!bindingStages(this.desc, b).includes(stage)) continue;
         const bound = this.bindings[b.resource];
         if (b.kind === 'texture') count++;
         if (b.kind !== 'texture-array' || !('array' in bound)) continue;
@@ -491,7 +492,7 @@ export class MaterialInstance {
       let count = 0;
       const arrays: string[] = [];
       for (const b of this.desc.bindings) {
-        if (!b.stages.includes(stage)) continue;
+        if (!bindingStages(this.desc, b).includes(stage)) continue;
         const bound = this.bindings[b.resource];
         if (b.kind === 'storage-image') count++;
         if (b.kind !== 'storage-image-array' || !('array' in bound)) continue;
@@ -516,7 +517,7 @@ export class MaterialInstance {
       let count = 0;
       const arrays: string[] = [];
       for (const b of this.desc.bindings) {
-        if (!b.stages.includes(stage)) continue;
+        if (!bindingStages(this.desc, b).includes(stage)) continue;
         const bound = this.bindings[b.resource];
         if (b.kind === 'buffer' || b.kind === 'buffer-array') count++;
         if (!('buffers' in bound)) continue;
@@ -536,7 +537,7 @@ export class MaterialInstance {
     const limit = this.graph.context.device.limits.maxUniformBuffersPerShaderStage;
     const stages: Stage[] = this.desc.kind === 'compute' ? ['compute'] : ['vertex', 'fragment'];
     for (const stage of stages) {
-      const arrays = this.desc.bindings.filter((b) => b.stages.includes(stage) && isArrayKind(b.kind)).map((b) => b.resource);
+      const arrays = this.desc.bindings.filter((b) => bindingStages(this.desc, b).includes(stage) && isArrayKind(b.kind)).map((b) => b.resource);
       // The push constants' buffer is visible to every stage (material.ts's layoutEntries)
       const count = arrays.length + (this.desc.push ? 1 : 0);
       if (count > limit) {

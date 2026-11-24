@@ -170,13 +170,16 @@ export function shaderCode(m: MaterialDesc, source: ShaderSource, formats: Bound
   return expandArrays(source(storageFormats(m, formats)), m, formats);
 }
 
+// The stages a binding is visible to: those using it, or every stage of the material where none
+// does (WebGPU counts it against each stage's limits all the same)
+export function bindingStages(m: MaterialDesc, b: BindingDesc): readonly Stage[] {
+  return b.stages.length > 0 ? b.stages : m.kind === 'compute' ? ['compute'] : ['vertex', 'fragment'];
+}
+
 // The bind group layout entries of a material bound to resources of `formats`
 export function layoutEntries(device: GPUDevice, m: MaterialDesc, formats: BoundFormats): GPUBindGroupLayoutEntry[] {
   const filterable = device.features.has('float32-filterable');
-  const stagesOf = (b: BindingDesc) => {
-    const used = b.stages.length > 0 ? b.stages : m.kind === 'compute' ? ['compute' as Stage] : ['vertex' as Stage, 'fragment' as Stage];
-    return used.reduce((flags, s) => flags | stageFlags[s], 0);
-  };
+  const stagesOf = (b: BindingDesc) => bindingStages(m, b).reduce((flags, s) => flags | stageFlags[s], 0);
   const sampleType = (format: GPUTextureFormat | undefined, depth: boolean): GPUTextureSampleType =>
     depth ? 'depth' : format && (isDepthFormat(format) || (!filterable && unfilterable.has(format))) ? 'unfilterable-float' : 'float';
   const buckets: GPUBindGroupLayoutEntry[] = [];

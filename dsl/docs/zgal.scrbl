@@ -2375,6 +2375,8 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        stage binding many arrays can pass the device's @tt{maxUniformBuffersPerShaderStage}
        (requested as high as the adapter allows, 12 by default): creating the material's layout
        then fails with an error naming the arrays.}
+ @item{A binding no shader stage uses still counts against every stage's limits above, as its
+       layout entry is visible to them all.}
 ]
 
 Arrays of bindings chosen each frame with @racket[#:select] have no WebGPU equivalent, so compiling them for the web reports
