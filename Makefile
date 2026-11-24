@@ -300,7 +300,17 @@ FRAMES_TEST_WEB = $(OUT)/web/frames
 $(eval $(call zgal-program,$(TEST_DIR)/frames/frames.zgal,$(FRAMES_TEST_OUT),frames,))
 $(eval $(call zgal-web-program,$(TEST_DIR)/frames/frames.zgal,$(FRAMES_TEST_WEB)))
 
-test-main: $(MAIN_TEST_BIN) $(BORDER_TEST_BIN) $(ARRAYS_TEST_BIN) $(TARGETS_TEST_BIN) $(STORAGE_TEST_BIN) $(FRAMES_TEST_BIN) $(IMAGE_FILTER_DIFF)
+# Arrays of buffers a dispatch reads and writes (16-bit integers and atomics) and the next one reads,
+# each invocation's element its row's (tests/arrays/buffers.zgal), compared likewise with
+# buffers.approved.png: on the web each distinct buffer is a bucket of its own
+BUFFERS_TEST_OUT = $(TEST_OUT)/buffers
+BUFFERS_TEST_BIN = $(BUFFERS_TEST_OUT)/buffers
+BUFFERS_TEST_WEB = $(OUT)/web/buffers
+
+$(eval $(call zgal-program,$(TEST_DIR)/arrays/buffers.zgal,$(BUFFERS_TEST_OUT),buffers,))
+$(eval $(call zgal-web-program,$(TEST_DIR)/arrays/buffers.zgal,$(BUFFERS_TEST_WEB)))
+
+test-main: $(MAIN_TEST_BIN) $(BORDER_TEST_BIN) $(ARRAYS_TEST_BIN) $(TARGETS_TEST_BIN) $(STORAGE_TEST_BIN) $(FRAMES_TEST_BIN) $(BUFFERS_TEST_BIN) $(IMAGE_FILTER_DIFF)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-main-steps
 
 test-main-steps:
@@ -327,6 +337,8 @@ test-main-steps:
 	  ./$(FRAMES_TEST_BIN) $(FRAMES_TEST_OUT)/$$run.png --first $${run%-*} --second $${run#*-} --frames 16 --validation || exit 1; \
 	  ./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/frames/frames-$$run.approved.png $(FRAMES_TEST_OUT)/$$run.png 0 || exit 1; \
 	done
+	./$(BUFFERS_TEST_BIN) $(BUFFERS_TEST_OUT)/out.png --frames 3 --validation
+	./$(IMAGE_FILTER_DIFF) $(TEST_DIR)/arrays/buffers.approved.png $(BUFFERS_TEST_OUT)/out.png 0
 
 # The benchmark (tools/bench): ZGAL's library kernels and fallbacks at a size the command line gives.
 #   make bench                         - builds build/tools/bench/bench
@@ -422,6 +434,9 @@ test-web-steps:
 	  $(NODE) $(FRAMES_TEST_WEB)/frames.zgal.main.js $(FRAMES_TEST_WEB)/$$run.png --first $${run%-*} --second $${run#*-} --frames 16 || exit 1; \
 	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/frames/frames-$$run.approved.png $(FRAMES_TEST_WEB)/$$run.png 0 || exit 1; \
 	done
+	$(MAKE) $(BUFFERS_TEST_WEB)
+	$(NODE) $(BUFFERS_TEST_WEB)/buffers.zgal.main.js $(BUFFERS_TEST_WEB)/out.png --frames 3
+	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/buffers.approved.png $(BUFFERS_TEST_WEB)/out.png 0
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/identity.png 1
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(SIMPLE_DIR)/textures/texture.jpg $(IMAGE_FILTER_WEB)/identity-jpeg.png
@@ -465,7 +480,7 @@ test-decode-steps:
 BROWSERS = chromium
 BROWSERS_REQUIRED = $(if $(filter command line environment override,$(origin BROWSERS)),1)
 TEST_PAGES = $(OUT)/web/tests
-test-pages: web $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) $(ARRAYS_TEST_WEB) $(TARGETS_TEST_WEB) $(STORAGE_TEST_WEB) $(FRAMES_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE) $(ZGAL_NAGA)
+test-pages: web $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) $(ARRAYS_TEST_WEB) $(TARGETS_TEST_WEB) $(STORAGE_TEST_WEB) $(FRAMES_TEST_WEB) $(BUFFERS_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE) $(ZGAL_NAGA)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-pages-steps
 
 test-pages-steps:
@@ -512,6 +527,9 @@ test-pages-steps:
 	      "frames/frames.zgal.html?arg=out.png&first=$${run%-*}&second=$${run#*-}&frames=16" || exit 1; \
 	    $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/frames/frames-$$run.approved.png $(TEST_PAGES)/frames-$$run-$$browser.png 0 || exit 1; \
 	  done; \
+	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/buffers-$$browser.png \
+	    'buffers/buffers.zgal.html?arg=out.png&frames=3' || exit 1; \
+	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/buffers.approved.png $(TEST_PAGES)/buffers-$$browser.png 0 || exit 1; \
 	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps glsl streams stream-buffers stop-streams; do \
 	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
 	  done; \

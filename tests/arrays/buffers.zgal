@@ -1,0 +1,99 @@
+;; Arrays of buffers, natively and on the web (where each distinct buffer is a bucket of its own,
+;; words the shader switches between): make test-main and make test-web compare the capture with
+;; buffers.approved.png, captured natively, exactly.
+;; Each invocation's element is its row's (y mod 3), so it varies within a workgroup and a SIMD
+;; vector (which, natively, needs nonuniformEXT). A dispatch reads its element of an array of
+;; structs (two uniforms) and writes through arrays of buffers: a 16-bit integer, partial words on
+;; the web (halves); a count (counts, an atomic add); and in lows a minimum (a signed atomic min, a
+;; loop on the web) and a flag (a compare-exchange). Each array's first buffer is given twice, so
+;; it's two elements (and on the web one bucket: arrays of at most two distinct buffers keep a
+;; stage within the 8 storage buffers every WebGPU device binds), and the app changes the first
+;; uniform after the first frame. The dispatch after it reads them through arrays of them, halves
+;; in another order (and one more element), into the capture: red the 16-bit integer, green the count, blue the flag,
+;; alpha the minimum.
+
+(struct Tint
+  (scale float)
+  (offset vec2)
+  (tag uint16))
+
+(compute-material Fill
+  (workgroup 4 4)
+  (bindings
+   (tints (array (buffer Tint)))
+   (halves (array (buffer-array uint16)))
+   (counts (array (buffer-array uint)))
+   (lows (array (buffer-array int))))
+  (compute
+   (let* ([at globalInvocationId.xy]
+          [e (remainder at.y 3)]
+          [t (at tints e)]
+          [i (+ (* at.y 8) at.x)])
+     (write! (at (at halves e) i) (uint16 (+ (* t.scale (float at.x)) t.offset.y (float t.tag))))
+     (atomic-add! (at (at counts e) 0) 1)
+     (atomic-min! (at (at lows e) 0) (- (int at.x) (int at.y)))
+     (atomic-compare-exchange! (at (at lows e) (+ i 1)) 0 (int (* (+ at.y 1) 10))))))
+
+(compute-material Show
+  (workgroup 4 4)
+  (bindings
+   (halves (array (buffer-array uint16 read)))
+   (counts (array (buffer-array uint read)))
+   (lows (array (buffer-array int read)))
+   (shown (storage-image write)))
+  (compute
+   (let* ([at globalInvocationId.xy]
+          [e (remainder at.y 3)]
+          [i (+ (* at.y 8) at.x)])
+     ;; Whole multiples of 1/255, which unorm8 stores exactly
+     (store! shown (ivec2 at)
+             (vec4 (/ (float (at (at halves (- 3 e)) i)) 255.0)
+                   (/ (float (at (at counts e) 0)) 255.0)
+                   (/ (float (at (at lows e) (+ i 1))) 255.0)
+                   (/ (float (+ 200 (at (at lows e) 0))) 255.0))))))
+
+(graph Buffered
+  (input first (per-frame Tint))
+  (input second (per-frame Tint))
+  (uniform firstTint Tint first)
+  (uniform secondTint Tint second)
+  (buffer half0 uint16 96 #:frames shared)
+  (buffer half1 uint16 96 #:frames shared)
+  (buffer count0 uint 1 #:frames shared)
+  (buffer count1 uint 1 #:frames shared)
+  (buffer low0 int 97 #:frames shared)
+  (buffer low1 int 97 #:frames shared)
+  (image result rgba8 (fixed 8 12) #:frames shared)
+  (clear clearCount0 count0)
+  (clear clearCount1 count1)
+  (clear clearLow0 low0)
+  (clear clearLow1 low1)
+  (material filling Fill
+            (tints (firstTint secondTint firstTint))
+            (halves (half0 half1 half0))
+            (counts (count0 count1 count0))
+            (lows (low0 low1 low0))
+            #:invocations (8 12))
+  (dispatch fill filling)
+  (material showing Show
+            (halves (half1 half0 half1 half0))
+            (counts (count0 count1 count0))
+            (lows (low0 low1 low0))
+            (shown result)
+            #:invocations (8 12))
+  (dispatch show showing)
+  (readback capture result))
+
+(app Buffers
+  (parameter destination path)
+  (state (frames uint 0))
+  (on (frame dt) (with state #:frames (+ state.frames 1)))
+  (run Buffered
+    (first (Tint (if (> state.frames 1) 9.0 1.0) (vec2 0.5 3.0) (uint16 5)))
+    (second (Tint 12.0 (vec2 0.25 7.0) (uint16 40)))))
+
+(main Buffers
+  (about "Reads and writes arrays of buffers, an element per row")
+  (timestep #:max 0.1 #:fixed 0.1)
+  (positional destination "the PNG file to write")
+  (capture capture #:to destination))

@@ -237,16 +237,19 @@ then:
    exactly with `storage.approved.png`,
    `tests/frames/frames.zgal` (a per-frame buffer and image read before they're written, as
    `set-frames-in-flight!` changes 2 to 3 frames in flight and 3 to 2) compared exactly with
-   `frames-2-3.approved.png` and `frames-3-2.approved.png`, and
+   `frames-2-3.approved.png` and `frames-3-2.approved.png`, `tests/arrays/buffers.zgal` (arrays
+   of uniforms and buffers a dispatch reads and writes, 16-bit integers and atomics, each
+   invocation's element its row's, and the next reads, run for 3 frames) compared exactly with
+   `buffers.approved.png`, and
    `tests/stream/streamer.zgal` streaming a file (its opener in
    `streamer.inputs.ts`) (`headless.test.ts` needs no GPU: the PNG encoders and
    `parseCommandLine`'s `where`);
 3. runs `make test-pages`: the particles and scene pages, image_filter's page (run from its query
    string, its capture saved with the checkers' `--save-capture` and compared with
    `blur_edges.approved.png`), the border program's page (its capture compared likewise with
-   `border.approved.png`), the arrays, targets, storage and frames programs' pages (compared
-   exactly with `arrays.approved.png`, `targets.approved.png`, `storage.approved.png` and both
-   frames captures),
+   `border.approved.png`), the arrays, targets, storage, frames and buffers programs' pages
+   (compared exactly with `arrays.approved.png`, `targets.approved.png`, `storage.approved.png`,
+   both frames captures and `buffers.approved.png`),
    `web/tests/mount.html` (mounts two programs and stops one),
    `web/tests/held-keys.html` (held keys and mouse buttons released once each, also when focus
    leaves, chorded buttons, cancelled pointers and lost captures, and a finger ignored while the
