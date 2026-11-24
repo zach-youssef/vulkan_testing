@@ -172,8 +172,18 @@
          [v (normalize (vec3 (sin t) (cos (* 2.0 t)) (+ 1.0 t)))]
          [c (cross v (vec3 0.0 1.0 0.0))]
          [s (sum ([k (range 0 4)]) (pow (+ 1.0 (* 0.1 (float k))) 1.5))]
-         [blend (mix c v (smoothstep 0.0 4.0 t))])
-    (vec4 blend.zx (+ s (exp (- t))) (float (remainder (pcgHash i) hashRange)))))
+         [blend (mix c v (smoothstep 0.0 4.0 t))]
+         [h (pcgHash i)]
+         ;; Bit positions, -1 for none: of uints (0 among them, as h >> 31 often is), and of ints,
+         ;; negative ones' most significant bit clear
+         [u (findMSB (uvec2 (shr h (remainder i 32)) h))]
+         [n (findMSB (ivec2 (int h) (- (int (shr h 20)))))]
+         ;; Constant lanes for the edge cases: 0 and ~0 (-1 and 31 for the uints), 0, -1 and INT_MIN
+         ;; (-1, -1 and 30 for the ints), which a hash reaches only by chance
+         [cu (findMSB (uvec2 (uint 0) (bitnot (uint 0))))]
+         [ci (findMSB (ivec3 0 -1 (- -2147483647 1)))]
+         [msb (uint (+ (+ (+ u.x u.y) (+ n.x n.y)) (+ (+ (+ cu.x cu.y) (+ (+ ci.x ci.y) ci.z)) 4)))])
+    (vec4 blend.zx (+ s (exp (- t))) (float (+ (remainder h hashRange) (* msb hashRange))))))
 
 ;; Writes evaluate(i) for each invocation i (a ZGAL body)
 (compute-material Evaluate

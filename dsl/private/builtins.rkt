@@ -95,7 +95,9 @@
      (cons 'floatBitsToUint '(((genF) genU)))
      (cons 'floatBitsToInt '(((genF) genI)))
      (cons 'uintBitsToFloat '(((genU) genF)))
-     (cons 'intBitsToFloat '(((genI) genF))))
+     (cons 'intBitsToFloat '(((genI) genF)))
+     ;; The most significant bit set (of a negative int, clear), -1 for none
+     (cons 'findMSB '(((genI) genI) ((genU) genI))))
     ;; Derivatives, in fragment shaders
     (unary '(dFdx dFdy fwidth dFdxFine dFdyFine fwidthFine dFdxCoarse dFdyCoarse fwidthCoarse) '(F))
     ;; Subgroup operations

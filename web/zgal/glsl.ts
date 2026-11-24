@@ -177,3 +177,6 @@ export const floatBitsToUint = unary((x) => (bits.setFloat32(0, x), bits.getUint
 export const floatBitsToInt = unary((x) => (bits.setFloat32(0, x), bits.getInt32(0)));
 export const uintBitsToFloat = unary((x) => (bits.setUint32(0, x), bits.getFloat32(0)));
 export const intBitsToFloat = unary((x) => (bits.setInt32(0, x), bits.getFloat32(0)));
+
+// The most significant bit set, -1 for none; of a negative int, the most significant bit clear
+export const findMSB = unary((x) => 31 - Math.clz32(x < 0 ? ~x : x));

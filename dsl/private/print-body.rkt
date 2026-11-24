@@ -7,6 +7,7 @@
          racket/string
          "ast.rkt"
          "body.rkt"
+         (only-in "builtins.rkt" component-kind)
          "cpp-common.rkt"
          "lower.rkt"
          "writer.rkt")
@@ -94,6 +95,11 @@
        [(input stage host) spelling]
        [else name])]
     [(t-call 'not (list a) _ _) (if (eq? dialect 'glsl) (format "not(~a)" (p a)) (format "glm::not_(~a)" (p a)))]
+    ;; glm's findMSB of a negative int is 31, GLSL's the most significant bit clear: of the
+    ;; complement (the sign bit's copies make v ^ (v >> 31) it)
+    [(t-call 'findMSB (list a) _ _)
+     #:when (and (eq? dialect 'cpp) (eq? (component-kind (texpr-type a)) 'int))
+     (format "[](auto v) { return glm::findMSB(v ^ (v >> 31)); }(~a)" (p a))]
     [(t-call f as _ _) (format "~a~a(~a)" (if (eq? dialect 'cpp) "glm::" "") f (args as))]
     [(t-user-call f as _ _) (format "~a(~a)" f (args as))]
     [(t-texture op as _ _)

@@ -1095,6 +1095,11 @@
                                   (type-key t) (wgsl-type t) (wgsl-type t) (wgsl-type t)))))
         (format "~a(~a, ~a)" h (p (first as)) (splat (second as)))]
        [(floatBitsToUint floatBitsToInt) (format "bitcast<~a>(~a)" (wgsl-type t) (args as))]
+       ;; firstLeadingBit gives a u32 of a u32 (all ones for none), which i32 reinterprets as -1
+       [(findMSB)
+        (if (eq? (component-kind (texpr-type (first as))) 'uint)
+            (format "~a(firstLeadingBit(~a))" (wgsl-type t) (args as))
+            (format "firstLeadingBit(~a)" (args as)))]
        [(uintBitsToFloat intBitsToFloat)
         ;; WGSL evaluates constant expressions when compiling, and a constant's bits giving an
         ;; infinity or NaN is an error there: a function call makes it a runtime value

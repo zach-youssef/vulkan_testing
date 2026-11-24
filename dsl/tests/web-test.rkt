@@ -537,3 +537,15 @@
     (check-false (string-contains? wgsl "zgalCompare_smp"))
     (check-true (string-contains? wgsl "override zgalLinear_smp: bool;\noverride zgalBorder_smp: u32;\n"))
     (check-true (string-contains? wgsl "vec4f(zgalSampleDepth(shadow, zgalDepth_smp, vec2f(0.5f), 0i, zgalLinear_smp, zgalBorder_smp), 0.0f, 0.0f, 1.0f).x"))))
+
+(test-case "findMSB is WGSL's firstLeadingBit, its u32 result of a u32 reinterpreted as i32 (-1 for none)"
+  (define wgsl
+    (web-shader
+     "(compute-material Top
+        (workgroup 1)
+        (bindings (values (buffer-array uint)) (results (buffer-array ivec2)))
+        (compute (write! (at results 0) (+ (findMSB (uvec2 (at values 0) 1)) (findMSB (int (at values 1)))))))"
+     "Top.comp.wgsl"))
+  (with-check-info (['wgsl wgsl])
+    (check-regexp-match #rx"vec2i\\(firstLeadingBit\\(vec2u\\(" wgsl)
+    (check-regexp-match #rx"[^<(]firstLeadingBit\\(i32\\(" wgsl)))

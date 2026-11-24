@@ -410,3 +410,13 @@
 (test-case "Conversions between kinds keep the shape and change the kind"
   (check-not-exn
    (λ () (compile-text "(compute-material C (workgroup 1) (bindings (b (buffer-array float)) (v (buffer-array vec2)))\n  (compute (write! (at b 0) (+ 1.0 (uintBitsToFloat (uint 5)))) (write! (at v 0) (* 2.0 (intBitsToFloat (ivec2 1 2))))))"))))
+
+(test-case "findMSB gives an int of the argument's shape, in shaders and in C++"
+  (define text (string-append
+                "(define (top [x : uvec2] [y : int]) : ivec2 (+ (findMSB x) (findMSB y)))\n"
+                (counting-material "(write! (at counts i) (uint (.x (top (uvec2 (at samples i)) (int i))))) (write! (at sums i) 0.0)")))
+  (check-true (string-contains? (generated text "Count.comp") "findMSB(x)"))
+  (check-true (string-contains? (generated text ".zgal.h") "glm::findMSB(x)"))
+  ;; glm's of a negative int is 31, so an int's is of its bits with the sign's copies cleared
+  (check-true (string-contains? (generated text ".zgal.h") "[](auto v) { return glm::findMSB(v ^ (v >> 31)); }(y)"))
+  (check-zgal-error (counting-material "(write! (at sums i) (float (findMSB 1.0)))") 'type-mismatch "findMSB isn't defined for a float"))
