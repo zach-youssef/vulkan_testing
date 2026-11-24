@@ -103,6 +103,27 @@
                 (sample-lod (at decals which) pick (/ (vec2 texel) (vec2 (image-size (at sources 0)))) 0.0)
                 (vec4 (vec2 (texture-size (at decals 0) 0)) 0.0 0.0))))))
 
+;; Arrays of buffers: buckets of raw words the runtime declares (atomic where atomics act on them
+;; or a write changes part of a word), each bucket's helpers repeated per bucket, and accesses of an
+;; element switching on its bucket: loads of structs, partial writes of 16-bit integers, atomics
+;; (signed min and compare-exchange through loops)
+(struct Weighted (scale float) (offset vec2) (tag uint16))
+
+(compute-material Scatter
+  (workgroup 4 4)
+  (bindings
+   (weights (array (buffer Weighted)))
+   (halves (array (buffer-array uint16)))
+   (lows (array (buffer-array int)))
+   (flags (array (buffer-array uint))))
+  (compute
+   (let* ([at globalInvocationId.xy]
+          [e (remainder at.y 3)]
+          [w (at weights e)])
+     (write! (at (at halves e) at.x) (uint16 (+ (* w.scale w.offset.y) (float w.tag))))
+     (atomic-min! (at (at lows e) 0) (int at.x))
+     (atomic-compare-exchange! (at (at flags e) at.x) 0 (+ at.x 1)))))
+
 ;; Expressions WGSL spells differently: vector comparisons, mixed scalars and vectors, conversions,
 ;; negated uints, shifts by ints, matrix inverses, mod, bitcasts of constants (kept out of WGSL's
 ;; constant evaluation), the smallest int, and ifs of structs (statements, as select can't give one)

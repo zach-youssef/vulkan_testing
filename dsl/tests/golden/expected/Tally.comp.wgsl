@@ -23,6 +23,12 @@ struct Settings {
     scale: vec4f,
 }
 
+struct Weighted {
+    scale: f32,
+    offset: vec2f,
+    tag: u32,
+}
+
 @group(0) @binding(0) var<storage, read_write> counts: array<atomic<u32>>;
 @group(0) @binding(1) var<storage, read_write> balances: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read_write> weights: array<atomic<u32>>;
@@ -32,25 +38,30 @@ fn zgalAtomic_min_int_balances(i: u32, value: i32) -> i32 {
     var old = atomicLoad(&balances[i]);
     loop {
         let r = atomicCompareExchangeWeak(&balances[i], old, bitcast<u32>(min(bitcast<i32>(old), value)));
-        if (r.exchanged) { return bitcast<i32>(old); }
+        if (r.exchanged) { break; }
         old = r.old_value;
     }
+    return bitcast<i32>(old);
 }
 
 fn zgalAtomic_add_float_weights(i: u32, value: f32) -> f32 {
     var old = atomicLoad(&weights[i]);
     loop {
         let r = atomicCompareExchangeWeak(&weights[i], old, bitcast<u32>(bitcast<f32>(old) + value));
-        if (r.exchanged) { return bitcast<f32>(old); }
+        if (r.exchanged) { break; }
         old = r.old_value;
     }
+    return bitcast<f32>(old);
 }
 
 fn zgalCompareExchange_counts(i: u32, comparand: u32, value: u32) -> u32 {
+    var old: u32;
     loop {
         let r = atomicCompareExchangeWeak(&counts[i], comparand, value);
-        if (r.exchanged || r.old_value != comparand) { return r.old_value; }
+        old = r.old_value;
+        if (r.exchanged || old != comparand) { break; }
     }
+    return old;
 }
 
 fn zgalStore_counts_uint(o: u32, v: u32) {

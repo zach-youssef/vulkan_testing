@@ -25,6 +25,12 @@ struct Settings {
     scale: vec4f,
 }
 
+struct Weighted {
+    scale: f32,
+    offset: vec2f,
+    tag: u32,
+}
+
 @group(0) @binding(0) var<storage, read_write> result: array<vec4u>;
 var<private> zgalSubgroupInvocationId: u32;
 var<private> zgalSubgroupSize: u32;

@@ -23,6 +23,12 @@ struct Settings {
     scale: vec4f,
 }
 
+struct Weighted {
+    scale: f32,
+    offset: vec2f,
+    tag: u32,
+}
+
 
 struct ZgalPush {
     transform: mat4x4f,

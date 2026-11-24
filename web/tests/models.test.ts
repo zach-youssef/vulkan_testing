@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zgal from '../zgal/index.ts';
 import { createNodeContext } from '../zgal/node.ts';
-import { Corner, CulledModels, ImportedLayers, ImportedStores, LayerGraph, Layers, Meshes, Models, ModelVertex, Stamps } from '../models.zgal.ts';
+import { Corner, CulledModels, ImportedLayers, ImportedStores, LayerGraph, Layers, Meshes, Models, ModelVertex, Scale, Spread, Spreads, Stamps } from '../models.zgal.ts';
 
 const assets = fileURLToPath(new URL('assets', import.meta.url));
 let context: zgal.Context;
@@ -438,5 +438,84 @@ test('arrays of storage images are checked against the storage textures a stage 
   without.destroy();
   graph.destroy();
   for (const t of many) t.destroy();
+  assert.deepEqual(context.errors, []);
+});
+
+// A buffer's bytes, copied out
+async function readBytes(device: GPUDevice, source: GPUBuffer): Promise<Uint8Array> {
+  const buffer = device.createBuffer({ size: source.size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const encoder = device.createCommandEncoder();
+  encoder.copyBufferToBuffer(source, 0, buffer, 0, source.size);
+  device.queue.submit([encoder.finish()]);
+  await buffer.mapAsync(GPUMapMode.READ);
+  const bytes = new Uint8Array(buffer.getMappedRange()).slice();
+  buffer.destroy();
+  return bytes;
+}
+
+test('arrays of buffers read and write their elements, a bucket per distinct buffer, uniforms updated each frame', async () => {
+  const device = context.device;
+  const graph = new zgal.RenderGraph(context);
+  const storage = (size: number) =>
+    device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+  const second = storage(8);
+  device.queue.writeBuffer(second, 0, zgal.encode(Scale, [{ factor: 5, tag: 1000 }]));
+  const even = storage(32);
+  const odd = storage(32);
+  const evenCount = storage(4);
+  const oddCount = storage(4);
+  let first: Scale = { factor: 3, tag: 7 };
+  const ids = await Spreads.build(context, graph, { first: () => first, second, even, odd, evenCount, oddCount });
+  // Rows 0, 2 and 3 are elements of halves that are even, row 1 the one that's odd; even rows read
+  // the uniform, odd ones second
+  const expected = (scale: Scale) => {
+    const halves = { even: new Array(16).fill(0), odd: new Array(16).fill(0) };
+    for (let y = 0; y < 4; y++) {
+      const s = y % 2 === 0 ? scale : { factor: 5, tag: 1000 };
+      for (let x = 0; x < 4; x++) halves[y % 3 === 1 ? 'odd' : 'even'][y * 4 + x] = s.factor * 100 + s.tag + x;
+    }
+    return halves;
+  };
+  const halves = async (b: GPUBuffer) => [...new Uint16Array((await readBytes(device, b)).buffer)];
+  const count = async (b: GPUBuffer) => new Uint32Array((await readBytes(device, b)).buffer)[0];
+  await graph.execute();
+  assert.deepEqual({ even: await halves(even), odd: await halves(odd) }, expected(first));
+  assert.deepEqual([await count(evenCount), await count(oddCount)], [12, 4]);
+  first = { factor: 4, tag: 9 };
+  await graph.execute();
+  assert.deepEqual({ even: await halves(even), odd: await halves(odd) }, expected(first));
+  assert.deepEqual([await count(evenCount), await count(oddCount)], [24, 8]);
+  // Each distinct buffer its own bucket, the same elements the same array
+  const counts = graph.bufferArray('again', [ids.buffers.evenCount, ids.buffers.oddCount, ids.buffers.evenCount]);
+  assert.deepEqual(counts.buckets, [ids.buffers.evenCount, ids.buffers.oddCount]);
+  assert.deepEqual(counts.shape, { count: 3, buckets: [null, null] });
+  const shapes = { scales: { count: 2, buckets: [null, null] }, halves: { count: 3, buckets: [null, null] }, counts: counts.shape };
+  const entries = zgal.layoutEntries(device, Spread, { textures: {}, arrays: shapes, samplers: {} });
+  // The tables, then (after the push constants' binding) the buckets, read-only where the array is
+  assert.deepEqual(entries.map((e) => [e.binding, e.buffer?.type]),
+    [[0, 'uniform'], [1, 'uniform'], [2, 'uniform'], [4, 'read-only-storage'], [5, 'read-only-storage'], [6, 'storage'], [7, 'storage'], [8, 'storage'], [9, 'storage']]);
+  graph.destroy();
+  for (const b of [second, even, odd, evenCount, oddCount]) b.destroy();
+  assert.deepEqual(context.errors, []);
+});
+
+test('arrays of buffers are checked against the storage buffers a stage may bind', async () => {
+  const device = context.device;
+  const graph = new zgal.RenderGraph(context);
+  const limit = device.limits.maxStorageBuffersPerShaderStage;
+  const buffers = Array.from({ length: limit }, (_, i) => graph.createBuffer(`b${i}`, 'shared', zgal.uint, 1));
+  const scales = graph.bufferArray('scales', [graph.createBuffer('scale', 'shared', Scale, 1)]);
+  const halves = graph.bufferArray('halves', [graph.createBuffer('half', 'shared', zgal.uint16, 16)]);
+  // One bucket for scales, one for halves, and limit - 1 distinct buffers for counts: limit + 1
+  const material = new zgal.MaterialInstance(graph, Spread, { scales: { buffers: scales }, halves: { buffers: halves }, counts: { buffers: graph.bufferArray('counts', buffers.slice(1)) } }, null, null);
+  assert.throws(() => material.groupLayout(),
+    new RegExp(`^Error: material Spread's compute stage binds ${limit + 1} storage buffers, more than this WebGPU device allows \\(maxStorageBuffersPerShaderStage ${limit}\\): .*it binds scales \\(1 distinct buffers\\) and halves \\(1 distinct buffers\\) and counts \\(${limit - 1} distinct buffers\\)`));
+  // Within it, it binds
+  const within = new zgal.MaterialInstance(graph, Spread, { scales: { buffers: scales }, halves: { buffers: halves }, counts: { buffers: graph.bufferArray('fewer', buffers.slice(2)) } }, null, null);
+  within.groupLayout();
+  // An array binding of buffers is bound to a BufferArray
+  assert.throws(() => new zgal.MaterialInstance(graph, Spread, { scales: { buffer: buffers[0] }, halves: { buffers: halves }, counts: { buffers: scales } }, null, null),
+    /^Error: material Spread's binding scales is an array, bound to a BufferArray/);
+  graph.destroy();
   assert.deepEqual(context.errors, []);
 });

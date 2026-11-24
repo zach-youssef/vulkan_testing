@@ -115,10 +115,11 @@
 ;; A binding as WebGPU binds it. name: its name in the material's description and (spelled by
 ;; wgsl-name for a binding's own name) in modules. source: the ZGAL binding it binds. index: its
 ;; @binding. kind: 'texture 'texture-array 'sampler 'depth-sampler 'comparison-sampler
-;; 'storage-image 'storage-image-array 'buffer 'buffer-array ('texture-array and
-;; 'storage-image-array: an array binding of textures or storage images, which WebGPU has no arrays
-;; of bindings for: its index is its element table's, and its buckets, texture_2d_arrays or
-;; texture_storage_2d_arrays, bind after the push constants; see Arrays of textures). access:
+;; 'storage-image 'storage-image-array 'buffer 'buffer-array 'storage-buffer-array ('texture-array,
+;; 'storage-image-array and 'storage-buffer-array: an array binding of textures, storage images or
+;; buffers, which WebGPU has no arrays of bindings for: its index is its element table's, and its
+;; buckets, texture_2d_arrays, texture_storage_2d_arrays or storage buffers, bind after the push
+;; constants; see Arrays of bindings). access:
 ;; 'read 'write 'read-write (buffers, storage images) or #f. stages: the stages using it ('vertex
 ;; 'fragment 'compute). depth?: a texture compared with depths (texture_depth_2d) or a comparison
 ;; sampler.
@@ -174,9 +175,6 @@
   (append*
    (for/list ([b (in-list (material-bindings m))])
      (define name (binding-name b))
-     (when (and (eq? (binding-kind b) 'array) (not (memq (binding-resource-kind b) '(texture storage-image))))
-       (web-error (binding-loc b) "WebGPU has no arrays of bindings (descriptor indexing), so ~a can't be an array of ~as (the web binds arrays of textures and storage images only, as texture arrays)"
-                  name (binding-resource-kind b)))
      (define (uses? u v) (set-member? (hash-ref (usage-opaque u) name (set)) v))
      (define (compared?) (for/or ([u (in-hash-values usages)]) (uses? u 'compare)))
      (case (binding-kind b)
@@ -195,9 +193,10 @@
 (define (array-kind b)
   (cond [(not (eq? (binding-kind b) 'array)) (binding-kind b)]
         [(eq? (binding-resource-kind b) 'texture) 'texture-array]
-        [else 'storage-image-array]))
+        [(eq? (binding-resource-kind b) 'storage-image) 'storage-image-array]
+        [else 'storage-buffer-array]))
 
-(define (array-binding-kind? k) (and (memq k '(texture-array storage-image-array)) #t))
+(define (array-binding-kind? k) (and (memq k '(texture-array storage-image-array storage-buffer-array)) #t))
 
 ;; A storage image binding's access, as WGSL spells it
 (define (storage-access b)
@@ -371,6 +370,12 @@
 ;; The type a variable's memory holds: a buffer's value, a buffer-array's array, a shared variable's
 (define (variable-type g) (t-global-type g))
 
+;; Whether g is an array binding of buffers, whose elements are always raw (see Arrays of bindings)
+(define (buffer-array-global? g)
+  (match g
+    [(t-global 'binding _ _ (binding-array-t e) _) (not (opaque-t? e))]
+    [_ #f]))
+
 ;; Whether memory of type t holds small integers
 (define (holds-small? t) (pair? (small-integer-kinds-in t)))
 
@@ -511,7 +516,7 @@
     (set-union atomic-targets
                (for/set ([e (in-list all)]
                          #:when (and (t-global? e) (memq (t-global-kind e) '(binding shared))
-                                     (holds-small? (variable-type e))))
+                                     (or (holds-small? (variable-type e)) (buffer-array-global? e))))
                  (t-global-name e))))
   ;; Writes changing part of a word
   (define partial-writes
@@ -541,6 +546,8 @@
 (define (address-of place)
   (match place
     [(t-global _ _ _ _ _) (address place 0 '())]
+    ;; An element of an array of buffers: its buffer, the root
+    [(t-index (? buffer-array-global?) _ _ _) (address place 0 '())]
     [(t-field b name _ _)
      (match-define (address root c ts) (address-of b))
      (define d (struct-t-decl (texpr-type b)))
@@ -653,9 +660,15 @@
   ;; Bindings this stage uses, then the push constants
   (line! "")
   (for ([wb (in-list layout)] #:when (and (memq stage (wgsl-binding-stages wb)) (array-binding-kind? (wgsl-binding-kind wb))))
-    (for ([l (in-list (array-declaration-lines (wgsl-binding-name wb) (wgsl-binding-index wb)
-                                               (and (eq? (wgsl-binding-kind wb) 'storage-image-array)
-                                                    (storage-access (wgsl-binding-source wb)))))])
+    (define b (wgsl-binding-source wb))
+    (define-values (space type)
+      (case (wgsl-binding-kind wb)
+        [(texture-array) (values "" "texture_2d_array<f32>")]
+        [(storage-image-array) (values "" (format "texture_storage_2d_array<{format}, ~a>" (storage-access b)))]
+        ;; Words (see Arrays of bindings)
+        [else (values (format "<storage, ~a>" (if (eq? (binding-access b) 'read) "read" "read_write"))
+                      (raw-declaration-type st (binding-name b) #f))]))
+    (for ([l (in-list (array-declaration-lines (wgsl-binding-name wb) (wgsl-binding-index wb) space type))])
       (line! "~a" l)))
   (for ([wb (in-list layout)] #:when (and (memq stage (wgsl-binding-stages wb)) (not (array-binding-kind? (wgsl-binding-kind wb)))))
     (define b (wgsl-binding-source wb))
@@ -755,7 +768,26 @@
 ;; ---------------------------------------------------------------------------------------------
 ;; Raw variables: their declarations and the functions reading and writing them
 
-(define (raw-atomic? st name) (set-member? (usage-atomic (state-usage st)) name))
+;; A raw variable as the functions reading and writing it name it: a binding's or shared variable's
+;; name, or (bucket-var array) for each bucket of an array of buffers, whose functions are a copy
+;; per bucket, each on a directive line (see Arrays of bindings)
+(struct bucket-var (array) #:transparent)
+
+;; The name of the binding or shared variable a raw variable is (or is a bucket of)
+(define (var-key v) (if (bucket-var? v) (bucket-var-array v) v))
+;; Its spelling in modules, and in its functions' names
+(define (var-text v) (if (bucket-var? v) (bucket-name (bucket-var-array v)) (wgsl-name v)))
+(define (var-label v) (if (bucket-var? v) (bucket-name (bucket-var-array v)) v))
+
+;; helper! for a function of raw variable var: for a bucket, one line per bucket
+(define (raw-helper! st var name make-text)
+  (helper! st name (if (bucket-var? var) (λ () (bucket-line (bucket-var-array var) (make-text))) make-text)))
+
+;; text, which has no comments, on one //zgal-bucket line of array binding `array`
+(define (bucket-line array text)
+  (format "//zgal-bucket ~a ~a" array (regexp-replace* #rx"\n *" text " ")))
+
+(define (raw-atomic? st var) (set-member? (usage-atomic (state-usage st)) (var-key var)))
 
 ;; The declared type of raw variable `name`: words, a runtime array for buffers (t #f), else
 ;; enough of them for t
@@ -776,13 +808,13 @@
 
 (define (word-read st var index)
   (if (raw-atomic? st var)
-      (format "atomicLoad(&~a[~a])" (wgsl-name var) index)
-      (format "~a[~a]" (wgsl-name var) index)))
+      (format "atomicLoad(&~a[~a])" (var-text var) index)
+      (format "~a[~a]" (var-text var) index)))
 
 ;; The function reading a value of type t from raw variable var at a byte offset
 (define (load-helper st var t)
-  (define name (format "zgalLoad_~a_~a" var (type-key t)))
-  (helper! st name
+  (define name (format "zgalLoad_~a_~a" (var-label var) (type-key t)))
+  (raw-helper! st var name
     (λ ()
       (define (word index) (word-read st var index))
       (define body
@@ -815,8 +847,8 @@
 
 (define (word-write st var index value)
   (if (raw-atomic? st var)
-      (format "atomicStore(&~a[~a], ~a);" (wgsl-name var) index value)
-      (format "~a[~a] = ~a;" (wgsl-name var) index value)))
+      (format "atomicStore(&~a[~a], ~a);" (var-text var) index value)
+      (format "~a[~a] = ~a;" (var-text var) index value)))
 
 ;; A scalar of kind k as the bits of a word (its low bytes, for small integers)
 (define (scalar-bits k value)
@@ -829,8 +861,8 @@
 ;; in their words atomically
 (define (store-helper st var t aligned?)
   (define words? (and aligned? (holds-small? t) (fills-words? t 4)))
-  (define name (format "zgalStore~a_~a_~a" (if words? "Words" "") var (type-key t)))
-  (helper! st name
+  (define name (format "zgalStore~a_~a_~a" (if words? "Words" "") (var-label var) (type-key t)))
+  (raw-helper! st var name
     (λ ()
       (define body
         (cond
@@ -853,11 +885,11 @@
           [else
            (match t
              [(scalar-t k) #:when (small-integer-kind? k)
-              (unless (raw-atomic? st var) (error 'wgsl "internal error: a partial write to ~a, which isn't atomic" var))
+              (unless (raw-atomic? st var) (error 'wgsl "internal error: a partial write to ~a, which isn't atomic" (var-key var)))
               (define mask (if (= (kind-bytes k) 1) "0xffu" "0xffffu"))
               (define shift (if (= (kind-bytes k) 1) "((o & 3u) * 8u)" "((o & 2u) * 8u)"))
               (format "let shift = ~a;\n    atomicAnd(&~a[o >> 2u], ~~(~a << shift));\n    atomicOr(&~a[o >> 2u], (~a & ~a) << shift);"
-                      shift (wgsl-name var) mask (wgsl-name var) (scalar-bits k "v") mask)]
+                      shift (var-text var) mask (var-text var) (scalar-bits k "v") mask)]
              [(scalar-t k) (word-write st var "o >> 2u" (scalar-bits k "v"))]
              [(vector-t k n)
               (define c (store-helper st var (scalar-t k) #f))
@@ -944,8 +976,7 @@
     [(and (memq (match e [(t-global k _ _ _ _) k] [(or (t-field _ _ _ _) (t-index _ _ _ _) (t-swizzle _ _ _ _)) 'place] [_ #f])
                 '(binding shared place))
           (raw-place? st e))
-     (define a (address-of e))
-     (format "~a(~a)" (load-helper st (t-global-name (address-root a)) (texpr-type e)) (offset-text st a))]
+     (raw-load st e)]
     [else
      (match e
        [(t-lit v t _) (literal-text v t)]
@@ -1318,7 +1349,7 @@
               layer (case mode [(level) ", level"] [(grad) ", ddx, ddy"] [else ""])))))
 
 ;; ---------------------------------------------------------------------------------------------
-;; Arrays of textures
+;; Arrays of bindings
 ;;
 ;; WebGPU has no arrays of bindings, and the elements of an array of textures each have their own
 ;; size and format, which only the runtime knows. So an array binding is bound as buckets, a
@@ -1336,18 +1367,23 @@
 ;; An operation on an element calls a helper of the array's (array-helper) with its index, as a
 ;; u32; an element of an array of textures passed to a function is passed as its index too
 ;; (call-signature), and functions given storage images are inlined.
+;; An array of buffers is bound likewise, each distinct buffer a bucket of its own (a storage buffer
+;; of raw words, atomic as a single buffer's would be: see "Raw variables"), the table giving each
+;; element's bucket. An element is the root of its places (address-of), at offset 0; the helpers
+;; that read, write and act atomically on a buffer's words are made per bucket, each on one
+;; //zgal-bucket line (bucket-var, raw-helper!), and an access of an element calls a helper
+;; switching on its bucket (element-switch).
 
 (define (table-name name) (string-append "zgalTable_" name))
 (define (count-name name) (string-append "zgalCount_" name))
 (define (bucket-name name) (string-append "zgalBucket_" name "_{bucket}"))
 
-;; The declarations of array binding `name`, at binding index `index`: of textures, or for
-;; storage-access (WGSL's spelling, storage-access), of storage images
-(define (array-declaration-lines name index storage-access)
+;; The declarations of array binding `name`, at binding index `index`, its buckets declared as
+;; `var<space> zgalBucket_<name>_{bucket}: type` (space "" for textures)
+(define (array-declaration-lines name index space type)
   (list (format "//zgal-array ~a @group(0) @binding(~a) var<uniform> ~a: array<vec4u, {count}>;" name index (table-name name))
         (format "//zgal-array ~a const ~a = {count}u;" name (count-name name))
-        (format "//zgal-bucket ~a @group(0) @binding({binding}) var ~a: ~a;" name (bucket-name name)
-                (if storage-access (format "texture_storage_2d_array<{format}, ~a>" storage-access) "texture_2d_array<f32>"))))
+        (format "//zgal-bucket ~a @group(0) @binding({binding}) var~a ~a: ~a;" name space (bucket-name name) type)))
 
 ;; The helper doing op on element e of array binding `name`: of textures, 'implicit (sampling at
 ;; the implicit level, in fragment shaders: with the derivatives taken before the switch, whose
@@ -1355,18 +1391,7 @@
 ;; 'load (image-load) or 'store (store!); of either, 'size (texture-size and image-size, from the
 ;; table). An index past the last element is the last (Vulkan leaves it undefined)
 (define (array-helper st name op)
-  (define (switch params result call [before ""])
-    (string-append
-     (format "fn ~a(e: u32~a)~a {\n" helper-name params (if result (format " -> ~a" result) ""))
-     (format "    let entry = ~a[min(e, ~a - 1u)];\n" (table-name name) (count-name name))
-     before
-     "    switch (entry.x) {\n"
-     (if result
-         (format "        //zgal-bucket ~a case {bucket}u: { return ~a; }\n" name call)
-         (format "        //zgal-bucket ~a case {bucket}u: { ~a; }\n" name call))
-     (if result (format "        default: { return ~a(); }\n" result) "        default: {}\n")
-     "    }\n"
-     "}"))
+  (define (switch params result call [before ""]) (element-switch helper-name name params result call before))
   (define helper-name
     (format "zgal~a_~a" (case op [(implicit) "Sample"] [(level) "SampleLevel"] [(fetch) "Fetch"] [(size) "Size"]
                           [(load) "Load"] [(store) "Store"])
@@ -1398,6 +1423,51 @@
           (format "    let entry = ~a[min(e, ~a - 1u)];\n" (table-name name) (count-name name))
           "    return vec2i(max(entry.zw >> vec2u(u32(lod)), vec2u(1u)));\n"
           "}")))]))
+
+;; The text of function helper-name, doing call (a WGSL expression, of type result or #f for none)
+;; on the bucket of element e of array binding `name`: its parameters are e, then params (", x: T",
+;; ...), and before is statements before the switch. An index past the last element is the last
+;; (Vulkan leaves it undefined)
+(define (element-switch helper-name name params result call [before ""])
+  (string-append
+   (format "fn ~a(e: u32~a)~a {\n" helper-name params (if result (format " -> ~a" result) ""))
+   (format "    let entry = ~a[min(e, ~a - 1u)];\n" (table-name name) (count-name name))
+   before
+   "    switch (entry.x) {\n"
+   (if result
+       (format "        //zgal-bucket ~a case {bucket}u: { return ~a; }\n" name call)
+       (format "        //zgal-bucket ~a case {bucket}u: { ~a; }\n" name call))
+   (if result (format "        default: { return ~a(); }\n" result) "        default: {}\n")
+   "    }\n"
+   "}"))
+
+;; Reading raw place `place`: its type's function at its offset (for an element of an array of
+;; buffers, its bucket's, through the array's function choosing it)
+(define (raw-load st place)
+  (define a (address-of place))
+  (define t (texpr-type place))
+  (match (array-element st (address-root a))
+    [(cons name e)
+     (define inner (load-helper st (bucket-var name) t))
+     (define h-name (string-replace inner (bucket-name name) name))
+     (helper! st h-name (λ () (element-switch h-name name ", o: u32" (wgsl-type t) (format "~a(o)" inner))))
+     (format "~a(~a, ~a)" h-name e (offset-text st a))]
+    [#f (format "~a(~a)" (load-helper st (t-global-name (address-root a)) t) (offset-text st a))]))
+
+;; Writing a value to raw place `place`: a statement, print-value printing the value after the store's
+;; helpers are made (so they come first among the helpers)
+(define (raw-store st place print-value)
+  (define a (address-of place))
+  (define t (texpr-type place))
+  (define aligned? (= (address-alignment place) 4))
+  (match (array-element st (address-root a))
+    [(cons name e)
+     (define inner (store-helper st (bucket-var name) t aligned?))
+     (define h-name (string-replace inner (bucket-name name) name))
+     (helper! st h-name (λ () (element-switch h-name name (format ", o: u32, v: ~a" (wgsl-type t)) #f (format "~a(o, v)" inner))))
+     (format "~a(~a, ~a, ~a);" h-name e (offset-text st a) (print-value))]
+    [#f (define helper (store-helper st (t-global-name (address-root a)) t aligned?))
+        (format "~a(~a, ~a);" helper (offset-text st a) (print-value))]))
 
 ;; Comparing with a depth texture as sampler s does: by hand where it clamps to a border, else with
 ;; its comparison variant (which WebGPU filters as Vulkan does: comparing each texel); with an
@@ -1556,56 +1626,88 @@
     [(array-t e n) (format "~a(~a)" (wgsl-type t) (string-join (map p as) ", "))]
     [_ (web-error where "~a values are only in apps" (type-name t))]))
 
-;; An atomic operation on a raw place, a word of a raw variable
+;; An atomic operation on a raw place, a word of a raw variable (of an element of an array of
+;; buffers: through the array's function choosing its bucket)
 (define (print-atomic st op place as t where)
   (define a (address-of place))
-  (define var (t-global-name (address-root a)))
   (define index (format "(~a) >> 2u" (offset-text st a)))
-  (define pointer (format "&~a[~a]" (wgsl-name var) index))
   (define kind (scalar-t-kind t))
   (define (p e) (print-expr st e))
-  (define (bits e) (scalar-bits kind (p e)))
-  (define (from-bits text) (case kind [(uint) text] [(int) (format "bitcast<i32>(~a)" text)] [(float) (format "bitcast<f32>(~a)" text)]))
-  (match* (op kind)
-    [((or 'add 'and 'or 'xor 'exchange) (or 'uint 'int))
-     (from-bits (format "~a(~a, ~a)"
-                        (case op [(add) "atomicAdd"] [(and) "atomicAnd"] [(or) "atomicOr"] [(xor) "atomicXor"] [(exchange) "atomicExchange"])
-                        pointer (bits (first as))))]
-    [((or 'min 'max) 'uint) (format "~a(~a, ~a)" (if (eq? op 'min) "atomicMin" "atomicMax") pointer (p (first as)))]
-    [('exchange 'float) (from-bits (format "atomicExchange(~a, ~a)" pointer (bits (first as))))]
-    [('compare-exchange _)
-     ;; GLSL's compare-exchange doesn't fail spuriously; WGSL's weak one may, so it's retried
-     (define h (helper! st (format "zgalCompareExchange_~a" var)
-                 (λ ()
-                   (format (string-append
-                            "fn zgalCompareExchange_~a(i: u32, comparand: u32, value: u32) -> u32 {\n"
-                            "    loop {\n"
-                            "        let r = atomicCompareExchangeWeak(&~a[i], comparand, value);\n"
-                            "        if (r.exchanged || r.old_value != comparand) { return r.old_value; }\n"
-                            "    }\n"
-                            "}")
-                           var (wgsl-name var)))))
-     (from-bits (format "~a(~a, ~a, ~a)" h index (bits (first as)) (bits (second as))))]
-    [(_ _)
-     ;; Signed minimums and maximums and float adds: a compare-exchange loop
-     (define name (format "zgalAtomic_~a_~a_~a" op kind var))
-     (define h (helper! st name
-                 (λ ()
-                   (define ty (scalar-name kind))
-                   (define (val x) (case kind [(int) (format "bitcast<i32>(~a)" x)] [(float) (format "bitcast<f32>(~a)" x)]))
-                   (format (string-append
-                            "fn ~a(i: u32, value: ~a) -> ~a {\n"
-                            "    var old = atomicLoad(&~a[i]);\n"
-                            "    loop {\n"
-                            "        let r = atomicCompareExchangeWeak(&~a[i], old, bitcast<u32>(~a));\n"
-                            "        if (r.exchanged) { return ~a; }\n"
-                            "        old = r.old_value;\n"
-                            "    }\n"
-                            "}")
-                           name ty ty (wgsl-name var) (wgsl-name var)
-                           (case op [(add) (format "~a + value" (val "old"))] [(min) (format "min(~a, value)" (val "old"))] [(max) (format "max(~a, value)" (val "old"))])
-                           (val "old")))))
-     (format "~a(~a, ~a)" h index (p (first as)))]))
+  ;; Signed minimums and maximums and float adds are compare-exchange loops, taking and giving
+  ;; values of kind; the others take and give words
+  (define loop? (match* (op kind)
+                  [((or 'add 'and 'or 'xor 'exchange) (or 'uint 'int)) #f]
+                  [((or 'min 'max) 'uint) #f]
+                  [((or 'exchange 'compare-exchange) _) #f]
+                  [(_ _) #t]))
+  (define operands (for/list ([x (in-list as)]) (if loop? (p x) (scalar-bits kind (p x)))))
+  ;; The operation on word i of raw variable var, given its operands' texts
+  (define (operation var i args)
+    (define pointer (format "&~a[~a]" (var-text var) i))
+    (cond
+      [loop? (format "~a(~a, ~a)" (atomic-loop-helper st op kind var) i (first args))]
+      [(eq? op 'compare-exchange) (format "~a(~a, ~a, ~a)" (compare-exchange-helper st var) i (first args) (second args))]
+      [else
+       (format "~a(~a, ~a)"
+               (case op [(add) "atomicAdd"] [(and) "atomicAnd"] [(or) "atomicOr"] [(xor) "atomicXor"] [(exchange) "atomicExchange"]
+                 [(min) "atomicMin"] [(max) "atomicMax"])
+               pointer (first args))]))
+  (define result
+    (match (array-element st (address-root a))
+      [(cons name e)
+       (define ty (if loop? (scalar-name kind) "u32"))
+       (define params (for/list ([i (in-range (length as))]) (format "a~a" i)))
+       (define h-name (format "zgalAtomic_~a_~a_~a" (if (eq? op 'compare-exchange) "compareExchange" op) kind name))
+       (define h (helper! st h-name
+                   (λ ()
+                     (element-switch h-name name
+                                     (string-append ", i: u32" (string-append* (for/list ([x (in-list params)]) (format ", ~a: ~a" x ty))))
+                                     ty (operation (bucket-var name) "i" params)))))
+       (format "~a(~a, ~a, ~a)" h e index (string-join operands ", "))]
+      [#f (operation (t-global-name (address-root a)) index operands)]))
+  (cond
+    [loop? result]
+    [else (case kind [(uint) result] [(int) (format "bitcast<i32>(~a)" result)] [(float) (format "bitcast<f32>(~a)" result)])]))
+
+;; GLSL's compare-exchange doesn't fail spuriously; WGSL's weak one may, so it's retried
+;; The loops break, returning after them, as naga refuses a function that ends in a loop (though WGSL
+;; allows it)
+(define (compare-exchange-helper st var)
+  (define name (format "zgalCompareExchange_~a" (var-label var)))
+  (raw-helper! st var name
+    (λ ()
+      (format (string-append
+               "fn ~a(i: u32, comparand: u32, value: u32) -> u32 {\n"
+               "    var old: u32;\n"
+               "    loop {\n"
+               "        let r = atomicCompareExchangeWeak(&~a[i], comparand, value);\n"
+               "        old = r.old_value;\n"
+               "        if (r.exchanged || old != comparand) { break; }\n"
+               "    }\n"
+               "    return old;\n"
+               "}")
+              name (var-text var)))))
+
+;; Signed minimums and maximums and float adds: a compare-exchange loop
+(define (atomic-loop-helper st op kind var)
+  (define name (format "zgalAtomic_~a_~a_~a" op kind (var-label var)))
+  (raw-helper! st var name
+    (λ ()
+      (define ty (scalar-name kind))
+      (define (val x) (case kind [(int) (format "bitcast<i32>(~a)" x)] [(float) (format "bitcast<f32>(~a)" x)]))
+      (format (string-append
+               "fn ~a(i: u32, value: ~a) -> ~a {\n"
+               "    var old = atomicLoad(&~a[i]);\n"
+               "    loop {\n"
+               "        let r = atomicCompareExchangeWeak(&~a[i], old, bitcast<u32>(~a));\n"
+               "        if (r.exchanged) { break; }\n"
+               "        old = r.old_value;\n"
+               "    }\n"
+               "    return ~a;\n"
+               "}")
+              name ty ty (var-text var) (var-text var)
+              (case op [(add) (format "~a + value" (val "old"))] [(min) (format "min(~a, value)" (val "old"))] [(max) (format "max(~a, value)" (val "old"))])
+              (val "old")))))
 
 ;; ---------------------------------------------------------------------------------------------
 ;; Statements
@@ -1636,10 +1738,7 @@
             (line "var ~a: ~a;" (wgsl-name name) (wgsl-type t)))]
        [(s-assign place v _)
         (cond
-          [(raw-place? st place)
-           (define a (address-of place))
-           (define var (t-global-name (address-root a)))
-           (line "~a(~a, ~a);" (store-helper st var (texpr-type place) (= (address-alignment place) 4)) (offset-text st a) (p v))]
+          [(raw-place? st place) (line "~a" (raw-store st place (λ () (p v))))]
           [else (line "~a = ~a;" (p place) (p v))])]
        [(s-if c then else _)
         (append (line "if (~a) {" (p c))

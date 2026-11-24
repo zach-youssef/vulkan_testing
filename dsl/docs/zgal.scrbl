@@ -2359,9 +2359,20 @@ to WebGPU, which has no bindless descriptors and lacks some of what Vulkan has, 
        @tt{texture-formats-tier2} feature for formats other than @tt{r32float}, @tt{r32uint} and
        @tt{r32sint}; @racket[array-length] and @racket[image-size] read no texels, so they don't
        make an array read-write.}
+ @item{An array of buffers (@racket[(array (buffer T))], @racket[(array (buffer-array T))]) is
+       likewise a table and buckets, each distinct buffer among its elements a storage buffer of
+       its own, of raw words (@tt{array<u32>}, or @tt{array<atomic<u32>>} where atomics act on the
+       array or a write changes part of a word, as 8- and 16-bit integers are emulated for a single
+       buffer). Reads, writes and atomics on an element switch on its bucket, each bucket with its
+       own copy of the helpers that read and write its words; an index past the end is the last
+       element. Uniform elements are storage buffers too, as a single uniform binding is. The
+       buckets count against the device's @tt{maxStorageBuffersPerShaderStage} with the material's
+       other buffers (requested as high as the adapter allows; past it, creating the layout fails
+       with an error naming the arrays and their distinct buffers). The elements are bound when
+       the graph is built. As natively, an element's length isn't known to shaders.}
 ]
 
-Other arrays of bindings (of buffers, or chosen with @racket[#:select]) have no WebGPU equivalent, so compiling them for the web reports
+Arrays of bindings chosen each frame with @racket[#:select] have no WebGPU equivalent, so compiling them for the web reports
 @secref["error-not-on-web"]. GLSL bodies, and materials calling GLSL functions
 (@racket[extern-glsl]), are translated with glslc and naga (@secref["glsl"] and
 @secref["extern-glsl"], which list what they can't do on the web). The example's TypeScript follows in

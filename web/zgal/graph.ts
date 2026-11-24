@@ -168,7 +168,7 @@ export class Uniform<T> {
 
 // An array binding of textures (ZGAL's (array texture)) as WebGPU binds one, having no arrays of
 // bindings: its elements are in buckets, texture arrays, and a table gives each element's bucket,
-// layer and size, which materials' modules read (wgsl.rkt's "Arrays of textures"). Elements whose
+// layer and size, which materials' modules read (wgsl.rkt's "Arrays of bindings"). Elements whose
 // texels are fixed (image files, models' textures) are copied into a texture array per distinct
 // size and format among them (more where one would have more layers than the device allows), each
 // distinct image a layer of one, when the array is first bound. Each other distinct image (live:
@@ -206,10 +206,43 @@ export interface BuiltArray {
   readonly shape: ArrayShape;
 }
 
+// An array binding of buffers (ZGAL's (array (buffer T)) and (array (buffer-array T))) as WebGPU
+// binds one, having no arrays of bindings: each distinct buffer among its elements is a bucket, a
+// storage buffer of its own, and a uniform table gives each element's bucket, which materials'
+// modules read (wgsl.rkt's "Arrays of bindings"). A uniform element is its storage buffer, updated
+// as a node using the array prepares. Made by RenderGraph.bufferArray, which writes the table:
+// the elements are bound when the graph is built (a bucket's buffer recreated with a new size is
+// rebound, as bind groups follow its generation).
+export class BufferArray {
+  readonly name: string;
+  readonly elements: readonly (GraphBuffer | Uniform<any>)[];
+  // The distinct buffers, in order of their first element
+  readonly buckets: readonly GraphBuffer[];
+  readonly uniforms: readonly Uniform<any>[];
+  readonly table: GPUBuffer;
+  constructor(device: GPUDevice, name: string, elements: readonly (GraphBuffer | Uniform<any>)[]) {
+    if (elements.length === 0) throw new Error(`array of buffers ${name} has no elements`);
+    this.name = name;
+    this.elements = elements;
+    const buffers = elements.map((e) => (e instanceof Uniform ? e.resource : e));
+    this.buckets = [...new Set(buffers)];
+    this.uniforms = [...new Set(elements.filter((e): e is Uniform<any> => e instanceof Uniform))];
+    const table = new Uint32Array(elements.length * 4);
+    buffers.forEach((b, i) => (table[i * 4] = this.buckets.indexOf(b)));
+    // UNIFORM | COPY_DST
+    this.table = device.createBuffer({ label: `${name} table`, size: table.byteLength, usage: 0x40 | 0x08 });
+    device.queue.writeBuffer(this.table, 0, table);
+  }
+  get shape(): ArrayShape {
+    return { count: this.elements.length, buckets: this.buckets.map(() => null) };
+  }
+}
+
 // What a material binding is bound to
 export type Bound =
   | { readonly image: GraphImage }
   | { readonly array: TextureArray }
+  | { readonly buffers: BufferArray }
   | { readonly buffer: GraphBuffer }
   | { readonly sampler: Sampler }
   | { readonly uniform: Uniform<any> };
@@ -315,8 +348,9 @@ export class MaterialInstance {
     for (const b of desc.bindings) {
       if (!(b.resource in bindings)) throw new Error(`material ${desc.name}'s binding ${b.resource} isn't given`);
       const bound = bindings[b.resource];
-      if (isArrayKind(b.kind) !== ('array' in bound)) {
-        throw new Error(`material ${desc.name}'s binding ${b.resource} ${isArrayKind(b.kind) ? 'is an array, bound to a TextureArray' : 'isn\'t an array, so it isn\'t bound to a TextureArray'}`);
+      const buffers = b.kind === 'storage-buffer-array';
+      if ((isArrayKind(b.kind) && !buffers) !== ('array' in bound) || buffers !== ('buffers' in bound)) {
+        throw new Error(`material ${desc.name}'s binding ${b.resource} ${isArrayKind(b.kind) ? `is an array, bound to a ${buffers ? 'BufferArray' : 'TextureArray'}` : 'isn\'t an array, so it isn\'t bound to a TextureArray or BufferArray'}`);
       }
       // Shaders store to and load from the images themselves, which only live ones (the graph's
       // and imported images) are bound as
@@ -356,6 +390,7 @@ export class MaterialInstance {
       const bound = this.bindings[b.resource];
       if ('image' in bound) textures[b.name] = bound.image.format;
       if ('array' in bound) arrays[b.name] = this.graph.arrayOf(bound.array).shape;
+      if ('buffers' in bound) arrays[b.name] = bound.buffers.shape;
     }
     for (const b of this.desc.bindings) {
       const bound = this.bindings[b.resource];
@@ -364,11 +399,13 @@ export class MaterialInstance {
     return { textures, arrays, samplers };
   }
 
-  // Throws where a stage would sample more textures, or bind more storage images, than the device
-  // allows (arrays' buckets counting one each), naming the arrays and their distinct sizes
-  private checkTextureCounts(): void {
+  // Throws where a stage would sample more textures, or bind more storage images or buffers, than
+  // the device allows (arrays' buckets counting one each), naming the arrays and their distinct
+  // sizes
+  private checkBindingCounts(): void {
     this.checkSampledTextures();
     this.checkStorageTextures();
+    this.checkStorageBuffers();
   }
 
   private checkSampledTextures(): void {
@@ -419,11 +456,35 @@ export class MaterialInstance {
     }
   }
 
+  // An array of buffers binds a storage buffer per distinct buffer (each a bucket of its own), which
+  // count against maxStorageBuffersPerShaderStage with the material's buffers (which the web binds
+  // as storage buffers, uniforms too)
+  private checkStorageBuffers(): void {
+    const limit = this.graph.context.device.limits.maxStorageBuffersPerShaderStage;
+    const stages: Stage[] = this.desc.kind === 'compute' ? ['compute'] : ['vertex', 'fragment'];
+    for (const stage of stages) {
+      let count = 0;
+      const arrays: string[] = [];
+      for (const b of this.desc.bindings) {
+        if (!b.stages.includes(stage)) continue;
+        const bound = this.bindings[b.resource];
+        if (b.kind === 'buffer' || b.kind === 'buffer-array') count++;
+        if (!('buffers' in bound)) continue;
+        count += bound.buffers.buckets.length;
+        arrays.push(`${b.resource} (${bound.buffers.buckets.length} distinct buffers)`);
+      }
+      if (count > limit) {
+        throw new Error(`material ${this.desc.name}'s ${stage} stage binds ${count} storage buffers, more than this WebGPU device allows (maxStorageBuffersPerShaderStage ${limit}): ` +
+          `arrays of buffers are a storage buffer per distinct buffer on the web, and it binds ${arrays.length > 0 ? arrays.join(' and ') : 'no arrays of them'}; give it fewer distinct buffers`);
+      }
+    }
+  }
+
   private layout(formats: BoundFormats) {
     const key = JSON.stringify(formats);
     let layout = this.layouts.get(key);
     if (!layout) {
-      this.checkTextureCounts();
+      this.checkBindingCounts();
       const device = this.graph.context.device;
       const group = device.createBindGroupLayout({ label: this.desc.name, entries: layoutEntries(device, this.desc, formats) });
       layout = { group, pipeline: device.createPipelineLayout({ label: this.desc.name, bindGroupLayouts: [group] }) };
@@ -566,6 +627,7 @@ export class MaterialBinder {
     const { instance } = this;
     for (const b of Object.values(instance.bindings)) {
       if ('uniform' in b) b.uniform.update(frame);
+      if ('buffers' in b) for (const u of b.buffers.uniforms) u.update(frame);
     }
     if (!this.pushBuffer || !this.pushBytes) return;
     const values: PushValues = {};
@@ -592,6 +654,7 @@ export class MaterialBinder {
         if ('image' in bound) return `i${bound.image.generation}`;
         // Building the array first, where an element was recreated
         if ('array' in bound) return (graph.arrayOf(bound.array), `a${bound.array.generation}`);
+        if ('buffers' in bound) return `B${bound.buffers.buckets.map((b) => b.generation).join('.')}`;
         if ('buffer' in bound) return `b${bound.buffer.generation}`;
         if ('uniform' in bound) return `u${bound.uniform.resource.generation}`;
         return 's';
@@ -609,6 +672,10 @@ export class MaterialBinder {
         const built = graph.arrayOf(bound.array);
         built.views[built.views.length > 1 ? slot : 0].forEach((view, bucket) => buckets.push({ binding: first[b.name] + bucket, resource: view }));
         return { binding: i, resource: { buffer: built.table } };
+      }
+      if ('buffers' in bound) {
+        bound.buffers.buckets.forEach((buffer, bucket) => buckets.push({ binding: first[b.name] + bucket, resource: { buffer: graph.bufferOf(buffer) } }));
+        return { binding: i, resource: { buffer: bound.buffers.table } };
       }
       if ('buffer' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.buffer) } };
       if ('uniform' in bound) return { binding: i, resource: { buffer: graph.bufferOf(bound.uniform.resource) } };
@@ -781,6 +848,7 @@ function buildArray(device: GPUDevice, array: TextureArray, slots: readonly (rea
 export class RenderGraph {
   private images: GraphImage[] = [];
   private arrays: TextureArray[] = [];
+  private bufferArrays: BufferArray[] = [];
   private buffers: GraphBuffer[] = [];
   private nodes: NodeRecord[] = [];
   private frameNumber = 0;
@@ -876,6 +944,16 @@ export class RenderGraph {
     if (same) return same;
     const array = new TextureArray(name, elements);
     this.arrays.push(array);
+    return array;
+  }
+
+  // An array binding of buffers (see BufferArray), its table written now. Arrays of the same
+  // elements are one
+  bufferArray(name: string, elements: readonly (GraphBuffer | Uniform<any>)[]): BufferArray {
+    const same = this.bufferArrays.find((a) => a.elements.length === elements.length && a.elements.every((e, i) => e === elements[i]));
+    if (same) return same;
+    const array = new BufferArray(this.context.device, name, elements);
+    this.bufferArrays.push(array);
     return array;
   }
 
@@ -1299,6 +1377,7 @@ export class RenderGraph {
     for (const r of this.nodes) (r.node as { destroy?(): void }).destroy?.();
     for (const image of this.images) if (image.extent) for (const t of image.textures) t.destroy();
     for (const array of this.arrays) destroyBuilt(array.built);
+    for (const array of this.bufferArrays) array.table.destroy();
     for (const b of this.buffers) if (b.count !== null) for (const buffer of b.buffers) buffer.destroy();
     for (const o of this.owned) o.destroy();
   }

@@ -37,8 +37,20 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   `maxStorageTexturesPerShaderStage` (requested as high as the adapter allows), checked with the
   error naming the array; read-write ones need `texture-formats-tier2` for most formats, as a
   single storage image does. `array-length` touches no element, so it doesn't make a written array
-  read-write. `web/tools/check-wgsl.ts` expands arrays' directive lines for two elements in two
-  `rgba8unorm` buckets, so the golden modules with arrays compile.
+  read-write.
+- An `(array (buffer T))` or `(array (buffer-array T))` binding is a `BufferArray`
+  (`RenderGraph.bufferArray(name, elements)`, the same object for the same elements) of
+  `GraphBuffer`s and `Uniform`s (a uniform element is its storage buffer, updated as the material's
+  uniforms are). Each distinct buffer is a bucket of its own, a storage buffer of raw words, in the
+  order buffers first appear (WebGPU forbids binding a writable storage buffer twice in a bind
+  group, so duplicates share a bucket); the uniform table of each element's bucket is written when
+  the array is made, as the graph is built. The WGSL repeats each bucket's load, store and atomic
+  helpers on `//zgal-bucket` lines (one line each), and an element's access switches on its
+  bucket. The buckets count against `maxStorageBuffersPerShaderStage` with the material's other
+  buffers (requested as high as the adapter allows), checked with the error naming the arrays;
+  `web/tests/models.test.ts` checks both. Arrays chosen with `#:select` stay refused.
+- `web/tools/check-wgsl.ts` expands arrays' directive lines for two elements in two `rgba8unorm`
+  buckets, so the golden modules with arrays compile.
 - Image files (`image-file`, models' textures) are decoded by `image-decode.ts`'s `decodeImage`, in
   every environment, never by the browser: Firefox's `createImageBitmap` premultiplies alpha
   whatever it's asked, and browsers' decoders needn't give native's bytes
@@ -139,6 +151,15 @@ This page has what the reference doesn't: the runtime's conventions and how to t
 - WebGPU validation: a filtering `GPUSampler` in a non-filtering layout slot is a bind-group error
   on Dawn and Chromium. `textureGather` on a `texture_depth_2d` works with a non-filtering sampler
   everywhere (Dawn, SwiftShader, Firefox) and honours address modes.
+- Generated WGSL: naga (Firefox, and `--naga`) rejects a function with a return type whose body
+  ends in a `loop` (it sees the end of the function reachable), so helpers `break` out of the loop
+  and return after it.
+- Storage buffers per stage: WebGPU's default `maxStorageBuffersPerShaderStage` is 8 (`Context`
+  requests the adapter's, 10 on Dawn on Metal); an array of buffers takes one per distinct
+  buffer, so keep test programs within 8.
+- Dawn rejects `STORAGE_BINDING` on a `bgra8unorm` texture unless the device has
+  `bgra8unorm-storage` (the graph only adds the usage then): storage-image tests use `rgba8unorm`
+  or `r32float`.
 
 ## The image decoder
 

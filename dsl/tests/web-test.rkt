@@ -35,11 +35,17 @@
 
 (test-case "Materials WebGPU can't express"
   (check-not-on-web
-   "(compute-material Pick
+   "(compute-material Sum
       (workgroup 1)
-      (bindings (sources (array (buffer-array uint))) (counts (buffer-array uint)))
-      (compute (write! (at counts 0) (array-length sources))))"
-   "can't be an array of buffer-arrays"))
+      (bindings (sources (array (buffer-array uint))) (total (buffer-array uint)))
+      (compute (write! (at total 0) (at (at sources 0) 0))))
+    (graph Sums
+      (input shown (per-frame (data uint)))
+      (buffer a uint 1 #:frames shared)
+      (buffer total uint 1 #:frames shared)
+      (material summing Sum (sources (a) #:select shown) total #:invocations (1))
+      (dispatch run summing))"
+   "can't #:select its elements"))
 
 
 (test-case "Graphs binding arrays of textures: copied image files, and graph and imported images"
@@ -416,6 +422,54 @@
   (define ts (web-shader program "test.zgal.ts"))
   (check-true (string-contains? ts "{ name: 'sources', resource: 'sources', kind: 'storage-image-array', access: 'read'") ts)
   (check-true (string-contains? ts "{ name: 'targets', resource: 'targets', kind: 'storage-image-array', access: 'write'") ts))
+
+(test-case "An array of buffers is storage buckets of raw words: accesses switch on the bucket, each bucket's helpers on a bucket line"
+  (define program
+    "(struct Params (scale float) (tag uint16))
+     (compute-material Mix
+       (workgroup 4 4)
+       (bindings (halves (array (buffer-array uint16))) (counts (array (buffer-array uint))) (params (array (buffer Params))))
+       (compute
+        (let* ([at globalInvocationId.xy]
+               [e (remainder at.y 3)]
+               [p (at params e)])
+          (write! (at (at halves e) at.x) (uint16 (+ p.scale (float p.tag))))
+          (atomic-add! (at (at counts e) 0) 1))))")
+  (define wgsl (web-shader program "Mix.comp.wgsl"))
+  (define (has text) (check-true (string-contains? wgsl text) text))
+  (with-check-info (['wgsl wgsl])
+    ;; Elements are words: atomic where atomics act on them or a write changes part of a word
+    (has "\n//zgal-bucket params @group(0) @binding({binding}) var<storage, read> zgalBucket_params_{bucket}: array<u32>;\n")
+    (has "\n//zgal-bucket halves @group(0) @binding({binding}) var<storage, read_write> zgalBucket_halves_{bucket}: array<atomic<u32>>;\n")
+    (has "\n//zgal-bucket counts @group(0) @binding({binding}) var<storage, read_write> zgalBucket_counts_{bucket}: array<atomic<u32>>;\n")
+    ;; Each bucket's helpers on one line, which the runtime repeats per bucket
+    (has "\n//zgal-bucket params fn zgalLoad_zgalBucket_params_{bucket}_Params(o: u32) -> Params {")
+    ;; Elements' accesses switch on the bucket, the element's index clamped to the array
+    (has "let entry = zgalTable_params[min(e, zgalCount_params - 1u)];")
+    (has "//zgal-bucket params case {bucket}u: { return zgalLoad_zgalBucket_params_{bucket}_Params(o); }")
+    (has "//zgal-bucket counts case {bucket}u: { return atomicAdd(&zgalBucket_counts_{bucket}[i], a0); }"))
+  (define ts (web-shader program "test.zgal.ts"))
+  (check-true (string-contains? ts "{ name: 'halves', resource: 'halves', kind: 'storage-buffer-array', access: 'write'") ts)
+  (check-true (string-contains? ts "{ name: 'params', resource: 'params', kind: 'storage-buffer-array', access: 'read'") ts))
+
+(test-case "A graph binds an array of buffers as a BufferArray, uniform elements as their Uniforms"
+  (define ts
+    (web-shader
+      "(struct Params (scale float) (tag uint16))
+       (compute-material Read
+         (workgroup 1)
+         (bindings (params (array (buffer Params))) (result (buffer-array float)))
+         (compute (write! (at result 0) (.scale (at params 1)))))
+       (graph G
+         (input k (per-frame Params))
+         (uniform u Params k)
+         (buffer c Params 1 #:frames shared)
+         (buffer result float 1 #:frames shared)
+         (material m Read (params (u c c)) result #:invocations (1))
+         (dispatch d m))"
+      "test.zgal.ts"))
+  (check-true (string-contains? ts "const array_m_params = graph.bufferArray('m\\'s params', [uniform_u, buffer_c, buffer_c]);") ts)
+  (check-true (string-contains? ts "params: { buffers: array_m_params }") ts))
 
 (test-case "A sampler clamping to a border clamps to the edge on the web, its border colour beside it"
   (define (sampler options)

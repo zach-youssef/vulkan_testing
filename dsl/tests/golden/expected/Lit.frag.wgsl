@@ -23,6 +23,12 @@ struct Settings {
     scale: vec4f,
 }
 
+struct Weighted {
+    scale: f32,
+    offset: vec2f,
+    tag: u32,
+}
+
 @group(0) @binding(0) var shadowMap: texture_depth_2d;
 @group(0) @binding(1) var zgalCompare_shadowSampler: sampler_comparison;
 @group(0) @binding(2) var albedo: texture_2d<f32>;

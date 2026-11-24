@@ -23,6 +23,12 @@ struct Settings {
     scale: vec4f,
 }
 
+struct Weighted {
+    scale: f32,
+    offset: vec2f,
+    tag: u32,
+}
+
 @group(0) @binding(0) var<storage, read_write> texels: array<u32>;
 @group(0) @binding(1) var<storage, read_write> packed: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read> settings: Settings;

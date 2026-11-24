@@ -23,6 +23,12 @@ struct Settings {
     scale: vec4f,
 }
 
+struct Weighted {
+    scale: f32,
+    offset: vec2f,
+    tag: u32,
+}
+
 //zgal-array decals @group(0) @binding(0) var<uniform> zgalTable_decals: array<vec4u, {count}>;
 //zgal-array decals const zgalCount_decals = {count}u;
 //zgal-bucket decals @group(0) @binding({binding}) var zgalBucket_decals_{bucket}: texture_2d_array<f32>;

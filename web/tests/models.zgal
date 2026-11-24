@@ -139,3 +139,34 @@
   (import-images given #:resting general)
   (material stamping Stamps (targets given) #:invocations (4 4 4))
   (dispatch stamp stamping))
+
+;; Arrays of buffers: a uniform and an imported buffer of structs, and imported buffers of 16-bit
+;; integers and of counters, some elements the same buffer. Each invocation reads its row's element
+;; of scales, writes a uint16 into its row's element of halves and counts itself in its row's
+;; element of counts. On the web each distinct buffer is a bucket of its own, words the shader
+;; switches between.
+(struct Scale (factor uint) (tag uint16))
+
+(compute-material Spread
+  (workgroup 4 4)
+  (bindings
+   (scales (array (buffer Scale)))
+   (halves (array (buffer-array uint16)))
+   (counts (array (buffer-array uint))))
+  (compute
+   (let* ([at globalInvocationId.xy]
+          [e (remainder at.y (array-length halves))]
+          [s (at scales (remainder at.y 2))])
+     (write! (at (at halves e) (+ (* at.y 4) at.x)) (uint16 (+ (* s.factor 100) (uint s.tag) at.x)))
+     (atomic-add! (at (at counts e) 0) 1))))
+
+(graph Spreads
+  (input first (per-frame Scale))
+  (import-buffer second Scale)
+  (import-buffer even uint16)
+  (import-buffer odd uint16)
+  (import-buffer evenCount uint)
+  (import-buffer oddCount uint)
+  (uniform firstScale Scale first)
+  (material spreading Spread (scales (firstScale second)) (halves (even odd even)) (counts (evenCount oddCount evenCount)) #:invocations (4 4))
+  (dispatch spread spreading))

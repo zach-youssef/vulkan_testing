@@ -11,12 +11,14 @@ export type Stage = 'vertex' | 'fragment' | 'compute';
 // one per distinct size and format among the elements) bind after the push constants (see
 // expandArrays). A storage-image-array is an array binding of storage images, bound likewise, its
 // buckets texture_storage_2d_arrays (each distinct image one of its own, a view of it, as only the
-// graph's and imported images are storage images). WebGPU's samplers each do one thing, so a ZGAL sampler
+// graph's and imported images are storage images). A storage-buffer-array is an array binding of
+// buffers, bound to a BufferArray likewise, its buckets storage buffers (each distinct buffer one of
+// its own). WebGPU's samplers each do one thing, so a ZGAL sampler
 // is up to three bindings of one resource (a Sampler), the variants its stages use: sampler, as
 // the graph describes it; depth-sampler (zgalDepth_<name>), a non-filtering one sampling depth
 // textures, which WebGPU refuses filtering samplers on; and comparison-sampler
 // (zgalCompare_<name>), comparing depths
-export type BindingKind = 'texture' | 'texture-array' | 'sampler' | 'depth-sampler' | 'comparison-sampler' | 'storage-image' | 'storage-image-array' | 'buffer' | 'buffer-array';
+export type BindingKind = 'texture' | 'texture-array' | 'sampler' | 'depth-sampler' | 'comparison-sampler' | 'storage-image' | 'storage-image-array' | 'buffer' | 'buffer-array' | 'storage-buffer-array';
 export type Access = 'read' | 'write' | 'read-write';
 
 export interface BindingDesc {
@@ -111,14 +113,15 @@ export function isDepthFormat(f: GPUTextureFormat): boolean {
   return f.startsWith('depth');
 }
 
-// Whether a binding kind is an array binding, bound to a TextureArray
+// Whether a binding kind is an array binding, bound to a TextureArray (or, for buffers, a
+// BufferArray)
 export function isArrayKind(kind: BindingKind): boolean {
-  return kind === 'texture-array' || kind === 'storage-image-array';
+  return kind === 'texture-array' || kind === 'storage-image-array' || kind === 'storage-buffer-array';
 }
 
 // What a material's bindings are bound to, as far as its pipeline cares: the formats of its
-// textures and storage images, the shape of its arrays of textures (their number of elements and
-// their buckets' formats), and whether its samplers (the plain ones: depth and comparison samplers
+// textures and storage images, the shape of its arrays (their number of elements and their
+// buckets' formats), and whether its samplers (the plain ones: depth and comparison samplers
 // are what they are) filter
 export interface BoundFormats {
   readonly textures: Readonly<Record<string, GPUTextureFormat>>;
@@ -128,7 +131,8 @@ export interface BoundFormats {
 
 export interface ArrayShape {
   readonly count: number;
-  readonly buckets: readonly GPUTextureFormat[];
+  // Per bucket, its texel format (null for an array of buffers' buckets)
+  readonly buckets: readonly (GPUTextureFormat | null)[];
 }
 
 // The binding index of each array binding's first bucket: after the push constants' binding (the
@@ -145,18 +149,18 @@ export function firstBuckets(m: MaterialDesc, formats: BoundFormats): Record<str
 }
 
 // A module (as its ShaderSource gives it) with its arrays' directive lines expanded (wgsl.rkt's
-// "Arrays of textures"): `//zgal-array <name> <text>` becomes text, its {count} the array's number
+// "Arrays of bindings"): `//zgal-array <name> <text>` becomes text, its {count} the array's number
 // of elements, and `//zgal-bucket <name> <text>` becomes text for each bucket, its {bucket} the
-// bucket's number, {binding} its binding index and {format} its texel format
+// bucket's number, {binding} its binding index and {format} its texel format (for textures)
 export function expandArrays(code: string, m: MaterialDesc, formats: BoundFormats): string {
   if (!code.includes('//zgal-')) return code;
   const first = firstBuckets(m, formats);
   return code.replace(/^([ \t]*)\/\/zgal-(array|bucket) (\S+) (.*)$/gm, (_, indent: string, kind: string, name: string, text: string) => {
     const shape = formats.arrays[name];
-    if (!shape) throw new Error(`material ${m.name}: array ${name} isn't bound to a TextureArray`);
+    if (!shape) throw new Error(`material ${m.name}: array ${name} isn't bound to a TextureArray or BufferArray`);
     if (kind === 'array') return indent + text.replaceAll('{count}', String(shape.count));
     return shape.buckets
-      .map((format, i) => indent + text.replaceAll('{bucket}', String(i)).replaceAll('{binding}', String(first[name] + i)).replaceAll('{format}', format))
+      .map((format, i) => indent + text.replaceAll('{bucket}', String(i)).replaceAll('{binding}', String(first[name] + i)).replaceAll('{format}', format ?? ''))
       .join('\n');
   });
 }
@@ -192,7 +196,7 @@ export function layoutEntries(device: GPUDevice, m: MaterialDesc, formats: Bound
         return { binding: i, visibility, texture: { sampleType: sampleType(formats.textures[b.name], b.depth) } };
       case 'texture-array': {
         (formats.arrays[b.name]?.buckets ?? []).forEach((format, bucket) => {
-          buckets.push({ binding: first[b.name] + bucket, visibility, texture: { sampleType: sampleType(format, false), viewDimension: '2d-array' } });
+          buckets.push({ binding: first[b.name] + bucket, visibility, texture: { sampleType: sampleType(format ?? undefined, false), viewDimension: '2d-array' } });
         });
         // The table of its elements
         return { binding: i, visibility, buffer: { type: 'uniform' } };
@@ -210,8 +214,14 @@ export function layoutEntries(device: GPUDevice, m: MaterialDesc, formats: Bound
       }
       case 'storage-image-array': {
         (formats.arrays[b.name]?.buckets ?? []).forEach((format, bucket) => {
-          checkReadWrite(b, format, ' array');
-          buckets.push({ binding: first[b.name] + bucket, visibility, storageTexture: { access: storageAccess(b), format, viewDimension: '2d-array' } });
+          checkReadWrite(b, format ?? undefined, ' array');
+          buckets.push({ binding: first[b.name] + bucket, visibility, storageTexture: { access: storageAccess(b), format: format!, viewDimension: '2d-array' } });
+        });
+        return { binding: i, visibility, buffer: { type: 'uniform' } };
+      }
+      case 'storage-buffer-array': {
+        (formats.arrays[b.name]?.buckets ?? []).forEach((_, bucket) => {
+          buckets.push({ binding: first[b.name] + bucket, visibility, buffer: { type: b.access === 'read' ? 'read-only-storage' : 'storage' } });
         });
         return { binding: i, visibility, buffer: { type: 'uniform' } };
       }

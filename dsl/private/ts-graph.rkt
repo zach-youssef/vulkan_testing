@@ -382,13 +382,19 @@
        (define (option k) (cond [(assq k options) => cdr] [else #f]))
        ;; Arrays of textures and of storage images are bound as TextureArrays (buckets of texture
        ;; arrays: image files' and models' images are copied in when first bound, and graph images
-       ;; and imported ones, the only storage images, are buckets of their own)
+       ;; and imported ones, the only storage images, are buckets of their own), and arrays of
+       ;; buffers as BufferArrays (each distinct buffer a bucket of its own)
        (for ([pair (in-list bindings)] #:when (eq? (binding-kind (car pair)) 'array))
          (match-define (cons b resource) pair)
          (define label (ts-string (format "~a's ~a" n (binding-name b))))
          (match resource
            [(g-selection _ _)
             (web-error l "WebGPU has no arrays of bindings, so material ~a's binding ~a can't #:select its elements" n (binding-name b))]
+           [(list rs ...) #:when (memq (binding-resource-kind b) '(buffer buffer-array))
+            (line! "    const array_~a_~a = graph.bufferArray(~a, [~a]);" n (binding-name b) label
+                   (string-join (for/list ([r (in-list rs)])
+                                  (if (eq? (entry-kind (hash-ref env r)) 'uniform) (format "uniform_~a" r) (resource-ref r)))
+                                ", "))]
            [(list rs ...)
             (line! "    const array_~a_~a = graph.textureArray(~a, [~a]);" n (binding-name b) label
                    (string-join (map resource-ref rs) ", "))]
@@ -398,7 +404,8 @@
            (match-define (cons b resource) pair)
            (format "~a: ~a" (binding-name b)
                    (match (if (eq? (binding-kind b) 'array) 'array (entry-kind (hash-ref env resource)))
-                     ['array (format "{ array: array_~a_~a }" n (binding-name b))]
+                     ['array (format "{ ~a: array_~a_~a }" (if (memq (binding-resource-kind b) '(buffer buffer-array)) "buffers" "array")
+                                     n (binding-name b))]
                      ['sampler (format "{ sampler: sampler_~a }" resource)]
                      ['uniform (format "{ uniform: uniform_~a }" resource)]
                      [(or 'image 'import) (format "{ image: ~a }" (resource-ref resource))]
