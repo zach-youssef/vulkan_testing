@@ -186,6 +186,16 @@
   ;; Only sized: bound read
   (check-equal? (binding-access (binding-named material "sized")) 'read))
 
+(test-case "An array's number of elements doesn't read it"
+  (define text (string-append
+                "(compute-material C (workgroup 1) (bindings (targets (array (storage-image))) (counted (array (storage-image))))\n"
+                "  (compute (let* ([t (ivec2 globalInvocationId.xy)] [e (remainder globalInvocationId.z (array-length targets))])\n"
+                "    (store! (at targets e) t (vec4 (float (array-length counted)))))))"))
+  (define material (material-named (program-of text) "C"))
+  (check-equal? (binding-access (binding-named material "targets")) 'write)
+  ;; Only counted: bound read
+  (check-equal? (binding-access (binding-named material "counted")) 'read))
+
 (test-case "Materials' functions read their bindings and push constants, and are inlined"
   (define material
     (string-append

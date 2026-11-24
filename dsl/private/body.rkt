@@ -1142,6 +1142,8 @@
        (match (opaque-root image)
          [#f (walk image)]
          [name (note! name 'size) (walk-indices image)])]
+      ;; An array's number of elements touches none of them
+      [(t-op 'array-length (list (t-global 'binding name _ _ _)) _ _) (note! name 'size)]
       [(t-user-call f args _ _)
        (for ([a (in-list args)] [summary (in-list (hash-ref summaries f))])
          (match (opaque-root a)

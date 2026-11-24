@@ -848,7 +848,7 @@ public:
 #line 200 "dsl/tests/golden/features.zgal"
         Handle<DescriptorArray> decals;   // (array texture)
         Handle<DescriptorArray> settings;   // (array (buffer Lights read))
-        Handle<DescriptorArray> targets;   // (array (storage-image read-write))
+        Handle<DescriptorArray> targets;   // (array (storage-image write))
 #line 853 "build/generated/features.zgal.h"
     };
 
@@ -899,7 +899,7 @@ private:
 #line 200 "dsl/tests/golden/features.zgal"
             MaterialBinding::array(std::move(bindings.decals), Access::SampledRead, 0),
             MaterialBinding::array(std::move(bindings.settings), Access::StorageBufferRead, 0),
-            MaterialBinding::array(std::move(bindings.targets), Access::StorageReadWrite, 0),
+            MaterialBinding::array(std::move(bindings.targets), Access::StorageWrite, 0),
 #line 904 "build/generated/features.zgal.h"
         };
     }
