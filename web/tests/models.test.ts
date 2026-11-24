@@ -678,16 +678,29 @@ test('a binding no stage uses counts against every stage\'s limits, as WebGPU ma
   const buffer = graph.createBuffer('buffer', 'shared', zgal.uint, 1);
   const texture = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
   const image = graph.importImage('image', texture, 'live');
-  const bound: Record<string, zgal.Bound> = {
-    'buffer': { buffer }, 'texture': { image },
-    'texture-array': { array: graph.textureArray('images', [image]) }, 'storage-buffer-array': { buffers: graph.bufferArray('buffers', [buffer]) },
+  // Written storage images may not alias, so each binding has its own
+  const storageTextures = Array.from({ length: device.limits.maxStorageTexturesPerShaderStage + 1 },
+    () => device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING }));
+  const storageImages = storageTextures.map((t, i) => graph.importImage(`storage${i}`, t, 'live'));
+  const array = graph.textureArray('images', [image]);
+  const buffers = graph.bufferArray('buffers', [buffer]);
+  const bound = (kind: zgal.BindingDesc['kind'], i: number): zgal.Bound => {
+    switch (kind) {
+      case 'buffer': return { buffer };
+      case 'texture': return { image };
+      case 'storage-image': return { image: storageImages[i]! };
+      case 'texture-array': return { array };
+      default: return { buffers };
+    }
   };
-  // A binding of each kind given, the last used by no stage (stages: [])
+  // A binding of each kind given, the last used by no stage (stages: []); storage images written,
+  // which every format may be
+  const access = (kind: zgal.BindingDesc['kind']): zgal.Access | null => (kind.startsWith('texture') ? null : kind === 'storage-image' ? 'write' : 'read');
   const material = (kinds: readonly zgal.BindingDesc['kind'][]) => {
     const bindings = kinds.map((kind, i): zgal.BindingDesc =>
-      ({ name: `b${i}`, resource: `b${i}`, kind, access: kind.startsWith('texture') ? null : 'read', stages: i === kinds.length - 1 ? [] : ['compute'], depth: false }));
+      ({ name: `b${i}`, resource: `b${i}`, kind, access: access(kind), stages: i === kinds.length - 1 ? [] : ['compute'], depth: false }));
     return new zgal.MaterialInstance(graph, { ...Cull, name: 'Unused', bindings, push: { ...Cull.push!, binding: bindings.length } },
-      Object.fromEntries(bindings.map((b) => [b.resource, bound[b.kind]])), null, null);
+      Object.fromEntries(bindings.map((b, i) => [b.resource, bound(b.kind, i)])), null, null);
   };
   const many = (kind: zgal.BindingDesc['kind'], count: number) => Array.from({ length: count }, () => kind);
   const storage = device.limits.maxStorageBuffersPerShaderStage;
@@ -696,14 +709,21 @@ test('a binding no stage uses counts against every stage\'s limits, as WebGPU ma
   const sampled = device.limits.maxSampledTexturesPerShaderStage;
   assert.throws(() => material(many('texture', sampled + 1)).groupLayout(), new RegExp(`^Error: material Unused's compute stage samples ${sampled + 1} textures, more than`));
   material(many('texture', sampled)).groupLayout();
+  const storageImageLimit = device.limits.maxStorageTexturesPerShaderStage;
+  assert.throws(() => material(many('storage-image', storageImageLimit + 1)).groupLayout(), new RegExp(`^Error: material Unused's compute stage binds ${storageImageLimit + 1} storage images, more than`));
+  material(many('storage-image', storageImageLimit)).groupLayout();
   // Arrays' tables and the push constants: arrays of textures as far as the stage may sample
-  // textures (a bucket each), then arrays of buffers
+  // textures (a bucket each), then arrays of buffers (a storage buffer bucket each), so the
+  // uniform limit is reached before the others only while those two cover it (as WebGPU's default
+  // limits do: 12 uniform buffers, 16 sampled textures, 8 storage buffers)
   const uniform = device.limits.maxUniformBuffersPerShaderStage;
+  assert.ok(uniform <= sampled + storage, `the device's ${uniform} uniform buffers outnumber its ${sampled} sampled textures and ${storage} storage buffers: reach the uniform limit otherwise`);
   const textures = Math.min(uniform, sampled);
   const arrays = (count: number) => [...many('texture-array', Math.min(count, textures)), ...many('storage-buffer-array', count - Math.min(count, textures))];
   assert.throws(() => material(arrays(uniform)).groupLayout(), new RegExp(`^Error: material Unused's compute stage binds ${uniform + 1} uniform buffers, more than`));
   material(arrays(uniform - 1)).groupLayout();
   graph.destroy();
   texture.destroy();
+  for (const t of storageTextures) t.destroy();
   assert.deepEqual(context.errors, []);
 });
