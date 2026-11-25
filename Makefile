@@ -486,7 +486,7 @@ test-decode-steps:
 # only headless Chromium on SwiftShader. Firefox (headless too, on the machine's GPU, or lavapipe
 # on Linux) runs only when asked:
 # make test-pages BROWSERS="chromium firefox" (or test-web, or test), as the pre-push check of a
-# stack's top and web.yml do. A browser found nowhere is skipped (the tools exit with 3) with a
+# stack's top and web.yml do (web.yml with every page in Firefox, FIREFOX_PAGES=all). A browser found nowhere is skipped (the tools exit with 3) with a
 # note in the summary, unless BROWSERS was given on the command line (or with make -e): then it
 # fails. One named by CHROMIUM or FIREFOX must exist.
 BROWSERS = chromium
@@ -503,7 +503,28 @@ PAGES = particles scene blur_edges border arrays targets storage frames-2-3 fram
 # touch: firefox.ts can't touch
 CHROMIUM_ONLY_PAGES = touch
 CHROMIUM_PAGES = $(PAGES)
-FIREFOX_PAGES = all
+# Firefox runs the pages using browser APIs that behave differently there, or WebGPU API paths where
+# wgpu's validation or behaviour differs from Dawn's; shader-only differences are naga's (make
+# test-web validates every generated WGSL module with it). web.yml runs them all (FIREFOX_PAGES=all),
+# local runs and the pre-push hook these:
+#   blur_edges: canvas presentation, --save-capture's readback, an image fetched, storage images
+#   arrays: texture arrays' bucket views, mixed sizes, sRGB view formats (wgpu's validation)
+#   targets: resize! recreating surface-relative images (canvas sizing)
+#   storage: storage-image arrays of mixed formats (wgpu's format support)
+#   frames-2-3: frames in flight changing (queue and mapAsync ordering)
+#   buffers: arrays of buffers, atomics, 16-bit integers (wgpu's binding limits and validation)
+#   indirect: indirect dispatches and draws (wgpu's validation)
+#   models: depth formats, meshes, texture arrays
+#   mount: mounting, and sizing through ResizeObserver
+#   held-keys: focus, pointer capture, keyboard events
+#   stream-buffers: fetch body and Blob streams, Content-Length and onProgress
+#   stop-streams: aborting fetches when stopping mid-stream
+# Left out: particles and scene (held-keys and models cover keys, meshes and depth), border, stamps,
+# glsl and kernels (only shader differences), frames-3-2 (frames-2-3's code path), image-file and
+# image-decode (the wasm decoder doesn't depend on the browser, and Node tests it too), headless and
+# streams (stream-buffers covers Blobs and runHeadless).
+FIREFOX_PAGES = blur_edges arrays targets storage frames-2-3 buffers indirect models mount \
+	held-keys stream-buffers stop-streams
 FIREFOX_PAGES_RUN = $(if $(filter all,$(FIREFOX_PAGES)),$(filter-out $(CHROMIUM_ONLY_PAGES),$(PAGES)),$(FIREFOX_PAGES))
 ifeq ($(strip $(FIREFOX_PAGES)),)
 $(error FIREFOX_PAGES is empty: name the pages Firefox runs, or all)

@@ -331,8 +331,15 @@ then:
    `note:` under the summary, unless `make` was given `BROWSERS`: then it fails, as it does when the
    browser `CHROMIUM` or `FIREFOX` names is missing. Each entry has a name (the Makefile's `PAGES`,
    e.g. `blur_edges`, `frames-2-3`, `mount`): Chromium runs them all, Firefox those `FIREFOX_PAGES`
-   lists, or with `FIREFOX_PAGES=all` every one but the Chromium-only ones (`CHROMIUM_ONLY_PAGES`:
-   touch). Give it on the command line for a targeted run (`make test-pages BROWSERS=firefox
+   lists (12 of the 23 it can), or with `FIREFOX_PAGES=all` every one but the Chromium-only ones
+   (`CHROMIUM_ONLY_PAGES`: touch), as web.yml does. So the pre-push hook, on the Mac's real GPU but
+   serial, runs the subset, while CI keeps every page on lavapipe. A page belongs in
+   `FIREFOX_PAGES` (with its reason in the comment beside it) when it uses browser APIs that behave
+   differently in Firefox (canvas sizing and presentation, focus and input events, fetch streams
+   and aborts) or WebGPU API paths where wgpu's validation or behaviour differs from Dawn's
+   (formats, binding limits, texture arrays, indirect work, frames in flight); a page whose only
+   difference would be its shaders stays out, as naga checks every generated module. Give it on
+   the command line for a targeted run (`make test-pages BROWSERS=firefox
    FIREFOX_PAGES="mount held-keys"`). A browser running fewer pages than it can says so in a `note:`
    under the summary, and an unknown or Chromium-only name, an empty list, or `all` with other
    names stops `make` before anything runs. A new entry in test-pages-steps needs a name in `PAGES`

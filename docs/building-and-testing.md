@@ -65,7 +65,8 @@ from `PATH` (the Vulkan SDK's locally), for the web tests too.
 - `make test-web` and `make test-pages`: the web backend's tests ([web.md](web.md#tests); `make
   test` includes them), with pages in headless Chromium only unless `BROWSERS="chromium firefox"`
   (Firefox, headless too, uses the machine's GPU, lavapipe on Linux), and in Firefox only the pages
-  `FIREFOX_PAGES` names (`FIREFOX_PAGES=all` for every page it can run). A browser that isn't installed is skipped with a note under the
+  `FIREFOX_PAGES` names, a subset ([web.md](web.md#tests)); `FIREFOX_PAGES=all` runs every page it
+  can, as CI does. A browser that isn't installed is skipped with a note under the
   summary, or fails the run when `BROWSERS` names it. `make web` builds the web examples.
 - `make test-decode`: checks the web runtime's image decoder under Node against native stb_image
   (no GPU; [web.md](web.md#the-image-decoder)); `make test-web` runs it first. `make
@@ -120,9 +121,9 @@ commit; the hook blocks the push instead:
 | Check | Where | Runs | Device |
 |---|---|---|---|
 | `cpu` | [cpu.yml](../.github/workflows/cpu.yml) | builds the examples and both test programs; `make test-cpu`, `make test-dsl`, `make test-tools` | no Vulkan tests; Dawn on lavapipe checks ZGAL's WGSL (naga's too) |
-| `web` | [web.yml](../.github/workflows/web.yml) | `make test-web BROWSERS="chromium firefox"` | Dawn under Node on lavapipe; Chromium's headless shell on SwiftShader; Firefox 160.0.1 (Mozilla's tarball, SHA-256 checked) on lavapipe |
+| `web` | [web.yml](../.github/workflows/web.yml) | `make test-web BROWSERS="chromium firefox" FIREFOX_PAGES=all` | Dawn under Node on lavapipe; Chromium's headless shell on SwiftShader; Firefox 160.0.1 (Mozilla's tarball, SHA-256 checked) on lavapipe |
 | `gpu` | [gpu.yml](../.github/workflows/gpu.yml) | `make test-gpu`, `make -k test-examples` | lavapipe, validation and synchronization validation required |
-| pre-push hook | [tools/git-hooks/pre-push](../tools/git-hooks/pre-push), on the Mac | builds, then `make -k test-gpu test-examples test-web BROWSERS="chromium firefox"` | MoltenVK; Dawn on Metal; Chromium and Firefox |
+| pre-push hook | [tools/git-hooks/pre-push](../tools/git-hooks/pre-push), on the Mac | builds, then `make -k test-gpu test-examples test-web BROWSERS="chromium firefox"` | MoltenVK; Dawn on Metal; Chromium, and Firefox on `FIREFOX_PAGES`' subset |
 
 The CI jobs run on Ubuntu 24.04 with clang++. In web.yml, `CHROMIUM` names the headless shell, so
 a missing one fails the pages rather than skipping them, as a missing `FIREFOX` does. Commits from
@@ -225,7 +226,8 @@ Mac), covering what lavapipe can't. Install it once per checkout, for all its wo
     git config core.hooksPath tools/git-hooks
 
 It builds the pushed commit (`make -j build/tests/gpu_tests examples web`, summarized as `build`),
-then runs `make -k test-gpu test-examples test-web BROWSERS="chromium firefox"` (both headless),
+then runs `make -k test-gpu test-examples test-web BROWSERS="chromium firefox"` (both headless,
+Firefox on `FIREFOX_PAGES`' subset of the pages, while CI runs them all),
 printing only the summaries; any failure blocks the push. `git push --no-verify` skips
 it. It skips with a notice a push that only deletes refs, commits the remote already has (under its
 remote-tracking refs or the refs the push updates, e.g. a new branch at `main`), and a machine

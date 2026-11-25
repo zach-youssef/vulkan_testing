@@ -1,6 +1,8 @@
 # Runs the web backend's tests on each commit (make test-web): the runtime's tests and the web
 # examples under Node on Dawn, which runs on lavapipe, then the test pages in headless Chromium on
-# SwiftShader and in headless Firefox on lavapipe (through wgpu's Vulkan backend). Its token can't
+# SwiftShader and in headless Firefox on lavapipe (through wgpu's Vulkan backend), every page in
+# both: FIREFOX_PAGES=all, as local runs and the pre-push hook run only a subset in Firefox (which
+# commits from before FIREFOX_PAGES ignore, running all anyway). Its token can't
 # post statuses: ci.yml posts each commit's "web" status from its job's conclusion, found by the
 # job's name, and passes only the commits that have this workflow, as older ones can't pass it.
 name: web
@@ -91,7 +93,7 @@ jobs:
       # A step timeout, under the job's, so a hang still uploads the logs
       - name: Web tests
         timeout-minutes: 12
-        run: make test-web BROWSERS="chromium firefox"
+        run: make test-web BROWSERS="chromium firefox" FIREFOX_PAGES=all
 
       # The tests print summaries; their full output is in build/logs
       - name: Upload the test logs
