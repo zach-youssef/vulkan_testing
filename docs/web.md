@@ -329,7 +329,14 @@ then:
    firefox"` (as CI and the pre-push hook do). A browser found nowhere is skipped (Chromium is
    Playwright's headless shell, Firefox the macOS application or `firefox` on `PATH`), with a
    `note:` under the summary, unless `make` was given `BROWSERS`: then it fails, as it does when the
-   browser `CHROMIUM` or `FIREFOX` names is missing.
+   browser `CHROMIUM` or `FIREFOX` names is missing. Each entry has a name (the Makefile's `PAGES`,
+   e.g. `blur_edges`, `frames-2-3`, `mount`): Chromium runs them all, Firefox those `FIREFOX_PAGES`
+   lists, or with `FIREFOX_PAGES=all` every one but the Chromium-only ones (`CHROMIUM_ONLY_PAGES`:
+   touch). Give it on the command line for a targeted run (`make test-pages BROWSERS=firefox
+   FIREFOX_PAGES="mount held-keys"`). A browser running fewer pages than it can says so in a `note:`
+   under the summary, and an unknown or Chromium-only name, an empty list, or `all` with other
+   names stops `make` before anything runs. A new entry in test-pages-steps needs a name in `PAGES`
+   and an `if want NAME` around it.
 
 Captures compared exactly across GPUs need texels whose values every GPU rounds alike: an sRGB
 texel decodes to a fraction of 255 that, near x.5, rounds differently on different GPUs (sRGB 100

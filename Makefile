@@ -491,10 +491,39 @@ test-decode-steps:
 # fails. One named by CHROMIUM or FIREFOX must exist.
 BROWSERS = chromium
 BROWSERS_REQUIRED = $(if $(filter command line environment override,$(origin BROWSERS)),1)
+# test-pages' entries by name, and the ones each browser runs: Chromium all of them, Firefox
+# FIREFOX_PAGES (a list, or all: every page but CHROMIUM_ONLY_PAGES), given on the command line for
+# a full or targeted run (make test-pages BROWSERS=firefox FIREFOX_PAGES="mount held-keys"). A
+# browser running fewer than all the pages it can says so in a note under the summary. An unknown
+# name or a Chromium-only page in FIREFOX_PAGES, an empty FIREFOX_PAGES, or all with other names
+# stops make before it runs anything.
+PAGES = particles scene blur_edges border arrays targets storage frames-2-3 frames-3-2 buffers \
+	mount held-keys image-file image-decode kernels indirect models headless stamps glsl streams \
+	stream-buffers stop-streams touch
+# touch: firefox.ts can't touch
+CHROMIUM_ONLY_PAGES = touch
+CHROMIUM_PAGES = $(PAGES)
+FIREFOX_PAGES = all
+FIREFOX_PAGES_RUN = $(if $(filter all,$(FIREFOX_PAGES)),$(filter-out $(CHROMIUM_ONLY_PAGES),$(PAGES)),$(FIREFOX_PAGES))
+ifeq ($(strip $(FIREFOX_PAGES)),)
+$(error FIREFOX_PAGES is empty: name the pages Firefox runs, or all)
+endif
+ifneq ($(and $(filter all,$(FIREFOX_PAGES)),$(filter-out all,$(FIREFOX_PAGES))),)
+$(error FIREFOX_PAGES gives all with other names: $(filter-out all,$(FIREFOX_PAGES)))
+endif
+ifneq ($(filter-out $(PAGES),$(FIREFOX_PAGES_RUN)),)
+$(error FIREFOX_PAGES names no test-pages entry: $(filter-out $(PAGES),$(FIREFOX_PAGES_RUN)) (see PAGES))
+endif
+ifneq ($(filter $(CHROMIUM_ONLY_PAGES),$(FIREFOX_PAGES_RUN)),)
+$(error FIREFOX_PAGES names pages only Chromium runs: $(filter $(CHROMIUM_ONLY_PAGES),$(FIREFOX_PAGES_RUN)))
+endif
 TEST_PAGES = $(OUT)/web/tests
 test-pages: web $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) $(ARRAYS_TEST_WEB) $(TARGETS_TEST_WEB) $(STORAGE_TEST_WEB) $(FRAMES_TEST_WEB) $(BUFFERS_TEST_WEB) $(ZGAL_DECODE_WASM) $(ZGAL_DECODE_NATIVE) $(ZGAL_NAGA)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-pages-steps
 
+# Each browser's entries run in a subshell, each wrapped in want (whether pages, the browser's
+# list, names it). browse runs a page in the browser, passing the tools' 3 (no browser) through
+# only from its first launch, so the subshell exits with 3 when the browser isn't installed.
 test-pages-steps:
 	rm -rf $(TEST_PAGES)
 	@mkdir -p $(TEST_PAGES)/assets
@@ -509,8 +538,66 @@ test-pages-steps:
 	ln -sfn $(abspath $(WEB_DIR)/node_modules) $(TEST_PAGES)/graphs/src/node_modules
 	$(NODE) $(WEB_DIR)/node_modules/typescript/bin/tsc -p $(TEST_PAGES)/graphs/src --outDir $(TEST_PAGES)/graphs --rootDir $(TEST_PAGES)/graphs/src
 	cp $(ZGAL_DECODE_WASM) $(TEST_PAGES)/graphs/zgal/
+	want() { case " $$pages " in *" $$1 "*) ;; *) return 1;; esac; }; \
+	browse() { \
+	  $(NODE) $(WEB_DIR)/tools/$$browser.ts "$$@"; s=$$?; \
+	  if [ $$s -eq 3 ] && [ -n "$$launched" ]; then s=1; fi; \
+	  launched=1; return $$s; \
+	}; \
+	launched=; \
 	for browser in $(BROWSERS); do \
-	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(PARTICLES_WEB) --keys ' 2' 'particles.zgal.html?frames=60'; \
+	  case $$browser in \
+	    firefox) pages="$(FIREFOX_PAGES_RUN)"; list=FIREFOX_PAGES; most=$(words $(filter-out $(CHROMIUM_ONLY_PAGES),$(PAGES)));; \
+	    *) pages="$(CHROMIUM_PAGES)"; list=CHROMIUM_PAGES; most=$(words $(PAGES));; \
+	  esac; \
+	  ( \
+	  if want particles; then browse --serve $(PARTICLES_WEB) --keys ' 2' 'particles.zgal.html?frames=60' || exit $$?; fi; \
+	  if want scene; then browse --serve $(SCENE_WEB) 'scene.zgal.html?frames=60' || exit $$?; fi; \
+	  if want blur_edges; then \
+	    browse --serve $(OUT)/web --save-capture $(TEST_PAGES)/blur_edges-$$browser.png \
+	      'image_filter/image_filter.zgal.html?arg=/tests/assets/input.png&arg=out.png&blur=2&edges' || exit $$?; \
+	    $(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/blur_edges-$$browser.png 2 || exit 1; \
+	  fi; \
+	  if want border; then \
+	    browse --serve $(OUT)/web --save-capture $(TEST_PAGES)/border-$$browser.png \
+	      'border/border.zgal.html?arg=out.png' || exit $$?; \
+	    $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/border/border.approved.png $(TEST_PAGES)/border-$$browser.png $(BORDER_TOLERANCE) || exit 1; \
+	  fi; \
+	  if want arrays; then \
+	    browse --serve $(OUT)/web --save-capture $(TEST_PAGES)/arrays-$$browser.png \
+	      'arrays/arrays.zgal.html?arg=out.png' || exit $$?; \
+	    $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/arrays.approved.png $(TEST_PAGES)/arrays-$$browser.png 0 || exit 1; \
+	  fi; \
+	  if want targets; then \
+	    browse --serve $(OUT)/web --save-capture $(TEST_PAGES)/targets-$$browser.png \
+	      'targets/targets.zgal.html?arg=out.png&frames=3' || exit $$?; \
+	    $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/targets.approved.png $(TEST_PAGES)/targets-$$browser.png 0 || exit 1; \
+	  fi; \
+	  if want storage; then \
+	    browse --serve $(OUT)/web --save-capture $(TEST_PAGES)/storage-$$browser.png \
+	      'storage/storage.zgal.html?arg=out.png&frames=3' || exit $$?; \
+	    $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/storage.approved.png $(TEST_PAGES)/storage-$$browser.png 0 || exit 1; \
+	  fi; \
+	  for run in 2-3 3-2; do \
+	    want frames-$$run || continue; \
+	    browse --serve $(OUT)/web --save-capture $(TEST_PAGES)/frames-$$run-$$browser.png \
+	      "frames/frames.zgal.html?arg=out.png&first=$${run%-*}&second=$${run#*-}&frames=16" || exit $$?; \
+	    $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/frames/frames-$$run.approved.png $(TEST_PAGES)/frames-$$run-$$browser.png 0 || exit 1; \
+	  done; \
+	  if want buffers; then \
+	    browse --serve $(OUT)/web --save-capture $(TEST_PAGES)/buffers-$$browser.png \
+	      'buffers/buffers.zgal.html?arg=out.png&frames=3' || exit $$?; \
+	    $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/buffers.approved.png $(TEST_PAGES)/buffers-$$browser.png 0 || exit 1; \
+	  fi; \
+	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps glsl streams stream-buffers stop-streams; do \
+	    want $$page || continue; \
+	    browse --serve $(OUT)/web tests/$$page.html || exit $$?; \
+	  done; \
+	  if want touch; then \
+	    browse --serve $(OUT)/web \
+	      --touch '40,60; 80,60; 160,120; ; 40,60; 40,60 240,180; 80,60 280,180; 80,60;' tests/touch.html || exit $$?; \
+	  fi; \
+	  ); \
 	  status=$$?; \
 	  if [ $$status -eq 3 ] && [ -n "$(BROWSERS_REQUIRED)" ]; then \
 	    echo "test-pages: $$browser not installed, but BROWSERS asks for it"; exit 1; \
@@ -518,37 +605,8 @@ test-pages-steps:
 	    echo "note: test-pages: $$browser skipped (not installed)"; continue; \
 	  fi; \
 	  [ $$status -eq 0 ] || exit $$status; \
-	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(SCENE_WEB) 'scene.zgal.html?frames=60' || exit 1; \
-	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/blur_edges-$$browser.png \
-	    'image_filter/image_filter.zgal.html?arg=/tests/assets/input.png&arg=out.png&blur=2&edges' || exit 1; \
-	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(TEST_PAGES)/blur_edges-$$browser.png 2 || exit 1; \
-	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/border-$$browser.png \
-	    'border/border.zgal.html?arg=out.png' || exit 1; \
-	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/border/border.approved.png $(TEST_PAGES)/border-$$browser.png $(BORDER_TOLERANCE) || exit 1; \
-	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/arrays-$$browser.png \
-	    'arrays/arrays.zgal.html?arg=out.png' || exit 1; \
-	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/arrays.approved.png $(TEST_PAGES)/arrays-$$browser.png 0 || exit 1; \
-	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/targets-$$browser.png \
-	    'targets/targets.zgal.html?arg=out.png&frames=3' || exit 1; \
-	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/targets.approved.png $(TEST_PAGES)/targets-$$browser.png 0 || exit 1; \
-	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/storage-$$browser.png \
-	    'storage/storage.zgal.html?arg=out.png&frames=3' || exit 1; \
-	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/storage.approved.png $(TEST_PAGES)/storage-$$browser.png 0 || exit 1; \
-	  for run in 2-3 3-2; do \
-	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/frames-$$run-$$browser.png \
-	      "frames/frames.zgal.html?arg=out.png&first=$${run%-*}&second=$${run#*-}&frames=16" || exit 1; \
-	    $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/frames/frames-$$run.approved.png $(TEST_PAGES)/frames-$$run-$$browser.png 0 || exit 1; \
-	  done; \
-	  $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web --save-capture $(TEST_PAGES)/buffers-$$browser.png \
-	    'buffers/buffers.zgal.html?arg=out.png&frames=3' || exit 1; \
-	  $(NODE) $(WEB_DIR)/tools/image-diff.ts $(TEST_DIR)/arrays/buffers.approved.png $(TEST_PAGES)/buffers-$$browser.png 0 || exit 1; \
-	  for page in mount held-keys image-file image-decode kernels indirect models headless stamps glsl streams stream-buffers stop-streams; do \
-	    $(NODE) $(WEB_DIR)/tools/$$browser.ts --serve $(OUT)/web tests/$$page.html || exit 1; \
-	  done; \
-	  if [ $$browser = chromium ]; then \
-	    $(NODE) $(WEB_DIR)/tools/chromium.ts --serve $(OUT)/web \
-	      --touch '40,60; 80,60; 160,120; ; 40,60; 40,60 240,180; 80,60 280,180; 80,60;' tests/touch.html || exit 1; \
-	  fi; \
+	  set -- $$pages; \
+	  if [ $$# -lt $$most ]; then echo "note: test-pages: $$browser ran $$# of the $$most pages it can ($$list)"; fi; \
 	done
 
 # The examples whose programs run on the web (simple's app is C++)

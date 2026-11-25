@@ -64,7 +64,8 @@ from `PATH` (the Vulkan SDK's locally), for the web tests too.
   documentation: `build/docs/zgal.html`, and `build/docs/zgal.txt` to read in a terminal.
 - `make test-web` and `make test-pages`: the web backend's tests ([web.md](web.md#tests); `make
   test` includes them), with pages in headless Chromium only unless `BROWSERS="chromium firefox"`
-  (Firefox, headless too, uses the machine's GPU, lavapipe on Linux). A browser that isn't installed is skipped with a note under the
+  (Firefox, headless too, uses the machine's GPU, lavapipe on Linux), and in Firefox only the pages
+  `FIREFOX_PAGES` names (`FIREFOX_PAGES=all` for every page it can run). A browser that isn't installed is skipped with a note under the
   summary, or fails the run when `BROWSERS` names it. `make web` builds the web examples.
 - `make test-decode`: checks the web runtime's image decoder under Node against native stb_image
   (no GPU; [web.md](web.md#the-image-decoder)); `make test-web` runs it first. `make
