@@ -1,4 +1,4 @@
-# vulkan_test
+# ZGAL
 
 A header-only C++20 Vulkan 1.3 wrapper (`include/`), ZGAL, a language compiling shaders, render
 graphs and apps to it and to WebGPU (`dsl/`, with its web runtime in `web/`), examples

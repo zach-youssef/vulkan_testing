@@ -31,7 +31,7 @@ struct ShaderDirectory {
 
     explicit ShaderDirectory(VulkanContext& context) : ctx(context) {
         static std::atomic<int> counter{0};
-        path = fs::temp_directory_path() / ("vulkan_test_shaders_" + std::to_string(::getpid()) + "_" + std::to_string(counter++));
+        path = fs::temp_directory_path() / ("zgal_shaders_" + std::to_string(::getpid()) + "_" + std::to_string(counter++));
         fs::create_directories(path);
     }
 

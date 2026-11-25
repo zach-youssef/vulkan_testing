@@ -2,7 +2,7 @@
 # programs whose main ZGAL generates. This repository's Makefile includes it, and so can other
 # projects' (e.g. with the wrapper as a submodule):
 #
-#     include external/vulkan_test/zgal.mk
+#     include external/zgal/zgal.mk
 #     $(eval $(call zgal-program,game/game.zgal,build/game,game,-lglfw))
 #     $(eval $(call zgal-web-program,game/game.zgal,build/web/game))
 #

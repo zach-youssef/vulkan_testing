@@ -73,7 +73,7 @@ TEST_CASE_FIXTURE(GpuTest, "A reloaded shader that writes what its material does
     namespace fs = std::filesystem;
     auto& ctx = context();
     auto& heap = ctx.descriptors();
-    const fs::path directory = fs::temp_directory_path() / ("vulkan_test_write_check_" + std::to_string(::getpid()));
+    const fs::path directory = fs::temp_directory_path() / ("zgal_write_check_" + std::to_string(::getpid()));
     fs::create_directories(directory);
     fs::copy_file(fs::path(testShaderDir()) / "reflect_reads.comp.spv", directory / "write_check.comp.spv",
                   fs::copy_options::overwrite_existing);

@@ -23,7 +23,7 @@ inputs:
     description: "native (the C++ toolchain, the SDK and ccache too) or web (lavapipe, clang, glslc, wasi-sdk, Racket and Node only)."
     required: true
   npm-lockfile:
-    description: The web backend's package-lock.json, relative to the workspace (e.g. external/vulkan_test/web/package-lock.json in a project with this repository as a submodule).
+    description: The web backend's package-lock.json, relative to the workspace (e.g. external/zgal/web/package-lock.json in a project with this repository as a submodule).
     default: web/package-lock.json
   vulkan-sdk-version:
     description: The LunarG Vulkan SDK's version (the Mac's, so both validate with the same layers).

@@ -1,6 +1,6 @@
-# vulkan_testing
+# ZGAL
 
-[![ci](https://github.com/zach-youssef/vulkan_testing/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zach-youssef/vulkan_testing/actions/workflows/ci.yml?query=branch%3Amain)
+[![ci](https://github.com/zach-youssef/zgal/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zach-youssef/zgal/actions/workflows/ci.yml?query=branch%3Amain)
 
 A header-only C++20 Vulkan 1.3 wrapper, and ZGAL (Zoey's Graphics Application Language), a language
 for writing GPU programs whole: shaders, the render graph that orders and synchronizes them, and the

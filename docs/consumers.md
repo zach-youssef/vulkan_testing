@@ -10,7 +10,7 @@ it `cancel()`.
 
 ## PPU (`~/code/ppu`)
 
-PPU uses the wrapper and ZGAL as a git submodule (`external/vulkan_test`) and builds with
+PPU uses the wrapper and ZGAL as a git submodule (`external/zgal`) and builds with
 `zgal.mk`.
 
 To try PPU against wrapper changes that aren't pushed yet, point its build at this checkout:
@@ -18,9 +18,9 @@ To try PPU against wrapper changes that aren't pushed yet, point its build at th
 PPU's submodule only after the wrapper change is pushed.
 
 Its CI can reuse this repository's actions from the submodule:
-`./external/vulkan_test/.github/actions/setup-zgal` (with `toolchain: native`, or `web` for jobs
-that build no C++, and `npm-lockfile: external/vulkan_test/web/package-lock.json`) and
-`./external/vulkan_test/.github/actions/commits`. Both toolchains install wasi-sdk (exporting
+`./external/zgal/.github/actions/setup-zgal` (with `toolchain: native`, or `web` for jobs
+that build no C++, and `npm-lockfile: external/zgal/web/package-lock.json`) and
+`./external/zgal/.github/actions/commits`. Both toolchains install wasi-sdk (exporting
 `WASI_SDK_PATH`), which builds the web runtime's image decoder (`build/web-decode/stb_image.wasm`,
 from `zgal.mk`), so any job running `make web` has it; the `web` toolchain also installs clang for
 the decoder's native test helper, and Ubuntu's glslc (only there: the native toolchain's glslc is
@@ -43,7 +43,7 @@ unpushed changes. That script relies on:
 
 - `make web docs`. `make web` builds the image decoder with wasi-sdk, which the site's CI
   (`.github/actions/setup-build`, not setup-zgal) doesn't install: without `WASI_SDK_PATH`, each
-  ZGAL checkout it builds in (`external/zgal`, and `external/vk_ppu/external/vulkan_test` for
+  ZGAL checkout it builds in (`external/zgal`, and `external/vk_ppu/external/zgal` for
   PPU) downloads its own into its `.cache` (curl and tar; about 600 MB unpacked each). Setting
   `WASI_SDK_PATH` there, and `build-zgal`'s header listing wasi-sdk among its requirements, are the
   site's follow-ups;
