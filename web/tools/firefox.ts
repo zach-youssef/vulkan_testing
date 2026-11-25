@@ -63,6 +63,15 @@ await runChecker<Options>('firefox', {
     // headless.
     if (options.window) delete process.env.MOZ_HEADLESS;
     else Object.assign(process.env, { MOZ_HEADLESS_WIDTH: '1024', MOZ_HEADLESS_HEIGHT: '900' });
+    // At startup, before reading any prefs, Firefox applies an update the installed application
+    // has pending (ProcessUpdates in nsAppRunner.cpp): it runs the updater, which relaunches
+    // Firefox detached with these arguments, and exits before listening, so the launch fails and
+    // the relaunched Firefox is left holding the profile. That happens whenever the user's own
+    // Firefox has downloaded an update it hasn't restarted into. MOZ_DISABLE_UPDATE_PROCESSING
+    // (Firefox 154 and later; older ones ignore it) skips it; app.update.disabledForTesting and
+    // app.update.checkInstallTime (in user.js, as Puppeteer sets them) keep Firefox from
+    // downloading updates or warning about its age once running.
+    process.env.MOZ_DISABLE_UPDATE_PROCESSING = '1';
     const firefox = await startBrowser('Firefox', binary, (profile) => {
       writeFileSync(join(profile, 'user.js'), [
         'user_pref("dom.webgpu.enabled", true);',
@@ -71,6 +80,8 @@ await runChecker<Options>('firefox', {
         'user_pref("browser.shell.checkDefaultBrowser", false);',
         'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
         'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);',
+        'user_pref("app.update.disabledForTesting", true);',
+        'user_pref("app.update.checkInstallTime", false);',
       ].join('\n'));
       return ['--remote-debugging-port', '0', '--profile', profile, '--no-remote', '--new-instance',
         '--window-size', '1024,900', ...(options.window ? [] : ['--headless'])];

@@ -341,7 +341,12 @@ browser where they look by default.
   it Firefox gets lavapipe through wgpu's Vulkan backend (`isFallbackAdapter` true, empty info
   strings), and no adapter at all without a Vulkan driver. The Mac's GPUs aren't blocklisted, so
   it changes nothing there. CI runs the pages in Mozilla's release tarball, version and SHA-256
-  pinned in web.yml. Its startup can flake while the user's
+  pinned in web.yml. firefox.ts sets `MOZ_DISABLE_UPDATE_PROCESSING` (Firefox 154 and later):
+  otherwise, when the installed Firefox has an update downloaded that the user's own Firefox
+  hasn't restarted into, startup runs the updater instead, which exits before listening and
+  relaunches Firefox detached on the test's profile. `app.update.disabledForTesting` and
+  `app.update.checkInstallTime` in the profile keep it from downloading updates once running.
+  Firefox's startup can also flake while the user's
   own Firefox is launching; rerun before investigating. `MOZ_LOG` for WebGPU writes empty files in
   release Firefox, so adapter problems are diagnosed from `requestAdapter()` and the gfx feature
   log. In web.yml, bash steps run with `-e -o pipefail`: a loop over pages that carries on past
