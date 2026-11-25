@@ -1,6 +1,7 @@
 #!/bin/sh
 # naga (naga-cli, a Rust crate), which translates the SPIR-V glslc compiles from GLSL shaders into
-# WGSL for ZGAL's web backend. Its version is pinned here only: zgal.mk
+# WGSL for ZGAL's web backend (make test-web also validates all generated WGSL with it, as Firefox
+# validates WGSL with its own naga, whose version may differ). Its version is pinned here only: zgal.mk
 # runs this script to build it locally, and setup-zgal (beside it) to build it in CI. Building it
 # needs cargo (Rust's build tool, from rustup); the crate's own lockfile pins its dependencies.
 #

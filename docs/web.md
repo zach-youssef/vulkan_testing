@@ -84,7 +84,7 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   (`RENDER_ATTACHMENT` with `TEXTURE_BINDING` or `STORAGE_BINDING`); the graph builds, and Dawn
   reports it at the first submit.
 - `web/tools/check-wgsl.ts` expands arrays' directive lines for two elements in two `rgba8unorm`
-  buckets, so the golden modules with arrays compile.
+  buckets, so the golden modules with arrays compile (with Dawn, and with naga under `--naga`).
 - Image files (`image-file`, models' textures) are decoded by `image-decode.ts`'s `decodeImage`, in
   every environment, never by the browser: Firefox's `createImageBitmap` premultiplies alpha
   whatever it's asked, and browsers' decoders needn't give native's bytes
@@ -193,8 +193,12 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   functions calling them, specialized per texture and sampler, as depth parameters are.
 - The naga CLI isn't on `PATH` (`make naga` builds it, see
   [building-and-testing.md](building-and-testing.md)). Dawn validates generated WGSL with Tint,
-  while Firefox validates it with naga, so running naga on a generated `.wgsl` file is a cheap
-  check of what Firefox accepts.
+  while Firefox validates it with naga, so `make test-web` validates every generated `.wgsl` file
+  with `check-wgsl.ts --naga` too ([Tests](#tests)). That naga is the GLSL-translation pin
+  (`naga.sh`), not Firefox's own version, which can differ either way: the Firefox pages remain
+  the backstop. naga 30 can't parse `enable subgroups`, though it validates subgroup
+  builtins and functions without it, so `--naga` drops the extension from enable directives (and
+  turns `subgroupElect()`, which it lacks, into `subgroupAll(true)`).
 - `tsc -p web` in the source tree fails on tests importing generated modules, which exist only
   beside the runtime's copy in `build/web-tests`: type check through `make test-web`'s layout.
 - Generated WGSL: naga (Firefox, and `--naga`) rejects a function with a return type whose body
@@ -268,7 +272,9 @@ then:
 1. compiles `web/tests/*.zgal` (and the image_filter example, which `image-filter.test.ts` runs
    without the `texture-formats-tier2` feature, and `tests/stream/streamer.zgal`, which
    `stop.test.ts` runs) to TypeScript and WGSL in `build/web-tests`, beside
-   a copy of the runtime, type checks it and runs `web/tests/*.test.ts` on Dawn under Node;
+   a copy of the runtime, validating each program's WGSL with naga as it's compiled (as Firefox
+   would, `web/tools/check-wgsl.ts --naga`), type checks it and runs `web/tests/*.test.ts` on Dawn
+   under Node;
 2. builds the particles, image_filter and scene examples for the web (`make web`, into
    `build/web/<name>`) and runs them under Node, comparing image_filter's outputs with
    `web/tools/image-diff.ts` (which compares images as `image_diff.cpp` does; image_filter also
@@ -291,7 +297,7 @@ then:
    `buffers.approved.png`, and
    `tests/stream/streamer.zgal` streaming a file (its opener in
    `streamer.inputs.ts`) (`headless.test.ts` needs no GPU: the PNG encoders and
-   `parseCommandLine`'s `where`);
+   `parseCommandLine`'s `where`), then validates the WGSL of every program it built with naga;
 3. runs `make test-pages`: the particles and scene pages, image_filter's page (run from its query
    string, its capture saved with the checkers' `--save-capture` and compared with
    `blur_edges.approved.png`), the border program's page (its capture compared likewise with
@@ -340,7 +346,8 @@ Not every device has WebGPU's optional features: Dawn on lavapipe and Chromium's
 half-float storage images read-write. `Context.create`'s `withoutFeatures` lets a test check a
 program on a device without a feature its own adapter has.
 
-`web/tools/check-wgsl.ts` compiles WGSL with Dawn.
+`web/tools/check-wgsl.ts` compiles WGSL with Dawn, or with `--naga PATH` validates it with that
+naga (as Firefox does).
 
 ## Running pages in browsers
 
@@ -374,7 +381,8 @@ browser where they look by default.
 - **Firefox** compiles WGSL with naga, not Tint, which differs from Dawn and Chromium both ways: it
   refuses storage textures as function parameters (why ZGAL inlines functions taking `image2D`s),
   but has no uniformity analysis and lets depth textures use filtering samplers. Passing in Firefox
-  doesn't prove a page portable.
+  doesn't prove a page portable. `make test-web` validates all generated WGSL with naga, so shader
+  differences show up without a Firefox page.
 - **Chromium** runs headless on SwiftShader, the same on macOS and Linux. Canvases of a SwiftShader
   device need all of `--use-angle=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader`:
   without the Vulkan ones they fail ("A valid external Instance reference no longer exists"), and

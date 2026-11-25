@@ -387,6 +387,14 @@ WEB_TEST_OUT = $(OUT)/web-tests
 # The models web/tests/models.zgal draws, shared with the native tests
 MODEL_ASSETS = $(addprefix tests/gpu/assets/,halves.gltf broken.gltf quad.obj quad.mtl quadrants.png)
 
+# Every generated WGSL module is also validated with naga, as Firefox validates WGSL (Dawn compiles
+# each as the tests run it): web/tests' programs' as each is compiled (zgal removes the previous
+# one's), then the web programs built here (all of $(OUT)/web but test-pages' copies, which are
+# web/tests' again). The naga is zgal.mk's GLSL-translation pin, not Firefox's own version.
+CHECK_NAGA = $(NODE) $(WEB_DIR)/tools/check-wgsl.ts --naga $(ZGAL_NAGA)
+NAGA_CHECKED_WEB = $(PARTICLES_WEB) $(IMAGE_FILTER_WEB) $(SCENE_WEB) $(MAIN_TEST_WEB) $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) \
+                   $(ARRAYS_TEST_WEB) $(TARGETS_TEST_WEB) $(STORAGE_TEST_WEB) $(FRAMES_TEST_WEB) $(BUFFERS_TEST_WEB)
+
 test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES) $(ZGAL_NAGA)
 	$(RUN_TEST) $(MAKE) --no-print-directory test-web-steps
 
@@ -396,7 +404,10 @@ test-web-steps:
 	$(MAKE) test-decode
 	rm -rf $(WEB_TEST_OUT)
 	@mkdir -p $(WEB_TEST_OUT)
-	for f in $(WEB_DIR)/tests/*.zgal $(IMAGE_FILTER_DIR)/image_filter.zgal $(TEST_DIR)/stream/streamer.zgal; do $(ZGAL) --web-out $(WEB_TEST_OUT) --naga $(ZGAL_NAGA) $$f || exit 1; done
+	for f in $(WEB_DIR)/tests/*.zgal $(IMAGE_FILTER_DIR)/image_filter.zgal $(TEST_DIR)/stream/streamer.zgal; do \
+	  $(ZGAL) --web-out $(WEB_TEST_OUT) --naga $(ZGAL_NAGA) $$f || exit 1; \
+	  $(CHECK_NAGA) $$(find $(WEB_TEST_OUT) -maxdepth 1 -name '*.wgsl') || exit 1; \
+	done
 	cp -R $(WEB_DIR)/zgal $(WEB_DIR)/tests $(WEB_DIR)/tools $(WEB_DIR)/package.json $(WEB_DIR)/tsconfig.json $(TEST_DIR)/stream/streamer.inputs.ts $(WEB_TEST_OUT)/
 	cp $(MODEL_ASSETS) $(IMAGE_FILTER_TEST_DIR)/input.png $(SIMPLE_DIR)/textures/texture.jpg $(WEB_TEST_OUT)/tests/assets/
 	$(ZGAL_DECODE_NATIVE) $(WEB_TEST_OUT)/tests/assets/texture.jpg $(WEB_TEST_OUT)/tests/assets/texture.jpg.rgba
@@ -445,6 +456,7 @@ test-web-steps:
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/blur_edges.approved.png $(IMAGE_FILTER_WEB)/blur_edges.png 2
 	$(NODE) $(IMAGE_FILTER_WEB)/image_filter.zgal.main.js $(IMAGE_FILTER_TEST_DIR)/input.png $(IMAGE_FILTER_WEB)/threshold.png --blur 2 --edges --threshold 0.15
 	$(NODE) $(WEB_DIR)/tools/image-diff.ts $(IMAGE_FILTER_TEST_DIR)/threshold.approved.png $(IMAGE_FILTER_WEB)/threshold.png 0 $(IMAGE_FILTER_THRESHOLD_FLIPS)
+	$(CHECK_NAGA) $$(find $(addsuffix /src,$(NAGA_CHECKED_WEB)) -maxdepth 1 -name '*.wgsl')
 	$(MAKE) test-pages
 
 # The web runtime's image decoder (web/decode/decode.mk), checked under Node against native

@@ -71,7 +71,8 @@ from `PATH` (the Vulkan SDK's locally), for the web tests too.
   build/web-decode/stb_image.wasm` builds the decoder, and `make wasi-sdk` only installs its
   compiler.
 - `make naga`: builds naga ([Requirements](#requirements)) if it isn't installed; `make test-dsl`,
-  `make test-web` and `make test-pages` do too.
+  `make test-web` and `make test-pages` do too. Besides translating GLSL, `make test-web` validates
+  every generated WGSL module with it, as Firefox validates WGSL ([web.md](web.md#tests)).
 - `make test-tools`: tests the pre-push hook and the GPU lock (`tests/tools/hook-test.sh`, no GPU
   needed; `make test` includes it).
 - `make run-bench`: times ZGAL's library kernels (`tools/bench`; see "Profiling").

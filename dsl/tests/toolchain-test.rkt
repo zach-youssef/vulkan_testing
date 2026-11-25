@@ -128,11 +128,13 @@
       (with-check-info (['tsc text])
         (check-equal? status 0)))))
 
-;; Runs check-wgsl.ts (Dawn) on the files, returning its exit code and output
-(define (check-wgsl files)
+;; Runs check-wgsl.ts on the files, returning its exit code and output: with Dawn, or with naga
+;; (ZGAL_NAGA) as Firefox validates WGSL
+(define (check-wgsl files #:naga? [naga? #f])
   (apply run (getenv "ZGAL_NODE")
          (path->string (build-path (getenv "ZGAL_WEB") "tools" "check-wgsl.ts"))
-         (map path->string files)))
+         (append (if naga? (list "--naga" (getenv "ZGAL_NAGA")) '())
+                 (map path->string files))))
 
 ;; GLSL bodies to WGSL (web-glsl.rkt), through glslc and naga, with the WGSL checked by Dawn
 (define (naga-tests)
@@ -168,6 +170,51 @@
       (define-values (status text) (check-wgsl files))
       (with-check-info (['dawn text])
         (check-equal? status 0))))
+
+  (test-case "naga validates the golden WGSL and the library kernels', subgroups and all"
+    (with-temporary-directory (directory)
+      (define-values (_prog kernels)
+        (parameterize ([current-directory repository])
+          (compile-zgal "web/tests/kernels.zgal" #:native? #f #:web-dir "web")))
+      (define (wgsl outputs) (filter (λ (o) (regexp-match? #rx"[.]wgsl$" (output-path o))) outputs))
+      (define outputs (append (wgsl (golden-web-outputs)) (wgsl kernels)))
+      ;; Kernels enabling subgroups and calling subgroupElect(), which naga 30 lacks
+      (check-not-false (findf (λ (o) (regexp-match? #rx"enable subgroups;.*subgroupElect[(][)]" (output-text o))) outputs))
+      (write-outputs outputs directory)
+      (define files (for/list ([o (in-list outputs)]) (build-path directory (file-name-from-path (output-path o)))))
+      (define-values (status text) (check-wgsl files #:naga? #t))
+      (with-check-info (['naga text])
+        (check-equal? status 0)
+        ;; Lanes and the kernels enable subgroups, the directive dropped for naga, which can't parse it
+        (check-regexp-match (pregexp (format "0 of ~a modules failed naga" (length files))) text))))
+
+  (test-case "naga refuses WGSL Dawn accepts, as Firefox does: a storage texture as a function parameter"
+    (with-temporary-directory (directory)
+      (define file (build-path directory "Stamp.comp.wgsl"))
+      (call-with-output-file file
+        (λ (out)
+          (void (write-string #<<WGSL
+@group(0) @binding(0) var target_image: texture_storage_2d<rgba8unorm, write>;
+
+fn stamp(image: texture_storage_2d<rgba8unorm, write>, at: vec2<u32>) {
+    textureStore(image, at, vec4<f32>(1.0));
+}
+
+@compute @workgroup_size(1)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    stamp(target_image, id.xy);
+}
+WGSL
+                              out))))
+      (define-values (dawn-status dawn-text) (check-wgsl (list file)))
+      (with-check-info (['dawn dawn-text])
+        (check-equal? dawn-status 0))
+      (define-values (status text) (check-wgsl (list file) #:naga? #t))
+      (with-check-info (['naga text])
+        (check-equal? status 1)
+        (check-regexp-match #rx"Stamp[.]comp[.]wgsl:\n  error: Function [[]0[]] 'stamp' is invalid" text)
+        (check-regexp-match #rx"Image store parameters are invalid" text)
+        (check-regexp-match #rx"1 of 1 modules failed naga" text))))
 
   (test-case "A readonly buffer is read in naga's WGSL though glslc decorated only its block's members NonWritable"
     ;; Ubuntu 24.04's glslc (shaderc 2023.8) leaves out the variable's NonWritable that newer ones
