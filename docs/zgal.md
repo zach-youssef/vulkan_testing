@@ -40,7 +40,8 @@ covers. This page holds only what isn't there.
 - The compute library's materials (`dsl/lib/kernels`) are templates: `(%if flag ...)` and
   `(%unless flag ...)` choose forms by flags. Each kernel material is instantiated with and without
   `subgroups`; the variant without (`program-fallbacks` in `dsl/private/ts.rkt`, the web
-  description's `withoutSubgroups`) runs on WebGPU devices lacking subgroups, and
+  description's `withoutSubgroups`, also written as `<shader>.without-subgroups.wgsl` so
+  `make test-web`'s naga check covers it) runs on WebGPU devices lacking subgroups, and
   `ContextOptions.withoutFeatures` forces it in `web/tests/kernels.test.ts`.
 - A test material drawing a full-screen triangle needs `#:cull none`: the default culls back faces,
   and the triangle's winding isn't one to rely on.

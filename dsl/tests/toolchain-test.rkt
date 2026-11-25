@@ -171,13 +171,17 @@
       (with-check-info (['dawn text])
         (check-equal? status 0))))
 
-  (test-case "naga validates the golden WGSL and the library kernels', subgroups and all"
+  (test-case "naga validates the golden WGSL and the library kernels', with subgroups and without (which --web-out writes)"
     (with-temporary-directory (directory)
       (define-values (_prog kernels)
         (parameterize ([current-directory repository])
           (compile-zgal "web/tests/kernels.zgal" #:native? #f #:web-dir "web")))
       (define (wgsl outputs) (filter (λ (o) (regexp-match? #rx"[.]wgsl$" (output-path o))) outputs))
       (define outputs (append (wgsl (golden-web-outputs)) (wgsl kernels)))
+      (define fallbacks (filter (λ (o) (regexp-match? #rx"[.]comp[.]without-subgroups[.]wgsl$" (output-path o))) kernels))
+      (check-not-false (findf (λ (o) (regexp-match? #rx"/ZgalScanReduceUintAdd[.]comp[.]without-subgroups[.]wgsl$" (output-path o))) fallbacks))
+      (for ([o (in-list fallbacks)])
+        (check-false (regexp-match? #rx"enable subgroups" (output-text o)) (output-path o)))
       ;; Kernels enabling subgroups and calling subgroupElect(), which naga 30 lacks
       (check-not-false (findf (λ (o) (regexp-match? #rx"enable subgroups;.*subgroupElect[(][)]" (output-text o))) outputs))
       (write-outputs outputs directory)

@@ -50,7 +50,8 @@
 ;; (<file>.main.cpp, beside the header) for a program with one, then a shader per material shader.
 ;; With a web-dir, the outputs for the web follow: the TypeScript module (<file>.ts), for a program
 ;; its main (<file>.main.ts) and with a window its page (<file>.html), then a WGSL module per
-;; material shader (which the TypeScript also holds). Materials with GLSL bodies, or calling GLSL
+;; material shader and one per library kernel's variant without subgroups (which the TypeScript also
+;; holds). Materials with GLSL bodies, or calling GLSL
 ;; functions (extern-glsl), are translated for the web through GLSL with web-toolchain (a
 ;; web-toolchain: glslc and naga), which only those need.
 ;; Raises exn:zgal for errors in the program.
@@ -104,7 +105,14 @@
              (output (join web-dir (wgsl-shader-file-name s))
                      (if translated
                          (web-material-module translated (shader-stage s) #:storage-format (λ (b) "rgba8unorm"))
-                         (emit-wgsl prog m s))))))
+                         (emit-wgsl prog m s))))
+           ;; A library kernel's variant without subgroups (the description's withoutSubgroups),
+           ;; which devices without the feature (Firefox) run: written so tools check it too
+           (for*/list ([m (in-list (program-materials prog))]
+                       [fallback (in-value (hash-ref (program-fallbacks prog) (material-name m) #f))]
+                       #:when fallback
+                       [s (in-list (material-shaders fallback))])
+             (output (join web-dir (wgsl-fallback-file-name s)) (emit-wgsl prog fallback s)))))
         '()))
   (cond
     [check-only? (values prog '())]

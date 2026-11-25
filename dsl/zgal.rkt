@@ -59,7 +59,7 @@
      #:once-each
      [("--cpp-out") dir "Write the C++ header to DIR/<file>.h (and a program's main to DIR/<file>.main.cpp)" (set! cpp-out dir)]
      [("--glsl-out") dir "Write each shader to DIR/<shader name>, removing others there" (set! glsl-out dir)]
-     [("--web-out") dir "Write the TypeScript module (WebGPU) to DIR/<file>.ts (a program's main to DIR/<file>.main.ts, and its page to DIR/<file>.html) and each shader's WGSL to DIR/<shader name>.wgsl, removing other WGSL there" (set! web-out dir)]
+     [("--web-out") dir "Write the TypeScript module (WebGPU) to DIR/<file>.ts (a program's main to DIR/<file>.main.ts, and its page to DIR/<file>.html) and each shader's WGSL to DIR/<shader name>.wgsl (a library kernel's variant without subgroups to DIR/<shader name>.without-subgroups.wgsl), removing other WGSL there" (set! web-out dir)]
      [("--glslc") path "The glslc --web-out compiles GLSL bodies and materials calling GLSL functions with (default: glslc, on PATH)" (set! glslc path)]
      [("--naga") path "The naga --web-out translates their SPIR-V to WGSL with (default: naga, on PATH)" (set! naga path)]
      [("--depfile") file "Write a Makefile rule listing the inputs to FILE" (set! depfile file)]

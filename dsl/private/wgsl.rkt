@@ -26,6 +26,7 @@
 
 (provide emit-wgsl
          wgsl-shader-file-name
+         wgsl-fallback-file-name
          (struct-out wgsl-binding)
          wgsl-bindings
          wgsl-push-layout
@@ -37,6 +38,9 @@
 
 ;; The file a shader's module is written to: its name plus .wgsl, e.g. Lit.frag.wgsl
 (define (wgsl-shader-file-name s) (string-append (shader-name s) ".wgsl"))
+;; The file a library kernel's variant without subgroups is written to, beside the shader's:
+;; ZgalScanReduceUintAdd.comp.without-subgroups.wgsl
+(define (wgsl-fallback-file-name s) (string-append (shader-name s) ".without-subgroups.wgsl"))
 
 ;; ---------------------------------------------------------------------------------------------
 ;; Names

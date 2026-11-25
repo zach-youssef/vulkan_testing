@@ -198,7 +198,9 @@ This page has what the reference doesn't: the runtime's conventions and how to t
   (`naga.sh`), not Firefox's own version, which can differ either way: the Firefox pages remain
   the backstop. naga 30 can't parse `enable subgroups`, though it validates subgroup
   builtins and functions without it, so `--naga` drops the extension from enable directives (and
-  turns `subgroupElect()`, which it lacks, into `subgroupAll(true)`).
+  turns `subgroupElect()`, which it lacks, into `subgroupAll(true)`). Devices without the feature
+  run a library kernel's variant without subgroups instead, which `--web-out` writes as
+  `<shader>.without-subgroups.wgsl`, so the check covers it too.
 - `tsc -p web` in the source tree fails on tests importing generated modules, which exist only
   beside the runtime's copy in `build/web-tests`: type check through `make test-web`'s layout.
 - Generated WGSL: naga (Firefox, and `--naga`) rejects a function with a return type whose body

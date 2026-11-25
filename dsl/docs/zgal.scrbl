@@ -160,7 +160,8 @@ racket dsl/zgal.rkt --check FILE.zgal
  @item{@tt{@literal{--web-out} DIR} writes the TypeScript module (@secref["web"]) to
        @tt{DIR/FILE.zgal.ts} (for a program its main, @tt{DIR/FILE.zgal.main.ts}, and its page,
        @tt{DIR/FILE.zgal.html}) and each shader's WGSL module to
-       @tt{DIR/<shader name>.wgsl} (the
+       @tt{DIR/<shader name>.wgsl} (a library kernel's variant without subgroups to
+       @tt{DIR/<shader name>.without-subgroups.wgsl}; the
        TypeScript holds them too; they're written for tools and reading), and removes other WGSL
        modules there. Given alone, it doesn't generate the C++ and GLSL.}
  @item{@tt{@literal{--glslc} PATH} and @tt{@literal{--naga} PATH} name the tools that translate
