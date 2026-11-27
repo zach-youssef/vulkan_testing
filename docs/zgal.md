@@ -10,9 +10,9 @@ compiler is Racket (`dsl/`).
 ZGAL's reference is `build/docs/zgal.txt` (from `make docs`; also `build/docs/zgal.html`, and
 online at <https://zyoussef.com/zgal/docs/>), built from `dsl/docs/zgal.scrbl`. Read it before
 writing ZGAL or working on the compiler: it has the language, what's generated for each form, the
-command line and Makefile rules, the web backend, every error, the limitations, and a "Working on
-ZGAL" section with the compiler's file map, how to keep the reference accurate and what each test
-covers. This page holds only what isn't there.
+command line and Makefile rules, the web backend, every error, the limitations and plans, and a
+"Working on ZGAL" section with the compiler's file map, how to keep the reference accurate and what
+each test covers. This page holds only what isn't there.
 
 ## Writing ZGAL
 

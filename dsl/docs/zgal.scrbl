@@ -3,7 +3,7 @@
           scribble/core
           "helpers.rkt")
 
-@title{ZGAL: shaders, render graphs and apps for the Vulkan wrapper}
+@title{ZGAL: shaders, render graphs and apps for Vulkan and WebGPU}
 
 ZGAL (Zoey's Graphics Application Language) is a small language for a Vulkan application's
 shaders and render graphs. A @tt{.zgal} file declares a material's interface (the structs in its
@@ -2723,34 +2723,130 @@ document was built.
 @(error-catalog-section)
 
 @; -----------------------------------------------------------------------------------------------
-@section[#:tag "roadmap"]{Limitations and plans}
+@section[#:tag "limitations"]{Limitations}
 
-What ZGAL doesn't describe yet:
+What ZGAL can't do yet, by area. GLSL bodies and functions written in GLSL (@secref["glsl"],
+@secref["extern-glsl"]) can do what ZGAL's shader bodies can't.
+
+@subsection{Shader bodies}
+
 @itemlist[
- @item{in shader bodies: recursion, atomics on images and on 64-bit or small integers, arithmetic
-       on 8- and 16-bit integers (they're widened), and functions reading bindings (pass them as
-       arguments). GLSL bodies and functions (@racket[extern-glsl]) can do these;}
- @item{several vertex buffers, or per-instance attributes;}
- @item{images other than 2D ones;}
- @item{a shader used by more than one material.}
+ @item{Functions can't recurse: a shader or function only calls functions declared before it
+       (@secref["functions"]).}
+ @item{Top-level functions can't name bindings. Pass their values (or textures, samplers and
+       images) as arguments, or declare the function in its material
+       (@secref["material-functions"]).}
+ @item{Atomics act on 32-bit @tt{int}s, @tt{uint}s and (for adds and exchanges) @tt{float}s in
+       buffers and shared memory, not on images or 8- and 16-bit integers (@secref["atomics"]).}
+ @item{There are no 64-bit types.}
+ @item{8- and 16-bit integers are for storage: reading one widens it to 32 bits, and arithmetic is
+       on the wider value (@secref["small-integers"]).}
+ @item{@racket[print!] takes strings only as literal, direct arguments: @racket[(print! (if c "a"
+       "b"))] is refused.}
 ]
 
-Graphs can't yet use storage images other than 2D ones, run a node on a chosen queue, or compute
-anything per frame but push constants, dispatch sizes and uniforms. Loops of nodes are fixed when
-the graph is built (a node list that changes from frame to frame needs a rebuilt graph), go over
-ranges and data inputs (not lists within their elements).
+@subsection{Materials and resources}
 
-Apps handle events only: they can't ask whether a key is held or where the cursor is outside
-handlers (track it in the state from press and release events), read files, or create resources.
+@itemlist[
+ @item{A material has one vertex buffer, with per-vertex attributes only: no per-instance ones.}
+ @item{Images are 2D: no 3D, cube or layered images (arrays of bindings, @secref["arrays"], are
+       a different thing). Image files and models' textures have one mip level.}
+ @item{A shader belongs to one material.}
+ @item{Image files must be in a format stb_image reads (PNG, JPEG, BMP, TGA, GIF, PSD, PIC or
+       PNM): not WebP or AVIF (@secref["assets"]).}
+ @item{Models (@secref["assets"]) keep only their base colours (a factor and a texture): no other
+       material properties, skins, animation, morph targets, compressed meshes (Draco,
+       meshopt) or texture transforms.}
+]
+
+@subsection{Graphs}
+
+@itemlist[
+ @item{A node can't be put on a chosen queue.}
+ @item{Each frame, a graph computes push constants, dispatch sizes (@racket[#:invocations]),
+       buffer counts, uniforms, @racket[#:select] indices and the compute library's counts, and an
+       app's @racket[#:enabled]. Everything else is fixed when the graph is built, e.g. a node's
+       @racket[#:when] and @racket[#:enabled], a draw's vertex count and an indirect draw's
+       @racket[#:draws] (for a count the GPU computes, give an indirect draw a @racket[#:count],
+       @secref["indirect"]), copies' counts, offsets and extents, clear values, loop ranges, image
+       sizes other than following the surface, and stream buffers' sizes.}
+ @item{Loops of nodes are unrolled when the graph is built: a list of nodes
+       that changes from frame to frame needs a rebuilt graph. They go over ranges and data
+       inputs, not over lists inside the inputs' elements (@secref["loops"]).}
+ @item{Graph expressions (@secref["graph-expressions"]) can't call functions or use a module's
+       constants, and can't give a buffer file's element count, join paths or read device limits.}
+ @item{Graph parameters are @tt{bool}s, @tt{int}s, @tt{uint}s and @tt{float}s: no vectors.}
+ @item{A graph can't include another graph, and nothing reads JSON or other manifests.}
+ @item{The compute library's kernels are fixed: scans and reductions of scalar @tt{uint}s,
+       @tt{int}s and @tt{float}s, and an ascending sort of @tt{uint} keys with 32-bit values
+       (@secref["compute-library"]). ZGAL can't declare kernels generic over a type.}
+]
+
+@subsection{Apps and programs}
+
+@itemlist[
+ @item{Apps handle events only: they can't ask whether a key is held or where the cursor is
+       outside a handler (track it in the state from press and release events), and they can't
+       read files or create resources.}
+ @item{Externs' parameters are values: not paths or strings.}
+ @item{An option's @racket[#:range] checks that option alone: nothing checks two options together
+       (a width times a height, say).}
+ @item{@tt{@literal{--capture}} runs headless, so it can't be combined with @tt{@literal{--window}}
+       (@secref["main"]).}
+ @item{@tt{zgal.mk}'s rules for a program's C++ don't track the headers beside it: add them to the
+       objects' prerequisites by hand (@secref["building"]).}
+]
+
+@subsection{The web}
+
+The web backend (@secref["web"]) compiles every kind of form, and runs programs in browsers and
+under Node, but refuses some uses of them. What differs from Vulkan:
+@itemlist[
+ @item{Arrays of bindings chosen each frame with @racket[#:select] have no WebGPU equivalent and are
+       refused (@secref["error-not-on-web"]).}
+ @item{An element of an array of textures or storage images can only be used in texture and
+       image operations and passed to functions, and can't be compared with
+       @racket[sample-compare] (@secref["web"]).}
+ @item{A graphics material can't have a writable binding (a buffer or storage image it writes)
+       that its vertex shader uses, even only to read it, or that no shader uses.}
+ @item{A material can't bind a resource twice where either binding writes it, and a node can't
+       write the buffer holding its own indirect commands. The runtime refuses both when the graph
+       is built.}
+ @item{Nothing checks a draw that samples or stores to an image its own pass draws to: WebGPU
+       reports it when the frame is submitted.}
+ @item{Nothing checks invocations storing to different components of the same vector in a
+       storage buffer. WGSL may rewrite the whole vector, so they race, where Vulkan's don't.}
+ @item{HDR image files fail to load, where native converts them (@secref["assets"]).}
+ @item{GLSL bodies have restrictions of their own on the web (@secref["glsl"],
+       @secref["extern-glsl"]).}
+]
+
+@; -----------------------------------------------------------------------------------------------
+@section[#:tag "plans"]{Plans}
 
 ZGAL has grown in stages: interfaces, graphs, shader bodies (with functions shared by the GLSL and
-C++ backends, and bindings' accesses inferred), then apps. The compiler's checked program
-(@tt{dsl/private/ast.rkt}) describes interfaces without assuming a backend, so other backends only
-add emitters. The web backend (@secref["web"]) writes WGSL and TypeScript for materials, graphs,
-apps and programs, which run in browsers and under Node. What's still missing there is arrays of
-bindings chosen each frame with @racket[#:select], which have no WebGPU equivalent
-(@secref["error-not-on-web"]), some uses of arrays' elements (@secref["web"]), and what GLSL
-bodies can't do on the web (@secref["glsl"], @secref["extern-glsl"]).
+C++ backends, and bindings' accesses inferred), apps, programs, then the web backend. The
+compiler's checked program (@tt{dsl/private/ast.rkt}) doesn't assume a backend, so a new backend
+only adds emitters.
+
+Planned or being considered (none of it decided):
+@itemlist[
+ @item{Lifting the limitations above, as programs need them.}
+ @item{Arrays whose length changes from frame to frame: today a per-frame list of indices chooses
+       the elements (@racket[#:select]). Alternatives being weighed are a count of the first
+       elements, enabling each element, and arrays built from an app's data.}
+ @item{A standard-library module of signed distance functions, if more programs than the raymarch
+       example need them.}
+ @item{Tidier generated GLSL.}
+ @item{A graph visualizer and low-code editor, showing a file's graphs and later editing them. Being
+       scoped, with open questions: where compilation runs (a local server, a service, or in the
+       browser), what the first phase covers (viewing, live viewing or editing), how edits get
+       back into the text, the UI it's built with, where the viewer lives, and how a layout is
+       kept.}
+ @item{A Rust backend. Being scoped, with open questions: what it targets (e.g. a runtime on wgpu),
+       what constraints it checks, where it lives, how shaders written in each language are declared as externs, Rust
+       functions as externs, and how synchronization validation is handled.}
+]
 
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "maintaining"]{Working on ZGAL}
