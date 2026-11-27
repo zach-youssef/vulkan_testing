@@ -656,11 +656,17 @@ test-pages-steps:
 # The examples whose programs run on the web (simple's app is C++)
 web: $(PARTICLES_WEB) $(IMAGE_FILTER_WEB) $(SCENE_WEB) $(RAYMARCH_WEB)
 
-# build/docs/zgal.html, and zgal.txt for reading in a terminal
+# build/docs/zgal.html, and zgal.txt for reading in a terminal. Scribble only warns about an
+# undefined @secref (and renders it as "???"), so the build fails on a warning or on a "???".
+DOCS_LOG = $(DOCS_OUT)/scribble.log
 docs: $(ZGAL_COMPILED)
 	@mkdir -p $(DOCS_OUT)
-	$(RACO) scribble --html --dest $(DOCS_OUT) $(DSL_DIR)/docs/zgal.scrbl
-	$(RACO) scribble --text --dest $(DOCS_OUT) $(DSL_DIR)/docs/zgal.scrbl
+	@set -e; trap 'cat $(DOCS_LOG)' EXIT; \
+	 { $(RACO) scribble --html --dest $(DOCS_OUT) $(DSL_DIR)/docs/zgal.scrbl && \
+	   $(RACO) scribble --text --dest $(DOCS_OUT) $(DSL_DIR)/docs/zgal.scrbl; } > $(DOCS_LOG) 2>&1; \
+	 if grep -qi 'warning' $(DOCS_LOG) || grep -q '???' $(DOCS_OUT)/zgal.txt; then \
+	   echo 'make docs: scribble warned or rendered "???" (an undefined @secref?)' >&2; \
+	   rm -f $(DOCS_OUT)/zgal.html $(DOCS_OUT)/zgal.txt; exit 1; fi
 
 # The pre-push hook's and the GPU lock's tests (tests/tools; no GPU needed)
 test-tools:

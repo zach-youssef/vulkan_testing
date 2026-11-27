@@ -61,7 +61,9 @@ from `PATH` (the Vulkan SDK's locally), for the web tests too.
   ([Approving lavapipe's screenshots](#approving-lavapipes-screenshots)).
 - `make test-dsl`: builds ZGAL's documentation and runs its compiler's tests (`make test` includes
   it), installing the web backend's npm packages (`web/`) first. `make docs` only builds the
-  documentation: `build/docs/zgal.html`, and `build/docs/zgal.txt` to read in a terminal.
+  documentation: `build/docs/zgal.html`, and `build/docs/zgal.txt` to read in a terminal. It fails
+  if scribble warns (e.g. an undefined `@secref`, otherwise rendered as "???") or the text output
+  has "???".
 - `make test-web` and `make test-pages`: the web backend's tests ([web.md](web.md#tests); `make
   test` includes them), with pages in headless Chromium only unless `BROWSERS="chromium firefox"`
   (Firefox, headless too, uses the machine's GPU, lavapipe on Linux), and in Firefox only the pages
