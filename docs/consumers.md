@@ -47,12 +47,12 @@ unpushed changes. That script relies on:
   PPU) downloads its own into its `.cache` (curl and tar; about 600 MB unpacked each). Setting
   `WASI_SDK_PATH` there, and `build-zgal`'s header listing wasi-sdk among its requirements, are the
   site's follow-ups;
-- the layout of `build/web/<name>/` for particles and scene: `<name>.zgal.html`, its `*.js` files,
-  the `zgal/` runtime directory, and `assets/` and `*.wasm` when present, which it copies; `zgal/`
-  includes the image decoder, `zgal/stb_image.wasm`, which every program needs to load images
-  (copying `zgal/` whole, as it does, keeps it);
-- `examples/particles/particles.zgal` and `examples/scene/scene.zgal`, which it copies for the page
-  to show beside each program;
+- the layout of `build/web/<name>/` for particles, scene and raymarch: `<name>.zgal.html`, its
+  `*.js` files, the `zgal/` runtime directory, and `assets/` and `*.wasm` when present, which it
+  copies; `zgal/` includes the image decoder, `zgal/stb_image.wasm`, which every program needs to
+  load images (copying `zgal/` whole, as it does, keeps it);
+- `examples/particles/particles.zgal`, `examples/scene/scene.zgal` and
+  `examples/raymarch/raymarch.zgal`, which it copies for the page to show beside each program;
 - the generated main's `--frames`, `--size` and `--capture` options, run under Node for the
   screenshot shown to browsers without WebGPU;
 - for programs without a window (e.g. `build/web/image_filter/`, which `build-zgal` can copy the
