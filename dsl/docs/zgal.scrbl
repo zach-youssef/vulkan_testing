@@ -2564,60 +2564,63 @@ floats as C++'s streams do.
   (on (read readCounts copied) (with state #:seen copied))
   (run Counting (count state.count) #:enabled ((filling (not state.paused)))))"]
 
-A program's main runs headless under Node, @tt{node FILE.zgal.main.ts --frames N}, with the native
-program's options (@secref["main"]) and its own, writing captures (@tt{--capture},
-@tt{--capture-frames}) to PNG files and exiting with 1 for errors or WebGPU's validation errors. A
-program without a window runs headless in its page too (see below). A program with a window runs in
-its page, @tt{FILE.zgal.html}, which loads the main built to
-JavaScript (@tt{zgal-web-program}, @secref["building"]): the app draws into the page's canvas
-each animation frame, at the window's size scaled to fit the page, with the canvas's keyboard,
-pointer (mouse, pen or touch) and wheel events, and options from the query string (@tt{?frames=60&level=3}, @tt{arg=...}
-for positional arguments). Serve the directory over HTTP (modules don't load from @tt{file:} URLs)
-and open the page in a browser with WebGPU (e.g. Firefox, Safari or Chrome); headless browsers
-usually have no WebGPU adapter, which the page reports. Assets are found in @tt{assets/} beside the main,
-as native programs find theirs. The page's state is in its root element's @tt{data-zgal} attribute
-(@tt{running}, then @tt{stopped} when the app quits or runs its @tt{frames}, or @tt{failed}), and
-@tt{web/tools/firefox.ts} uses it to check a page in Firefox: it serves a directory, opens the page
-(headless, on the machine's GPU), prints its console, presses keys and compares the canvas with an
-approved PNG, e.g. @tt{node web/tools/firefox.ts --serve build/web/smb3 --compare 120.png
-'smb3.zgal.html?frames=120'}. @tt{web/tools/chromium.ts} does the same in headless Chromium (by
-default Playwright's headless shell) on SwiftShader, its software adapter, needing no window or GPU.
-@tt{make test-pages} checks the examples' pages and its test pages in each browser of
-@tt{BROWSERS}: by default only headless Chromium, as Firefox uses the machine's GPU; @tt{make
-test-pages BROWSERS="chromium firefox"} adds it. A browser found nowhere is skipped, but one @tt{CHROMIUM} or
-@tt{FIREFOX} names must exist. Headless Chromium shows WebGPU canvases of a SwiftShader device only
-with all of @tt{--use-angle=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader}, on macOS
-and Linux alike, which the tool passes (see @tt{docs/web.md}).
+@subsubsection[#:tag "web-node"]{Running under Node}
 
-Other pages embed programs: the main of a program with a window exports @tt{mount(canvas, options)},
-which runs it in a canvas of the page (@tt{zgal.mountProgram}) and returns an object whose
-@tt{stop()} stops it and frees its WebGPU device, its graphs and its listeners (while it starts,
-too). Its downloads never hold @tt{stop()} up: it first aborts them (the fetches of assets read
-whole and of streams, whose sources are cancelled), so it settles promptly even while an asset
-stalls. A program ending by itself (it quits, runs its @tt{--frames} or fails) ends its downloads,
-removes its listeners and frees its graphs at once, as @tt{stop()} would, keeping its last frame
-shown (and fitted to the canvas's parent) until @tt{stop()} frees the device. The options are
-@tt{scaling} (required: @tt{'whole-multiples'} shows the canvas at the largest whole multiple of
-its size that fits, pixelated, @tt{'fit'} at the largest size, smoothly),
-@tt{args} (its command line, as under Node), @tt{keys} (@tt{'canvas'}, the default, takes key
-presses while the canvas has focus, which it takes when clicked; @tt{'page'} takes the whole
-page's), @tt{onState} (called with @tt{running}, @tt{stopped} or @tt{failed}), @tt{onMessage}
-(errors and usage, by default to the console) and @tt{onProgress} (@tt{zgal.AssetProgress}, called
-as its assets' bytes arrive, read whole or streamed, e.g. for a progress bar: with the asset's path
-as the program opens it, the bytes loaded so far and its total size, or null if that isn't known;
-once when it's opened, with 0, then as each piece arrives, counted as it passes, so it neither
-slows nor buffers the asset. The total is a @tt{Blob}'s size or a response's @tt{Content-Length},
-unless the response is compressed or more bytes than it arrive (the total is then null from that
-call); while it is null, the last call, once the asset has ended, gives
-@tt{total} = @tt{loaded}). The canvas is shown at the centre of its parent,
-which must have a size of its own. The app's mouse events come from the canvas's pointer events,
-whether from a mouse, a pen or a finger, but only the primary pointer's (the mouse, or the first
-finger down; further fingers are ignored), so a one-finger drag is a left-button drag. A press
-follows its pointer, ignoring others (e.g. a finger while the mouse is pressed), until its buttons
-are released, it is cancelled or the canvas loses it (which releases them). While
-running, the canvas has @tt{touch-action: none}, so touches are the program's rather than the
-page's to scroll or zoom; once the program ends (or @tt{stop()}) it has its own back. Each mounted
-program has its own device, so a page can run several, e.g.
+A program's main runs headless under Node: @tt{node FILE.zgal.main.ts --frames N}. It takes the
+native program's options (@secref["main"]) and its own, writes captures (@tt{--capture},
+@tt{--capture-frames}) to PNG files, and exits with 1 for errors or WebGPU's validation errors.
+Node runs the main when it is the program run, not when it's imported.
+
+@subsubsection[#:tag "web-pages"]{A program's page}
+
+A program runs in its page, @tt{FILE.zgal.html}, which loads the main built to JavaScript
+(@tt{zgal-web-program}, @secref["building"]). The page calls the main's @tt{run()}.
+@itemlist[
+ @item{A program with a window draws into the page's canvas each animation frame, at the window's
+       size scaled to fit the page. It gets the canvas's keyboard, pointer (mouse, pen or touch)
+       and wheel events.}
+ @item{A program without a window runs headless in its page, through a form (below).}
+ @item{Options come from the query string: @tt{?frames=60&level=3}, and @tt{arg=...} for
+       positional arguments.}
+ @item{Assets are found in @tt{assets/} beside the main, as native programs find theirs.}
+ @item{The page's state is in its root element's @tt{data-zgal} attribute: @tt{running}, then
+       @tt{stopped} when the app quits or runs its @tt{frames}, or @tt{failed}.}
+]
+Serve the directory over HTTP (modules don't load from @tt{file:} URLs) and open the page in a
+browser with WebGPU (e.g. Firefox, Safari or Chrome). Headless browsers usually have no WebGPU
+adapter, which the page reports.
+
+@subsubsection[#:tag "web-checking"]{Checking pages}
+
+@tt{web/tools/firefox.ts} checks a page in Firefox, using its @tt{data-zgal} state. It serves a
+directory, opens the page (headless, on the machine's GPU), prints its console, presses keys and
+compares the canvas with an approved PNG, e.g. @tt{node web/tools/firefox.ts --serve build/web/smb3
+--compare 120.png 'smb3.zgal.html?frames=120'}. @tt{web/tools/chromium.ts} does the same in
+headless Chromium (by default Playwright's headless shell) on SwiftShader, its software adapter,
+needing no window or GPU. Headless Chromium shows WebGPU canvases of a SwiftShader device only with
+all of @tt{--use-angle=swiftshader --enable-features=Vulkan --use-vulkan=swiftshader}, on macOS and
+Linux alike, which the tool passes (see @tt{docs/web.md}). The checkers' @tt{--save-capture FILE}
+saves the page's capture.
+
+@tt{make test-pages} checks the examples' pages and its test pages in each browser of
+@tt{BROWSERS}. By default that's only headless Chromium, as Firefox uses the machine's GPU;
+@tt{make test-pages BROWSERS="chromium firefox"} adds it. A browser found nowhere is skipped, but
+one @tt{CHROMIUM} or @tt{FIREFOX} names must exist. Among the test pages:
+@itemlist[
+ @item{@tt{web/tests/mount.html} checks mounting, and @tt{web/tests/touch.html} touch (in
+       Chromium, whose checker touches the canvas, @tt{web/tools/chromium.ts --touch});}
+ @item{@tt{web/tests/headless.html} checks @tt{runHeadless} and the form, and @tt{onProgress}
+       for assets read whole, and @tt{web/tests/stream-buffers.html} for streamed ones;}
+ @item{@tt{web/tests/stop-streams.html} checks downloads ending: a stalled stream ended by
+       @tt{stop()} and by quitting with Escape;}
+ @item{image_filter's page runs a program without a window.}
+]
+
+@subsubsection[#:tag "web-mount"]{Embedding a program: @tt{mount}}
+
+The main of a program with a window exports @tt{mount(canvas, options)}, which runs it in a canvas
+of the page (@tt{zgal.mountProgram}). Each mounted program has its own device, so a page can run
+several, e.g.
 
 @verbatim{
 import { mount } from './particles/particles.zgal.main.js';
@@ -2626,29 +2629,72 @@ const particles = mount(document.querySelector('canvas'), { scaling: 'fit', args
 await particles.stop();
 }
 
-Its own page calls the main's @tt{run()}, which mounts the program in the page's canvas, and Node
-runs the main when it is the program run (not imported). @tt{make test-pages} checks mounting with
-@tt{web/tests/mount.html}, touch with @tt{web/tests/touch.html} (in Chromium, whose checker
-touches the canvas, @tt{web/tools/chromium.ts --touch}), and @tt{onProgress} (through @tt{runHeadless}, which shares the loaders)
-with @tt{web/tests/headless.html} (assets read whole) and @tt{web/tests/stream-buffers.html}
-(streamed), and downloads ending with @tt{web/tests/stop-streams.html} (a stalled stream ended by
-@tt{stop()} and by quitting with Escape).
+The options are:
+@itemlist[
+ @item{@tt{scaling} (required): @tt{'whole-multiples'} shows the canvas at the largest whole
+       multiple of its size that fits, pixelated, and @tt{'fit'} at the largest size, smoothly.}
+ @item{@tt{args}: its command line, as under Node.}
+ @item{@tt{keys}: @tt{'canvas'}, the default, takes key presses while the canvas has focus, which
+       it takes when clicked; @tt{'page'} takes the whole page's.}
+ @item{@tt{onState}: called with @tt{running}, @tt{stopped} or @tt{failed}.}
+ @item{@tt{onMessage}: errors and usage, by default to the console.}
+ @item{@tt{onProgress} (@tt{zgal.AssetProgress}): called as its assets' bytes arrive, read whole
+       or streamed, e.g. for a progress bar. It's given the asset's path as the program opens it,
+       the bytes loaded so far, and its total size, or null if that isn't known. It's called once
+       when the asset is opened, with 0, then as each piece arrives, counted as it passes, so it
+       neither slows nor buffers the asset. The total is a @tt{Blob}'s size or a response's
+       @tt{Content-Length}, unless the response is compressed or more bytes than it arrive (the
+       total is then null from that call). While it is null, the last call, once the asset has
+       ended, gives @tt{total} = @tt{loaded}.}
+]
 
-Every program's main also exports @tt{runHeadless(options)} (@tt{zgal.runHeadless}), which runs it
-headless in a page as Node would, with its own WebGPU device: its frames (@tt{--frames}, by default
-1 for a program without a window; a program with a window needs it), its captures given to a
-callback rather than written. The options are @tt{args} (required: its command line, as under
-Node), @tt{files} (the files it reads, by the paths @tt{args} gives them: a @tt{Blob}, e.g. a file
-input's @tt{File}, or a URL relative to the page; other paths are fetched from @tt{assets/}),
-@tt{onCapture} (called with each capture: its @tt{path}, the file Node would write, @tt{frame}
-(@tt{--capture-frames}' frame, or null), @tt{size}, @tt{rgba} pixels and @tt{png}, a PNG
-@tt{Blob}), @tt{onState}, @tt{onMessage} and @tt{onProgress}, as @tt{mount}'s. It returns an object whose @tt{done}
-promise gives the state it ended in (@tt{stopped}, or @tt{failed} for a bad command line, an
-error or WebGPU's validation errors) and whose @tt{stop()} stops it, resolving once its device is
-destroyed: as @tt{mount}'s, it aborts the run's downloads first, so it never waits for them, and a
-run ends them as soon as its frames end, however they end. Runs are independent, each creating a
-device, so a page running again on input (e.g. a slider) should @tt{await} the previous run's
-@tt{stop()} before starting the next, and start only the latest of several quick inputs, e.g.
+@tt{mount} returns an object whose @tt{stop()} stops the program and frees its WebGPU device, its
+graphs and its listeners (while it starts, too). Downloads never hold @tt{stop()} up: it first
+aborts them (the fetches of assets read whole and of streams, whose sources are cancelled), so it
+settles promptly even while an asset stalls. A program ending by itself (it quits, runs its
+@tt{--frames} or fails) ends its downloads, removes its listeners and frees its graphs at once, as
+@tt{stop()} would. It keeps its last frame shown (and fitted to the canvas's parent) until
+@tt{stop()} frees the device.
+
+The canvas is shown at the centre of its parent, which must have a size of its own. Input:
+@itemlist[
+ @item{The app's mouse events come from the canvas's pointer events, whether from a mouse, a pen
+       or a finger, but only the primary pointer's (the mouse, or the first finger down; further
+       fingers are ignored). So a one-finger drag is a left-button drag.}
+ @item{A press follows its pointer, ignoring others (e.g. a finger while the mouse is pressed),
+       until its buttons are released, it is cancelled or the canvas loses it (which releases
+       them).}
+ @item{While running, the canvas has @tt{touch-action: none}, so touches are the program's rather
+       than the page's to scroll or zoom. Once the program ends (or @tt{stop()}) the page has them
+       back.}
+]
+
+@subsubsection[#:tag "web-run-headless"]{Running headless in a page: @tt{runHeadless}}
+
+Every program's main also exports @tt{runHeadless(options)} (@tt{zgal.runHeadless}). It runs the
+program headless in a page as Node would, with its own WebGPU device. It runs its frames
+(@tt{--frames}: by default 1 for a program without a window, and a program with a window needs it)
+and gives its captures to a callback rather than writing them. The options are:
+@itemlist[
+ @item{@tt{args} (required): its command line, as under Node.}
+ @item{@tt{files}: the files it reads, by the paths @tt{args} gives them: a @tt{Blob} (e.g. a file
+       input's @tt{File}) or a URL relative to the page. Other paths are fetched from
+       @tt{assets/}.}
+ @item{@tt{onCapture}: called with each capture: its @tt{path} (the file Node would write),
+       @tt{frame} (@tt{--capture-frames}' frame, or null), @tt{size}, @tt{rgba} pixels and
+       @tt{png}, a PNG @tt{Blob}.}
+ @item{@tt{onState}, @tt{onMessage} and @tt{onProgress}, as @tt{mount}'s.}
+]
+
+It returns an object whose @tt{done} promise gives the state the run ended in (@tt{stopped}, or
+@tt{failed} for a bad command line, an error or WebGPU's validation errors), and whose @tt{stop()}
+stops it, resolving once its device is destroyed. As with @tt{mount}, @tt{stop()} aborts the run's
+downloads first, so it never waits for them, and a run ends them as soon as its frames end, however
+they end.
+
+Runs are independent, each creating a device. So a page running again on input (e.g. a slider)
+should @tt{await} the previous run's @tt{stop()} before starting the next, and start only the
+latest of several quick inputs, e.g.
 
 @verbatim{
 import { runHeadless } from './image_filter/image_filter.zgal.main.js';
@@ -2669,56 +2715,73 @@ async function filter(file, blur) {
 }
 }
 
+@subsubsection[#:tag "web-form"]{A form for a program without a window}
+
 The main of a program without a window exports @tt{mount(container, options)} instead of the
-canvas's (@tt{zgal.mountHeadless}): it adds a form to the element, with an input per positional
-argument, option and flag (a file input for each path the program reads; the path its capture
-goes to, @tt{capture #:to}, is named by the page), the number of frames and a Run button, then the
-last run's captures, each an image and a link downloading it. The options are @tt{args} (a command
-line to run at once), @tt{onRun} (called with each run's command line), @tt{onState} and
-@tt{onMessage}. Running again stops the run before (only the last of several quick runs starts, and
-a stopped run's states and captures don't follow the next run's @tt{onRun}, and its messages go to
-@tt{console.debug}); @tt{stop()} stops the run, reporting its last messages and @tt{stopped}, and removes
-the form. Its markup has classes for a page's
-styles (@tt{form.zgal-headless}, @tt{label.zgal-field}, @tt{.zgal-captures}), and the program's
-@tt{program.options} describe its options (@tt{kind}, @tt{name}, @tt{metavar}, @tt{help}, @tt{value},
-@tt{default}, @tt{range}, and @tt{output} for where the capture goes) for a page building its own
-controls. The program's page shows the form, running the query string's command line at once when
-it gives one (@tt{?arg=photo.jpg&arg=out.png&blur=2}, paths fetched relative to @tt{assets/}), with
-the run's state in @tt{data-zgal}. @tt{make test-pages} runs image_filter's page and checks
-@tt{web/tests/headless.html}; the checkers' @tt{--save-capture FILE} saves the page's capture.
+canvas's (@tt{zgal.mountHeadless}). It adds a form to the element: an input per positional
+argument, option and flag (a file input for each path the program reads; the path its capture goes
+to, @tt{capture #:to}, is named by the page), the number of frames and a Run button. Below it go
+the last run's captures, each an image and a link downloading it. The options are:
+@itemlist[
+ @item{@tt{args}: a command line to run at once.}
+ @item{@tt{onRun}: called with each run's command line.}
+ @item{@tt{onState} and @tt{onMessage}, as @tt{mount}'s.}
+]
+
+Running again stops the run before. Only the last of several quick runs starts, a stopped run's
+states and captures don't follow the next run's @tt{onRun}, and its messages go to
+@tt{console.debug}. @tt{stop()} stops the run, reporting its last messages and @tt{stopped}, and
+removes the form.
+
+The form's markup has classes for a page's styles (@tt{form.zgal-headless}, @tt{label.zgal-field},
+@tt{.zgal-captures}). For a page building its own controls, the program's @tt{program.options}
+describe its options (@tt{kind}, @tt{name}, @tt{metavar}, @tt{help}, @tt{value}, @tt{default},
+@tt{range}, and @tt{output} for where the capture goes).
+
+The program's own page shows the form, running the query string's command line at once when it
+gives one (@tt{?arg=photo.jpg&arg=out.png&blur=2}, paths fetched relative to @tt{assets/}), with
+the run's state in @tt{data-zgal}.
+
+@subsubsection[#:tag "web-more"]{Other features on the web}
 
 Read-write storage images other than @tt{r32float}, @tt{r32uint} and @tt{r32sint} need WebGPU's
-@tt{texture-formats-tier2} feature, which the runtime requests when the adapter has it; without it,
+@tt{texture-formats-tier2} feature, which the runtime requests when the adapter has it. Without it,
 a material binding one reports which image to bind read or write instead.
 
-Graphs on the web can use the compute library's nodes (@secref["compute-library"]). Where the device has no
-subgroups (WebGPU's @tt{subgroups} feature is optional), the runtime runs their materials'
-variants scanning, reducing and ranking in shared memory instead, which the compiler generates
-beside them. Indirect dispatches and draws run on the web too (@secref["indirect"]), and so do
-models and meshes: the runtime loads glTF (@tt{.gltf}, @tt{.glb}) and OBJ files itself, as the
-C++ does, and a meshes input is an array of the runtime's @tt{Mesh}es, which @tt{createMesh} makes
-from vertices @tt{encodeVertices} lays out as the module's vertex format descriptions (a constant
-per vertex format) say. What a program's own code gives the app goes through
-@tt{mainInputs} on the web too (@secref["main-inputs"]), and so do samplers clamping to a border:
-WebGPU's samplers have no border colour, so they clamp to the edge and modules sample past it by
-hand (see the WGSL above).
+Graphs on the web can use the compute library's nodes (@secref["compute-library"]). Where the
+device has no subgroups (WebGPU's @tt{subgroups} feature is optional), the runtime runs their
+materials' variants scanning, reducing and ranking in shared memory instead, which the compiler
+generates beside them.
+
+Indirect dispatches and draws run on the web too (@secref["indirect"]), and so do models and
+meshes. The runtime loads glTF (@tt{.gltf}, @tt{.glb}) and OBJ files itself, as the C++ does. A
+meshes input is an array of the runtime's @tt{Mesh}es, which @tt{createMesh} makes from vertices
+@tt{encodeVertices} lays out as the module's vertex format descriptions (a constant per vertex
+format) say.
+
+What a program's own code gives the app goes through @tt{mainInputs} on the web too
+(@secref["main-inputs"]). So do samplers clamping to a border: WebGPU's samplers have no border
+colour, so they clamp to the edge and modules sample past it by hand (see the WGSL above).
 
 A @racket[cpu] node reading or writing imported buffers runs on the web too, though WebGPU's
-buffers can't be mapped while the GPU uses them: its cpu input is
+buffers can't be mapped while the GPU uses them. Its cpu input is
 @tt{(frame: zgal.FrameInfo, buffers: { name: ArrayBuffer; ... }) => void}, given the bytes of each
 buffer in its @tt{#:reads} and @tt{#:writes} by name (a name optional where other nodes run the
-same input without that buffer), each valid only during the call. A buffer it reads holds what the
-GPU's work before the node left in it: the runtime submits the frame so far there, as native
-submits at cpu steps, copies the buffer into a staging buffer and waits for it, so each such node
-adds a submission and a wait to the frame. A buffer it only writes starts zeroed and replaces the
-buffer's whole contents (list it in @tt{#:reads} too to start from them), copied into it at the
-node's place in the frame, so the GPU's work before the node sees the buffer as it was. This
-differs from native, which maps the buffer and writes it in place, keeping the bytes the function
-leaves alone: a function writing only part of a buffer reads it too, to behave the same on both. The
-application creates the buffers with @tt{COPY_SRC} for reads and @tt{COPY_DST} for writes, with
-sizes that are multiples of 4 bytes. A
-windowed graph can't draw to the surface both before and after a node reading buffers, as the page
-shows the surface while the frame waits.
+same input without that buffer), each valid only during the call.
+@itemlist[
+ @item{A buffer it reads holds what the GPU's work before the node left in it. The runtime submits
+       the frame so far there, as native submits at cpu steps, copies the buffer into a staging
+       buffer and waits for it, so each such node adds a submission and a wait to the frame.}
+ @item{A buffer it only writes starts zeroed and replaces the buffer's whole contents (list it in
+       @tt{#:reads} too to start from them). It's copied into the buffer at the node's place in
+       the frame, so the GPU's work before the node sees the buffer as it was. Native maps the
+       buffer and writes it in place, keeping the bytes the function leaves alone, so a function
+       writing only part of a buffer should read it too, to behave the same on both.}
+ @item{The application creates the buffers with @tt{COPY_SRC} for reads and @tt{COPY_DST} for
+       writes, with sizes that are multiples of 4 bytes.}
+ @item{A windowed graph can't draw to the surface both before and after a node reading buffers, as
+       the page shows the surface while the frame waits.}
+]
 
 @; -----------------------------------------------------------------------------------------------
 @section[#:tag "errors"]{Errors}
