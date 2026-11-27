@@ -1179,33 +1179,44 @@ be missing otherwise.
 
 @racket[(stream-buffer name stream-input asset #:words words #:per-frame bytes)] is a buffer a stream
 fills over frames, e.g. a large scene drawn while it loads, instead of a file read whole when the
-graph is built. Its stream input (C++'s @tt{zgal::StreamOpener}, @tt{include/zgal/Stream.h}) opens
-the stream at the asset's path, which it's given as is: @tt{zgal::assetStream(context)}
-(@tt{include/zgal/Assets.h}) finds files as other assets are, and a program's own opener can read
-anything (a socket, memory) or wrap one, e.g. to check the header. When the graph is built, it
-opens the stream and reads its header, a std430 @tt{H}, which @racket[(stream-header name)] gives
-(@secref["graph-expressions"]), e.g. to size the buffer. The buffer is @tt{words} 32-bit words,
-device-local, shared by every frame and never recreated, which shaders bind as a
-@racket[(buffer-array uint)] and decode themselves; it isn't zeroed, so they read only what has
-arrived. The stream gives the header's bytes again, then the rest: the buffer holds the whole
-stream, which must be exactly @tt{words} × 4 bytes.
+graph is built.
+
+Its stream input (C++'s @tt{zgal::StreamOpener}, @tt{include/zgal/Stream.h}) opens the stream at
+the asset's path, which it's given as is. @tt{zgal::assetStream(context)} (@tt{include/zgal/Assets.h})
+finds files as other assets are found, and a program's own opener can read anything (a socket,
+memory) or wrap one, e.g. to check the header. On the web, the opener is a @tt{zgal.StreamOpener}
+(usually @tt{context.loadAssetStream}, streaming fetch bodies), and a frame takes what has arrived
+without waiting (@tt{docs/web.md}); the rest is the same.
+
+When the graph is built, it opens the stream and reads its header, a std430 @tt{H}, which
+@racket[(stream-header name)] gives (@secref["graph-expressions"]), e.g. to size the buffer. The
+stream then gives the header's bytes again, followed by the rest: the buffer holds the whole stream,
+which must be exactly @tt{words} × 4 bytes.
+
+The buffer is @tt{words} 32-bit words, device-local, shared by every frame and never recreated.
+Shaders bind it as a @racket[(buffer-array uint)] and decode it themselves. It isn't zeroed, so
+they read only what has arrived; apps learn what has with a @racket[streamed] event
+(@secref["apps"]).
 
 Before each frame's nodes, at most @tt{bytes} new bytes are copied in after those already there
 (the graph's first submission copies them, and its uses wait for it). Copies are whole words: 1-3
 trailing bytes wait for the rest of their word. Both options are required, since they're the
-trade-offs: @tt{#:words} is computed when the graph is built (it may use the header), and
-@tt{#:per-frame} is how much a frame reads (and stages, per frame in flight): a positive multiple
-of 4, checked when it's a literal and otherwise when the graph is built (a contract violation).
-Apps learn what has arrived with a @racket[streamed] event (@secref["apps"]).
+trade-offs:
+@itemlist[
+ @item{@tt{#:words} is computed when the graph is built (it may use the header).}
+ @item{@tt{#:per-frame} is how much a frame reads (and stages, per frame in flight): a positive
+       multiple of 4, checked when it's a literal and otherwise when the graph is built (a
+       contract violation).}
+]
 
-A stream input's opener failing fails @tt{build()}, adding which stream-buffer it was. A stream
-ending within its header, failing or throwing while it's read, giving more than the buffer holds,
-or ending before it's full (including within its last word) fails the next frame
-(@tt{RenderGraph::execute()}, or an app's @tt{beginFrame()} when the app has a streamed handler
-for that graph), and every one after, with
-@tt{ErrorCode::InvalidData}. Stream-buffers take no @tt{#:when}. On the web, the opener is a
-@tt{zgal.StreamOpener} (usually @tt{context.loadAssetStream}, streaming fetch bodies), the
-semantics are the same, and a frame takes what has arrived without waiting (@tt{docs/web.md}).
+Stream-buffers take no @tt{#:when}. Failures:
+@itemlist[
+ @item{The stream input's opener failing fails @tt{build()}, adding which stream-buffer it was.}
+ @item{A stream ending within its header, failing or throwing while it's read, giving more than
+       the buffer holds, or ending before it's full (including within its last word) fails the
+       next frame (@tt{RenderGraph::execute()}, or an app's @tt{beginFrame()} when the app has a
+       streamed handler for that graph), and every one after, with @tt{ErrorCode::InvalidData}.}
+]
 
 @(zgal-example stream-buffer-source)
 @(generated-file stream-buffer-source "example.zgal.h" #:from #rx"TRY_ASSIGN[(]auto stream_scene" #:to #rx"result.buffers.scene")
@@ -3034,23 +3045,25 @@ This document is part of the language: change it in the same commit as the compi
        that functions with @tt{image2D} parameters reach WGSL inlined, how a sampler that samples
        and compares, and a texture compared in one stage, are declared, and the web interface of
        GLSL bodies' shaders and what it refuses.}
- @item{@tt{web/tests}: @tt{web.zgal} and @tt{apps.zgal} compiled to TypeScript and WGSL and run on Dawn under Node
-       (@tt{make test-web}, which type checks it first): the generated WGSL computes what the GLSL
-       would (layouts of small integers, shared memory, emulated atomics and subgroup scans,
-       expressions WGSL spells differently, draws with depth tests, functions storing into the
-       images they're given, a depth image sampled and compared with one sampler; @tt{glsl.zgal}:
-       GLSL bodies translated by glslc and naga; @tt{extern_glsl.zgal}: ZGAL bodies calling GLSL
-       functions, likewise), and generated
-       graphs run as
-       the C++ ones do (loops, conditions, enables and once nodes, per-frame inputs, uploads,
-       copies, buffer files (also conditional ones), cpu nodes (also reading and writing imported
-       buffers, in graph order)
-       and extern nodes), functions compute what the GPU and C++ do,
-       and apps handle events, effects, read events, externs and phases as C++ apps do, without
-       WebGPU errors. @tt{make test-web} then builds the examples and the test programs in
-       @tt{tests/} for the web and runs them under Node, then runs the examples' pages and the test
-       pages (most of those programs', and @tt{web/tests}' own) in browsers (@tt{docs/web.md} lists
-       them).}
+ @item{@tt{web/tests} (@tt{make test-web}, which type checks them first): programs compiled to
+       TypeScript and WGSL and run on Dawn under Node, without WebGPU errors.
+       @itemlist[
+        @item{@tt{web.zgal}: the generated WGSL computes what the GLSL would (layouts of small
+              integers, shared memory, emulated atomics and subgroup scans, expressions WGSL
+              spells differently, draws with depth tests, functions storing into the images
+              they're given, a depth image sampled and compared with one sampler).}
+        @item{@tt{glsl.zgal}: GLSL bodies translated by glslc and naga; @tt{extern_glsl.zgal}: ZGAL
+              bodies calling GLSL functions, likewise.}
+        @item{Generated graphs run as the C++ ones do: loops, conditions, enables and once nodes,
+              per-frame inputs, uploads, copies, buffer files (also conditional ones), cpu nodes
+              (also reading and writing imported buffers, in graph order) and extern nodes.}
+        @item{Functions compute what the GPU and C++ do.}
+        @item{@tt{apps.zgal}: apps handle events, effects, read events, externs and phases as C++
+              apps do.}
+       ]
+       @tt{make test-web} then builds the examples and the test programs in @tt{tests/} for the
+       web and runs them under Node, then runs the examples' pages and the test pages (most of
+       those programs', and @tt{web/tests}' own) in browsers (@tt{docs/web.md} lists them).}
  @item{@tt{tests/gpu/ZgalTest.cpp}: generated materials and graphs on the device: the C++ structs
        and push constants have the layout the shaders write and read (8- and 16-bit integers
        included), a function computes the same on the CPU (as C++) as on the GPU, a reduction
