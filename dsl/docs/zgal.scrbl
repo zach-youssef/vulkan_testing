@@ -5,34 +5,22 @@
 
 @title{ZGAL: shaders, render graphs and apps for Vulkan and WebGPU}
 
-ZGAL (Zoey's Graphics Application Language) is a small language for a Vulkan application's
-shaders and render graphs. A @tt{.zgal} file declares a material's interface (the structs in its
-buffers, its bindings and push constants, its vertex format, what one stage passes to the next)
-once, and its shaders in an expression language. The compiler generates both sides: complete GLSL
-shaders, and a C++ header for the wrapper (@tt{include/}) with a class per material. The
-@tt{.zgal} file is the source of truth, so the shaders and the C++ can't disagree about a
-binding's order, a field's offset or a vertex attribute's location, and bindings' accesses, which
-the render graph synchronizes on, are inferred from what the shaders do.
+ZGAL (Zoey's Graphics Application Language) is a small language for graphics programs. A
+@tt{.zgal} file declares a material's interface once (the structs in its buffers, its bindings and
+push constants, its vertex format, what one stage passes to the next) and writes its shaders in an
+expression language. It can also declare the render graphs running the materials, the apps driving
+a graph, and a whole program.
 
-A @tt{.zgal} file can also declare render graphs (@secref["graphs"]): their parameters, inputs,
-resources, materials and nodes. The compiler generates a @tt{build()} function adding them to a
-@tt{RenderGraph}, so C++ supplies only what changes at runtime: meshes, imported images and
-per-frame values. Functions that don't use textures are also compiled to C++, so the CPU and the
-shaders can share code.
+The compiler generates both sides from the file: GLSL shaders and C++ for the Vulkan wrapper
+(@tt{include/}), or WGSL and TypeScript for WebGPU, in browsers and under Node. The @tt{.zgal} file
+is the source of truth, so the shaders and the code using them can't disagree about a binding's
+order, a field's offset or a vertex attribute's location. Bindings' accesses, which the render
+graph synchronizes on, are inferred from what the shaders do.
 
-And it can declare apps (@secref["apps"]): an application's state, the handlers computing its next
-state from input events and each frame, and the graph it runs, whose per-frame inputs are computed
-from the state. The compiler generates a class running them. A @racket[main] makes the file a
-program (@secref["main"]): the compiler writes its @tt{main} too, with a command line, and C++ only
-gives what ZGAL can't; otherwise C++'s @tt{main} creates the app and runs it in a window (or
-headless).
-
-ZGAL is written in Racket (@tt{dsl/}). Shaders can also still be written in GLSL, with only their
-interface in ZGAL (@secref["glsl"]).
-
-This document is built from the compiler: every example is compiled while it builds, and the
-generated code it shows is the compiler's actual output. Build it with @tt{make docs}, which writes
-@tt{build/docs/zgal.html} and a plain text copy, @tt{build/docs/zgal.txt}.
+The compiler is written in Racket (@tt{dsl/}). This document is built from it: every example is
+compiled while the document builds, and the generated code shown is the compiler's actual output.
+Build it with @tt{make docs}, which writes @tt{build/docs/zgal.html} and a plain text copy,
+@tt{build/docs/zgal.txt}.
 
 @table-of-contents[]
 
@@ -92,6 +80,34 @@ which gives the shaders its name and the C++ a member of @tt{Bindings} to fill (
 material without an entry for it is a contract violation), or a graph a binding to give.
 
 @; -----------------------------------------------------------------------------------------------
+@section[#:tag "concepts"]{Concepts}
+
+A @tt{.zgal} file holds any of these, and can import others' (@secref["imports"]):
+@itemlist[
+ @item{@bold{Materials} (@secref["language"]): a graphics or compute pipeline's interface and its
+       shaders. Each becomes a class the host code creates and binds resources to.}
+ @item{@bold{Shader bodies} (@secref["bodies"]): the expressions computing a stage's results. They
+       can be written in GLSL instead, with only the interface in ZGAL (@secref["glsl"]).}
+ @item{@bold{Functions and constants} (@secref["functions"]): shared by every shader declared
+       after them. Those that use no textures, images, stage variables or effects are compiled for
+       the CPU too, so the host computes the same thing.}
+ @item{@bold{Graphs} (@secref["graphs"]): a render graph's parameters, inputs, resources, material
+       instances and nodes (draws, dispatches, copies). The compiler generates the code building
+       it, so the host gives only what changes at runtime: meshes, imported images, per-frame
+       values.}
+ @item{@bold{Apps} (@secref["apps"]): an application's state, the handlers computing its next
+       state from input events and each frame, and the graph it runs, whose per-frame inputs are
+       computed from the state. Each becomes a class the host runs, in a window or headless.}
+ @item{@bold{Programs} (@secref["main"]): a @racket[main] makes the file a whole program. The
+       compiler writes its entry point too, with a command line, and the host code gives only what
+       ZGAL can't.}
+]
+
+Files compile for two backends. For Vulkan, a file gives GLSL compiled to SPIR-V and a C++ header
+for the wrapper (@secref["cpp"]). For WebGPU, it gives WGSL and a TypeScript module using the web
+runtime (@secref["web"]), and the compiler refuses what WebGPU can't do (@secref["limitations"]).
+
+@; -----------------------------------------------------------------------------------------------
 @section[#:tag "build"]{Building with ZGAL}
 
 @subsection{What the compiler generates}
@@ -114,15 +130,20 @@ are unique within a file.
 
 @subsection[#:tag "building"]{The Makefile}
 
-@tt{zgal.mk}, which the repository's Makefile includes, has the rules; other projects' Makefiles
-include it too (e.g. from the wrapper as a submodule), defining @tt{CXX}, @tt{CFLAGS}, @tt{LDFLAGS}
-and @tt{LDLIBS} first. It adds the platform's include and library paths (the Vulkan SDK's when
-@tt{VULKAN_SDK} is set) to its rules' compilations and links. Its @tt{zgal-rule} generates a
-@tt{.zgal} file's outputs into a directory, with a stamp file that depends on the @tt{.zgal} file,
-its shader bodies and the compiler, and compiles its shaders. @tt{zgal-program} builds a program
-(@secref["main"]) on it: the generated main, the program's own C++ (the @tt{.cpp} files beside the
-@tt{.zgal} file), its SPIR-V in @tt{shaders/} and its assets (the files under @tt{assets/} beside
-the @tt{.zgal} file) copied to @tt{assets/}, beside the executable, where the context finds them.
+@tt{zgal.mk} has the rules. The repository's Makefile includes it, and so can other projects'
+(e.g. with the wrapper as a submodule), defining @tt{CXX}, @tt{CFLAGS}, @tt{LDFLAGS} and
+@tt{LDLIBS} first. It adds the platform's include and library paths (the Vulkan SDK's when
+@tt{VULKAN_SDK} is set) to its compilations and links.
+
+@itemlist[
+ @item{@tt{zgal-rule} generates a @tt{.zgal} file's outputs into a directory and compiles its
+       shaders. A stamp file depends on the @tt{.zgal} file, its shader bodies and the compiler.}
+ @item{@tt{zgal-program} builds a program (@secref["main"]) on top of it: the generated main, the
+       program's own C++ (the @tt{.cpp} files beside the @tt{.zgal} file), its SPIR-V in
+       @tt{shaders/}, and its assets (the files under @tt{assets/} beside the @tt{.zgal} file),
+       copied to @tt{assets/} beside the executable, where the context finds them.}
+]
+
 The scene example's rules:
 
 @(file-excerpt "Makefile" #:from #rx"^SCENE_DIR =" #:to #rx"zgal-program,[$][(]SCENE_DIR[)]")
