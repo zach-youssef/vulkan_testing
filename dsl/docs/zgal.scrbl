@@ -2895,6 +2895,8 @@ Planned or being considered (none of it decided):
   (list @tt{include/zgal/App.h} "what the generated apps use: events, Timestep, RunMode")
   (list @tt{include/zgal/Main.h} "what the generated mains use: the command line, validation, captures, running headless")
   (list @tt{include/zgal/Window.h} "running an app in a VulkanApp's window, and windowed programs")
+  (list @tt{include/zgal/Assets.h} "what the generated graphs use to load assets: models, image files and buffer files")
+  (list @tt{include/zgal/Stream.h} "streams for stream-buffers: files read over frames")
   (list @tt{dsl/docs/} "this document, and the helpers compiling its examples")
   (list @tt{web/zgal/} "what the generated TypeScript uses at runtime: Context, RenderGraph, nodes, materials, types' layouts, apps' events and clocks, C++'s arithmetic (math.ts) and built-in functions (glsl.ts), mains (main.ts, main-node.ts, main-browser.ts), writing PNGs (png-write.ts), streams (stream.ts), the image decoder, which loads every image file (image-decode.ts, stb_image built to WebAssembly from web/decode, copied into each program's zgal/); node.ts and png.ts for Node")
   (list @tt{web/} "the web backend's packages (npm: TypeScript, and Dawn, WebGPU for Node), tools (tools/check-wgsl.ts compiles WGSL with Dawn, or validates it with naga; tools/firefox.ts and tools/chromium.ts check a page in Firefox or headless Chromium) and tests")
@@ -2927,6 +2929,14 @@ This document is part of the language: change it in the same commit as the compi
  @item{@tt{dsl/tests/app-test.rkt}: apps: handlers, events, effects and their graphs.}
  @item{@tt{dsl/tests/module-test.rkt}: imports, the standard library, namespaces, and data in and
        out of graphs (uploads, clears, copies into images, readbacks).}
+ @item{@tt{dsl/tests/nodes-test.rkt}: nodes' own push constants and invocations, and loops of
+       nodes.}
+ @item{@tt{dsl/tests/dynamic-test.rkt}: buffers sized each frame, and array bindings.}
+ @item{@tt{dsl/tests/compute-test.rkt}: the compute library's kernels.}
+ @item{@tt{dsl/tests/assets-test.rkt}: packed vertex attributes, image files and models.}
+ @item{@tt{dsl/tests/stream-test.rkt}: stream buffers, their headers, and apps' streamed event.}
+ @item{@tt{dsl/tests/main-test.rkt}: programs' mains: command lines, windows, clocks, captures and
+       what C++ gives them.}
  @item{@tt{dsl/tests/golden-test.rkt}: the output for @tt{golden/features.zgal}, which uses every
        feature, and for the web for @tt{golden/web.zgal}, what the WGSL backend does differently.}
  @item{@tt{dsl/tests/toolchain-test.rkt}: the generated shaders and header through glslc and the C++
@@ -2953,8 +2963,10 @@ This document is part of the language: change it in the same commit as the compi
        buffers, in graph order)
        and extern nodes), functions compute what the GPU and C++ do,
        and apps handle events, effects, read events, externs and phases as C++ apps do, without
-       WebGPU errors. @tt{make test-web} then builds the particles example for the web and runs it
-       under Node.}
+       WebGPU errors. @tt{make test-web} then builds the examples and the test programs in
+       @tt{tests/} for the web and runs them under Node, then runs the examples' pages and the test
+       pages (most of those programs', and @tt{web/tests}' own) in browsers (@tt{docs/web.md} lists
+       them).}
  @item{@tt{tests/gpu/ZgalTest.cpp}: generated materials and graphs on the device: the C++ structs
        and push constants have the layout the shaders write and read (8- and 16-bit integers
        included), a function computes the same on the CPU (as C++) as on the GPU, a reduction
@@ -2963,4 +2975,7 @@ This document is part of the language: change it in the same commit as the compi
        app's state, events, extern functions and graph inputs, and uploads, clears, copies into
        images and buffer readbacks. @tt{tests/gpu/VulkanAppTest.cpp} checks
        @tt{zgal::connect} turns window input into events.}
+ @item{@tt{tests/main}, @tt{tests/border}, @tt{tests/arrays} and @tt{tests/frames}: programs
+       @tt{make test-main} runs natively and @tt{make test-web} on the web, comparing their
+       captures with approved images. @tt{tests/stream} streams a file, on the web only.}
 ]
