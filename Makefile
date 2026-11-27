@@ -658,7 +658,9 @@ web: $(PARTICLES_WEB) $(IMAGE_FILTER_WEB) $(SCENE_WEB) $(RAYMARCH_WEB)
 
 # build/docs/zgal.html, and zgal.txt for reading in a terminal. Scribble only warns about an
 # undefined @secref (and renders it as "???"), so the build fails on a warning or on a "???".
-DOCS_LOG = $(DOCS_OUT)/scribble.log
+# The log stays outside $(DOCS_OUT): the site ships that directory whole, and its deploy
+# refuses files it doesn't know.
+DOCS_LOG = $(OUT)/docs-scribble.log
 docs: $(ZGAL_COMPILED)
 	@mkdir -p $(DOCS_OUT)
 	@set -e; trap 'cat $(DOCS_LOG)' EXIT; \
