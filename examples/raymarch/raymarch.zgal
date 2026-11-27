@@ -1,0 +1,269 @@
+;; Raymarching: a scene of signed distance fields drawn by one fragment shader, with no meshes. Each
+;; pixel marches a ray from the camera through the distance field (sphere tracing: step as far as
+;; the nearest surface allows) until it hits a surface, then shades it with a sun whose soft shadows
+;; march again towards it, and ambient occlusion from the field around the hit. A few primitives
+;; (a sphere, a torus, a rounded box) are blended with smooth unions, and move with time. The
+;; shader, the graph, the app (an orbit camera and the clock) and its main are all here, in ZGAL
+;; (dsl/; `make docs` for the language): the example has no C++ of its own.
+;;
+;;   raymarch                                    interactive, in a window
+;;   raymarch --frames N [--capture out.png]     N frames headless (the smoke test)
+
+;; From the standard library: acesFilmic; orbit
+(import color)
+(import camera)
+
+;; ---------------------------------------------------------------------------------------------
+;; Distance fields: each gives the distance from p to its surface, negative inside
+
+(define (sdSphere [p : vec3] [radius : float]) : float
+  (- (length p) radius))
+
+;; A torus in the xz plane: the ring's radius, then the tube's
+(define (sdTorus [p : vec3] [ring : float] [tube : float]) : float
+  (- (length (vec2 (- (length p.xz) ring) p.y)) tube))
+
+;; A box of half extents size, its edges rounded by radius
+(define (sdRoundBox [p : vec3] [size : vec3] [radius : float]) : float
+  (let* ([q (- (abs p) size)])
+    (- (+ (length (max q 0.0)) (min (max q.x (max q.y q.z)) 0.0)) radius)))
+
+;; Inigo Quilez's polynomial smooth minimum of two distances, blending within k of where they meet.
+;; Its second value is the blend, 0 for a and 1 for b, for mixing what the surfaces carry.
+(define (smoothUnion [a : float] [b : float] [k : float]) : vec2
+  (let* ([h (clamp (+ 0.5 (/ (* 0.5 (- a b)) k)) 0.0 1.0)])
+    (vec2 (- (mix a b h) (* k h (- 1.0 h))) h)))
+
+;; p rotated by angle (radians) around +Y
+(define (rotateY [p : vec3] [angle : float]) : vec3
+  (let* ([c (cos angle)]
+         [s (sin angle)])
+    (vec3 (+ (* c p.x) (* s p.z)) p.y (- (* c p.z) (* s p.x)))))
+
+;; ---------------------------------------------------------------------------------------------
+;; The scene at a time (seconds): a sphere bobbing and circling through a spinning torus over a
+;; rounded box, all melted together, on a checkered floor.
+
+;; The objects: the distance to them, then their surface's linear albedo
+(define (objects [p : vec3] [time : float]) : vec4
+  (let* ([spherePosition (vec3 (* 1.3 (sin (* 0.7 time)))
+                               (+ 1.6 (* 0.35 (sin (* 1.9 time))))
+                               (* 0.6 (cos (* 0.7 time))))]
+         [sphere (sdSphere (- p spherePosition) 0.55)]
+         [torus (sdTorus (rotateY (- p (vec3 0.0 1.3 0.0)) (* 0.5 time)) 1.1 0.22)]
+         [box (sdRoundBox (rotateY (- p (vec3 0.0 0.45 0.0)) (* -0.3 time))
+                          (vec3 0.9 0.3 0.9) 0.12)]
+         ;; Blend the colours as the distances: the sphere and torus first, then the box
+         [st (smoothUnion sphere torus 0.45)]
+         [stColor (mix (vec3 0.85 0.25 0.12) (vec3 0.95 0.7 0.15) st.y)]
+         [stb (smoothUnion st.x box 0.35)]
+         [stbColor (mix stColor (vec3 0.15 0.45 0.8) stb.y)])
+    (vec4 stb.x stbColor)))
+
+;; The whole scene: the objects joined to the floor (the plane y = 0) with a small fillet. Gives the
+;; distance, then how much of the surface is the floor's (0 to 1). Colours are only computed for
+;; the hit, so the marching loops only compute distances.
+(define (scene [p : vec3] [time : float]) : vec2
+  (smoothUnion (.x (objects p time)) p.y 0.15))
+
+(define (sceneDistance [p : vec3] [time : float]) : float
+  (.x (scene p time)))
+
+;; The floor's albedo: a checkerboard of unit squares, box filtered over a footprint (the width a
+;; pixel covers there), so it fades to grey in the distance instead of shimmering (Inigo Quilez's
+;; analytic filter)
+(define (checkerboard [p : vec2] [footprint : float]) : vec3
+  (let* ([w (vec2 (max footprint 0.0001))]
+         [i (/ (* 2.0 (- (abs (- (fract (* (- p (* 0.5 w)) 0.5)) 0.5))
+                         (abs (- (fract (* (+ p (* 0.5 w)) 0.5)) 0.5))))
+               w)]
+         [checker (- 0.5 (* 0.5 i.x i.y))])
+    (mix (vec3 0.6) (vec3 0.22) checker)))
+
+;; The surface's normal at p: the field's gradient, from four samples at a tetrahedron's corners
+(define (sceneNormal [p : vec3] [time : float]) : vec3
+  (let* ([e 0.0005]
+         [a (vec3 1.0 -1.0 -1.0)]
+         [b (vec3 -1.0 -1.0 1.0)]
+         [c (vec3 -1.0 1.0 -1.0)]
+         [d (vec3 1.0 1.0 1.0)])
+    (normalize (+ (* a (sceneDistance (+ p (* a e)) time))
+                  (* b (sceneDistance (+ p (* b e)) time))
+                  (* c (sceneDistance (+ p (* c e)) time))
+                  (* d (sceneDistance (+ p (* d e)) time))))))
+
+;; How far rays go before they're sky, and how many steps they take at most
+(define farDistance 40.0)
+(define maxSteps 160)
+
+;; The distance along the ray to the first surface, or farDistance (or more) for none. A step is as
+;; long as the field allows; the ray has hit when the field is within a fraction of a pixel's
+;; footprint (which grows with the distance).
+(define (march [origin : vec3] [direction : vec3] [time : float]) : float
+  (let* ([(t steps d)
+          (while ([t 0.0] [steps 0] [d farDistance])
+            (and (< steps maxSteps) (> d (* 0.0005 t)) (< t farDistance))
+            (let* ([gap (sceneDistance (+ origin (* direction t)) time)])
+              (values (+ t gap) (+ steps 1) gap)))])
+    (if (> d (* 0.0005 t)) farDistance t)))
+
+;; The fraction of the sun reaching p along direction, darkening near misses into a penumbra whose
+;; width hardness sets (Inigo Quilez's soft shadows, with Sebastian Aaltonen's estimate of the
+;; nearest point between steps)
+(define (softShadow [p : vec3] [direction : vec3] [hardness : float] [time : float]) : float
+  (let* ([(light t previous steps)
+          (while ([light 1.0] [t 0.02] [previous 1.0e10] [steps 0])
+            (and (< steps 64) (> light 0.002) (< t 12.0))
+            (let* ([h (sceneDistance (+ p (* direction t)) time)]
+                   [y (/ (* h h) (* 2.0 previous))]
+                   [nearest (sqrt (max (- (* h h) (* y y)) 0.0))])
+              (values (min light (/ (* hardness nearest) (max (- t y) 0.0001)))
+                      (+ t (clamp h 0.01 0.3))
+                      h
+                      (+ steps 1))))])
+    (clamp light 0.0 1.0)))
+
+;; Ambient occlusion: how much of the field above p along its normal is closer than it would be
+;; over an open plane, from five samples at growing distances, nearer ones weighing more
+(define (ambientOcclusion [p : vec3] [normal : vec3] [time : float]) : float
+  (let* ([(occlusion weight)
+          (fold ([occlusion 0.0] [weight 1.0])
+                ([i (range 0 5)])
+            (let* ([h (+ 0.02 (* 0.11 (float i)))]
+                   [d (sceneDistance (+ p (* normal h)) time)])
+              (values (+ occlusion (* (- h d) weight)) (* weight 0.85))))])
+    (clamp (- 1.0 (* 2.0 occlusion)) 0.0 1.0)))
+
+;; The sky in a direction: a gradient to the horizon, with the sun's glow
+(define sunDirection (normalize (vec3 -0.7 0.6 0.3)))
+(define (sky [direction : vec3]) : vec3
+  (+ (mix (vec3 0.55 0.62 0.72) (vec3 0.18 0.32 0.62) (clamp direction.y 0.0 1.0))
+     (* (vec3 1.0 0.8 0.5) (pow (max (dot direction sunDirection) 0.0) 64.0))))
+
+;; The colour seen along a ray: the surface it hits, lit by the sun (soft shadowed) and the sky
+;; (occluded), fading into the sky with distance. pixelAngle is the angle a pixel covers (radians).
+(define (shade [origin : vec3] [direction : vec3] [pixelAngle : float] [time : float]) : vec3
+  (let* ([t (march origin direction time)])
+    (if (>= t farDistance)
+        (sky direction)
+        (let* ([p (+ origin (* direction t))]
+               [n (sceneNormal p time)]
+               ;; A pixel's footprint grows with the distance, and as the surface turns away
+               [footprint (/ (* t pixelAngle) (max (abs (dot n direction)) 0.05))]
+               [albedo (mix (.yzw (objects p time)) (checkerboard p.xz footprint)
+                            (.y (scene p time)))]
+               [diffuse (max (dot n sunDirection) 0.0)]
+               ;; Start the shadow ray off the surface, so it doesn't hit it
+               [shadow (if (> diffuse 0.0)
+                           (softShadow (+ p (* n 0.002)) sunDirection 12.0 time)
+                           0.0)]
+               [occlusion (ambientOcclusion p n time)]
+               [halfway (normalize (- sunDirection direction))]
+               [specular (* (pow (max (dot n halfway) 0.0) 48.0) diffuse shadow)]
+               [skyLight (* (+ 0.6 (* 0.4 n.y)) occlusion)]
+               [lit (+ (* albedo (+ (* (vec3 1.7 1.5 1.25) diffuse shadow)
+                                    (* (vec3 0.3 0.36 0.48) skyLight)))
+                       (* (vec3 1.0 0.9 0.8) specular 0.5))]
+               [fog (- 1.0 (exp (* -0.0012 t t)))])
+          (mix lit (sky direction) fog)))))
+
+;; The camera's push constants, which the app computes each frame
+(graphics-material Raymarch
+  (push
+   (eye vec3)                   ; The camera's position
+   (time float)                 ; Seconds of animation
+   (target vec3)                ; The point it looks at
+   (focalLength float)          ; 1 / tan(vertical field of view / 2)
+   (resolution vec2))           ; The target's size in pixels
+  (outputs
+   (outColor vec4))             ; Linear: the sRGB target encodes it
+  ;; A triangle covering the screen, without vertex buffers
+  (vertex
+   (let* ([corner (vec2 (float (bitand vertexIndex 2)) (float (bitand (shl vertexIndex 1) 2)))])
+     (results #:position (vec4 (- (* corner 2.0) 1.0) 0.0 1.0))))
+  ;; A ray per pixel, through a pinhole camera looking from eye at target. fragCoord's y points
+  ;; down; the screen's up is +y.
+  (fragment
+   (let* ([screen (/ (* (- (* fragCoord.xy 2.0) resolution) (vec2 1.0 -1.0)) resolution.y)]
+          [forward (normalize (- target eye))]
+          [right (normalize (cross forward (vec3 0.0 1.0 0.0)))]
+          [up (cross right forward)]
+          [direction (normalize (+ (* right screen.x) (* up screen.y) (* forward focalLength)))])
+     (vec4 (acesFilmic (shade eye direction (/ 2.0 (* resolution.y focalLength)) time)) 1.0))))
+
+;; The frame: one fullscreen draw into the window (or headless, an image read back)
+(graph RaymarchGraph
+  (parameter headless bool)
+  (parameter capture bool)
+  (input eye (per-frame vec3))
+  (input target (per-frame vec3))
+  (input time (per-frame float))
+  (input resolution (per-frame vec2))   ; The surface's size in pixels
+  (image offscreen rgba8-srgb (surface 1.0) #:frames per-frame #:when headless)
+  ;; Every pixel is drawn, so nothing needs clearing, and the ray needs no depth
+  (target screen (if headless (color offscreen) (surface #:depth none)))
+  (material raymarching Raymarch #:cull none
+            #:push ((eye eye) (time time) (target target) (focalLength 1.8)
+                    (resolution resolution)))
+  (draw raymarch screen raymarching 3)
+  (readback readback offscreen #:when capture))
+
+;; ---------------------------------------------------------------------------------------------
+;; The app: an orbit camera, which turns slowly by itself until it's dragged, and the clock
+
+;; The camera orbits this point
+(define cameraTarget (vec3 0.0 0.9 0.0))
+
+(app RaymarchApp
+  (state
+   (yaw float 0.6)
+   (pitch float 0.35)
+   (orbitRadius float 6.5)
+   (dragging bool #f)
+   (cursor vec2 (vec2 0.0))     ; Where the drag last was
+   (turning bool #t)            ; Whether the camera turns by itself
+   (paused bool #f)
+   (time float 0.0))
+
+  ;; Dragging with the left button orbits the camera (and stops it turning by itself); scrolling
+  ;; zooms
+  (on (mouse-pressed left cursor) (with state #:dragging #t #:turning #f #:cursor cursor))
+  (on (mouse-released left cursor) (with state #:dragging #f))
+  (on (cursor-moved cursor)
+    (if state.dragging
+        (let* ([delta (* (- cursor state.cursor) 3.0)])
+          (with state #:cursor cursor
+                      #:yaw (- state.yaw delta.x)
+                      #:pitch (clamp (+ state.pitch delta.y) 0.05 1.4)))
+        state))
+  (on (scrolled offset)
+    (with state #:orbitRadius (clamp (* state.orbitRadius (pow 0.9 offset.y)) 2.5 20.0)))
+  (on (key-pressed t) (with state #:turning (not state.turning)))
+  (on (key-pressed space) (with state #:paused (not state.paused)))
+  (on (key-pressed escape) (quit!))
+  (on (frame dt)
+    (with state
+          #:time (if state.paused state.time (+ state.time dt))
+          #:yaw (if state.turning (+ state.yaw (* 0.15 dt)) state.yaw)))
+
+  (run RaymarchGraph
+    (headless headless)
+    (capture capture)
+    (eye (orbit cameraTarget state.yaw state.pitch state.orbitRadius))
+    (target cameraTarget)
+    (time state.time)
+    (resolution surfaceSize)))
+
+;; The program: a window (headless with --frames), the clock (real time interactively, a fixed step
+;; for a smoke test, so it's deterministic) and the last frame's capture
+(main RaymarchApp
+  (about "Raymarched signed distance fields: smooth unions, soft shadows and ambient occlusion")
+  (window "Raymarch" 1280 800)
+  (timestep #:max 1/30 #:fixed 1/60)
+  (capture readback)
+  (controls "Controls:"
+            "  drag (left mouse)  orbit the camera"
+            "  scroll             zoom"
+            "  T                  toggle the camera turning by itself"
+            "  space              pause / resume the animation"
+            "  Esc                quit"))

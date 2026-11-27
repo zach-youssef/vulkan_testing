@@ -33,7 +33,7 @@ images, define `STB_IMAGE_WRITE_IMPLEMENTATION` in one translation unit and incl
 Read `examples/simple/simple_example.cpp` first: it builds its graph with the C++ API, using
 materials and a small app generated from `simple.zgal`. Every example's shaders and app are written
 in ZGAL ([zgal.md](zgal.md)), and the others declare their graphs there too.
-The other three are programs written entirely in ZGAL: their `main` is generated (`(main ...)`),
+The other four are programs written entirely in ZGAL: their `main` is generated (`(main ...)`),
 with their options, window and smoke-test capture, and they have no C++. They show common kinds of
 application:
 
@@ -42,6 +42,7 @@ application:
 | `examples/image_filter` | Headless use without `VulkanApp` (a generated main without a window): a chain of compute passes enabled from the app's state, push constant parameters from command-line options, an image file named on the command line, readback written to a PNG |
 | `examples/particles` | Compute writing a graph buffer that a graphics pass reads (across queues), per-frame parameters computed from app state, input handlers, changing frames in flight at runtime (scripted by the app in its smoke test), a generated main with a window |
 | `examples/scene` | A 3D renderer: a glTF model (`assets/scene.gltf`, written by `make_scene.py`), shadow map, HDR target that follows window resizes, tonemapping, an orbit camera whose matrices are ZGAL functions, toggling a pass, shader hot reload, window or headless targets chosen by how it's run, a smoke test scripted by the app (resizes, a pass toggled) |
+| `examples/raymarch` | A whole scene in one fragment shader: signed distance fields joined with smooth unions, raymarched with bounded `while` loops (soft shadows) and a `fold` (ambient occlusion), file-level functions shared by them, a fullscreen triangle without vertex buffers, an orbit camera dragged and zoomed with the mouse, animation paused and resumed from app state |
 
 ```cpp
 // Fallible calls return Result<T>; TRY / TRY_ASSIGN return errors to the caller

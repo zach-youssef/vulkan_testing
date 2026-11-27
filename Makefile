@@ -149,15 +149,36 @@ test-example-scene: $(SCENE_OUT)/scene_example
 SCENE_WEB = $(OUT)/web/scene
 $(eval $(call zgal-web-program,$(SCENE_DIR)/scene.zgal,$(SCENE_WEB)))
 
+# ---------------------------------------------------------------------------
+# Example: raymarch
+#   Signed distance fields raymarched in a fragment shader: smooth unions, soft shadows, ambient
+#   occlusion and an orbit camera
+#   make test-example-raymarch - runs it headless for 60 frames with validation, capturing the last
+# ---------------------------------------------------------------------------
+RAYMARCH_DIR = $(EXAMPLES_DIR)/raymarch
+RAYMARCH_OUT = $(EXAMPLES_OUT)/raymarch
+# Everything is in raymarch.zgal, main too
+RAYMARCH_ZGAL_STAMP = $(RAYMARCH_OUT)/generated/raymarch.zgal.stamp
+
+$(eval $(call zgal-program,$(RAYMARCH_DIR)/raymarch.zgal,$(RAYMARCH_OUT),raymarch,$(GLFW_LDLIBS)))
+
+test-example-raymarch: $(RAYMARCH_OUT)/raymarch
+	$(RUN_TEST) ./$< --frames 60 --size 640x400 --capture $(RAYMARCH_OUT)/smoke.png --validation
+
+# For the web: build/web/raymarch (serve it and open raymarch.zgal.html, or run it under Node)
+RAYMARCH_WEB = $(OUT)/web/raymarch
+$(eval $(call zgal-web-program,$(RAYMARCH_DIR)/raymarch.zgal,$(RAYMARCH_WEB)))
+
 # All the examples' smoke tests, each with its own log and summary (test-examples.log has theirs)
-EXAMPLE_TESTS = test-example-image_filter test-example-particles test-example-scene test-main \
+EXAMPLE_TESTS = test-example-image_filter test-example-particles test-example-scene test-example-raymarch test-main \
 	test-bench
 test-examples:
 	$(RUN_TEST) $(MAKE) --no-print-directory $(EXAMPLE_TESTS)
 
-examples: $(SIMPLE_OUT)/simple_example $(IMAGE_FILTER_BIN) $(PARTICLES_OUT)/particles $(SCENE_OUT)/scene_example
+examples: $(SIMPLE_OUT)/simple_example $(IMAGE_FILTER_BIN) $(PARTICLES_OUT)/particles $(SCENE_OUT)/scene_example \
+	$(RAYMARCH_OUT)/raymarch
 
-shaders: $(SIMPLE_ZGAL_STAMP) $(IMAGE_FILTER_ZGAL_STAMP) $(PARTICLES_ZGAL_STAMP) $(SCENE_ZGAL_STAMP)
+shaders: $(SIMPLE_ZGAL_STAMP) $(IMAGE_FILTER_ZGAL_STAMP) $(PARTICLES_ZGAL_STAMP) $(SCENE_ZGAL_STAMP) $(RAYMARCH_ZGAL_STAMP)
 
 .DEFAULT_GOAL := examples
 
@@ -392,7 +413,7 @@ MODEL_ASSETS = $(addprefix tests/gpu/assets/,halves.gltf broken.gltf quad.obj qu
 # one's), then the web programs built here (all of $(OUT)/web but test-pages' copies, which are
 # web/tests' again). The naga is zgal.mk's GLSL-translation pin, not Firefox's own version.
 CHECK_NAGA = $(NODE) $(WEB_DIR)/tools/check-wgsl.ts --naga $(ZGAL_NAGA)
-NAGA_CHECKED_WEB = $(PARTICLES_WEB) $(IMAGE_FILTER_WEB) $(SCENE_WEB) $(MAIN_TEST_WEB) $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) \
+NAGA_CHECKED_WEB = $(PARTICLES_WEB) $(IMAGE_FILTER_WEB) $(SCENE_WEB) $(RAYMARCH_WEB) $(MAIN_TEST_WEB) $(STREAM_TEST_WEB) $(BORDER_TEST_WEB) \
                    $(ARRAYS_TEST_WEB) $(TARGETS_TEST_WEB) $(STORAGE_TEST_WEB) $(FRAMES_TEST_WEB) $(BUFFERS_TEST_WEB)
 
 test-web: $(ZGAL_COMPILED) $(WEB_PACKAGES) $(ZGAL_NAGA)
@@ -417,6 +438,7 @@ test-web-steps:
 	$(MAKE) web
 	$(NODE) $(PARTICLES_WEB)/particles.zgal.main.js --frames 120 --size 1024x768 --capture $(PARTICLES_WEB)/smoke.png
 	$(NODE) $(SCENE_WEB)/scene.zgal.main.js --frames 60 --size 640x360 --capture $(SCENE_WEB)/smoke.png
+	$(NODE) $(RAYMARCH_WEB)/raymarch.zgal.main.js --frames 60 --size 640x400 --capture $(RAYMARCH_WEB)/smoke.png
 	$(MAKE) $(MAIN_TEST_WEB)
 	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js --help > /dev/null
 	$(NODE) $(MAIN_TEST_WEB)/painter.zgal.main.js > /dev/null 2>&1; test $$? -eq 2
@@ -497,7 +519,7 @@ BROWSERS_REQUIRED = $(if $(filter command line environment override,$(origin BRO
 # browser running fewer than all the pages it can says so in a note under the summary. An unknown
 # name or a Chromium-only page in FIREFOX_PAGES, an empty FIREFOX_PAGES, or all with other names
 # stops make before it runs anything.
-PAGES = particles scene blur_edges border arrays targets storage frames-2-3 frames-3-2 buffers \
+PAGES = particles scene raymarch blur_edges border arrays targets storage frames-2-3 frames-3-2 buffers \
 	mount held-keys image-file image-decode kernels indirect models headless stamps glsl streams \
 	stream-buffers stop-streams touch
 # touch: firefox.ts can't touch
@@ -519,10 +541,10 @@ CHROMIUM_PAGES = $(PAGES)
 #   held-keys: focus, pointer capture, keyboard events
 #   stream-buffers: fetch body and Blob streams, Content-Length and onProgress
 #   stop-streams: aborting fetches when stopping mid-stream
-# Left out: particles and scene (held-keys and models cover keys, meshes and depth), border, stamps,
-# glsl and kernels (only shader differences), frames-3-2 (frames-2-3's code path), image-file and
-# image-decode (the wasm decoder doesn't depend on the browser, and Node tests it too), headless and
-# streams (stream-buffers covers Blobs and runHeadless).
+# Left out: particles, scene and raymarch (held-keys and models cover keys, meshes and depth),
+# border, stamps, glsl and kernels (only shader differences), frames-3-2 (frames-2-3's code path),
+# image-file and image-decode (the wasm decoder doesn't depend on the browser, and Node tests it
+# too), headless and streams (stream-buffers covers Blobs and runHeadless).
 FIREFOX_PAGES = blur_edges arrays targets storage frames-2-3 buffers indirect models mount \
 	held-keys stream-buffers stop-streams
 FIREFOX_PAGES_RUN = $(if $(filter all,$(FIREFOX_PAGES)),$(filter-out $(CHROMIUM_ONLY_PAGES),$(PAGES)),$(FIREFOX_PAGES))
@@ -574,6 +596,7 @@ test-pages-steps:
 	  ( \
 	  if want particles; then browse --serve $(PARTICLES_WEB) --keys ' 2' 'particles.zgal.html?frames=60' || exit $$?; fi; \
 	  if want scene; then browse --serve $(SCENE_WEB) 'scene.zgal.html?frames=60' || exit $$?; fi; \
+	  if want raymarch; then browse --serve $(RAYMARCH_WEB) 'raymarch.zgal.html?frames=60' || exit $$?; fi; \
 	  if want blur_edges; then \
 	    browse --serve $(OUT)/web --save-capture $(TEST_PAGES)/blur_edges-$$browser.png \
 	      'image_filter/image_filter.zgal.html?arg=/tests/assets/input.png&arg=out.png&blur=2&edges' || exit $$?; \
@@ -631,7 +654,7 @@ test-pages-steps:
 	done
 
 # The examples whose programs run on the web (simple's app is C++)
-web: $(PARTICLES_WEB) $(IMAGE_FILTER_WEB) $(SCENE_WEB)
+web: $(PARTICLES_WEB) $(IMAGE_FILTER_WEB) $(SCENE_WEB) $(RAYMARCH_WEB)
 
 # build/docs/zgal.html, and zgal.txt for reading in a terminal
 docs: $(ZGAL_COMPILED)
@@ -654,7 +677,7 @@ approve-screenshots:
 	done
 	@find $(SCREENSHOT_DIR) -name '*.flip.png' -delete 2>/dev/null || true
 
-.PHONY: clean examples shaders test test-cpu test-gpu test-dsl test-web test-decode test-tools test-pages web docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-examples test-main bench run-bench test-bench
+.PHONY: clean examples shaders test test-cpu test-gpu test-dsl test-web test-decode test-tools test-pages web docs approve-screenshots test-example-image_filter test-example-particles test-example-scene test-example-raymarch test-examples test-main bench run-bench test-bench
 .PHONY: test-example-image_filter-steps test-main-steps test-bench-steps test-dsl-steps \
 	test-web-steps test-decode-steps test-pages-steps
 

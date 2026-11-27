@@ -277,7 +277,7 @@ then:
    a copy of the runtime, validating each program's WGSL with naga as it's compiled (as Firefox
    would, `web/tools/check-wgsl.ts --naga`), type checks it and runs `web/tests/*.test.ts` on Dawn
    under Node;
-2. builds the particles, image_filter and scene examples for the web (`make web`, into
+2. builds the particles, image_filter, scene and raymarch examples for the web (`make web`, into
    `build/web/<name>`) and runs them under Node, comparing image_filter's outputs with
    `web/tools/image-diff.ts` (which compares images as `image_diff.cpp` does; image_filter also
    copies a JPEG, compared with the JPEG), and runs
@@ -300,8 +300,8 @@ then:
    `tests/stream/streamer.zgal` streaming a file (its opener in
    `streamer.inputs.ts`) (`headless.test.ts` needs no GPU: the PNG encoders and
    `parseCommandLine`'s `where`), then validates the WGSL of every program it built with naga;
-3. runs `make test-pages`: the particles and scene pages, image_filter's page (run from its query
-   string, its capture saved with the checkers' `--save-capture` and compared with
+3. runs `make test-pages`: the particles, scene and raymarch pages, image_filter's page (run from
+   its query string, its capture saved with the checkers' `--save-capture` and compared with
    `blur_edges.approved.png`), the border program's page (its capture compared likewise with
    `border.approved.png`), the arrays, targets, storage, frames and buffers programs' pages
    (compared exactly with `arrays.approved.png`, `targets.approved.png`, `storage.approved.png`,

@@ -96,7 +96,8 @@
         (append (filter (λ (o) (regexp-match? #rx"[.]wgsl$" (output-path o))) (golden-web-outputs))
                 (for*/list ([source (in-list (list "examples/image_filter/image_filter.zgal"
                                                    "examples/particles/particles.zgal"
-                                                   "examples/scene/scene.zgal"))]
+                                                   "examples/scene/scene.zgal"
+                                                   "examples/raymarch/raymarch.zgal"))]
                             [prog (in-value (let-values ([(prog _outputs)
                                                           (parameterize ([current-directory repository])
                                                             (compile-zgal source #:native? #f #:check-only? #t))])
